@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Architecture, status, and delivery specification for dual-stack k3s and RKE2 clanServices with shared artifacts, Cilium, Traefik, BGP, ClusterMesh, and cert-manager." />
+  <title>Rancher clanServices — Architecture, Status &amp; Delivery Specification</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #191816;
+      --paper: #24221f;
+      --ink: #f3f0ea;
+      --muted: #bbb4a9;
+      --line: #4a453e;
+      --accent: #d97757;
+      --accent-soft: #3d2e27;
+      --green: #78c49b;
+      --green-soft: #21382d;
+      --amber: #e2b16b;
+      --amber-soft: #3c3223;
+      --red: #ed9289;
+      --red-soft: #422927;
+      --violet: #c6a5df;
+      --violet-soft: #342b3d;
+      --code: #322e2a;
+      --shadow: 0 12px 35px rgba(0, 0, 0, 0.28);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+    }
+    a { color: #e99a7c; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+    a:hover { text-decoration-thickness: 2px; }
+    code {
+      background: var(--code);
+      color: #f4d8ca;
+      border-radius: 4px;
+      padding: 0.08em 0.32em;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.91em;
+      overflow-wrap: anywhere;
+    }
+    .page { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
+    .hero {
+      background: linear-gradient(135deg, #29231f 0%, #56382b 58%, #a9543b 100%);
+      color: #fff8f2;
+      border: 1px solid #704b3b;
+      border-radius: 20px;
+      padding: 42px 44px 36px;
+      box-shadow: var(--shadow);
+    }
+    .eyebrow { text-transform: uppercase; letter-spacing: 0.13em; font-size: 0.75rem; font-weight: 750; opacity: 0.82; }
+    h1, h2, h3 { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; }
+    h1 { font-size: clamp(2rem, 5vw, 3.5rem); line-height: 1.08; margin: 12px 0 14px; letter-spacing: -0.035em; }
+    .subtitle { font-size: clamp(1.1rem, 2.5vw, 1.45rem); max-width: 850px; margin: 0; opacity: 0.94; }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 25px; }
+    .hero .chip { background: rgba(255,248,242,0.10); color: #fff8f2; border-color: rgba(255,248,242,0.25); }
+    .chip, .status {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 0.76rem;
+      font-weight: 700;
+      line-height: 1.6;
+      white-space: nowrap;
+    }
+    .status.implemented { color: var(--green); background: var(--green-soft); border-color: #38634c; }
+    .status.partial, .status.planned { color: var(--amber); background: var(--amber-soft); border-color: #695435; }
+    .status.gap { color: var(--red); background: var(--red-soft); border-color: #70403b; }
+    .status.future { color: var(--violet); background: var(--violet-soft); border-color: #59466a; }
+    nav.toc {
+      margin: 22px 0;
+      padding: 18px 22px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      font-size: 0.91rem;
+    }
+    nav.toc strong { margin-right: 5px; }
+    main > section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 30px 34px;
+      margin: 20px 0;
+      box-shadow: 0 3px 14px rgba(0, 0, 0, 0.12);
+    }
+    h2 { font-size: 1.75rem; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 20px; }
+    h3 { font-size: 1.23rem; line-height: 1.3; margin: 30px 0 12px; }
+    h4 { font-size: 1.02rem; margin: 24px 0 8px; }
+    h2:first-child, h3:first-child { margin-top: 0; }
+    p { margin: 10px 0; }
+    li { margin: 6px 0; }
+    .lead { font-size: 1.08rem; color: var(--ink); }
+    .muted { color: var(--muted); }
+    .small { font-size: 0.88rem; }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 14px 18px;
+      border-radius: 0 10px 10px 0;
+      margin: 18px 0;
+    }
+    .callout.warning { border-left-color: #d9a158; background: var(--amber-soft); }
+    .callout.danger { border-left-color: var(--red); background: var(--red-soft); }
+    .callout.success { border-left-color: var(--green); background: var(--green-soft); }
+    .callout > :first-child { margin-top: 0; }
+    .callout > :last-child { margin-bottom: 0; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .card { border: 1px solid var(--line); border-radius: 12px; padding: 17px 18px; background: #292622; }
+    .card h3, .card h4 { margin-top: 0; }
+    .metric { font-size: 1.8rem; font-weight: 800; line-height: 1.1; color: var(--accent); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 11px; margin: 15px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th { text-align: left; background: #302c27; color: #ddd6cb; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.045em; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:nth-child(even) { background: #282521; }
+    .stories { padding-left: 25px; }
+    .stories > li { padding-left: 4px; margin: 10px 0; }
+    .stories > li::marker { color: var(--accent); font-weight: 750; }
+    .decision { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 26px; }
+    .decision:first-of-type { border-top: 0; padding-top: 0; }
+    .phase { display: grid; grid-template-columns: 105px 1fr; gap: 18px; border-top: 1px solid var(--line); padding: 20px 0; }
+    .phase:first-of-type { border-top: 0; }
+    .phase-label { font-weight: 800; color: var(--accent); }
+    .phase-content > :first-child { margin-top: 0; }
+    figure { margin: 24px 0; border: 1px solid var(--line); border-radius: 14px; background: #201e1b; padding: 16px; }
+    figure svg { display: block; width: 100%; height: auto; }
+    figcaption { color: var(--muted); font-size: 0.88rem; margin-top: 10px; }
+    .svg-box { fill: #2b2824; stroke: #927765; stroke-width: 1.5; }
+    .svg-box-green { fill: #21382d; stroke: #579572; stroke-width: 1.5; }
+    .svg-box-amber { fill: #3c3223; stroke: #b58b4d; stroke-width: 1.5; }
+    .svg-box-violet { fill: #342b3d; stroke: #9573b1; stroke-width: 1.5; }
+    .svg-title { font: 700 16px Inter, sans-serif; fill: #f3f0ea; }
+    .svg-text { font: 13px Inter, sans-serif; fill: #e7e1d8; }
+    .svg-small { font: 11px Inter, sans-serif; fill: #bbb4a9; }
+    .svg-line { stroke: #e99a7c; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .svg-line-green { stroke: #78c49b; stroke-width: 2; fill: none; marker-end: url(#arrow-green); }
+    .svg-dash { stroke-dasharray: 6 5; }
+    .refs { columns: 2; column-gap: 32px; }
+    .refs li { break-inside: avoid; }
+    .footer { color: var(--muted); text-align: center; font-size: 0.85rem; padding: 25px 10px 0; }
+    @media (max-width: 800px) {
+      .page { padding: 14px 12px 50px; }
+      .hero { padding: 28px 24px; border-radius: 15px; }
+      main > section { padding: 23px 20px; }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .phase { grid-template-columns: 1fr; gap: 5px; }
+      .refs { columns: 1; }
+    }
+    @media print {
+      :root {
+        color-scheme: light;
+        --paper: #ffffff;
+        --ink: #172033;
+        --muted: #566176;
+        --line: #aaaaaa;
+        --accent: #9f4c32;
+        --accent-soft: #fff0e9;
+        --code: #f3eee9;
+      }
+      body { background: #fff; color: #172033; font-size: 10pt; }
+      .page { max-width: none; padding: 0; }
+      .hero { color: #000; background: #fff; border: 2px solid #000; box-shadow: none; }
+      .hero .chip { color: #000; border-color: #777; }
+      nav.toc { display: none; }
+      main > section { border: 0; border-top: 1px solid #aaa; border-radius: 0; padding: 18px 0; box-shadow: none; }
+      a, code { color: #172033; }
+      .card, th, tbody tr:nth-child(even) { background: #fff; color: #172033; }
+      .svg-box { fill: #fff; }
+      .svg-title { fill: #172033; }
+      .svg-text { fill: #27334a; }
+      .svg-small { fill: #566176; }
+      figure, .card, .callout { break-inside: avoid; }
+      h2, h3 { break-after: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="eyebrow">external-systems/clanServices · architecture and delivery record · 2026-10-18</div>
+      <h1>Rancher clanServices</h1>
+      <p class="subtitle">An opinionated, test-locked specification for declarative k3s and RKE2 clusters on NixOS—with dual-stack transport choices, target Cilium-first ingress and Gateway API, first-class Traefik, shared artifacts, cert-manager, BGP load balancing, and ClusterMesh.</p>
+      <div class="meta-row">
+        <span class="chip">Canonical repo: external-systems/clanServices</span>
+        <span class="chip">Imported baseline: 692807c</span>
+        <span class="chip">Provenance: extracted from clan-community; borg is a consumer</span>
+        <span class="chip">Status: living specification</span>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="Table of contents">
+      <strong>Contents</strong>
+      <a href="#status">Status report</a>
+      <a href="#problem">Problem</a>
+      <a href="#solution">Solution</a>
+      <a href="#stories">User stories</a>
+      <a href="#decisions">Implementation decisions</a>
+      <a href="#testing">Testing decisions</a>
+      <a href="#plan">Delivery plan</a>
+      <a href="#out-of-scope">Out of scope</a>
+      <a href="#notes">Notes &amp; references</a>
+    </nav>
+
+    <main>
+      <svg width="0" height="0" style="position:absolute;overflow:hidden" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#e99a7c" /></marker>
+          <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#78c49b" /></marker>
+        </defs>
+      </svg>
+      <section id="status">
+        <h2>1. Status report</h2>
+        <p class="lead">The first upstreaming slice is now imported into the canonical standalone <code>external-systems/clanServices</code> repository: a generic WireGuard transport, a shared Rancher implementation library, and thin RKE2 and k3s services. Their recorded single-node, join, and HA suites pass in the source fork. The broader networking and add-on vision—including the new Cilium-first and transport-mode decisions—is <strong>not implemented by this repository move</strong>, and the static audit found correctness gaps outside the current VM coverage.</p>
+
+        <div class="grid-3">
+          <div class="card"><div class="metric">6</div><strong>imported implementation commits</strong><p class="small muted">From clan-community upstream main 07732ec through k3s parity at 692807c.</p></div>
+          <div class="card"><div class="metric">7</div><strong>recorded green VM suites</strong><p class="small muted">WireGuard mesh, three RKE2 suites, and three k3s suites in the source fork.</p></div>
+          <div class="card"><div class="metric">0</div><strong>ClusterMesh / BGP suites</strong><p class="small muted">These are target phases, not current capabilities.</p></div>
+        </div>
+
+        <div class="callout">
+          <strong>Evidence boundary.</strong> The VM results were recorded during implementation on 2026-10-17: RKE2 at <code>def62bf</code>, k3s at <code>692807c</code>, and WireGuard mesh at <code>c90e2da</code>. Static gates were also recorded green at <code>692807c</code>. The repository import and this specification revision do not rerun or extend those results. Green baseline suites must not be read as proof of the unfinished requirements below.
+        </div>
+
+        <h3>Capability matrix at the imported baseline</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Capability</th><th scope="col">State</th><th scope="col">What is true now</th><th scope="col">Remaining work</th></tr></thead>
+            <tbody>
+              <tr><td>Canonical service flake</td><td><span class="status implemented">Implemented</span></td><td><code>external-systems/clanServices</code> contains the standalone flake, custom services, shared library, fixtures, and this living specification. Consumers do not need a clan-community input.</td><td>Own CI/release lifecycle and send focused changes upstream for review without making upstream a consumer dependency.</td></tr>
+              <tr><td>WireGuard transport</td><td><span class="status implemented">Implemented</span></td><td>Dual-stack, host-level, L3 full mesh with <code>node_transport</code> exports and a recorded three-node VM test at <code>c90e2da</code>.</td><td>Absorb the shared logic into the cluster services and add native-Cilium-encryption and unencrypted-underlay modes.</td></tr>
+              <tr><td>Shared Rancher library</td><td><span class="status implemented">Implemented</span></td><td>Shared interfaces, pure renderers, assertions, vars generators, PKI, haproxy, Cilium, Traefik, cert-manager, CoreDNS, and Sealed Secrets helpers.</td><td>Harden invariants and expand shared behavior instead of duplicating distro logic.</td></tr>
+              <tr><td>RKE2 base</td><td><span class="status implemented">Implemented</span></td><td>Thin public service; PKI sync, local haproxy API/supervisor LB, airgap bootstrap, single/join/HA suites recorded green at <code>def62bf</code>.</td><td>Correctness fixes, feature parity phases, and borg migration.</td></tr>
+              <tr><td>k3s base</td><td><span class="status implemented">Implemented</span></td><td>Thin public service; init-only PKI seed, API-only local haproxy path, local bootstrap charts, single/join/HA suites recorded green at <code>692807c</code>.</td><td>Same shared feature phases as RKE2.</td></tr>
+              <tr><td>Cilium base</td><td><span class="status partial">Partial</span></td><td>VXLAN tunnel, kube-proxy replacement, multi-pool IPAM, dual-stack defaults, one default pod pool.</td><td>Prevent override escapes, repair CIDR resolution, add BGP and additional pool rendering.</td></tr>
+              <tr><td>Cilium ingress / Gateway default</td><td><span class="status planned">Planned (breaking default)</span></td><td>The imported default is Traefik; Cilium ingress and Gateway are not the default implementation.</td><td>Make one Cilium ingress and one Cilium Gateway the default on declared node InternalIP/ExternalIP addresses, prove ports 80/443 with the BGP pool model, and retain Traefik as a first-class alternative.</td></tr>
+              <tr><td>Traefik 0–N</td><td><span class="status partial">Partial</span></td><td>Instance interface, per-class isolation, HTTP/HTTPS/TCP/UDP/HTTP3 option shapes, no hostPort, at most one Gateway controller.</td><td>Fix the audited rendering gaps; add full protocol/pool tests and IPv6-first defaults alongside Cilium, while allowing Traefik to be the only ingress/Gateway implementation.</td></tr>
+              <tr><td>cert-manager / Gateway API</td><td><span class="status partial">Partial</span></td><td>Default-on cert-manager, self-signed CA bootstrap, a default certificate for Gateway-enabled instances, and pinned experimental Gateway CRDs.</td><td>Fix custom-certificate duplication/default suppression/namespace placement; add voter-node pinning and broader runtime tests.</td></tr>
+              <tr><td>CoreDNS rewrites</td><td><span class="status implemented">Implemented</span></td><td>Both distro render paths support custom rewrite ConfigMaps; base suites include a DNS rewrite probe.</td><td>Integrate deliberately with cross-cluster service discovery and later stable MCS-API support.</td></tr>
+              <tr><td>Sealed Secrets</td><td><span class="status partial">Partial</span></td><td>Optional pinned controller and vars-owned keypair with offline public sealing certificate.</td><td>Add a real seal/deploy/unseal VM round-trip for each distro.</td></tr>
+              <tr><td>Airgap packaging</td><td><span class="status partial">Partial</span></td><td>Current components are pinned and boot without registry access in the VM baseline; packaging still lives in the consumer.</td><td>Fix override semantics and runtime package wiring; extract granular artifacts into a dedicated public flake without weakening locks.</td></tr>
+              <tr><td>Shared artifact flake</td><td><span class="status planned">Planned</span></td><td><code>external-systems/pkgs</code> is the intended artifact repository; borg has reusable packaging patterns.</td><td>Build RKE2/k3s from source, support explicitly resolved upstream-HEAD revisions, and publish charts, images, sources, constructors, locks, atomic updaters, and artifact checks.</td></tr>
+              <tr><td>Node ExternalIP / LB pools</td><td><span class="status planned">Planned</span></td><td>Only Node IPAM and Service-class hooks exist; no pool model or external-address facts.</td><td>Node-named pools, primary and extra addresses, deterministic IPv6 carve-outs, explicit multi-node projections, and family-aware assertions. Cilium's default web path claims the primary IPv4; extra Traefik instances default to IPv6.</td></tr>
+              <tr><td>Cilium BGP v2 + BIRD</td><td><span class="status planned">Planned</span></td><td>No implementation.</td><td>Per-node BIRD, four BGP CRD kinds, advertisements only for eligible addresses, external peers, ECMP, and route-withdrawal tests.</td></tr>
+              <tr><td>Automatic ClusterMesh</td><td><span class="status planned">Planned</span></td><td>Only cluster name/id values and non-overlap groundwork exist.</td><td>Cross-service exports, stable identity, shared CA, LoadBalancer endpoints with a NodePort escape, declarative peers, and mixed-distro tests.</td></tr>
+              <tr><td>Dual-stack transport modes</td><td><span class="status planned">Planned (breaking default)</span></td><td>The baseline consumes a separate optional host mesh and also contains single-stack rendering assumptions.</td><td>Default to integrated host WireGuard; add first-class Cilium-native WireGuard and explicit <code>"unencrypted"</code> underlay modes with dual-stack node/interface/MTU overrides and VM coverage for every mode.</td></tr>
+              <tr><td>Topology labels</td><td><span class="status planned">Planned</span></td><td>No automatic cluster topology contract.</td><td>Default every node's standard region and zone labels to the cluster instance name, allow independent per-machine overrides, and assert that both labels are always present.</td></tr>
+              <tr><td>PKI operations</td><td><span class="status planned">Planned</span></td><td>Bootstrap PKI exists; no proven live rotation contract exists.</td><td>Leaf and CA rotation runbooks, staged files, token/kubeconfig handling, and live rotation tests. No blanket 100-year leaf certificate default.</td></tr>
+              <tr><td>External CCM handoff</td><td><span class="status planned">Planned</span></td><td>No generic external-CCM contract.</td><td>Disable the Rancher CCM cleanly, select external kubelet mode, and let operators supply AWS, hcloud, or another CCM without provider-specific base policy.</td></tr>
+              <tr><td>Multus</td><td><span class="status planned">Planned</span></td><td>Absent; current CNI chaining settings are exclusive to Cilium.</td><td>Optional CNI chaining, one shared upstream artifact profile, and a secondary-network round-trip.</td></tr>
+              <tr><td>OpenEBS LVM / ZFS</td><td><span class="status planned">Planned</span></td><td>Absent from the imported services; proven patterns exist in borg.</td><td>Port digest locks, host preparation, StorageClasses, snapshots, persistence, and expansion tests.</td></tr>
+              <tr><td>KubeVirt + CDI</td><td><span class="status planned">Planned</span></td><td>Absent from the imported services; proven patterns exist in borg.</td><td>Port operators, node preparation, airgap images, CPU pinning, and real guest-boot tests.</td></tr>
+              <tr><td>Optional HAProxy edge-proxy</td><td><span class="status future">Reserved</span></td><td>No edge service; only manual Service escape hatches.</td><td>Design 0–N HAProxy instances for HTTP/TLS offload, caching, Cloudflare mTLS, PROXY protocol v2, and multi-cluster backends. BGP, IP failover, and pool advertisement stay with separate routing modules/services.</td></tr>
+              <tr><td>Later platform layers</td><td><span class="status future">Reserved</span></td><td>No upstream-Kubernetes distro, clan-operator, or MCS-API implementation.</td><td>Add upstream Kubernetes as a ClusterMesh-capable distro later; gate MCS-API on upstream stability with an initially disabled option; design the clan-operator as a separate lifecycle platform.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Known correctness gaps that precede new features</h3>
+        <p>A static code audit of the baseline found these issues. They do not invalidate the recorded boot/join/HA results; they show where those tests are blind.</p>
+        <ol>
+          <li><strong>ETP Local is only documented, not rendered.</strong> Traefik Service values omit <code>externalTrafficPolicy</code>, leaving the normal default of <code>Cluster</code>. Arbitrary Helm values can also bypass the intended policy.</li>
+          <li><strong>RKE2's Traefik master switch does not disable every chart.</strong> Setting <code>traefik.enabled = false</code> changes the bundled ingress selection but does not suppress extra standalone RKE2 Traefik charts; k3s already gates its instance resolution. The zero-Traefik contract needs a positive RKE2 regression test.</li>
+          <li><strong>Cluster identity is not inventory-wide.</strong> Every instance defaults to id 1, no cross-distro duplicate/CIDR assertion exists, and ids 128–255 produce invalid derived IPv4 service addresses under the current formula.</li>
+          <li><strong>CIDR overrides are inconsistent.</strong> The shared pool renderer honors overrides while distro configuration still derives some values directly from the id. The new mandatory-dual-stack contract removes single-stack rendering rather than preserving these inconsistent branches.</li>
+          <li><strong>Custom certificates are duplicated and namespace-incomplete.</strong> They are rendered by the shared bootstrap and again by each distro; custom entries fail to suppress per-instance defaults, and a custom Certificate rendered in <code>kube-system</code> cannot satisfy a Gateway certificate reference in another namespace.</li>
+          <li><strong>Two airgap escape hatches are broken or unclear.</strong> The RKE2 package override selects artifact sources but is not wired to the running NixOS RKE2 package; the image override replaces rather than extends defaults without making that contract explicit.</li>
+          <li><strong>Some documented Traefik behavior is absent.</strong> The interface describes placement/anti-affinity behavior that the renderer does not produce, and disabling the ingress controller does not disable every provider. Documentation and rendering must be reconciled at the post-merge invariant boundary.</li>
+          <li><strong>Current tests miss important external behavior.</strong> The single-node suites use ClusterIP for Traefik, join/HA disable parts of the stack, and there are no runtime suites for LB policy, multi-Traefik, Sealed Secrets, ClusterMesh, BGP, PKI rotation, external CCM handoff, or the large add-ons.</li>
+        </ol>
+
+        <h3>Completed implementation checkpoints</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Commit</th><th scope="col">Checkpoint</th><th scope="col">Recorded verification</th></tr></thead>
+            <tbody>
+              <tr><td><code>c90e2da</code></td><td>Dual-stack <code>wireguard-mesh</code> service</td><td>Eval suite and three-node WireGuard VM suite.</td></tr>
+              <tr><td><code>e896061</code></td><td>Shared <code>lib/rancher-cluster</code></td><td>Shared renderer/interface/eval foundation.</td></tr>
+              <tr><td><code>79dad0c</code> → <code>def62bf</code></td><td>Thin public RKE2 service and fixes</td><td><code>rke2-single</code>, <code>rke2-join</code>, <code>rke2-ha</code>; static gates.</td></tr>
+              <tr><td><code>692807c</code></td><td>Thin public k3s service with corrected API join endpoint</td><td><code>k3s-single</code>, <code>k3s-join</code>, <code>k3s-ha</code>; static gates.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="problem">
+        <h2>2. Problem Statement</h2>
+        <p class="lead">A clan operator should be able to declare machines and cluster instances in <code>inventory.nix</code> and receive working, secure, interconnected Kubernetes clusters—not a second, hand-operated networking project.</p>
+        <p>Today, an operator assembling k3s or RKE2 on bare metal must separately solve cluster bootstrap, CA and join-token handling, API failover, CNI replacement, pod/service addressing, ingress, certificates, LoadBalancer allocation, BGP, cross-cluster networking, add-on packaging, and firewall interactions. Most documentation assumes a cloud LoadBalancer, a flat L2 network, one cluster, one distro, or a live administrator running CLI commands. Those assumptions do not produce a declarative fleet.</p>
+        <p>The hardest requirements interact with one another:</p>
+        <ul>
+          <li><strong>Multi-cluster is an inventory problem.</strong> ClusterMesh needs unique names/ids, non-overlapping pod CIDRs, reachable node InternalIPs, compatible datapaths, shared trust, and remote API endpoints. Hand-editing each cluster cannot keep those facts coherent.</li>
+          <li><strong>The transport must guarantee what the cluster promises.</strong> Pod, Service, and node networking are always dual-stack, even when a machine's physical underlay has only one family. The default cluster-owned WireGuard mesh supplies the missing family and encrypted L3 transport; native Cilium WireGuard and an explicitly configured unencrypted underlay must preserve the same dual-stack contract rather than silently losing a family.</li>
+          <li><strong>Bare-metal LoadBalancing is an allocation, routing, and datapath problem.</strong> Cilium LB IPAM can allocate addresses, but something must deliver and, where appropriate, advertise them. A node's primary address, an address routed only to that node, and a shared BGP/ECMP VIP have different failure semantics and must not be conflated.</li>
+          <li><strong>Node IPAM is not a universal answer.</strong> It reproduces k3s ServiceLB-like status for ordinary Services with real endpoints, but Cilium's own Ingress and Gateway Services use dummy endpoints and cannot use Node IPAM with ETP Local. A single ordinary LB-IPAM contract with explicit per-node address projection avoids that special case.</li>
+          <li><strong>Ingress is not only HTTP.</strong> Real workloads need TCP, UDP, TLS termination, TLS passthrough, mTLS, and QUIC. One public IPv4 address cannot host every independent listener shape, so multiple Traefik instances and IPv6-first addressing must be normal.</li>
+          <li><strong>Source preservation changes routing behavior.</strong> <code>externalTrafficPolicy: Cluster</code> can hide the client source for ordinary TCP/UDP Services and attract traffic to nodes without local endpoints. Clan-managed external proxy Services therefore require <code>Local</code>, with placement, advertisements, and tests that honor local endpoint presence. Cilium's special HTTP header behavior is not treated as a substitute for raw-L4 source preservation.</li>
+          <li><strong>Address families are not symmetrical in the real world.</strong> The cluster is always dual-stack internally while a node may have only public IPv6, only public IPv4, both, or neither. Public exposure is per-node and per-Service; internal dual-stack never invents public reachability.</li>
+          <li><strong>Artifacts and services have different release cycles.</strong> Every chart, image, CRD, and operator needs a pinned source and an atomic update path. Consumers should pin one coherent artifact repository revision rather than duplicate packaging or track artifact <code>main</code>.</li>
+          <li><strong>Batteries included must not mean host-coupled day two.</strong> The base supplies CNI, CSI options, ingress/Gateway, LoadBalancer, BGP, cert-manager, and sealed-secret support, while tenants use Flux or Argo CD against those APIs without NixOS rebuilds.</li>
+          <li><strong>Long-lived credentials do not replace rotation.</strong> RKE2/k3s leaf certificates already renew at service startup and their generated CAs have upstream-defined lifetimes. A proven staged rotation path is safer than an untested blanket 100-year certificate policy.</li>
+          <li><strong>Misconfiguration needs an earlier failure boundary.</strong> Port collisions, overlapping CIDRs, duplicate ids, impossible TLS settings, inconsistent pool delivery, and conflicting firewall rules should fail at evaluation where possible; remaining behavior needs hermetic NixOS VM proof.</li>
+        </ul>
+        <p>In short: the problem is not “install Rancher.” It is <strong>turning multi-cluster, multi-distro, software-defined networking and its operational safety rules into one coherent clan inventory contract</strong>.</p>
+      </section>
+
+      <section id="solution">
+        <h2>3. Solution</h2>
+        <p class="lead">Two thin public clanServices—<code>rke2</code> and <code>k3s</code>—share one distro-neutral implementation, selectable dual-stack transport, and one Cilium-first networking contract. A separate artifact flake supplies pinned packages and sources; the inventory remains the only cluster topology declaration, while clan exports and vars distribute facts and credentials at build time.</p>
+        <div class="callout warning"><strong>Target architecture.</strong> This section and Section 5 describe the required end state, including unfinished work. Present-tense wording is normative shorthand for the target contract, not a claim that the capability exists at the imported baseline; Section 1 is always the current-status authority.</div>
+
+        <figure aria-labelledby="fig-render-title fig-render-desc">
+          <title id="fig-render-title">Inventory to running clusters</title>
+          <desc id="fig-render-desc">The inventory declares RKE2 or k3s instances with integrated dual-stack transport: host WireGuard by default, native Cilium WireGuard, or an explicit unencrypted underlay. Thin distro services use the shared Rancher library, a shared artifact flake, exports, and vars to render NixOS and Kubernetes configuration. Eval and VM tests verify the result.</desc>
+          <svg viewBox="0 0 1080 455" role="img" xmlns="http://www.w3.org/2000/svg">
+            <defs></defs>
+            <rect class="svg-box-violet" x="30" y="45" width="220" height="305" rx="14" />
+            <text class="svg-title" x="55" y="80">inventory.nix</text>
+            <text class="svg-text" x="55" y="112">machines + tags</text>
+            <text class="svg-text" x="55" y="140">per-cluster mesh settings</text>
+            <text class="svg-text" x="55" y="168">rke2 instances</text>
+            <text class="svg-text" x="55" y="196">k3s instances</text>
+            <text class="svg-text" x="55" y="224">roles + node pools</text>
+            <text class="svg-small" x="55" y="266">Single source of truth</text>
+            <text class="svg-small" x="55" y="286">No runtime topology CLI</text>
+
+            <path class="svg-line" d="M250 195 L315 195" />
+            <rect class="svg-box" x="315" y="70" width="215" height="115" rx="12" />
+            <text class="svg-title" x="338" y="103">Thin public services</text>
+            <text class="svg-text" x="338" y="133">rke2 · server / agent</text>
+            <text class="svg-text" x="338" y="158">k3s · server / agent</text>
+
+            <path class="svg-line" d="M422 185 L422 238" />
+            <rect class="svg-box-green" x="315" y="238" width="215" height="112" rx="12" />
+            <text class="svg-title" x="338" y="272">rancher-cluster</text>
+            <text class="svg-text" x="338" y="300">shared renderers</text>
+            <text class="svg-text" x="338" y="325">interfaces + assertions</text>
+
+            <path class="svg-line" d="M530 127 L610 127" />
+            <path class="svg-line" d="M530 292 L610 292" />
+            <rect class="svg-box" x="610" y="45" width="205" height="305" rx="14" />
+            <text class="svg-title" x="635" y="80">Build-time inputs</text>
+            <text class="svg-text" x="635" y="115">clan exports</text>
+            <text class="svg-small" x="635" y="139">identity · endpoints · CIDRs</text>
+            <text class="svg-text" x="635" y="177">clan vars</text>
+            <text class="svg-small" x="635" y="201">PKI · tokens · keypairs</text>
+            <text class="svg-text" x="635" y="239">artifact flake</text>
+            <text class="svg-small" x="635" y="263">packages · sources · lib</text>
+            <text class="svg-text" x="635" y="305">integrated transport</text>
+            <text class="svg-small" x="635" y="329">dual-stack · interface · MTU</text>
+
+            <path class="svg-line" d="M815 195 L875 195" />
+            <rect class="svg-box-green" x="875" y="70" width="175" height="250" rx="14" />
+            <text class="svg-title" x="897" y="105">Rendered fleet</text>
+            <text class="svg-text" x="897" y="139">NixOS nodes</text>
+            <text class="svg-text" x="897" y="170">RKE2 + k3s</text>
+            <text class="svg-text" x="897" y="201">Cilium + Traefik</text>
+            <text class="svg-text" x="897" y="232">BGP + add-ons</text>
+            <text class="svg-small" x="897" y="277">Airgap-ready</text>
+
+            <rect class="svg-box-amber" x="315" y="385" width="500" height="48" rx="10" />
+            <text class="svg-text" x="338" y="415">nix-unit + clanLib.clan + hermetic NixOS VM tests</text>
+            <path class="svg-line-green svg-dash" d="M565 350 L565 385" />
+          </svg>
+          <figcaption><strong>Figure 1.</strong> Distro-specific bootstrap stays in the thin services; shared behavior moves through the shared library, while artifact versions and hashes have an independent, explicitly pinned lifecycle.</figcaption>
+        </figure>
+
+        <h3>Target invariants</h3>
+        <div class="grid-2">
+          <div class="card"><h4>One declarative fleet</h4><p>Adding an RKE2 or k3s instance is enough for it to receive a stable identity, non-overlapping defaults, integrated transport, and—when its mesh group has peers—automatic ClusterMesh configuration.</p></div>
+          <div class="card"><h4>Dual-stack inside, always</h4><p>Every cluster has dual-stack node InternalIPs, pod CIDRs, and Service CIDRs in every transport mode. Public exposure may independently be IPv4-only, IPv6-only, dual-stack, or absent per node and Service.</p></div>
+          <div class="card"><h4>Cilium is the only CNI base</h4><p>Every cluster uses one shared upstream Cilium 1.20+ profile, kube-proxy replacement, VXLAN tunnel mode, and multi-pool IPAM. Alternative CNIs and native-routing base modes are unsupported.</p></div>
+          <div class="card"><h4>L3 only, with transport choices</h4><p>No VLAN, L2 announcement, VRRP, or shared L2 requirement. Integrated host WireGuard is the default; native Cilium WireGuard and an unencrypted underlay are first-class alternatives with explicit dual-stack node facts. The cluster services absorb the mesh implementation rather than requiring a second inventory service.</p></div>
+          <div class="card"><h4>Local external policy, always</h4><p>Every externally exposed Service rendered for Traefik, ClusterMesh, or Cilium ingress/Gateway uses <code>externalTrafficPolicy: Local</code>. No Helm override may silently change it to <code>Cluster</code>; an upstream inability to honor the contract fails the feature gate.</p></div>
+          <div class="card"><h4>One LB-IPAM model</h4><p>Node-named Cilium LB pools own node transport, primary, and extra addresses. Clan-managed proxies use explicit per-node projections rather than Cilium Node IPAM, avoiding its dummy-endpoint limitation and making multi-IP status deterministic.</p></div>
+          <div class="card"><h4>BGP only where routing needs it</h4><p>Provider-, mesh-, assigned-, and statically routed node addresses are not re-advertised by default. Shared BGP VIPs use Cilium BGP v2 plus per-node BIRD for health-aware ECMP; route ownership is never ambiguous.</p></div>
+          <div class="card"><h4>Cilium by default, Traefik first-class</h4><p>One Cilium ingress and one Cilium Gateway supply the default HTTP/HTTPS and Gateway API path on declared node addresses, including the primary IPv4 on ports 80 and 443. Traefik remains a 0–N, fully tested alternative that can be the only ingress/Gateway implementation; additional instances default to IPv6-only alongside Cilium.</p></div>
+          <div class="card"><h4>Topology is always labeled</h4><p>Every node receives non-empty <code>topology.kubernetes.io/region</code> and <code>topology.kubernetes.io/zone</code> labels. Both default to the cluster instance name and can be overridden independently in per-machine settings.</p></div>
+          <div class="card"><h4>cert-manager is base</h4><p>cert-manager is always installed; there is no disable switch. Sealed Secrets remains optional and preserves a recoverable key history. Day-two issuers, routes, Services, and applications belong to Flux or Argo CD, not NixOS rebuilds.</p></div>
+          <div class="card"><h4>Hermetic proof and operable PKI</h4><p>All runtime dependencies are pinned in a dedicated artifact flake. Eval tests reject invalid inventories; NixOS VM tests exercise real traffic, BGP, certificate rotation, storage, and guest workloads offline.</p></div>
+        </div>
+      </section>
+
+      <section id="stories">
+        <h2>4. User Stories</h2>
+        <p>These stories define the intended consumer contract. “Operator” means the person writing the clan inventory; “maintainer” means someone changing the canonical services or artifact repository.</p>
+
+        <h3>Cluster and fleet operators</h3>
+        <ol class="stories">
+          <li>As a clan operator, I want to declare one server with one bootstrap flag, so that I get a working cluster without hand-writing Kubernetes configuration.</li>
+          <li>As a clan operator, I want to choose RKE2 for one instance and k3s for another, so that I can use the right distro without learning two unrelated networking models.</li>
+          <li>As a clan operator, I want the same role and add-on vocabulary across both distros, so that documentation and inventory patterns transfer cleanly.</li>
+          <li>As a clan operator, I want to declare several cluster instances in one inventory, so that fleet topology is reviewable in one change.</li>
+          <li>As a clan operator, I want integrated host WireGuard by default with native Cilium WireGuard and unencrypted-underlay alternatives, so that transport policy does not require a second mesh instance or a forked cluster service.</li>
+          <li>As a clan operator, I want each cluster to receive a stable unique name and id, so that adding another cluster does not renumber existing clusters.</li>
+          <li>As a clan operator, I want derived dual-stack pod and Service CIDRs that cannot overlap other clusters, so that cross-cluster traffic is unambiguous.</li>
+          <li>As a clan operator, I want explicit id and CIDR overrides with collision checks, so that I can migrate existing addressing safely.</li>
+          <li>As a clan operator, I want mixed RKE2 and k3s instances to discover one another through exports, so that I do not copy endpoints or credentials between them.</li>
+          <li>As a clan operator, I want mesh groups, so that only mutually trusted clusters join the same ClusterMesh trust domain.</li>
+          <li>As a clan operator, I want adding a second cluster to enable the mesh on both clusters after deployment, so that peering is declarative rather than a CLI follow-up.</li>
+          <li>As a clan operator, I want removing a cluster from a mesh group to remove its remote configuration from survivors, so that stale peers do not linger.</li>
+          <li>As a clan operator, I want a clear warning when an identity, CA, address-pool, or membership change is disruptive, so that I can plan the imperative reconciliation steps.</li>
+          <li>As a cluster operator, I want cert-manager permanently present in the base, so that later add-ons and tenant Helm releases can rely on it.</li>
+          <li>As a cluster operator, I want to disable the Rancher cloud controller and select an external CCM, so that AWS, hcloud, or another provider can be used without forking the service.</li>
+          <li>As a cluster operator, I want day-two cluster changes to stay in Flux or Argo CD, so that application and tenant work does not rebuild the NixOS hosts.</li>
+        </ol>
+
+        <h3>Network and LoadBalancer operators</h3>
+        <ol class="stories" start="17">
+          <li>As a network operator, I want an L3-only design with VXLAN tunneling, so that clusters work across routed bare-metal, VPN, and multi-cloud networks without VLANs.</li>
+          <li>As a network operator, I want mandatory dual-stack node, pod, and Service addressing in every transport mode, so that cluster-internal contracts never depend on the physical underlay's families or encryption choice.</li>
+          <li>As a network operator, I want an IPv4-only machine to receive mesh IPv6 in host-WireGuard mode, so that it can join the same dual-stack cluster as every other node.</li>
+          <li>As a network operator, I want an IPv6-only machine to receive mesh IPv4 in host-WireGuard mode, so that dual-stack cluster APIs still work while public IPv4 exposure remains optional.</li>
+          <li>As a network operator, I want per-machine node addresses, endpoints, ports, interfaces, MTU, routes, and pool blocks inside the cluster instance settings, including explicit overrides when host WireGuard is disabled.</li>
+          <li>As a network operator, I want Cilium multi-pool IPAM with sensible non-overlapping defaults, so that pod allocation scales beyond the Kubernetes-default single pool.</li>
+          <li>As a network operator, I want cluster CIDR overrides to drive every renderer consistently, so that Cilium, the distro, DNS, and assertions never disagree.</li>
+          <li>As a network operator, I want every node's cluster-joining addresses added automatically to its node-named LB pool as exact /32 and /128 blocks, so that a single-node cluster needs no extra IP declaration.</li>
+          <li>As a network operator, I want to add addresses and subnets to a node's pool through per-machine settings, so that additional capacity stays declarative.</li>
+          <li>As a network operator, I want node InternalIP and ExternalIP facts to back the default Cilium ingress and Gateway LoadBalancers, so that simple clusters expose ports 80 and 443 without allocating a separate VIP.</li>
+          <li>As a network operator, I want deterministic IPv6 carve-outs from a node's routed prefix, so that additional proxy instances can each receive one address per selected node.</li>
+          <li>As a network operator, I want additional Traefik instances to default to IPv6-only addresses, so that Cilium can claim the node's first and only public IPv4 for the default web path.</li>
+          <li>As a network operator, I want clan-managed proxies to receive an explicit list of per-node addresses, so that multi-node LoadBalancer status is deterministic rather than a single dynamic allocation.</li>
+          <li>As a network operator, I want generic tenant Services to draw dynamically from labeled pools with documented one-per-family semantics, so that GitOps users can allocate LoadBalancers without Nix changes.</li>
+          <li>As a network operator, I want per-node BIRD configured through Cilium's v2 BGP resources, so that I do not hand-maintain BGP speakers and peer files.</li>
+          <li>As a network operator, I want exact IPv4 /32 and IPv6 /128 Service advertisements, so that upstream routers can install predictable host routes.</li>
+          <li>As a network operator, I want ECMP toward endpoint-hosting nodes, so that north-south traffic uses available capacity without a separate load-balancer appliance.</li>
+          <li>As a network operator, I want a BGP-routed VIP's next hop withdrawn from nodes without ready local endpoints, so that routers keep the VIP through healthy nodes instead of blackholing traffic.</li>
+          <li>As a network operator, I want primary and statically delivered node addresses excluded from BGP advertisements by default, so that the control plane never competes with provider or WireGuard routing.</li>
+          <li>As a network operator, I want eval-time port, pool, CIDR, ASN, delivery-mode, and interface checks plus targeted firewall rules, so that conflicts fail before packets are dropped mysteriously.</li>
+          <li>As a network operator, I want standard region and zone topology labels to default to the cluster instance name with independent per-machine overrides, so that every node is labeled without forcing uniform physical topology.</li>
+        </ol>
+
+        <h3>Ingress, application, and security operators</h3>
+        <ol class="stories" start="38">
+          <li>As an application operator, I want default Cilium ingress and Gateway instances with HTTP, HTTPS, and a default certificate, so that a minimal cluster has a useful CNCF-owned entry point.</li>
+          <li>As an application operator, I want to disable all Traefik instances explicitly, so that Cilium-only, internal-only, or alternative-ingress clusters remain possible.</li>
+          <li>As an application operator, I want multiple Traefik instances with distinct namespaces, Services, and IngressClasses, so that tenants and listener configurations do not collide.</li>
+          <li>As an application operator, I want proxy placement and address projection to select the same nodes where <code>web != false</code>, so that no Service advertises a node without a local ready proxy.</li>
+          <li>As an application operator, I want raw TCP and UDP entrypoints, so that non-HTTP protocols use the same declarative ingress model.</li>
+          <li>As an application operator, I want TLS termination and SNI-based TLS passthrough, so that I can choose where certificates terminate per route.</li>
+          <li>As an application operator, I want HTTP/3 over QUIC with the matching TCP and UDP Service paths and firewall openings, so that enabling it does not silently produce a TCP-only listener.</li>
+          <li>As a network operator, I want externalTrafficPolicy Local on every clan-managed external proxy Service, so that raw client source addresses survive and routing reflects local endpoint health.</li>
+          <li>As a security operator, I want mTLS through explicit TLSOption references and compatible IngressRoutes, so that client-certificate policy is not falsely promised on unsupported Gateway routes.</li>
+          <li>As an application operator, I want Cilium as the default Gateway API implementation with the option to use only Traefik instead, so that the cluster matches my routing model without a manual controller installation.</li>
+          <li>As an application operator, I want Cilium 1.20+ Gateway in ordinary LoadBalancer mode to support L4 and L7 without the old cilium-l4/cilium-l7 split, so that the interface reflects upstream capabilities.</li>
+          <li>As an application operator, I want Cilium Ingress and Gateway to use ordinary LB IPAM rather than Node IPAM, so that the dummy-endpoint ETP Local limitation is avoided.</li>
+          <li>As an application operator, I want at most one Traefik Gateway API controller per cluster with other instances isolated by IngressClass, so that route ownership is deterministic.</li>
+          <li>As a security operator, I want cert-manager and an airgapped bootstrap CA installed unconditionally, so that TLS and dependent add-ons work before an external issuer is configured.</li>
+          <li>As a security operator, I want to reference my own Issuer or ClusterIssuer for certificates, so that ACME, Vault, or other trust systems remain GitOps-owned rather than hardcoded here.</li>
+          <li>As an application operator, I want CoreDNS rewrites, so that alias domains and tunnel-based access resolve to ordinary cluster Services.</li>
+          <li>As an application operator, I want opt-in cross-cluster global Services, so that only explicitly shared workloads gain remote endpoints and discovery.</li>
+          <li>As a security operator, I want a Sealed Secrets keypair generated and retained by clan vars by default, so that I can seal offline and recover decryption after a rebuild.</li>
+          <li>As a security operator, I want native controller-generated Sealed Secrets keys as an explicit alternative with backup documentation, rather than a cert-manager Certificate that can overwrite the only private key.</li>
+          <li>As a security operator, I want private keys and join tokens kept out of the Nix store, so that evaluation artifacts do not disclose cluster credentials.</li>
+          <li>As a security operator, I want tested leaf and CA rotation runbooks for both distros, so that expiry and compromise response do not depend on rebuilding the cluster.</li>
+          <li>As a security operator, I want expiry checks and staged rotation instead of blanket 100-year leaf certificates, with any long-lived offline root treated as an explicit custom-CA risk decision.</li>
+        </ol>
+
+        <h3>Add-on, platform, and edge operators</h3>
+        <ol class="stories" start="60">
+          <li>As a platform operator, I want optional Multus with Cilium remaining the primary CNI, so that workloads can attach secondary networks deliberately.</li>
+          <li>As a platform operator, I want OpenEBS LVM Local PV with thin-pool-aware StorageClasses, so that production local volumes can provision, expand, and snapshot.</li>
+          <li>As a platform operator, I want OpenEBS ZFS Local PV on explicitly prepared nodes, so that mixed storage fleets do not require ZFS everywhere.</li>
+          <li>As a platform operator, I want a central snapshot controller and per-engine snapshot classes, so that snapshot behavior is consistent and does not run duplicate controllers.</li>
+          <li>As a platform operator, I want optional KubeVirt and CDI with per-node KVM preparation, so that I can import disks and run virtual machines beside containers.</li>
+          <li>As a platform operator, I want kubelet CPU-manager and KubeVirt CPU-pinning options per node, so that mixed-core hosts can provide deterministic VM capacity.</li>
+          <li>As an airgap operator, I want one pinned artifact-flake input to supply every chart, image, CRD, operator, and constructor, so that I do not duplicate packaging in each consumer.</li>
+          <li>As an airgap operator, I want granular artifact packages rather than one mandatory mega-archive, so that disabled add-ons do not add gigabytes to a node closure.</li>
+          <li>As a platform operator, I want both distros to use the same upstream Cilium and Multus versions, so that features and ClusterMesh compatibility do not depend on the distro's bundled mirror.</li>
+          <li>As an airgap operator, I want an explicit non-airgap escape mode, so that connected environments can opt into pulls without changing the tested default.</li>
+          <li>As a power user, I want merged distro and Helm overrides that cannot violate the core invariants, so that advanced configuration remains possible without silent unsupported shapes.</li>
+          <li>As a platform operator, I want every clan-rendered manifest to carry consistent managed-by, instance, component, and content-hash labels, so that ownership is identifiable without changing selector labels.</li>
+          <li>As a tenant operator, I want to use Flux or Argo CD against the base Gateway, Ingress, certificate, pool, and Service APIs, so that cluster day two does not churn the Nix repository.</li>
+          <li>As an edge operator, I want 0–N optional HAProxy edge-proxy instances with one or more nodes each, so that one instance can consume exports from one or many downstream clusters without a one-to-one topology mapping.</li>
+          <li>As an edge operator, I want TLS termination, HTTP caching, and PROXY protocol v2 by default toward Cilium or Traefik ingress endpoints, with passthrough and end-to-end TLS also available.</li>
+          <li>As an edge operator, I want a vars-prompted directory containing one or more certificate pairs and a first-class Cloudflare mTLS toggle, so that edge certificates and client verification are declarative and recoverable.</li>
+          <li>As an edge operator, I want health-checked HAProxy backend balancing across downstream ingress endpoints, while BGP, ECMP routing, pool advertisement, and IP failover remain composable concerns of other NixOS modules or services.</li>
+          <li>As an edge operator, I want explicit protocol boundaries—TCP, HTTP, HTTPS, TLS, mTLS, and optional VM-proven HTTP/3 termination, but no generic UDP relay—so that cache hits and HTTP/TLS offload do not depend on unsupported data paths.</li>
+        </ol>
+
+        <h3>Maintainers and reviewers</h3>
+        <ol class="stories" start="78">
+          <li>As a maintainer, I want thin distro adapters around a shared implementation, so that a networking fix lands once for both RKE2 and k3s.</li>
+          <li>As an artifact maintainer, I want atomic component updates and immutable consumer pins, so that artifact releases can evolve independently without surprising fleet upgrades.</li>
+          <li>As a maintainer, I want eval tests at the complete inventory boundary, so that cross-service discovery and collisions are tested where users actually configure them.</li>
+          <li>As a maintainer, I want hermetic VM tests for every externally visible feature, so that upgrades prove behavior rather than merely rendering manifests.</li>
+          <li>As a maintainer, I want test suites reused across distros and run sequentially, so that parity is strong without unmaintainable duplicated harnesses or resource collisions.</li>
+          <li>As a reviewer, I want current, partial, planned, and reserved capabilities labeled separately, so that the documentation cannot overclaim the implementation.</li>
+          <li>As an operator, I want node, etcd, cluster, and mesh removal runbooks, so that necessary imperative reconciliation is explicit rather than mistaken for fully declarative cleanup.</li>
+          <li>As the borg owner, I want to migrate only after the canonical implementation reaches the required parity and passes the affected suites, so that upstreaming does not regress the proven fleet and borg can drop its clan-community input.</li>
+          <li>As a platform maintainer, I want upstream Kubernetes as a later first-class distro with the same Cilium and ClusterMesh contracts, so that distro choice is not limited to Rancher forever.</li>
+          <li>As a platform maintainer, I want stable Cilium MCS-API support with CoreDNS integration and VM tests, initially disabled by default, so that cross-cluster discovery can mature without changing existing clusters implicitly.</li>
+          <li>As a fleet maintainer, I want a later clan-operator with Inventory and Machine custom resources, so that clan lifecycle operations, health, topology visualization, and imperative reconciliation can run under Kubernetes without weakening the current declarative contract.</li>
+        </ol>
+      </section>
+
+      <section id="decisions">
+        <h2>5. Implementation Decisions</h2>
+        <p class="lead">The design is deliberately generic at the inventory boundary and opinionated in the rendered result. Users may choose distros, topology, addresses, and add-ons; they may not turn the result into a different, untested networking architecture through an override.</p>
+
+        <div class="decision">
+          <h3>5.1 Module, artifact, and ownership boundaries</h3>
+          <ul>
+            <li><strong><code>external-systems/clanServices</code> is the canonical service repository.</strong> It owns the standalone flake, CI/release lifecycle, living specification, and day-to-day development. Consumers, including borg, use this repository without a clan-community input. Focused changes may still be proposed to clan-community for upstream review; upstream is a destination, not a consumer dependency.</li>
+            <li><strong>Public <code>rke2</code> and <code>k3s</code> services remain thin.</strong> They select distro runtime artifacts and own NixOS module options, bootstrap configuration, TLS-directory differences, chart-adoption differences, and join semantics. RKE2 retains its Supervisor path; k3s uses only its kube-apiserver endpoint.</li>
+            <li><strong>The private Rancher cluster library owns parity.</strong> Shared interfaces, integrated transport, identity/CIDR resolution, Cilium, pools, BGP, Traefik, cert-manager, CoreDNS, Sealed Secrets, add-ons, vars generators, managed labels, and assertions live here.</li>
+            <li><strong>The cluster services absorb the shared WireGuard implementation.</strong> No second inventory service is required. The standalone <code>wireguard-mesh</code> clanService may remain useful for ordinary NixOS machines, but Rancher and that service share one transport implementation rather than drifting into two WireGuard stacks. Every generated interface, key generator, firewall rule, and systemd unit is namespaced by cluster instance.</li>
+            <li><strong>A dedicated public artifact flake is the single packaging input.</strong> <code>external-systems/pkgs</code> is the intended home. Borg is evidence and a future consumer, not the shared input other repos must absorb.</li>
+            <li>The artifact flake exports granular <code>packages.&lt;system&gt;</code> as its canonical API, an optional artifact-only <code>overlays.default</code>, pinned <code>sources</code>, and <code>lib</code> containing explicit-argument constructors plus version/lock metadata. It contains no inventory, clan vars, fleet labels, devshell policy, golden-image logic, or VM-test-specific runtime bundle.</li>
+            <li><strong>RKE2 and k3s are built from source in the artifact repository.</strong> Release builds and upstream-HEAD development builds use the same constructors. “HEAD” means an explicitly resolved upstream commit whose revision and hash are locked by an atomic update—not an unfixed network fetch. Consumers still pin one immutable artifact-repository revision.</li>
+            <li><strong>A normal locked flake input is the primary consumption path.</strong> The legacy <code>lib/import-flake</code> adapter inherited from clan-community remains optional for consumers that cannot declare the input directly; it is not a second required packaging interface. Temporary proving may use <code>git+file://</code> or <code>path:</code> with an uncommitted lock override, but local URLs and home-directory paths are never committed.</li>
+            <li>Artifacts are granular and updated as atomic component sets: distro runtime + matching core artifacts, Cilium chart + images, Multus chart + images, cert-manager chart + images, each storage engine + snapshotter, and KubeVirt + CDI + tools. There is no mandatory all-add-ons archive. A consumer pins an immutable revision or tag, reviews the compatibility notes, updates explicitly, and runs its own static and VM gates; no consumer tracks artifact <code>main</code>.</li>
+            <li>The artifact repository proves source/hash/render/import consistency. The service repository proves NixOS and Kubernetes behavior. Final consumer proof uses a clean public fetch, not only a local path.</li>
+            <li><strong>Node interface ownership is not blurred.</strong> Rancher consumes declared delivery facts and does not guess provider routing or silently reconfigure arbitrary public interfaces. Additional pool addresses must be marked as mesh/provider-delivered, assigned, statically routed to one node, or BGP-routed.</li>
+            <li><strong>A future <code>edge-proxy</code> is a consumer, not a hidden dependency.</strong> Its HAProxy instances consume stable cluster/address exports and never become necessary for an in-cluster deployment.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.2 Identity, topology, dual-stack CIDRs, and discovery exports</h3>
+          <ul>
+            <li>The Cilium cluster name defaults to the inventory instance name and must satisfy Cilium's 32-character lowercase DNS-style constraint.</li>
+            <li><code>cilium.id</code> becomes nullable. The default is a stable hash of the instance name into 1–127, the safe derived-CIDR range; an explicit 1–255 override remains available. A hash collision is an eval error that requires an explicit id override—zero-configuration uniqueness is not guaranteed. Adding or removing other instances never changes an existing id.</li>
+            <li>Because IPv4 is always enabled internally, an explicit id above 127 always requires explicit IPv4 pod and Service CIDRs. No invalid <code>10.256…</code> address may reach a distro. There is no single-stack branch and no placeholder family.</li>
+            <li>Before hashed defaults replace the current default id 1, existing inventories are migrated by pinning their current ids and CIDRs explicitly. The change must not silently renumber an established cluster; the migration and collision behavior receive eval tests.</li>
+            <li>One resolved, explicitly dual-stack CIDR structure feeds distro <code>cluster-cidr</code>, <code>service-cidr</code>, cluster DNS, Cilium values, pod pools, assertions, and exports. Both families are mandatory in every renderer.</li>
+            <li><strong>Topology labels are always resolved.</strong> Cluster defaults set <code>topology.kubernetes.io/region = instanceName</code> and <code>topology.kubernetes.io/zone = instanceName</code>. Per-machine <code>topology.region</code> and <code>topology.zone</code> settings override either value independently; for example, one node can remain in region <code>borg</code> with zone <code>texas</code>, while another uses region <code>foo</code> and zone <code>bar</code>. Both rendered label values must be non-empty valid Kubernetes label values.</li>
+            <li>A neutral <code>rancher_cluster</code> instance-scope export publishes identity, mesh group, resolved pod/Service CIDRs, ClusterMesh endpoint addresses and port, pool handoff blocks, and schema version. Per-node <code>node_transport</code> exports carry mesh or explicit-underlay addresses, interface, MTU, primary/external address facts, delivery modes, and resolved topology. Secrets never appear in exports.</li>
+            <li>Both distro services select exports across service boundaries. Inventory-wide assertions reject duplicate names/ids, overlapping pod, Service, or linked-mesh CIDRs, duplicate NodePorts, missing cross-cluster transport peers, incompatible mesh settings, and missing topology labels before deployment.</li>
+            <li>Identity and CIDR changes are documented as disruptive on established clusters. The implementation must not “helpfully” renumber a cluster to resolve a collision.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.3 Integrated transport and address-family contract</h3>
+          <ul>
+            <li><strong>Host WireGuard is the default, not the only supported transport.</strong> The target interface exposes <code>transport.mode = "host-wireguard" | "cilium-wireguard" | "unencrypted"</code>, defaulting to <code>host-wireguard</code>. The <code>"unencrypted"</code> value means the explicit unencrypted-underlay mode. API, supervisor, Cilium VXLAN, ClusterMesh, and ordinary east-west traffic use the selected routed L3 transport; no mode requires VLANs or shared L2.</li>
+            <li><strong>Dual-stack cluster internals are unconditional in every mode.</strong> Node InternalIPs, pod CIDRs, Service CIDRs, Cilium address-family settings, and DNS rendering always include both families. An option to render a single-stack cluster is removed rather than repaired.</li>
+            <li>In host-WireGuard mode every node has both mesh IPv4 and mesh IPv6 addresses. Defaults derive deterministically from the stable cluster id and inventory machine name; per-machine settings can override addresses, listen port, endpoint, interface, MTU, extra routes, and pool blocks. A physical IPv4-only underlay therefore still supplies mesh IPv6, and a physical IPv6-only underlay still supplies mesh IPv4.</li>
+            <li><strong>Native Cilium WireGuard is the first-class encrypted alternative.</strong> It disables the cluster-owned host WireGuard interface, keys, and units and enables Cilium's own transparent encryption. Every machine still supplies or derives valid dual-stack node InternalIPs, the transport interface, MTU, and required routes; the VM suite asserts both encryption and dual-stack behavior rather than accepting a config render alone.</li>
+            <li><strong>The explicit unencrypted underlay is also first-class.</strong> It makes no confidentiality claim, disables host WireGuard and Cilium transparent encryption, and requires explicit per-machine dual-stack node addresses, interface, MTU, and any facts that the integrated mesh would otherwise generate. Missing families or transport facts are eval errors; no placeholder address or implicit single-stack fallback is allowed.</li>
+            <li><strong>Per-cluster meshes do not imply isolated ClusterMesh islands.</strong> In host-WireGuard mode, members of one trust group render explicit cross-cluster peering from exported endpoints and public vars keys, with only remote mesh prefixes in AllowedIPs. The other modes must declare equivalent routed reachability. Every remote node InternalIP used by Cilium ClusterMesh must be reachable before peering is considered ready, and no secret key enters exports.</li>
+            <li>The supported datapath is routed L3 transport plus Cilium VXLAN. Host WireGuard cryptokey routing carries only declared mesh host prefixes and explicit extra routes; transport MTU minus VXLAN overhead determines Cilium's tunnel budget. Native-routing base mode remains outside the design.</li>
+            <li><strong>Public family flexibility is distinct from cluster stack mode.</strong> A node may publish only public IPv6, only public IPv4, both, or neither. Each proxy instance selects its covered nodes and Service families independently: one family renders <code>SingleStack</code>; two render <code>PreferDualStack</code> by default, with <code>RequireDualStack</code> as an explicit strict option. No renderer invents an address or public route.</li>
+            <li>The distro HTTP-proxy setting is the documented escape for a node whose only external path is through a proxy. RKE2/k3s pass it to their own services, containerd, and kubelet; host environment and proxy variables are not automatically passed into pods. Application egress, NAT64/DNS64, and making an IPv6-only node reach an IPv4-only Internet endpoint are outside this service's networking guarantee.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.4 Cilium and shared network artifact base</h3>
+          <ul>
+            <li><strong>Both distros use the same canonical upstream Cilium chart and image profile, at version 1.20 or newer.</strong> RKE2's bundled Cilium is disabled; k3s does not adopt RKE2's Rancher-mirrored Cilium bundle. This makes BGP v2, Gateway API, and ClusterMesh behavior a deliberate shared version choice rather than a distro accident.</li>
+            <li>Multus follows the same rule: one upstream, atomically pinned chart/image profile for both distros unless a VM-proven distro incompatibility forces a documented adapter. RKE2 runtime/core/Traefik artifacts remain distro-specific.</li>
+            <li>Borg's removed upstream-Cilium lock machinery is prior art, not a file to resurrect blindly. Its later migration to RKE2-bundled artifacts avoided independent chart/image drift, and its per-architecture archives could not satisfy multi-arch index digest references. The artifact repository must preserve atomic versions and prove the chosen archive/digest model rather than reintroducing silent <code>useDigest = false</code> drift.</li>
+            <li>Always enabled: kube-proxy replacement, VXLAN tunnel mode, multi-pool IPAM, BPF masquerade/TProxy, Maglev, path-MTU discovery, and the default dual-stack pod pool.</li>
+            <li><strong>Clan-managed proxy Services do not use Cilium Node IPAM.</strong> They use ordinary LB IPAM with explicit addresses. Node IPAM's ServiceLB-like behavior is therefore not needed for the default, and its dummy-endpoint incompatibility with Cilium Ingress/Gateway under ETP Local never becomes a special-case exception.</li>
+            <li><strong>One Cilium ingress and one Cilium Gateway are the default public implementations.</strong> They use ordinary LoadBalancer Services and the same Local-only, explicit-address, and port-collision rules as Traefik. Cilium host-network mode is not used by the base: it disables the ordinary LoadBalancer path and rejects TCPRoute/UDPRoute. Traefik can replace Cilium as the only ingress/Gateway implementation or run additional instances beside it.</li>
+            <li>Post-merge validation rejects <code>cilium.helmValues</code> that change routing mode, tunnel protocol, IPAM mode, required dual-stack enablement, CNI chaining semantics, artifact profile, or Service policy invariants. Escape hatches customize the agreed architecture; they do not replace it unnoticed.</li>
+            <li>Enabling Multus changes the CNI chaining configuration explicitly and atomically. It is not emulated by unrelated raw Helm overrides.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.5 Automatic, mixed-distro ClusterMesh</h3>
+          <p>Actual peering is enabled automatically when more than one eligible RKE2/k3s instance belongs to the same mesh group. The default group includes all Rancher instances in the clan; an explicit group or opt-out separates trust domains. Every mesh-eligible cluster—including a singleton—runs the local clustermesh-apiserver and holds its certificates from first boot, but a singleton's remote-peer list is empty. Adding the first peer therefore updates configuration rather than introducing a new CA or a new local control plane; removing the last peer returns to that empty-list state without deleting certificates.</p>
+
+          <figure aria-labelledby="fig-mesh-title fig-mesh-desc">
+            <title id="fig-mesh-title">Declarative mixed-distro ClusterMesh</title>
+            <desc id="fig-mesh-desc">RKE2 and k3s clusters discover each other from exports, use a shared mesh CA from clan vars, connect clustermesh apiservers over mTLS through LoadBalancer addresses on the WireGuard mesh, and tunnel pod traffic directly between nodes.</desc>
+            <svg viewBox="0 0 1080 500" role="img" xmlns="http://www.w3.org/2000/svg">
+              <rect class="svg-box" x="45" y="75" width="410" height="315" rx="16" />
+              <text class="svg-title" x="72" y="110">RKE2 cluster · id A</text>
+              <rect class="svg-box-green" x="75" y="140" width="160" height="88" rx="10" />
+              <text class="svg-text" x="93" y="172">server nodes</text>
+              <text class="svg-small" x="93" y="196">mesh InternalIPs</text>
+              <rect class="svg-box" x="265" y="140" width="160" height="88" rx="10" />
+              <text class="svg-text" x="282" y="169">clustermesh</text>
+              <text class="svg-text" x="282" y="191">apiserver</text>
+              <text class="svg-small" x="282" y="214">LoadBalancer · Local</text>
+              <rect class="svg-box-violet" x="75" y="265" width="350" height="88" rx="10" />
+              <text class="svg-text" x="97" y="298">Cilium VXLAN + multi-pool</text>
+              <text class="svg-small" x="97" y="324">unique pod / service CIDRs</text>
+
+              <rect class="svg-box" x="625" y="75" width="410" height="315" rx="16" />
+              <text class="svg-title" x="652" y="110">k3s cluster · id B</text>
+              <rect class="svg-box-green" x="655" y="140" width="160" height="88" rx="10" />
+              <text class="svg-text" x="673" y="172">server nodes</text>
+              <text class="svg-small" x="673" y="196">mesh InternalIPs</text>
+              <rect class="svg-box" x="845" y="140" width="160" height="88" rx="10" />
+              <text class="svg-text" x="862" y="169">clustermesh</text>
+              <text class="svg-text" x="862" y="191">apiserver</text>
+              <text class="svg-small" x="862" y="214">LoadBalancer · Local</text>
+              <rect class="svg-box-violet" x="655" y="265" width="350" height="88" rx="10" />
+              <text class="svg-text" x="677" y="298">Cilium VXLAN + multi-pool</text>
+              <text class="svg-small" x="677" y="324">different pod / service CIDRs</text>
+
+              <path class="svg-line" d="M425 184 L625 184" />
+              <path class="svg-line" d="M655 207 L455 207" />
+              <text class="svg-small" x="463" y="166">mTLS · LB VIP:port → 2379</text>
+              <path class="svg-line-green" d="M455 310 L625 310" />
+              <path class="svg-line-green" d="M625 333 L455 333" />
+              <text class="svg-small" x="462" y="292">pod-to-pod VXLAN</text>
+
+              <rect class="svg-box-amber" x="280" y="415" width="520" height="58" rx="11" />
+              <text class="svg-text" x="305" y="441">exports discover endpoints · vars supply the shared mesh CA</text>
+              <text class="svg-small" x="346" y="461">same trust group · same datapath · compatible Cilium versions</text>
+              <path class="svg-line svg-dash" d="M540 415 L540 370" />
+            </svg>
+            <figcaption><strong>Figure 2.</strong> ClusterMesh connects Cilium control planes; pod traffic still flows directly between nodes through the same tunnel datapath. Remote clients dial a stable local DNS name whose eval-rendered endpoint set contains the exported LoadBalancer addresses; 2379 is the backend apiserver/etcd port. It is one trust domain, not a federation of unrelated security postures.</figcaption>
+          </figure>
+
+          <ul>
+            <li>Peer lists are rendered from <code>rancher_cluster</code> exports into Cilium's declarative <code>clustermesh.config.clusters</code> structure. No <code>cilium clustermesh connect</code> or live kubeconfig exchange is part of deployment.</li>
+            <li><strong>LoadBalancer is the default clustermesh-apiserver exposure.</strong> It uses the same ordinary LB-IPAM model as every other clan-managed proxy and exports stable addresses. A collision-checked NodePort mode remains an explicit escape for mesh-only deployments that deliberately do not want a LoadBalancer; it is not the default and must export the actual selected NodePort.</li>
+            <li>All server-role members are the endpoint and placement set by default. Each runs one clustermesh-apiserver replica with required anti-affinity/topology placement; the Service uses ETP Local and retains ClientIP session affinity for multi-replica deployments. Server membership changes update addresses, endpoints, placement, and certificate SANs together.</li>
+            <li><strong>DNS fan-in gives every remote cluster one stable local name.</strong> Each remote cluster gets a selectorless local ClusterIP Service plus an eval-rendered EndpointSlice (or legacy Endpoints only where required for distro compatibility). Cilium's singular remote <code>address</code> points to that stable cluster-local DNS name, which fans out to all exported remote VIPs or node/NodePort endpoints. This preserves the useful part of the earlier implementation without its IPv4-only and weakly tested aspects.</li>
+            <li>The shared server certificate's SANs include every exported address and every DNS alias clients actually dial, including the local fan-in name and the clustermesh API DNS name derived from cluster name and mesh domain—not the Kubernetes API FQDN. The sorted endpoint set is a public validation input to the certificate generator, so membership changes reissue and roll certificates before new endpoints are advertised.</li>
+            <li>Dedicated ClusterMesh addresses are preferred. A primary address may be shared with Traefik or another Service only through an explicit <code>lbipam.cilium.io/sharing-key</code> projection with disjoint ports, the required cross-namespace annotations, and proof that every claimed address has the required local endpoints. For a BGP-routed VIP, all sharing Services must have identical ETP and local-endpoint coverage: BGP advertises an IP, not an IP/port pair, so one Service's healthy endpoint must not attract traffic that blackholes another Service on that node.</li>
+            <li>Every group member declares the identically named shared generator <code>rancher-clustermesh-ca-&lt;group&gt;</code> with <code>share = true</code>. Clan generates it once under <code>vars/shared</code>; no individual cluster owns it. Per-cluster dependent generators issue server/remote/local/admin certificates, which are synced as Secrets before Cilium starts. Authentication uses per-cluster identities and needs no cert-manager/CNI bootstrap dependency.</li>
+            <li>The CA and certificate contents never enter exports, Helm values, or the Nix store. Rotation is a separate two-phase CA-bundle design; regenerating a live mesh CA blindly is explicitly unsupported.</li>
+            <li>All peers use the same tunnel datapath and <code>maxConnectedClusters</code> value, have non-overlapping pod and linked-mesh CIDRs, and run the same pinned upstream Cilium profile. The trust group's selected cross-cluster transport must make every remote dual-stack node InternalIP reachable before Cilium peering starts; an API LoadBalancer alone is not treated as proof of ClusterMesh readiness. A future profile bump must remain within Cilium's documented compatibility window during rollout.</li>
+            <li>Cross-cluster global Services are opt-in per Service. Mesh membership alone does not export every workload. CoreDNS rewrites remain available for alias/tunnel naming. MCS-API is not part of the first ClusterMesh acceptance: implementation waits for upstream stability, ships with its CoreDNS wiring and VM tests, and remains disabled by default in its initial release. Any later default-on change is a separate reviewed migration.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.6 Node LoadBalancing, LB IPAM, BGP, and BIRD</h3>
+          <p>Every externally exposed clan-managed proxy is a Kubernetes <code>LoadBalancer</code> Service. Cilium-owned modes use ordinary Cilium LB IPAM, never Node IPAM; an explicit external class delegates allocation to another controller. The base distinguishes address delivery because allocation does not imply reachability or failover:</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Mode</th><th scope="col">Address source and delivery</th><th scope="col">Failure semantics</th></tr></thead>
+              <tbody>
+                <tr><td>Node-fate-bound pool</td><td>Default zero-config Cilium and additional per-node proxy instances request exact addresses from node-named pools. Mesh, provider-primary, NIC-assigned, and statically routed addresses already reach one particular node, so BGP is unnecessary.</td><td><strong>No automatic failover.</strong> If that node or its local endpoint is unhealthy, its address fails even if another node is healthy. Service status and placement must still agree; no provider route can be withdrawn by Cilium.</td></tr>
+                <tr><td>Shared BGP pool</td><td>A deliberately shared VIP or block is allocated by LB IPAM and advertised by Cilium BGP v2 through per-node BIRD to external routers.</td><td>With ETP Local, the failed node's next hop withdraws while healthy next hops remain. ECMP and route withdrawal apply only to this mode.</td></tr>
+                <tr><td>External class</td><td>A cloud or separately managed controller owns allocation and delivery; the Service class and user annotations pass through without clan pool wiring.</td><td>Controller-defined. The rendered Service still uses ETP Local; no unsupported failover promise is added.</td></tr>
+                <tr><td>ClusterIP</td><td>Internal-only instance using the cluster Service network.</td><td>No external LB resources or advertisements.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <figure aria-labelledby="fig-node-title fig-node-desc">
+            <title id="fig-node-title">Single-cluster LoadBalancer and API paths</title>
+            <desc id="fig-node-desc">Public clients reach a node-owned VIP intercepted by Cilium and forwarded to a local Traefik endpoint. Cilium advertises only BGP-eligible Service VIPs to local BIRD and optional external routers. Every node also has a local haproxy API load balancer over the mesh.</desc>
+            <svg viewBox="0 0 1080 520" role="img" xmlns="http://www.w3.org/2000/svg">
+              <defs></defs>
+              <rect class="svg-box-violet" x="35" y="55" width="185" height="95" rx="13" />
+              <text class="svg-title" x="60" y="90">Client</text>
+              <text class="svg-text" x="60" y="120">TCP · UDP · QUIC</text>
+
+              <path class="svg-line-green" d="M220 103 L295 103" />
+              <rect class="svg-box-green" x="295" y="45" width="490" height="405" rx="17" />
+              <text class="svg-title" x="322" y="80">Kubernetes node · public + mesh addresses</text>
+              <rect class="svg-box" x="325" y="110" width="205" height="95" rx="11" />
+              <text class="svg-text" x="348" y="143">Cilium BPF Service</text>
+              <text class="svg-small" x="348" y="168">VIP:port interception</text>
+              <text class="svg-small" x="348" y="190">ETP Local only</text>
+              <path class="svg-line-green" d="M530 158 L595 158" />
+              <rect class="svg-box" x="595" y="110" width="160" height="95" rx="11" />
+              <text class="svg-text" x="620" y="145">Traefik pod</text>
+              <text class="svg-small" x="620" y="171">local ready endpoint</text>
+
+              <rect class="svg-box" x="325" y="245" width="205" height="105" rx="11" />
+              <text class="svg-text" x="348" y="279">Cilium BGP speaker</text>
+              <text class="svg-small" x="348" y="305">eligible /32 + /128 only</text>
+              <path class="svg-line" d="M530 297 L595 297" />
+              <rect class="svg-box" x="595" y="245" width="160" height="105" rx="11" />
+              <text class="svg-text" x="635" y="281">BIRD 2</text>
+              <text class="svg-small" x="616" y="307">loopback peering</text>
+              <text class="svg-small" x="616" y="329">optional upstreams</text>
+
+              <rect class="svg-box-amber" x="325" y="380" width="430" height="48" rx="10" />
+              <text class="svg-text" x="348" y="410">local haproxy → healthy kube-apiservers</text>
+
+              <path class="svg-line" d="M755 297 L850 297" />
+              <rect class="svg-box-violet" x="850" y="225" width="195" height="145" rx="13" />
+              <text class="svg-title" x="878" y="260">External router</text>
+              <text class="svg-text" x="878" y="293">ECMP routes</text>
+              <text class="svg-small" x="878" y="322">to local endpoints</text>
+              <text class="svg-small" x="878" y="345">optional phase</text>
+
+              <rect class="svg-box" x="835" y="45" width="210" height="95" rx="12" />
+              <text class="svg-text" x="858" y="80">WireGuard mesh</text>
+              <text class="svg-small" x="858" y="106">node InternalIPs + API</text>
+              <path class="svg-line svg-dash" d="M835 103 L785 103" />
+              <path class="svg-line svg-dash" d="M940 140 L940 225" />
+            </svg>
+            <figcaption><strong>Figure 3.</strong> LB IPAM assigns addresses; BGP advertises only addresses explicitly marked for routed sharing. Cilium owns the Service datapath, and the API's local haproxy path remains independent on the mesh.</figcaption>
+          </figure>
+
+          <ul>
+            <li><strong>Every node receives one cluster-scoped, node-named <code>CiliumLoadBalancerIPPool</code>.</strong> Its initial blocks are the exact /32 and /128 cluster-joining mesh addresses. Per-machine cluster settings may add IPv4 addresses, IPv6 addresses, and larger subnets. For example, a single node <code>node-1</code> with join addresses <code>10.0.0.1/32</code> and <code>fd0::1/128</code> gets pool <code>node-1</code> containing exactly those blocks without further declaration.</li>
+            <li>Primary proxy addresses are explicit per-node facts. Declaring a public primary automatically adds its exact /32 or /128 block to that node's pool; it wins over the joining mesh address used as the fallback. Thus the zero-configuration example works on the mesh, while a normal bare-metal web node uses its public IPv4 and primary IPv6 on ports 80 and 443. Every projected address must belong to the corresponding node pool, and mesh reachability is never represented as public reachability.</li>
+            <li><strong>The default Cilium ingress and Gateway Services project the complete computed address set with <code>lbipam.cilium.io/ips</code>.</strong> Pool <code>serviceSelector</code> labels authorize the request; the annotation supplies the selected node InternalIP/ExternalIP addresses, including the node's first and only primary public IPv4 for ports 80 and 443 where declared. This reproduces ServiceLB-like multi-node status without Node IPAM or a runtime guessing algorithm.</li>
+            <li>Additional Traefik instances default to deterministic IPv6-only projections when a node has a declared routed IPv6 prefix. A stable hash of cluster, node, and instance selects a carve-out and offset; an explicit offset overrides it and collisions are eval errors. Renaming or reordering unrelated instances must not renumber existing ones. Without a usable IPv6 carve-out, an additional external instance needs explicit addresses or a shared pool; it does not silently consume the last public IPv4.</li>
+            <li><strong>Dynamic and projected allocation are different contracts.</strong> A generic tenant Service drawing by pool label receives one address per requested family for the whole Service, not one per node. Clan-managed multi-node proxies always use eval-time explicit projection. GitOps tenants may write their own explicit annotation if they deliberately want multiple addresses.</li>
+            <li>Per-node pools contain only addresses contributed by that node; shared public pools contain deliberately shared allocations. Pool names, labels, selectors, address ownership, delivery mode, and overlaps are checked at eval. Pool updates are potentially disruptive because Cilium may reassign addresses; they are reviewed as network changes, not harmless manifest tweaks.</li>
+            <li>Every node runs BIRD 2. Cilium's embedded GoBGP speaker uses the v2 <code>CiliumBGPClusterConfig</code>, <code>CiliumBGPPeerConfig</code>, <code>CiliumBGPAdvertisement</code>, and per-node <code>CiliumBGPNodeConfigOverride</code> resources; deprecated legacy BGP mode is never used.</li>
+            <li>The default local peering is Cilium dial-out to BIRD over loopback, with separate IPv4 and IPv6 sessions and eBGP multihop where required. Cilium does not open a competing TCP/179 listener.</li>
+            <li>The default ASN model assigns two deterministic private 32-bit ASNs per cluster—one to its BIRD instances and one to its Cilium speakers—plus a unique router id per node. Upstream AS paths therefore remain uniform. Advanced per-node ASNs are allowed only when the router supports AS-path multipath-relax.</li>
+            <li><strong>BGP advertisement is opt-in per address class, not a consequence of pool membership.</strong> Only shared BGP VIPs and explicitly enabled CiliumPodIPPool prefixes are advertised. Primary, mesh, NIC-assigned, and statically delivered node addresses are not re-advertised by default, preventing competition with provider or WireGuard routes.</li>
+            <li>Advertisements select LoadBalancerIPs explicitly by label and family. Exact /32 and /128 routes are the default; aggregation is disabled under ETP Local and not offered as a shortcut around address planning.</li>
+            <li>BIRD import filters accept only expected exact Service VIPs and explicitly enabled CiliumPodIPPool prefixes. Upstream exports are limited to the same approved prefixes—never default, management, or transit routes. The advertised next hop is the node's reachable mesh transport address; broad kernel installation is not a default side effect.</li>
+            <li>With ETP Local and a BGP-routed VIP, Cilium advertises only on nodes with ready local endpoints. Tests prove that the failed node's next hop is withdrawn while the VIP remains through healthy nodes, and that direct node traffic avoids Service-level SNAT. No equivalent route-withdrawal claim is made for node-fate-bound addresses.</li>
+            <li>External routers peer with node BIRD over routed transport and must support enough ECMP paths, recursive next-hop resolution, and AS-path multipath-relax if node ASNs differ. Session loss is detected with explicit timers rather than assumed BFD; graceful restart is sized to real agent startup time. Routers never create duplicate WireGuard AllowedIPs.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.7 Cilium, Traefik, and Gateway API</h3>
+          <ul>
+            <li><strong>Cilium is the default ingress and Gateway API implementation.</strong> The target selector is <code>ingressGateway.controller = "cilium" | "traefik"</code>, defaulting to <code>cilium</code>; despite living outside the <code>gatewayAPI</code> subtree, it governs both default ingress and Gateway API ownership. Selecting Traefik disables the default Cilium ingress/Gateway path so Traefik can be the only implementation; the old <code>cilium-l4</code>/<code>cilium-l7</code> enum is rejected.</li>
+            <li>The clan-managed default Cilium Ingress and default Cilium Gateway are each 0–1 as a matter of base-policy scope, not an upstream controller limitation. They default on when Cilium is selected. Tenants may create additional Gateway resources through GitOps. Cilium 1.20+ in ordinary LoadBalancer mode supports HTTPRoute, TCPRoute, and UDPRoute on one Gateway without the old split.</li>
+            <li><strong>The default Cilium web path uses declared node InternalIP and ExternalIP facts on ports 80 and 443.</strong> The same evaluated <code>web != false</code> node set controls placement, rendered node labels/affinity, pool projection, and firewall exposure. Where a node has only one public IPv4, Cilium's default path claims it; additional Traefik instances therefore default to deterministic per-node IPv6 projections rather than competing for that address.</li>
+            <li>Cilium Ingress/Gateway always uses ordinary LB IPAM with dedicated or explicitly shared addresses and ETP Local—never Node IPAM and never host-network mode. Full HTTP/HTTPS, L4/L7 Gateway, certificate, source-preservation, and BGP-pool acceptance tests must prove this upstream path on both distros; a dummy-endpoint or advertisement regression fails the feature instead of triggering a Cluster-policy fallback.</li>
+            <li><strong>Traefik remains first-class with 0–N instances.</strong> No Traefik instance is required when Cilium is selected. An empty instance map means zero Traefik, and the master switch suppresses every bundled and standalone chart on both distros. Every instance is one release of the same pinned chart for that distro; extra instances use standalone chart resources and unique full names, namespaces, Services, and default IngressClasses.</li>
+            <li>At most one Traefik instance enables Traefik's Gateway provider because its controller name is shared upstream. When Cilium is the selected Gateway implementation, no Traefik instance claims that role; Traefik instances can still serve their own IngressClass-scoped ingress and CRD routes.</li>
+            <li><strong>Every externally exposed Traefik or Cilium proxy Service renders ETP Local.</strong> Node-fate-bound address modes require full local coverage: DaemonSets are the Traefik default, while Deployments need required placement and at least one ready replica per covered node, with scale-to-zero and undersized HPA minima rejected. Routed BGP Deployments may scale to zero intentionally; BGP then withdraws every next hop.</li>
+            <li>Traefik EntryPoints cover HTTP, HTTPS, raw TCP, raw UDP, TLS termination, TLS passthrough, mTLS references, and HTTP/3. Container and exposed ports are separate; hostPort is always null. Raw UDP on Traefik uses IngressRouteUDP unless a pinned upstream version proves a Gateway UDPRoute path; Cilium 1.20+ UDPRoute is validated independently.</li>
+            <li>Port uniqueness is evaluated per covered node, address, and transport protocol. TCP and UDP may share a number; two conflicting listeners on the same family/address/protocol/port may not. LB IPAM, NodePort allocation, and Cilium do not perform the whole cross-instance check for us.</li>
+            <li>HTTP/3 adds the QUIC UDP listener, matching TCP and UDP Service ports, NetworkPolicy rule, and firewall opening together, normally through one mixed-protocol LoadBalancer Service. Separate TCP/UDP Services require explicit IP-sharing configuration. Maglev can stabilize backend selection but does not make an existing QUIC connection survive backend failure.</li>
+            <li>TLS passthrough leaves termination to the backend. mTLS enforcement uses IngressRoute-compatible TLSOptions; unsupported Gateway-route behavior is not claimed. Cilium's HTTP <code>X-Forwarded-For</code> behavior is documented separately from raw-L4 source preservation, and TLS-passthrough backends are not promised the original client address after Envoy creates a new upstream TCP connection.</li>
+            <li>The default certificate comes from cert-manager. Custom certificate entries render exactly once, in the namespace of their consumer, and suppress default per-instance certificates as documented. Tenant issuers, TLSStores, CA Secrets, and provider-specific integrations remain GitOps-owned.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.8 Base and add-on contract</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Component</th><th scope="col">Default</th><th scope="col">Decision</th><th scope="col">Required behavioral proof</th></tr></thead>
+              <tbody>
+                <tr><td>cert-manager</td><td><strong>Always on</strong></td><td>Base component with no disable option: pinned chart/images, self-signed CA bootstrap, control-plane/etcd-voter placement by default, arbitrary issuer references. Future TopoLVM, OpenShell, and other consumers may rely on its presence.</td><td>Default Gateway HTTPS, custom-issuer certificate rendering without duplicates or namespace mismatches, and a dependent add-on webhook/certificate round-trip.</td></tr>
+                <tr><td>CoreDNS rewrites</td><td>On</td><td>Distro-appropriate custom ConfigMaps; no pretend Helm interface for k3s's plain AddOn.</td><td>Alias resolution with answer-name reversal and ordinary cluster.local negative control.</td></tr>
+                <tr><td>Sealed Secrets</td><td>Off</td><td><code>keyManagement = "clan-vars"</code> is the default when enabled: persistent keypair, offline public cert, native renewal disabled. <code>"controller"</code> explicitly selects native in-cluster key generation/retention and its backup workflow. A plain cert-manager Certificate is not a key-management mode.</td><td>For vars mode: offline seal, deploy/unseal, rebuild from retained vars, and old ciphertext still decrypts. For controller mode: back up every active key, rebuild/restore, and prove the same history. Rotation never means deleting old keys.</td></tr>
+                <tr><td>Multus</td><td>Off</td><td>Cilium stays primary; enabling Multus switches supported chaining/exclusive settings and the shared upstream pinned artifacts together.</td><td>A pod receives and uses a secondary network while normal Cilium connectivity remains healthy on both distros at the same profile version.</td></tr>
+                <tr><td>OpenEBS LVM</td><td>Off</td><td>Existing disko-created VGs; thin-pool naming/provisioning convention; WaitForFirstConsumer; central snapshotter.</td><td>PVC lifecycle, persistence, expansion, snapshot and restore with host-side artifact verification.</td></tr>
+                <tr><td>OpenEBS ZFS</td><td>Off</td><td>Per-node eligibility and host/ZFS-path preparation; existing zpools; per-engine snapshot class.</td><td>Provision, persistence, snapshot and restore only on eligible nodes.</td></tr>
+                <tr><td>KubeVirt + CDI</td><td>Off</td><td>Operators and digest-locked images, per-node KVM prep, PSS exceptions, optional CDI and CPU-manager integration.</td><td>Hermetic DataVolume import and a real guest boot/login; dedicated CPU allocation in the pinning suite.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>OpenEBS Local PV is node-local storage, not replicated storage. Mayastor, Longhorn, and a hidden default storage engine are not part of this contract. KubeVirt CPU pinning remains per-machine because host topology and reserved CPUs are not cluster-uniform facts. Cert-manager's presence does not make every add-on default-on.</p>
+        </div>
+
+        <div class="decision">
+          <h3>5.9 Secrets, PKI, Sealed Secrets, and airgap</h3>
+          <ul>
+            <li>Clan vars own cluster CAs, join tokens, haproxy healthcheck material, admin kubeconfigs, the default Sealed Secrets key history, and ClusterMesh CA/certs. Public certificates may be read as public values; private material is referenced only by deployed secret paths.</li>
+            <li>RKE2 PKI sync remains non-destructive and distro-specific; k3s seeds only its initializing server and uses native CA replication/rotation thereafter. The shared library does not force RKE2 semantics onto k3s.</li>
+            <li><strong>cert-manager does not generate the Sealed Secrets sealing key in the base design.</strong> A Certificate can create a Secret mechanically, but cert-manager reissuance and private-key rotation do not implement Sealed Secrets' append-new/preserve-old key registry, controller reload, public-cert distribution, or backup semantics. Preventing old ciphertext from becoming undecryptable is more important than reusing the convenient controller.</li>
+            <li>Vars-managed Sealed Secrets keeps native renewal disabled and retains every old key. Controller-managed mode uses native generation and retention with an explicit backup/restore runbook. Any future cert-manager integration is a separate orchestration feature requiring key history, <code>rotationPolicy</code> analysis, controller restart, newest-cert publication, and recovery tests—not a one-resource option.</li>
+            <li>Airgap-ready is the tested default. Every new feature lands with its artifact-flake source pin, complete image set, digest/NAR locks, and build-time manifest-to-lock consistency check in the same change. Consumers update the artifact input and their own compatibility checks together.</li>
+            <li>A single explicit airgap disable switch may permit registry access in connected environments. It never changes pinning or tests, and all VM suites keep airgap enabled.</li>
+            <li>Override contracts are explicit: artifact replacement requires a complete replacement set; additive image lists extend defaults. The RKE2 package override must control both the runtime and the matching artifact extraction source.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.10 Live certificate rotation and imperative lifecycle</h3>
+          <ul>
+            <li><strong>The base ships a tested per-distro rotation runbook and a guarded helper, not a promise that Nix activation rotates live PKI safely.</strong> The helper checks expiry and cluster health, backs up required state, stages files outside the active TLS directory, preserves keys where required, executes the distro-native command, and verifies nodes, API access, and workloads afterward.</li>
+            <li>Leaf rotation follows upstream behavior: RKE2/k3s client and server certificates are valid for 365 days and renew at service startup when expired or within the upstream renewal window. Manual key+cert rotation uses <code>rke2 certificate rotate</code> or <code>k3s certificate rotate</code> with the service stopped, then restarts and verifies it. Automated leaf renewal is retained.</li>
+            <li>CA rotation uses a separate staging directory and <code>rke2 certificate rotate-ca --path=/opt/rke2/server</code> or <code>k3s certificate rotate-ca --path=/opt/k3s/server</code>. It never overwrites the active TLS directory. Same-root custom-CA renewal can be non-disruptive; a new root is explicitly disruptive, may require <code>--force</code>, new secure-token configuration, admin kubeconfig replacement, server/agent restarts, and pod restarts. The runbook includes those steps rather than hiding them behind a successful command exit.</li>
+            <li>The service-account signing key receives its own rotation path. Existing keys are appended/retained where upstream requires them so old service-account tokens are not invalidated. CA rotation and Sealed Secrets rotation are different operations and never rotate application Secret values implicitly.</li>
+            <li><strong>A blanket 100-year cluster certificate default is rejected.</strong> Upstream generated CAs are normally 10-year and leaf certificates 365-day; there is no ordinary supported config switch that makes the whole PKI 100-year. An installation may deliberately provide a long-lived offline custom root, even 100-year, but that is an explicit risk decision with intermediates, leaves, backups, and rotation still governed by this runbook.</li>
+            <li>Rotation acceptance runs on live single-node and HA VMs: check expiry, rotate leaves, rotate CA with the same root, exercise the documented new-root branch in a disposable fixture, preserve service-account tokens where promised, and prove API/workload/Sealed Secrets behavior afterward.</li>
+            <li><strong>Inventory deletion is not cluster garbage collection.</strong> Removing a machine does not drain it, delete its Kubernetes Node object, or remove its etcd member; removing a cluster does not erase remote peers, external addresses, data, or backups. The operator runbooks cover cordon/drain, Node deletion, distro-native etcd membership removal with quorum checks, mesh-peer cleanup, and safe name/address reuse.</li>
+            <li>Changing pool blocks, CIDRs, cluster ids, shared CA roots, or ClusterMesh membership is a reviewed operational change with documented reconciliation. Declarative rendering remains the source of the desired end state, while these unavoidable imperative steps are explicit and tested where feasible.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.11 External CCM, managed manifests, and GitOps ownership</h3>
+          <ul>
+            <li><strong>Cloud-controller selection is generic:</strong> <code>cloudController = "none" | "rancher" | "external"</code>. <code>none</code> disables the distro/Rancher CCM for the built-in bare-metal path; <code>rancher</code> preserves the distro-managed controller; <code>external</code> disables the built-in controllers, selects external kubelet/cloud-provider mode, and accepts operator-supplied CCM configuration.</li>
+            <li>AWS, hcloud, and other CCM implementations, credentials, provider flags, and provider-specific LoadBalancer classes are not bundled into the shared base. An external CCM may be rendered through the generic chart/manifest escape or installed by GitOps. The service only guarantees the correct distro handoff and does not prevent the external controller from owning its documented Service classes.</li>
+            <li>A hermetic fake external CCM validates the handoff in VM tests: nodes receive the expected provider/address behavior, the Rancher CCM stays disabled, and Cilium-owned Services remain distinct from external-class Services. Real AWS/hcloud acceptance is provider-specific operational validation, not a requirement for the offline suite.</li>
+            <li>Every manifest rendered by these services carries non-selector ownership labels: <code>app.kubernetes.io/managed-by: clan</code>, <code>rancher.clan.lol/managed: "true"</code>, <code>rancher.clan.lol/instance</code>, <code>rancher.clan.lol/component</code>, and a short <code>rancher.clan.lol/config-hash</code>. Larger provenance belongs in annotations. Hashes and ownership labels never enter immutable selectors, and secrets never enter either field.</li>
+            <li><strong>The clan-rendered layer is the opinionated base, not the cluster's day-two control plane.</strong> It installs APIs and a small set of base resources, then leaves tenant issuers, TLSOptions/TLSStores, Routes, Services, pool claims, and applications to Flux or Argo CD. Neither GitOps controller is required by the base.</li>
+            <li>Clan does not continuously reclaim tenant resources or require a NixOS rebuild for their changes. Base upgrades must preserve tenant CRDs and documented extension points; a tenant can create a Gateway, IngressRoute, Certificate, or generic LoadBalancer Service and use it without host activation.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.12 Assertions and firewall behavior</h3>
+          <ul>
+            <li>Evaluation rejects impossible topology: multiple bootstrap servers, duplicate ids/CIDRs/ports, missing dual-stack transport or CIDR families, missing region/zone labels, multiple Gateway controllers, invalid entrypoint/TLS combinations, duplicate certificates, and uncovered certificate references.</li>
+            <li>Pool assertions reject overlaps, unknown delivery modes, per-node address ownership mismatches, unstable hash collisions, dynamic multi-node assumptions, unavailable requested families, unsafe shared-VIP topology, and BGP advertisement of provider/mesh-owned primary addresses.</li>
+            <li>Placement assertions compare the complete projected address set with the nodes that can host ready local endpoints. ETP Cluster, missing local coverage, Cilium Node IPAM on clan-managed proxies, Cilium host-network mode, and a disabled cert-manager are invalid post-merge states.</li>
+            <li>Transport assertions reject missing node addresses, interfaces, or MTU in native-Cilium-WireGuard and unencrypted modes, and reject host-WireGuard resources rendered outside their own mode. Encryption never substitutes for the mandatory second address family.</li>
+            <li>Assertions inspect the fully merged values where an escape hatch could violate an invariant. Testing only defaults is insufficient. Artifact assertions also require the selected runtime and chart/image profile to be coherent and completely locked.</li>
+            <li>Firewall rendering follows interface trust boundaries: API and haproxy stay on declared cluster transport; public listener ports open only where the corresponding Service actually exposes them; ClusterMesh and BGP ports are restricted to expected peers; HTTP/3 opens UDP as well as TCP.</li>
+            <li>VM tests assert both positive connectivity and negative exposure. A missing debug binary or empty capture is a test failure, not evidence that a packet path works.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.13 Reserved optional HAProxy edge design</h3>
+          <p>The future <code>edge-proxy</code> runs HAProxy on ordinary NixOS machines. It is entirely optional, is not a Kubernetes member, and exists to offload HTTP and TLS work from cluster nodes. It supports 0–N instances with one or more nodes per instance; each instance consumes one or many clusters' exported Cilium or Traefik ingress/Gateway endpoints. It is implemented only after those cluster contracts stabilize.</p>
+
+          <figure aria-labelledby="fig-edge-title fig-edge-desc">
+            <title id="fig-edge-title">Future optional HAProxy edge</title>
+            <desc id="fig-edge-desc">External routing and failover live outside the edge service. HAProxy terminates TLS and client mTLS, caches eligible HTTP responses, and forwards through PROXY protocol v2 to Cilium or Traefik endpoints from one or more clusters. Separate routing modules or services may compose BGP and ECMP with exported facts.</desc>
+            <svg viewBox="0 0 1080 440" role="img" xmlns="http://www.w3.org/2000/svg">
+              <defs></defs>
+              <rect class="svg-box-violet" x="30" y="120" width="180" height="130" rx="14" />
+              <text class="svg-title" x="55" y="158">External routing</text>
+              <text class="svg-text" x="55" y="190">VIP · BGP · ECMP</text>
+              <text class="svg-small" x="55" y="220">outside edge-proxy</text>
+
+              <path class="svg-line" d="M210 185 L285 185" />
+              <rect class="svg-box-green" x="285" y="75" width="245" height="280" rx="15" />
+              <text class="svg-title" x="312" y="110">Edge NixOS nodes</text>
+              <rect class="svg-box" x="315" y="140" width="185" height="65" rx="10" />
+              <text class="svg-text" x="338" y="169">vars certificate directory</text>
+              <text class="svg-small" x="338" y="191">1–N pairs · Cloudflare mTLS</text>
+              <rect class="svg-box" x="315" y="235" width="185" height="80" rx="10" />
+              <text class="svg-text" x="338" y="264">HAProxy + HTTP cache</text>
+              <text class="svg-small" x="338" y="289">0–N edge instances</text>
+              <text class="svg-small" x="338" y="307">1–N nodes per instance</text>
+
+              <path class="svg-line-green" d="M530 160 L620 160" />
+              <rect class="svg-box" x="620" y="55" width="420" height="135" rx="14" />
+              <text class="svg-title" x="648" y="91">Default: to in-cluster ingress</text>
+              <text class="svg-text" x="648" y="123">Cilium or Traefik · one or many clusters</text>
+              <text class="svg-small" x="648" y="153">TLS termination / passthrough · PROXY v2</text>
+
+              <path class="svg-line svg-dash" d="M530 290 L620 290" />
+              <rect class="svg-box-amber" x="620" y="225" width="420" height="155" rx="14" />
+              <text class="svg-title" x="648" y="261">Separate routing composition</text>
+              <text class="svg-text" x="648" y="294">BIRD · BGP · ECMP · pool advertisement</text>
+              <text class="svg-small" x="648" y="324">other NixOS modules or clanServices</text>
+              <text class="svg-small" x="648" y="347">never implied by HAProxy backend balancing</text>
+            </svg>
+            <figcaption><strong>Figure 4.</strong> HAProxy terminates and caches HTTP/TLS traffic, then load-balances across healthy downstream ingress endpoints. Route advertisement and IP failover are separate composable concerns, not hidden edge-service behavior.</figcaption>
+          </figure>
+
+          <ul>
+            <li><strong>The primary mode is TLS termination at HAProxy, forwarding to an in-cluster Cilium or Traefik Service endpoint.</strong> TLS may instead pass through or terminate and re-encrypt for end-to-end TLS. The default downstream is the selected cluster's exported default ingress/Gateway endpoint set, but an instance may address additional exported proxy instances explicitly.</li>
+            <li><strong>Certificate material comes from clan vars.</strong> Prompts accept one or more certificate/private-key pairs and render them into a HAProxy certificate directory. Private keys remain encrypted at rest in the repo and are referenced only by deployed secret paths; certificate naming, SAN coverage, and stale-file behavior are part of the interface and tests.</li>
+            <li><strong>Cloudflare client-certificate verification is a first-class toggle.</strong> The Cloudflare mTLS profile configures the appropriate client CA and verification behavior explicitly; it does not silently trust every client CA or claim end-to-end client identity after termination. End-to-end client authentication uses TLS passthrough instead.</li>
+            <li><strong>The terminate-and-cache profile offloads eligible HTTP responses.</strong> Cache keys, eligibility, TTLs, invalidation/purge, tenant isolation, and origin-consistency tests are explicit. Private or otherwise ineligible responses are not cached merely because the profile is enabled.</li>
+            <li><strong>PROXY protocol v2 is on by default between compatible hops.</strong> The downstream Cilium or Traefik listener must explicitly enable and trust it for the edge's addresses. ETP Local remains required in-cluster; PROXY protocol is not an excuse for Cluster, and forwarded client identity is accepted only from explicitly trusted proxy hops.</li>
+            <li><strong>Protocol support is stated precisely.</strong> HAProxy provides TCP and HTTP/HTTPS proxying, TLS termination, SNI-based TLS passthrough, client-certificate mTLS, HTTP caching, and health-checked backend load balancing. A QUIC-capable pinned HAProxy build may offer HTTP/3 termination as a separately proven profile with HTTP/1.1 or HTTP/2 downstream. HAProxy does not provide a generic UDP relay; raw UDP/QUIC forwarding is outside this service.</li>
+            <li>One edge deployment may consume many cluster exports and route to many downstream Cilium or Traefik instances. Separate edge instances are for administrative, listener, certificate, or addressing isolation—not an artificial one-to-one mapping requirement.</li>
+            <li><strong>HAProxy backend balancing is not BGP or IP failover.</strong> HAProxy can select healthy downstream endpoints, but it does not speak BGP, advertise pools, or provide ECMP itself. BIRD or another routing service may compose with exported endpoint/pool facts to advertise edge VIPs or downstream blocks. IP failover, route withdrawal, and address ownership remain the user's NixOS modules or another custom clanService.</li>
+            <li>The first edge acceptance suite covers multiple downstream clusters, vars-provided certificate pairs, TLS termination and passthrough, Cloudflare mTLS accept/reject behavior, the explicit cache profile, default PROXY protocol v2, and downstream/edge failure behavior. HTTP/3 termination is a separate opt-in suite only when the pinned HAProxy build supports it. Generic UDP relay and edge-owned IP failover are not acceptance requirements.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.14 Decisions explicitly superseded</h3>
+          <ul>
+            <li><strong>The canonical implementation now lives in <code>external-systems/clanServices</code>.</strong> Clan-community remains an upstream review destination, not a required flake input for borg or other consumers.</li>
+            <li><strong>Single-stack clusters are removed.</strong> The target is always dual-stack internally; only public Service families vary. This supersedes the earlier plan to repair and test IPv4-only and IPv6-only cluster rendering.</li>
+            <li><strong>Rancher no longer requires a separately instantiated mesh, and host WireGuard is no longer mandatory.</strong> Each cluster absorbs the shared implementation and defaults to host WireGuard, with native Cilium WireGuard and unencrypted-underlay alternatives that preserve dual-stack behavior.</li>
+            <li><strong>Cilium Node IPAM is not the default LoadBalancer mechanism.</strong> Ordinary LB IPAM plus explicit per-node projection supplies ServiceLB-like addresses without the Cilium Ingress/Gateway dummy-endpoint exception.</li>
+            <li><strong>ETP Cluster is rejected for clan-managed externally exposed proxy Services.</strong> This supersedes older notes that required Cluster for Node IPAM or allowed it for Traefik Deployments. No silent fallback is permitted when an upstream path cannot honor Local.</li>
+            <li><strong>ClusterMesh is not a manual post-install step, and NodePort is not its default.</strong> Declarative exports and certs remain; LoadBalancer is canonical, NodePort is an explicit escape, and the old selectorless-Service endpoint fan-in is retained.</li>
+            <li><strong>Cilium, not Traefik, is the default ingress and Gateway API implementation.</strong> The cilium-l4/cilium-l7 split remains removed: Cilium 1.20+ ordinary LoadBalancer Gateway mode supports L4 and L7. Traefik is a fully supported 0–N alternative and can be the only implementation.</li>
+            <li><strong>The reserved external edge is HAProxy <code>edge-proxy</code>, not a Traefik binary service.</strong> Its first-class job is HTTP/TLS termination and caching toward downstream Cilium or Traefik; BGP, ECMP advertisement, and IP failover are not built into it.</li>
+            <li><strong>cert-manager is no longer optional.</strong> It is base. Conversely, Sealed Secrets key generation is not delegated to a plain cert-manager Certificate merely because cert-manager is present.</li>
+            <li><strong>A blanket 100-year cluster certificate policy is not accepted as a rotation shortcut.</strong> Upstream leaf renewal and a proven staged CA rotation runbook are the base; long-lived custom roots are explicit exceptions.</li>
+            <li><strong>Borg and RKE2-bundled Cilium are not shared packaging APIs.</strong> A dedicated artifact flake serves consumers, and both distros use one upstream Cilium/Multus profile. Borg's implementation remains evidence, not something to copy blindly.</li>
+          </ul>
+        </div>
+
+        <div class="decision">
+          <h3>5.15 Reserved platform evolution</h3>
+          <ul>
+            <li><strong>Upstream Kubernetes is a later first-class distro.</strong> It must consume the same identity, transport, Cilium, artifact, export, and ClusterMesh contracts and prove mixed-cluster behavior before it joins the supported distro matrix. It is not part of the current RKE2/k3s implementation.</li>
+            <li><strong>Cilium MCS-API waits for upstream stability.</strong> The eventual implementation includes its special CoreDNS configuration and full ClusterMesh VM coverage, but ships disabled by default. Existing opt-in global Services remain the initial discovery contract; any later default-on migration is reviewed separately.</li>
+            <li><strong>A future clan-operator is a separate lifecycle platform.</strong> Inventory and Machine custom resources will wrap the clan HTTP server and CLI for CRUD operations, manage <code>inventory.nix</code>, and orchestrate imperative work such as PKI rotation, machine creation/deletion, service membership changes, updates, and health checks. A user-facing topology UI is also reserved. The operator does not replace the current declarative flake contract and is not a dependency of these services.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="testing">
+        <h2>6. Testing Decisions</h2>
+        <p class="lead">A good test checks behavior a consumer depends on. Eval tests validate the inventory-to-configuration contract; VM tests validate live networking, protocol behavior, and operations. Artifact tests prove only artifact integrity; they never substitute for a consumer's cluster tests.</p>
+
+        <h3>6.1 Existing seams are sufficient</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Seam</th><th scope="col">What it proves</th><th scope="col">How it is used</th></tr></thead>
+            <tbody>
+              <tr><td>Pure shared renderer tests with <code>lib.evalModules</code></td><td>Option resolution, manifests, vars shapes, labels, address projections, and assertions</td><td>Extend <code>nix-unit.tests.rancher-cluster</code>; ideal for post-merge invariants, CIDR/identity functions, topology resolution, and deterministic pool calculations.</td></tr>
+              <tr><td>Complete throwaway clans with <code>clanLib.clan</code></td><td>The actual inventory boundary, integrated transport, cross-service exports, and resulting NixOS configuration</td><td>Extend the existing RKE2/k3s eval suites and add mixed-distro, multi-instance inventories rather than a new framework.</td></tr>
+              <tr><td><code>clan.nixosTests</code></td><td>Real boot, joins, Cilium behavior, network traffic, certificates, rotation, storage, and guest workloads</td><td>Reuse the current per-distro suites and factor shared VM behavior into parameterized definitions.</td></tr>
+              <tr><td>Build-time artifact/render gates</td><td>Every rendered image/chart is pinned, coherent, and present in the selected airgap payload</td><td>Keep source/hash/render checks in the artifact flake; extend consumer coverage gates with each enabled feature.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The highest practical seam is preferred: a multi-cluster discovery bug belongs in a complete-inventory eval test, while an ECMP withdrawal belongs in a VM with a real router. No new test runner or parallel VM orchestration layer is proposed.</p>
+
+        <h3>6.2 Test quality rules</h3>
+        <ul>
+          <li>Tests are hermetic and offline. A registry, chart repository, or internet request during a test is a defect in the pin, not something to mock away. Final artifact-consumer proof also starts from a clean checkout and immutable public revision.</li>
+          <li>Assertions use eval-time-deterministic addresses and ports. Runtime-allocated values are read and checked against their allowed semantics, never hardcoded from a previous run.</li>
+          <li>Every boot/join test asserts dual-stack node, pod, and Service addressing in the selected transport mode even when the physical test underlay exposes only one family. Public-family tests are separate from cluster-stack tests.</li>
+          <li>VM tests check round-trips and failure behavior, not only that a pod exists. Examples: an HTTPS response validates the CA, a UDP echo returns the payload, an HTTP/3 client uses QUIC, a BGP-routed VIP loses only the failed node's next hop, and a restored snapshot contains the original file.</li>
+          <li>Negative assertions matter: no single-stack cluster rendering, no public API listener, no ETP Cluster in clan-rendered external proxy Services, no Node IPAM on those Services, no foreign-IngressClass route, no image pull, no primary-address BGP advertisement, no next hop from a node without a ready local endpoint, and no host-WireGuard resources in the non-host modes.</li>
+          <li>Operational tests verify the postcondition, not just the command: after PKI rotation the API and workloads still function; after Sealed Secrets recovery old ciphertext still decrypts; after node removal the etcd member and Node object are explicitly reconciled by the runbook.</li>
+          <li>Tests fail fast on crash loops and missing diagnostic tools. No timeout inflation, skipped assertion, weakened protocol check, or fallback to Cluster policy is an acceptable fix.</li>
+          <li>Sandboxed runs are authoritative. Driver mode is for diagnosis only. VM suites run one at a time to avoid KVM, RAM, disk, and timing collisions.</li>
+        </ul>
+
+        <h3>6.3 Suite plan and prior art</h3>
+        <p>Prior art imported from the source branch: <code>wireguard-mesh</code>, <code>rke2-single</code>, <code>rke2-join</code>, <code>rke2-ha</code>, <code>k3s-single</code>, <code>k3s-join</code>, and <code>k3s-ha</code>. Borg supplies additional proven models for Traefik multi-instance, LB pools, OpenEBS, and KubeVirt. Integrated transport modes, ordinary-LB ClusterMesh, mixed-distro parity, rotation, and external CCM handoff are new canonical-repo work.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Suite / layer</th><th scope="col">State</th><th scope="col">External behavior required</th></tr></thead>
+            <tbody>
+              <tr><td>Shared invariant eval suite</td><td><span class="status planned">Next</span></td><td>Rejects duplicate identities, CIDR overlap, invalid id boundaries, missing dual-stack facts, missing/invalid topology labels, ETP Cluster, forbidden overrides, duplicate certs, pool/delivery conflicts, unsafe VIP sharing, and cross-cluster port collisions. Proves cluster-default and per-machine region/zone resolution.</td></tr>
+              <tr><td>Current single/join/HA suites</td><td><span class="status implemented">Keep</span></td><td>Remain green while coverage is strengthened; default Cilium LB behavior, managed and topology labels, permanent cert-manager, and Sealed Secrets runtime coverage are added where appropriate.</td></tr>
+              <tr><td>Integrated transport family matrix</td><td><span class="status planned">Planned</span></td><td>On each distro and each mode—host WireGuard, native Cilium WireGuard, and unencrypted underlay—physical IPv4-only and IPv6-only underlays still produce dual-stack node/pod/Service behavior, joins, DNS, and workload connectivity. Non-host modes prove their explicit overrides and absence of host-WireGuard resources.</td></tr>
+              <tr><td>Artifact consumer matrix</td><td><span class="status planned">Planned</span></td><td>Both distros fetch one immutable artifact revision, evaluate the runtime package actually built from the selected source or resolved HEAD commit, boot with matching upstream Cilium and, when enabled, Multus artifacts, and never contact a registry. Disabled add-ons do not pull their archives into the node closure.</td></tr>
+              <tr><td><code>rke2-traefik-multi</code> / <code>k3s-traefik-multi</code></td><td><span class="status planned">Planned</span></td><td>HTTP, HTTPS, TCP, UDP, HTTP3, passthrough, mTLS, class isolation, ETP Local, direct-path source preservation, per-node IPv6 projections beside Cilium, family-specific addressing, and a Traefik-only ingress/Gateway variant.</td></tr>
+              <tr><td>Cilium ingress/Gateway matrix</td><td><span class="status planned">Planned</span></td><td>On each distro: default enabled Cilium ingress and Gateway, declared node InternalIP/ExternalIP projections on 80/443, ordinary LB IPAM and BGP pools, ETP Local, L4 and L7 on Cilium 1.20+ Gateway, source-IP semantics, cert-manager HTTPS, and no Node IPAM/host-network fallback.</td></tr>
+              <tr><td><code>rke2-lb-pool</code> / <code>k3s-lb-pool</code></td><td><span class="status planned">Planned</span></td><td>The exact single-node <code>10.0.0.1/32</code> + <code>fd0::1/128</code> default, multi-node explicit projections, extra per-machine blocks, deterministic IPv6 carve-outs, generic one-per-family draws, port sharing, pool conflicts, and public-family subsets.</td></tr>
+              <tr><td><code>rke2-bgp-ecmp</code> / <code>k3s-bgp-ecmp</code></td><td><span class="status planned">Planned</span></td><td>Real BIRD/router VM, dual-family sessions, exact eligible routes only, ECMP, failed-next-hop withdrawal with healthy VIP reachability, client-source preservation, full default Cilium ingress/Gateway behavior over those pools, and no primary/mesh route re-advertisement.</td></tr>
+              <tr><td>ClusterMesh matrix</td><td><span class="status planned">Planned</span></td><td>Two-RKE2, two-k3s, and mixed inventories: LoadBalancer and NodePort escape, stable DNS fan-in, mTLS/SAN updates, pod-to-pod traffic, global Services, add/remove after deployment, safe address sharing, and stale-peer cleanup.</td></tr>
+              <tr><td>PKI rotation matrix</td><td><span class="status planned">Planned</span></td><td>Single-node and HA leaf rotation, same-root staged CA rotation, disposable new-root branch, token/kubeconfig handling, retained service-account keys, and post-rotation API/workload checks.</td></tr>
+              <tr><td>External CCM + GitOps handoff</td><td><span class="status planned">Planned</span></td><td>Fake external CCM proves the distro handoff; a tenant applies Gateway/IngressRoute/Certificate/generic LB resources without host activation, with managed labels present and base CRDs preserved.</td></tr>
+              <tr><td><code>rke2-multus</code> / <code>k3s-multus</code> + Sealed Secrets</td><td><span class="status planned">Planned</span></td><td>Same-profile secondary-network round-trips; vars and controller key modes each prove seal/deploy/unseal, complete key-history backup, rebuild/restore, and old-ciphertext decryption.</td></tr>
+              <tr><td>OpenEBS engine matrix</td><td><span class="status planned">Planned</span></td><td>LVM and ZFS on each distro: provision, persistence, expansion where supported, snapshot, and restore.</td></tr>
+              <tr><td><code>rke2-kubevirt</code> / <code>k3s-kubevirt</code></td><td><span class="status planned">Planned</span></td><td>Offline CDI import, guest boot/login, device advertisement, and dedicated-CPU evidence in the pinning variant.</td></tr>
+              <tr><td><code>edge-proxy</code></td><td><span class="status future">Reserved</span></td><td>HAProxy to one or many downstream Cilium/Traefik clusters: vars certificate pairs, TLS termination and passthrough, Cloudflare mTLS, explicit caching, default PROXY protocol v2, backend health, and edge/downstream failure. Optional HTTP/3 only when supported; no generic UDP or edge-owned IP-failover assertion.</td></tr>
+              <tr><td>MCS-API and upstream Kubernetes</td><td><span class="status future">Reserved</span></td><td>After the respective features stabilize: upstream-Kubernetes mixed ClusterMesh fixtures, plus MCS-API/CoreDNS discovery tests with the option initially disabled by default.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="plan">
+        <h2>7. Delivery Plan</h2>
+        <p class="lead">Proceed in small, independently validated changes. Each feature phase lands its shared implementation, both distro adapters, docs, pins, eval coverage, and affected VM suites together. Artifact-only changes land in the artifact repository with their own checks; consumer upgrades remain separate, explicit input bumps. Do not migrate borg or broaden the feature surface ahead of the correctness gate.</p>
+
+        <div class="phase">
+          <div class="phase-label">Phase 0<br /><span class="status implemented">Done</span></div>
+          <div class="phase-content"><h3>Canonical repository import</h3><p>WireGuard mesh, shared library, thin RKE2 and k3s services, airgap base, PKI/haproxy, fixtures, and recorded single/join/HA suites are imported from the source branch through <code>692807c</code> into <code>external-systems/clanServices</code>. This HTML is the canonical consolidated architecture/status/plan record; service READMEs remain usage and option references. The import changes repository ownership, not the recorded implementation evidence.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 1<br /><span class="status planned">Next</span></div>
+          <div class="phase-content"><h3>Correctness and permanent-base gate</h3><p>Render ETP Local for external proxy Services; reject conflicting post-merge overrides; unify CIDR consumption and id bounds; fix cert-manager duplication/default suppression/namespace placement and make it non-optional; wire RKE2 package overrides and clarify image replacement semantics; repair RKE2 zero-Traefik rendering and provider/placement mismatches. Add managed labels without touching selectors. <strong>Exit:</strong> negative eval tests plus positive zero-Traefik, permanent-cert-manager, and runtime-package/artifact-override regressions pass; all current VM and static suites remain green.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 2<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>Shared artifact flake and upstream network profile</h3><p>Bootstrap <code>external-systems/pkgs</code> with granular packages, optional overlay, sources, constructors, version metadata, atomic updaters, and artifact checks. Build RKE2 and k3s from source, with release and explicitly resolved upstream-HEAD revisions sharing the same locked constructor path. Extract rather than import borg policy. Add one upstream Cilium 1.20+ and one upstream Multus profile for both distros while keeping distro runtime artifacts coherent. Prove locally with an uncommitted file/path override, then repeat from clean checkouts at an immutable public revision. <strong>Exit:</strong> both distro consumers boot offline with the same Cilium profile, the running packages match their source and artifacts, disabled add-ons stay out of closures, and no local URL or unfixed HEAD reference is committed.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 3<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>Transport modes, stable identity, topology, and dual-stack exports</h3><p>Absorb the shared WireGuard implementation into each cluster, default to host WireGuard, and add native Cilium WireGuard and explicit unencrypted-underlay modes. Namespace per-cluster resources and require dual-stack node/pod/Service addressing plus complete non-host overrides. Add stable hashed ids with pin-first migration, automatic region/zone defaults with per-machine overrides, inventory-wide validation, trust-group cross-cluster reachability, and neutral cluster/per-node exports. <strong>Exit:</strong> mixed-distro discovery, topology, collision, and migration eval tests pass; every transport mode passes its physical-family VM matrix, and linked clusters reach every required remote node InternalIP without accidental identity changes.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 4<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>Node pools and the complete default Cilium datapath</h3><p>Render node-named pools with automatic join-address blocks, per-machine extra blocks, primary-address selection, deterministic IPv6 carve-outs, and explicit multi-node projections. Remove Node IPAM from clan-managed proxies. Make one Cilium ingress and one Cilium Gateway the default on declared node InternalIP/ExternalIP addresses, including primary IPv4 on 80/443, with ETP Local, placement, cert-manager, and collision checks. <strong>Exit:</strong> both distro Cilium and LB-pool suites prove the exact-address default, multi-node status, HTTP/HTTPS and L4/L7 behavior, source preservation, local coverage, generic dynamic draws, and node-fate-bound delivery without inventing BGP failover.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 5<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>Traefik 0–N, controller selection, external CCM, and GitOps handoff</h3><p>Complete first-class Traefik instances with IPv6-first defaults beside Cilium and a Traefik-only ingress/Gateway selection. Add generic external-CCM handoff and prove tenant operation without host activation. <strong>Exit:</strong> both distro Traefik-multi suites prove protocols, class isolation, addressing, source preservation, and controller selection; the fake-CCM and GitOps extension tests pass, and any upstream dummy-endpoint failure blocks rather than weakens the mode.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 6<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>Cilium BGP v2, per-node BIRD, and router ECMP</h3><p>Render the four BGP resource kinds, local dual-family BIRD sessions, deterministic ASNs/router ids, exact advertisements only for eligible addresses, safe route filters, and optional external peers. <strong>Exit:</strong> both distro BGP/ECMP suites prove advertisements and failed-next-hop withdrawal through a real router while healthy next hops keep the VIP reachable, the full default Cilium ingress/Gateway feature set works over the pools, and primary/mesh routes are not re-advertised.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 7<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>Automatic ClusterMesh</h3><p>Implement mesh groups, shared vars CA/certs, declarative remote clusters, LoadBalancer endpoints with a NodePort escape, selectorless-Service DNS fan-in, endpoint/SAN updates, safe sharing rules, and lifecycle removal. <strong>Exit:</strong> two-RKE2, two-k3s, and mixed-distro suites prove automatic peering, pod-to-pod traffic, opt-in global Services, add/remove after deployment, and stale-peer cleanup without CLI intervention.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 8<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>PKI operations, Sealed Secrets, and Multus completion</h3><p>Ship guarded leaf/CA rotation helpers and runbooks, both Sealed Secrets key modes with complete history recovery, and supported shared-profile Multus chaining. Document imperative node/etcd/cluster cleanup. <strong>Exit:</strong> live rotation suites, secondary-network round-trips, and seal/deploy/unseal/rebuild tests pass for both distros, including old-ciphertext and service-account-token compatibility where promised.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 9<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>OpenEBS Local PV</h3><p>Port and generalize LVM/ZFS rendering, per-node host preparation, artifact locks, StorageClasses, and the central snapshotter. <strong>Exit:</strong> each engine passes its full lifecycle/persistence/snapshot suite on each distro without registry access.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 10<br /><span class="status planned">Planned</span></div>
+          <div class="phase-content"><h3>KubeVirt and CDI</h3><p>Port operators, node preparation, airgap images, PSS integration, CDI, and per-node CPU pinning. <strong>Exit:</strong> both distros boot a real imported guest; the CPU-pinning variant proves the allocated host CPUs.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 11<br /><span class="status future">Reserved</span></div>
+          <div class="phase-content"><h3>Optional HAProxy edge-proxy</h3><p>Implement <code>edge-proxy</code> only against stable multi-cluster export and downstream endpoint contracts. Start with HAProxy TLS termination, vars-provided certificate pairs, explicit caching, Cloudflare mTLS, and default PROXY protocol v2 toward Cilium or Traefik. Add passthrough, multi-cluster backends, and failure handling; test HTTP/3 only when the pinned build supports it. BGP, pool advertisement, and IP failover remain external composition. <strong>Exit:</strong> external-client suites prove HTTP/TLS offload and failure behavior without claiming generic UDP relay, HAProxy-native BGP, or edge-owned IP failover.</p></div>
+        </div>
+        <div class="phase">
+          <div class="phase-label">Phase 12<br /><span class="status planned">Pending</span></div>
+          <div class="phase-content"><h3>Borg migration and upstream review</h3><p>Migrate borg inventory to <code>external-systems/clanServices</code> and <code>external-systems/pkgs</code>, dropping its clan-community input only after the complete canonical matrix for every enabled feature is green. The production shape uses default Cilium ingress/Gateway on node InternalIP/ExternalIP addresses and primary IPv4 on 80/443, with additional IPv6-only Traefik instances. Final consumer validation is the complete borg VM suite, sequentially and freshly sandboxed on the final tree—including at minimum <code>rke2-single</code>, <code>rke2-ha</code>, <code>rke2-lb-pool</code>, <code>rke2-gateway-cilium</code>, <code>rke2-gateway-traefik</code>, <code>rke2-traefik-multi</code>, <code>rke2-openebs-lvm</code>, <code>rke2-openebs-zfs</code>, and <code>rke2-kubevirt</code>. No feature may disappear silently. Keep canonical and artifact changes small and reviewable; no branch push or PR is implied by this document alone. <strong>Exit:</strong> the complete canonical matrix and complete borg suite pass, and upstream review receives the feature/evidence matrix rather than one opaque port.</p></div>
+        </div>
+        <div class="callout"><strong>Later reserved layers.</strong> Upstream Kubernetes, stable MCS-API with CoreDNS integration, and the clan-operator follow separate designs after the current service contracts stabilize. They are not hidden prerequisites for borg migration.</div>
+      </section>
+
+      <section id="out-of-scope">
+        <h2>8. Out of Scope</h2>
+        <ul>
+          <li>Alternative CNIs, Flannel, Calico, kube-router, native-routing as the base datapath, L2 announcements, VRRP, Keepalived, or Cilium host-network proxy exposure.</li>
+          <li>Single-stack cluster internals or Cilium Node IPAM for clan-managed proxies. Dual-stack node/pod/Service addressing in every transport mode and ordinary LB-IPAM proxy projections are mandatory instead.</li>
+          <li>Rancher Manager installation or fleet management through a separate control plane. This work provisions RKE2/k3s clusters through clan, not Rancher Manager.</li>
+          <li>Automatic ClusterMesh across different clan inventories, unrelated administrative domains, or mutually untrusted clusters. Exports and trust are intentionally inventory-scoped.</li>
+          <li>Automatic global exposure of every Service merely because clusters are meshed. Global Services remain explicit.</li>
+          <li>MCS-API before upstream stability, or an initial MCS-API implementation enabled by default. Cilium Global Services and pod-to-pod behavior come first; later MCS support ships disabled until a separate migration decision.</li>
+          <li>Bundled AWS/hcloud/other provider CCM implementations, credentials, provider-specific CSI, or provider hacks in the shared base. The generic external-CCM handoff is supported; the provider implementation remains operator-owned.</li>
+          <li>Longhorn, Mayastor, iSCSI, or replicated-storage promises. OpenEBS Local PV is node-local.</li>
+          <li>Cluster-side provider-specific certificate issuers, Cloudflare account resources, tenant TLSStores, application routes, or the day-two application lifecycle inside NixOS. Those remain GitOps-owned behind generic interfaces. The optional edge's operator-supplied Cloudflare client-CA profile is not a Cloudflare account integration.</li>
+          <li>Windows guest support, live-migration guarantees, or every KubeVirt feature gate. The first KubeVirt contract is a real Linux guest plus CDI and deliberate CPU pinning.</li>
+          <li>Direct-to-pod routing from the HAProxy edge. The edge targets exported ingress/Gateway Service endpoints; it does not assume that external hosts can reach VXLAN pod addresses.</li>
+          <li>Public Internet family remediation, NAT64/DNS64, or automatic pod proxy configuration. The distro HTTP-proxy setting covers only its documented RKE2/k3s/containerd/kubelet path; application egress remains workload-owned.</li>
+          <li>Generic UDP or raw QUIC relay through HAProxy, HAProxy-native BGP, or edge-owned IP failover. Optional HTTP/3 termination requires a capable pinned build and its own VM proof; backend balancing must not be presented as route advertisement.</li>
+          <li>Untested HTTP caching or HTTP/3 behavior. The terminate-and-cache profile requires explicit eligibility and invalidation rules, and every optional protocol profile requires behavioral tests.</li>
+          <li>Blanket 100-year leaf certificates, a cert-manager-generated Sealed Secrets key without key-history orchestration, or automatic blind regeneration of live CA roots.</li>
+          <li>Fully declarative node/etcd/cluster deletion, non-disruptive cluster-id changes, or in-place conversion between RKE2 and k3s. The required imperative runbooks are part of the deliverable.</li>
+          <li>A production external edge implementation before the multi-cluster endpoint, certificate, and downstream ingress contracts it consumes are VM-proven.</li>
+          <li>Upstream Kubernetes, the clan-operator, or their acceptance suites in the current delivery phases. They are reserved platform layers, not hidden dependencies of the RKE2/k3s services.</li>
+        </ul>
+      </section>
+
+      <section id="notes">
+        <h2>9. Further Notes</h2>
+        <h3>9.1 How to read and maintain this document</h3>
+        <ul>
+          <li>This file is the canonical architecture and delivery record. <a href="rke2/README.md">RKE2's README</a>, <a href="k3s/README.md">k3s's README</a>, and the <a href="../lib/rancher-cluster/README.md">shared library README</a> describe current usage and implementation scope.</li>
+          <li>Update the capability matrix whenever a phase lands. “Implemented” requires merged behavior and the specified tests; “VM-proven” requires a fresh sandboxed result on the final tree.</li>
+          <li>Amend the relevant decision before implementation if a test disproves a load-bearing assumption. Do not edit the test to match a convenient but weaker design.</li>
+          <li>The document is self-contained HTML with inline CSS and SVG. It needs no JavaScript, web font, image host, Mermaid renderer, or network access, and it prints cleanly.</li>
+        </ul>
+
+        <h3>9.2 Important upstream constraints</h3>
+        <ul>
+          <li>ClusterMesh joins one trust domain. Cilium explicitly recommends connecting only mutually trusted clusters with equivalent security postures.</li>
+          <li>Cilium Node IPAM selects candidates from EndpointSlices under ETP Local and explicitly rejects its own dummy-endpoint Ingress/Gateway Services in that mode. Ordinary LB IPAM avoids that allocation path, but the resulting Cilium behavior still requires VM proof.</li>
+          <li>Cilium LB IPAM allocates addresses; another mechanism must deliver and, where required, advertise them. A dynamic draw is not a per-node projection, pool updates can reassign addresses, and overlapping pools conflict.</li>
+          <li>Cilium BGP advertises routes but does not replace the Service datapath. With ETP Local, LoadBalancer advertisements track local ready endpoints. Advertisements are per IP, not per IP/port pair, which constrains safe VIP sharing.</li>
+          <li>Cilium 1.20+ ordinary LoadBalancer Gateway mode supports L4 and L7 routes; host-network mode is different and rejects TCPRoute/UDPRoute. The specification deliberately uses the former.</li>
+          <li>Cilium's per-node Envoy preserves HTTP source information in both ETP modes through forwarding headers, but TLS passthrough and raw UDP/TCP have different backend source semantics. No blanket client-IP claim is inferred from HTTP behavior.</li>
+          <li>Traefik's Kubernetes providers can run outside a cluster, but direct endpoint routing still requires network reachability and appropriately scoped API credentials. UDP routers have no Host/SNI matching.</li>
+          <li>Traefik OSS routing and TLS termination do not by themselves define an HTTP cache. The narrow terminate-and-cache profile uses a cache-capable implementation with explicit eligibility and invalidation behavior.</li>
+          <li>RKE2 and k3s leaf certificates renew at service startup; generated CAs are not automatically renewed. CA rotation is staged through distro-native commands, and root replacement can invalidate tokens and trust.</li>
+          <li>Sealed Secrets renewal adds a new key while retaining old active private keys. It does not re-encrypt existing SealedSecrets or rotate the application Secret values, and cert-manager does not supply that lifecycle automatically.</li>
+          <li>Distro HTTP-proxy settings do not automatically propagate host environment or proxy configuration into pods.</li>
+        </ul>
+
+        <h3>9.3 References</h3>
+        <ul class="refs">
+          <li><a href="https://clan.lol/docs/26.05/guides/services/intro-to-services-revised">Clan: using clanServices</a></li>
+          <li><a href="https://clan.lol/docs/26.05/guides/services/exports">Clan: build-time exports</a></li>
+          <li><a href="https://docs.cilium.io/en/v1.20/network/clustermesh/clustermesh/">Cilium: ClusterMesh setup, exposure, and trust</a></li>
+          <li><a href="https://docs.cilium.io/en/v1.20/network/clustermesh/services/">Cilium: cross-cluster service discovery</a></li>
+          <li><a href="https://docs.cilium.io/en/v1.20/network/bgp-control-plane/bgp-control-plane-configuration/">Cilium: v2 BGP resources, advertisements, and ETP behavior</a></li>
+          <li><a href="https://docs.cilium.io/en/v1.20/network/lb-ipam/">Cilium: LoadBalancer IPAM pools, explicit requests, and sharing keys</a></li>
+          <li><a href="https://docs.cilium.io/en/v1.20/network/node-ipam/">Cilium: Node IPAM and the dummy-endpoint ETP Local limitation</a></li>
+          <li><a href="https://docs.cilium.io/en/v1.20/network/servicemesh/gateway-api/gateway-api/">Cilium: Gateway API, LoadBalancer, host-network, and source-IP behavior</a></li>
+          <li><a href="https://docs.cilium.io/en/v1.20/network/servicemesh/ingress/">Cilium: Ingress Service options and source-IP behavior</a></li>
+          <li><a href="https://www.cncf.io/blog/2026/09/14/cilium-1-20-gateway-api-externalauth-tcproute-udproute-eni-ipam-for-ipv6-and-more/">Cilium 1.20: TCPRoute and UDPRoute support</a></li>
+          <li><a href="https://doc.traefik.io/traefik/providers/kubernetes-crd/">Traefik: KubernetesCRD provider and external endpoint options</a></li>
+          <li><a href="https://doc.traefik.io/traefik/v3.7/reference/install-configuration/entrypoints/">Traefik: entrypoints and HTTP/3</a></li>
+          <li><a href="https://doc.traefik.io/traefik/reference/routing-configuration/udp/routing/router/">Traefik: UDP routers, sessions, and timeouts</a></li>
+          <li><a href="https://www.haproxy.com/documentation/haproxy-configuration-tutorials/performance/caching/">HAProxy: explicit HTTP caching for the narrow edge profile</a></li>
+          <li><a href="https://docs.k3s.io/networking/basic-network-options">k3s: network and dual-stack requirements</a></li>
+          <li><a href="https://docs.rke2.io/networking/basic_network_options">RKE2: network and dual-stack requirements</a></li>
+          <li><a href="https://docs.k3s.io/advanced#configuring-an-http-proxy">k3s: HTTP proxy configuration</a></li>
+          <li><a href="https://docs.rke2.io/advanced#configuring-an-http-proxy">RKE2: HTTP proxy configuration</a></li>
+          <li><a href="https://docs.k3s.io/cli/certificate">k3s: certificate checks and rotation</a></li>
+          <li><a href="https://docs.rke2.io/security/certificates">RKE2: certificate checks, custom CAs, and rotation</a></li>
+          <li><a href="https://github.com/bitnami-labs/sealed-secrets#secret-rotation">Sealed Secrets: key renewal and retention semantics</a></li>
+          <li><a href="https://github.com/bitnami-labs/sealed-secrets/blob/main/docs/bring-your-own-certificates.md">Sealed Secrets: pre-generated key/cert Secrets</a></li>
+          <li><a href="https://cert-manager.io/docs/usage/certificate/">cert-manager: Certificate and private-key lifecycle</a></li>
+          <li><a href="https://openebs.io/docs">OpenEBS: Local PV engines, prerequisites, and airgap guidance</a></li>
+        </ul>
+
+        <h3>9.4 Glossary</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Term</th><th scope="col">Meaning in this specification</th></tr></thead>
+            <tbody>
+              <tr><td>Rancher services</td><td>The public <code>rke2</code> and <code>k3s</code> clanServices plus their private shared library in <code>external-systems/clanServices</code>; not Rancher Manager.</td></tr>
+              <tr><td>Artifact flake</td><td>The independently versioned <code>external-systems/pkgs</code> input supplying source-built distro packages, charts, images, constructors, and locks without fleet or service policy.</td></tr>
+              <tr><td>Integrated node transport</td><td>The per-cluster routed L3 transport carrying dual-stack node InternalIPs, API traffic, and Cilium VXLAN: host WireGuard by default, native Cilium WireGuard, or an explicitly configured unencrypted underlay.</td></tr>
+              <tr><td>Topology labels</td><td>The standard <code>topology.kubernetes.io/region</code> and <code>topology.kubernetes.io/zone</code> node labels. Both always exist, default to the cluster instance name, and support independent per-machine overrides.</td></tr>
+              <tr><td>Mesh group</td><td>The set of mutually trusted Rancher instances that automatically form one Cilium ClusterMesh.</td></tr>
+              <tr><td>External address</td><td>An address used to reach a node or Service from outside the cluster; it need not equal the node InternalIP or be publicly routable.</td></tr>
+              <tr><td>Primary address</td><td>The per-node address projected into the default Cilium proxy Service. A declared public primary wins; otherwise the cluster-joining transport address is used.</td></tr>
+              <tr><td>Node-named pool</td><td>A cluster-scoped Cilium LB IPAM pool containing only one node's join addresses and declared extra blocks. It does not imply BGP advertisement.</td></tr>
+              <tr><td>Explicit projection</td><td>An eval-time <code>lbipam.cilium.io/ips</code> list containing the selected per-node addresses, used for deterministic multi-node Service status.</td></tr>
+              <tr><td>Node-fate-bound delivery</td><td>Mesh, provider-primary, assigned, or static routing that delivers an address to one node and provides no automatic failover.</td></tr>
+              <tr><td>Shared BGP VIP</td><td>An address deliberately advertised from eligible nodes through Cilium BGP v2/BIRD for ECMP and local-endpoint-aware next-hop withdrawal.</td></tr>
+              <tr><td>ETP Local</td><td><code>externalTrafficPolicy: Local</code>: external traffic is accepted only where a ready local endpoint exists and direct node traffic avoids Service-level SNAT. BGP-routed VIPs can withdraw the failed node's next hop; node-fate-bound routes gain no failover. External proxies still need PROXY protocol or explicitly trusted identity headers to convey the original client.</td></tr>
+              <tr><td>Edge-proxy</td><td>An optional HAProxy clanService that terminates TLS and client mTLS, caches eligible HTTP responses, and balances across downstream Cilium or Traefik endpoints. It does not provide generic UDP relay, BGP, or IP failover.</td></tr>
+              <tr><td>Managed base</td><td>The small set of labeled, clan-rendered APIs and resources installed once as the opinionated foundation. Tenant and application resources are GitOps-owned and do not require NixOS activation.</td></tr>
+              <tr><td>Airgap-ready</td><td>All required artifacts are pinned and available locally at boot; no registry or internet dependency.</td></tr>
+              <tr><td>VM-proven</td><td>The relevant behavior passed in a fresh, sandboxed, hermetic NixOS VM test on the final tree.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      Rancher clanServices architecture, status, and delivery specification · external-systems/clanServices · Dark self-contained offline HTML · Imported baseline 692807c · 2026-10-18
+    </footer>
+  </div>
+</body>
+</html>

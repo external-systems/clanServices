@@ -1,0 +1,21 @@
+{
+  "nodes": {
+    "a": {
+      "locked": {
+        "path": "../fixture-a",
+        "type": "path"
+      },
+      "original": {
+        "path": "../fixture-a",
+        "type": "path"
+      }
+    },
+    "root": {
+      "inputs": {
+        "a": "a"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

@@ -1,0 +1,392 @@
+{
+  "nodes": {
+    "cert-manager-chart": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1789055334,
+        "narHash": "sha256-AsbUc4Q9aVfTmENGPPmjOwC6V6v3MpTN1cKIl8csi10=",
+        "type": "tarball",
+        "url": "https://charts.jetstack.io/charts/cert-manager-v1.21.2.tgz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://charts.jetstack.io/charts/cert-manager-v1.21.2.tgz"
+      }
+    },
+    "cilium-chart": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1784320185,
+        "narHash": "sha256-EYY4IJQzdiSzrKBvlwAiGg2pg4tk4et5UKJaNyNV3nE=",
+        "type": "tarball",
+        "url": "https://rke2-charts.rancher.io/assets/rke2-cilium/rke2-cilium-1.19.601.tgz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://rke2-charts.rancher.io/assets/rke2-cilium/rke2-cilium-1.19.601.tgz"
+      }
+    },
+    "clan-core": {
+      "inputs": {
+        "data-mesher": "data-mesher",
+        "disko": "disko",
+        "flake-parts": [
+          "flake-parts"
+        ],
+        "nix-darwin": "nix-darwin",
+        "nix-select": "nix-select",
+        "nixpkgs": "nixpkgs",
+        "sops-nix": "sops-nix",
+        "systems": "systems",
+        "treefmt-nix": [
+          "treefmt-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792077833,
+        "narHash": "sha256-a5KOVq8zERpdA+37brsjIqnsQITr3Z2YgcPkRev+/Lg=",
+        "rev": "06f8e420826646b1b43afe3b15cf8ae6852dc996",
+        "type": "tarball",
+        "url": "https://git.clan.lol/api/v1/repos/clan/clan-core/archive/06f8e420826646b1b43afe3b15cf8ae6852dc996.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://git.clan.lol/clan/clan-core/archive/main.tar.gz"
+      }
+    },
+    "data-mesher": {
+      "inputs": {
+        "flake-parts": [
+          "clan-core",
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "clan-core",
+          "nixpkgs"
+        ],
+        "treefmt-nix": [
+          "clan-core",
+          "treefmt-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1791886485,
+        "narHash": "sha256-/+7ayxD7PeW6wMQiHw20UJHmSTGN8Y5HXbn0zG/EgoA=",
+        "rev": "8d4d36437f9fff6ecaa34872bd53c3ed09ef5464",
+        "type": "tarball",
+        "url": "https://git.clan.lol/api/v1/repos/clan/data-mesher/archive/8d4d36437f9fff6ecaa34872bd53c3ed09ef5464.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://git.clan.lol/clan/data-mesher/archive/main.tar.gz"
+      }
+    },
+    "disko": {
+      "inputs": {
+        "nixpkgs": [
+          "clan-core",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1789770686,
+        "narHash": "sha256-uZkBR7yHdIKUFB5SZdfgh1qkGfI3XmYmI/lTiquxbck=",
+        "owner": "nix-community",
+        "repo": "disko",
+        "rev": "725ea35e410ad83be4931d1bff7e090eacaf3563",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "disko",
+        "type": "github"
+      }
+    },
+    "flake-parts": {
+      "inputs": {
+        "nixpkgs-lib": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1790898470,
+        "narHash": "sha256-zTwuwezD0w3hpga6a6P8emidzAZFyWqlNeRBlpWOOl8=",
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "rev": "024633cd702b10285db5cb19b40ad48d2399ba60",
+        "type": "github"
+      },
+      "original": {
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "type": "github"
+      }
+    },
+    "gateway-api-crds": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1784212646,
+        "narHash": "sha256-Hq3vaCQRSRFjya76qRYw4/BcH00Wu5wE6UQACrjKJSk=",
+        "type": "tarball",
+        "url": "https://github.com/kubernetes-sigs/gateway-api/archive/refs/tags/v1.6.1.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://github.com/kubernetes-sigs/gateway-api/archive/refs/tags/v1.6.1.tar.gz"
+      }
+    },
+    "nix-darwin": {
+      "inputs": {
+        "nixpkgs": [
+          "clan-core",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1786845137,
+        "narHash": "sha256-oQFip+v0luP8NIxJzmiW4Wu8bILsbFWom5l0zonl8hQ=",
+        "owner": "nix-darwin",
+        "repo": "nix-darwin",
+        "rev": "4cff07de74b50e64bdd68cd4e722ab5b6b35ee48",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-darwin",
+        "repo": "nix-darwin",
+        "type": "github"
+      }
+    },
+    "nix-github-actions": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1737420293,
+        "narHash": "sha256-F1G5ifvqTpJq7fdkT34e/Jy9VCyzd5XfJ9TO8fHhJWE=",
+        "owner": "nix-community",
+        "repo": "nix-github-actions",
+        "rev": "f4158fa080ef4503c8f4c820967d946c2af31ec9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "nix-github-actions",
+        "type": "github"
+      }
+    },
+    "nix-github-actions_2": {
+      "inputs": {
+        "nixpkgs": [
+          "nix-unit",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1737420293,
+        "narHash": "sha256-F1G5ifvqTpJq7fdkT34e/Jy9VCyzd5XfJ9TO8fHhJWE=",
+        "owner": "nix-community",
+        "repo": "nix-github-actions",
+        "rev": "f4158fa080ef4503c8f4c820967d946c2af31ec9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "nix-github-actions",
+        "type": "github"
+      }
+    },
+    "nix-select": {
+      "locked": {
+        "lastModified": 1763303120,
+        "narHash": "sha256-yxcNOha7Cfv2nhVpz9ZXSNKk0R7wt4AiBklJ8D24rVg=",
+        "rev": "3d1e3860bef36857a01a2ddecba7cdb0a14c35a9",
+        "type": "tarball",
+        "url": "https://git.clan.lol/api/v1/repos/clan/nix-select/archive/3d1e3860bef36857a01a2ddecba7cdb0a14c35a9.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://git.clan.lol/clan/nix-select/archive/main.tar.gz"
+      }
+    },
+    "nix-unit": {
+      "inputs": {
+        "nix-github-actions": "nix-github-actions_2",
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "treefmt-nix": [
+          "treefmt-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1784925540,
+        "narHash": "sha256-11IOL5tyJbB3vMQzzhIULuPtoHJpkLFz4BaKApm6t0Q=",
+        "owner": "nix-community",
+        "repo": "nix-unit",
+        "rev": "b3d16367c54621fd073aa8c1dd510042f771f624",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "nix-unit",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1791966044,
+        "narHash": "sha256-UwKRZKua8BOagYl0cou05BHtu7F6XV62FD2Hb+f0QYs=",
+        "rev": "319e4cebef10cbb636c6ea392137b52ad105336a",
+        "type": "tarball",
+        "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1092129.319e4cebef10/nixexprs.tar.xz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://nixos.org/channels/nixpkgs-unstable/nixexprs.tar.xz"
+      }
+    },
+    "root": {
+      "inputs": {
+        "cert-manager-chart": "cert-manager-chart",
+        "cilium-chart": "cilium-chart",
+        "clan-core": "clan-core",
+        "data-mesher": [
+          "clan-core",
+          "data-mesher"
+        ],
+        "disko": [
+          "clan-core",
+          "disko"
+        ],
+        "flake-parts": "flake-parts",
+        "gateway-api-crds": "gateway-api-crds",
+        "nix-darwin": [
+          "clan-core",
+          "nix-darwin"
+        ],
+        "nix-github-actions": "nix-github-actions",
+        "nix-select": [
+          "clan-core",
+          "nix-select"
+        ],
+        "nix-unit": "nix-unit",
+        "nixpkgs": [
+          "clan-core",
+          "nixpkgs"
+        ],
+        "sealed-secrets-chart": "sealed-secrets-chart",
+        "sops-nix": [
+          "clan-core",
+          "sops-nix"
+        ],
+        "systems": [
+          "clan-core",
+          "systems"
+        ],
+        "traefik-chart": "traefik-chart",
+        "traefik-crd-chart": "traefik-crd-chart",
+        "treefmt-nix": "treefmt-nix"
+      }
+    },
+    "sealed-secrets-chart": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787216217,
+        "narHash": "sha256-brsr4XcKA2ytJ3zqUqNG90K49aHURRsgRBJlrmN2cm4=",
+        "type": "tarball",
+        "url": "https://github.com/bitnami-labs/sealed-secrets/releases/download/helm-v2.19.3/sealed-secrets-2.19.3.tgz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://github.com/bitnami-labs/sealed-secrets/releases/download/helm-v2.19.3/sealed-secrets-2.19.3.tgz"
+      }
+    },
+    "sops-nix": {
+      "inputs": {
+        "nixpkgs": [
+          "clan-core",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792056300,
+        "narHash": "sha256-YU1LjDe1o2Ymg5zEiCHbmMXLkDCtxHQRiVqZ3nC5GGk=",
+        "owner": "Mic92",
+        "repo": "sops-nix",
+        "rev": "44931708c62937c2b1bf7953902989fa5bb9ee1b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Mic92",
+        "repo": "sops-nix",
+        "type": "github"
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1791244623,
+        "narHash": "sha256-uuanbkFk8a313Zfrxdcz8Us/yQtaxNnKJtX8v0ZPpd8=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "d36eeed142f88b5a636f2e3856a53c61654cf29b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "ref": "future-26.11",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "traefik-chart": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1788177681,
+        "narHash": "sha256-LoU1MiYPNIGj7wrvzO2W8YMyVSael173Tk2ckdbYFRA=",
+        "type": "tarball",
+        "url": "https://k3s.io/k3s-charts/assets/traefik/traefik-40.1.5%2Bup40.1.0.tgz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://k3s.io/k3s-charts/assets/traefik/traefik-40.1.5%2Bup40.1.0.tgz"
+      }
+    },
+    "traefik-crd-chart": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1788174420,
+        "narHash": "sha256-mkz75/i4djmsq4PX5ih9923l3GBLGIZUqKut0LNajRU=",
+        "type": "tarball",
+        "url": "https://k3s.io/k3s-charts/assets/traefik-crd/traefik-crd-40.1.5%2Bup40.1.0.tgz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://k3s.io/k3s-charts/assets/traefik-crd/traefik-crd-40.1.5%2Bup40.1.0.tgz"
+      }
+    },
+    "treefmt-nix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1791885023,
+        "narHash": "sha256-C3alQ2MEt0zVrUSho5NUDo3jmhbff72++bfwoqT9Omo=",
+        "owner": "numtide",
+        "repo": "treefmt-nix",
+        "rev": "0d6d739a833ba9a9c93034862e4a7b061a062a1c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "treefmt-nix",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
