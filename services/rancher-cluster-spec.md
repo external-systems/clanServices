@@ -396,9 +396,21 @@ sandboxed authoritative); artifact source/hash/render gates. Standard
 internal HTTP/HTTPS test workload: **go-httpbin** (zero-dependency Go
 stdlib httpbin port; pinned + airgap-carried as a test-fixture artifact;
 HTTPS fixtures use generated certs). go-httpbin speaks HTTP/1.1 + HTTP/2
-only (no QUIC in Go stdlib) ⇒ HTTP/3 suites use an HTTP/3-capable client
-against the Gateway with go-httpbin as plain backend — QUIC terminates at
-EG, which is the architecture under test. Rules:
+only (no QUIC in Go stdlib) ⇒ HTTP/3 termination suites use an
+HTTP/3-capable client against the Gateway with go-httpbin as plain
+backend — QUIC terminates at EG, which is the architecture under test.
+HTTP/3 client: nixpkgs `curlHTTP3` run by the VM test driver directly on
+the node (`curl --http3`); if an in-cluster client is needed, the
+artifact repo builds its own image from `pkgs.curlHTTP3` via
+`dockerTools` — never third-party http3 curl images (unpinned).
+**QUIC passthrough suite** (required): UDPRoute (raw L4 UDP — QUIC cannot
+be SNI-routed at L7; TLS lives inside QUIC) through an EG UDP listener to
+a pinned **Caddy** fixture serving HTTP/3 end-to-end; one UDP/443
+listener per address per backend class (no hostname multiplexing on raw
+UDP). HTTP/3 advertisement: `Alt-Svc` response header via the core
+`ResponseHeaderModifier` HTTPRoute filter (backend needs no awareness),
+or DNS `HTTPS`/SVCB records with `alpn="h3"` in the private-domain zones
+(D22). Rules:
 hermetic/offline; eval-deterministic addresses; dual-stack asserted in
 every boot test; round-trips + failure behavior (HTTPS validates CA, UDP
 echo, HTTP/3 uses QUIC, BGP withdrawal keeps VIP via healthy nodes);
@@ -427,7 +439,9 @@ tests together)
   (external-systems/pkgs): granular components incl. distro runtimes
   (source-built RKE2/k3s, release + locked HEAD constructors), one
   upstream Cilium 1.20+ profile, Multus, `gateway-envoy` (EG chart +
-  envoy image + Gateway API/EG CRDs), go-httpbin test fixture; atomic
+  envoy image + Gateway API/EG CRDs), test fixtures (go-httpbin;
+  `curlHTTP3`-based HTTP/3 client image via dockerTools; Caddy for QUIC
+  passthrough); atomic
   updaters, artifact checks, clean-public-fetch proof.
 - **3** — transport modes, hashed ids, topology, dual-stack exports;
   one-cluster-per-node assertion.
@@ -533,4 +547,5 @@ in-place RKE2↔k3s conversion.
 - Mozilla: enterprise_roots is Windows/macOS-only; Linux = Certificates.
   Import policy / per-profile NSS (zen-browser is Firefox-based).
 - go-httpbin (github.com/mccutchen/go-httpbin): standard airgapped
-  HTTP/HTTPS VM-test workload.
+  HTTP/HTTPS VM-test workload; Caddy = QUIC-passthrough server fixture;
+  nixpkgs curlHTTP3 = HTTP/3 test client.
