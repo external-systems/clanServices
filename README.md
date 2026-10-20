@@ -11,7 +11,7 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 - [wireguard-mesh](services/wireguard-mesh/README.md): dual-stack host-level WireGuard full mesh
 - [rancher-cluster](lib/rancher-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
-The [Rancher clanServices specification](services/rancher-cluster-spec.html) is the canonical architecture, status, and delivery record. Its capability matrix distinguishes implemented behavior from planned work.
+The [Rancher clanServices specification](services/rancher-cluster-spec.html) is the canonical architecture, status, and delivery record; [rancher-cluster-spec.md](services/rancher-cluster-spec.md) is its normative decision summary for AI agents (edit both together). Its capability matrix distinguishes implemented behavior from planned work.
 
 ## Usage
 
