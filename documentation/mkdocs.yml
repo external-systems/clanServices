@@ -1,0 +1,63 @@
+site_name: "External Systems — Kubernetes cluster clanServices"
+site_description: >-
+  Declare machines in one inventory file and get secure, interconnected
+  Kubernetes clusters.
+repo_url: https://github.com/external-systems/clanServices
+edit_uri: edit/main/documentation/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Networking: architecture/networking.md
+      - Gateways: architecture/gateways.md
+      - Multi-cluster: architecture/multi-cluster.md
+      - Fleet routing: architecture/fleet-routing.md
+      - GitOps: architecture/gitops.md
+      - Security: architecture/security.md
+  - Decisions:
+      - Decision record D1–D35: decisions/index.md
+  - Services:
+      - Overview: services/index.md
+      - rke2: services/rke2.md
+      - k3s: services/k3s.md
+      - kubernetes (upstream, reserved): services/kubernetes.md
+      - wireguard-mesh: services/wireguard-mesh.md
+      - fleet-routing: services/fleet-routing.md
+  - Guides:
+      - Airgap operation: guides/airgap.md
+      - Upgrades: guides/upgrades.md
+      - Secrets: guides/secrets.md
+  - Reference:
+      - Glossary: reference/glossary.md
+      - Testing: reference/testing.md
+      - Upstream references: reference/upstream.md

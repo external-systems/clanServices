@@ -13,10 +13,14 @@ is a review destination, not a dependency.
 - `lib/import-flake/` — legacy flake-input adapter (optional).
 - `tests/` — eval-test wiring; every `clan.modules` entry must have a
   nix-unit test (enforced by `checks.coverage`).
-- Specs: `services/rancher-cluster-spec.html` = full human record;
-  `services/rancher-cluster-spec.md` = normative decisions for agents.
-  **Edit both together.** HTML §1 is the status authority (implemented vs
-  planned); the MD is the target contract.
+- `SPEC.md` (repo root) — the normative decision contract AND the status
+  authority (implemented vs planned), optimized for agents.
+- `documentation/` — MkDocs site + reveal.js slides (human record, built
+  via the `external-systems/presenting` flake). **Edit SPEC.md and
+  `documentation/` together.** The old `services/rancher-cluster-spec.*`
+  pair is retired.
+- Planned rename (not yet applied to code): `lib/rancher-cluster/` →
+  `lib/kube-cluster/` once the upstream `kubernetes` distro lands (D23).
 
 ## Hard rules
 
@@ -29,11 +33,15 @@ is a review destination, not a dependency.
    behavior goes in `lib/rancher-cluster/` — fix once, not twice.
 5. Multi-instance safe: namespace every global (systemd units, generators,
    interfaces) by `instanceName`.
-6. Secrets only via clan vars generators — never in the Nix store.
-7. Do not implement Planned/Reserved spec rows without reading the MD
-   decision record (D1–D15) first — several invariants changed
+6. Secrets: clan vars own the bootstrap plane only (CAs, tokens,
+   kubeconfigs, sealing keys) — never in the Nix store. In-cluster
+   application credentials (provider keys, hub↔spoke kubeconfigs) are
+   GitOps-owned via Sealed Secrets (SPEC.md D35).
+7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
+   decision record (D1–D35) first — several invariants changed
    (Cilium is networking-only; Envoy Gateway is the default ingress/Gateway;
-   Ingress API deprecated; HAProxy edge-proxy scrapped).
+   Ingress API deprecated; HAProxy edge-proxy scrapped; Flux is default-on
+   day two; OLM rejected).
 9. DO NOT RUN `nix flake check`, it boots VM tests and will OOM kill the machine!!! Run with `--no-build`.
 
 ## Verified upstream facts the spec depends on

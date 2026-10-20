@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" font-family="sans-serif">
+  <rect x="0" y="0" width="900" height="560" fill="#ffffff"/>
+
+  <!-- layer stack -->
+  <rect x="40" y="40" width="570" height="72" rx="6" fill="#fdf3e3" stroke="#333" stroke-width="1.5"/>
+  <text x="325" y="70" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Flux — GitOps day two</text>
+  <text x="325" y="94" text-anchor="middle" font-size="14" fill="#111">flux-operator + FluxInstance per cluster; hub delivers workloads</text>
+
+  <rect x="40" y="132" width="570" height="72" rx="6" fill="#efe8f7" stroke="#333" stroke-width="1.5"/>
+  <text x="325" y="162" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Envoy Gateway + cert-manager</text>
+  <text x="325" y="186" text-anchor="middle" font-size="14" fill="#111">only ingress/Gateway; one IP serves HTTPS, TLS passthrough, mTLS, HTTP/3</text>
+
+  <rect x="40" y="224" width="570" height="72" rx="6" fill="#e8f0fb" stroke="#333" stroke-width="1.5"/>
+  <text x="325" y="254" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Cilium — networking only</text>
+  <text x="325" y="278" text-anchor="middle" font-size="14" fill="#111">CNI, kube-proxy replacement, LB IPAM, BGP v2, ClusterMesh</text>
+
+  <rect x="40" y="316" width="570" height="72" rx="6" fill="#e8f4ec" stroke="#333" stroke-width="1.5"/>
+  <text x="325" y="346" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Distro runtime — k3s / rke2 / kubernetes</text>
+  <text x="325" y="370" text-anchor="middle" font-size="14" fill="#111">thin clanServices over the shared library</text>
+
+  <rect x="40" y="408" width="570" height="72" rx="6" fill="#f4f6fb" stroke="#333" stroke-width="1.5"/>
+  <text x="325" y="438" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">NixOS hosts + integrated transport</text>
+  <text x="325" y="462" text-anchor="middle" font-size="14" fill="#111">host WireGuard (default) / cilium-wireguard / unencrypted; per-node BIRD</text>
+
+  <!-- secrets side bar: application plane aligned with Flux/GitOps,
+       bootstrap plane aligned with distro/hosts -->
+  <text x="745" y="30" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">Secrets planes</text>
+
+  <rect x="650" y="40" width="220" height="204" rx="6" fill="#fdeaea" stroke="#333" stroke-width="1.5"/>
+  <text x="760" y="70" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">Sealed Secrets</text>
+  <text x="760" y="94" text-anchor="middle" font-size="14" fill="#111">application plane</text>
+  <text x="760" y="118" text-anchor="middle" font-size="13" fill="#333">external-dns provider keys,</text>
+  <text x="760" y="138" text-anchor="middle" font-size="13" fill="#333">hub↔spoke kubeconfigs,</text>
+  <text x="760" y="158" text-anchor="middle" font-size="13" fill="#333">tenant secrets</text>
+  <text x="760" y="186" text-anchor="middle" font-size="13" fill="#333">GitOps-owned (D35)</text>
+
+  <rect x="650" y="276" width="220" height="204" rx="6" fill="#fdeaea" stroke="#333" stroke-width="1.5"/>
+  <text x="760" y="306" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">clan vars</text>
+  <text x="760" y="330" text-anchor="middle" font-size="14" fill="#111">bootstrap plane</text>
+  <text x="760" y="354" text-anchor="middle" font-size="13" fill="#333">cluster CAs, join tokens,</text>
+  <text x="760" y="374" text-anchor="middle" font-size="13" fill="#333">kubeconfigs, fleet CA,</text>
+  <text x="760" y="394" text-anchor="middle" font-size="13" fill="#333">ClusterMesh certs, sealing keys</text>
+  <text x="760" y="422" text-anchor="middle" font-size="13" fill="#333">never in the Nix store</text>
+
+  <!-- connectors from secrets bar to the layers they serve -->
+  <line x1="650" y1="142" x2="614" y2="76" stroke="#333" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <line x1="650" y1="378" x2="614" y2="352" stroke="#333" stroke-width="1.5" stroke-dasharray="6 4"/>
+
+  <!-- artifact flake footer -->
+  <rect x="40" y="500" width="830" height="44" rx="6" fill="#eeeeee" stroke="#333" stroke-width="1.5"/>
+  <text x="455" y="528" text-anchor="middle" font-size="14" fill="#111">artifact flake pins every chart, image, CRD — last 3 Kubernetes minors per distro, airgap-ready</text>
+</svg>

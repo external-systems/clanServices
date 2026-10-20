@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+		<title>External Systems — Kubernetes cluster clanServices</title>
+
+		<!-- reveal.js core styles. `reveal/` is added by the Nix build
+		     (flake-parts/slides.nix); it is not in this folder. -->
+		<link rel="stylesheet" href="reveal/reset.css" />
+		<link rel="stylesheet" href="reveal/reveal.css" />
+
+		<!-- Theme: swap black.css for white, league, moon, dracula, ...
+		     (see reveal/theme/ in the built output) -->
+		<link rel="stylesheet" href="reveal/theme/black.css" />
+
+		<!-- Colours for highlighted code blocks -->
+		<link rel="stylesheet" href="reveal/plugin/highlight/monokai.css" />
+	</head>
+	<body>
+		<div class="reveal">
+			<div class="slides">
+				<!-- All slides come from slides.md. The separators are regular
+				     expressions matched against whole lines:
+				       ---    new slide to the right
+				       --     new slide below
+				       Note:  speaker notes until the end of the slide -->
+				<section
+					data-markdown="slides.md"
+					data-separator="^---$"
+					data-separator-vertical="^--$"
+					data-separator-notes="^Note:"
+				></section>
+			</div>
+		</div>
+
+		<script src="reveal/reveal.js"></script>
+		<script src="reveal/plugin/markdown.js"></script>
+		<script src="reveal/plugin/highlight.js"></script>
+		<script src="reveal/plugin/notes.js"></script>
+		<script>
+			// All options: https://revealjs.com/config/
+			Reveal.initialize({
+				hash: true, // keep the slide number in the URL, so refresh stays put
+				slideNumber: true,
+				plugins: [RevealMarkdown, RevealHighlight, RevealNotes],
+			});
+		</script>
+	</body>
+</html>

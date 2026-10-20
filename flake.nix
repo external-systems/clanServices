@@ -76,6 +76,15 @@
       url = "github:nix-community/nix-github-actions";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # MkDocs site + reveal.js slides for the spec/docs (see documentation/).
+    presenting = {
+      url = "github:external-systems/presenting";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-parts.follows = "flake-parts";
+      };
+    };
   };
 
   outputs =
@@ -108,6 +117,7 @@
         ./services/flake-module.nix
         ./lib/rancher-cluster/flake-module.nix
         ./tests/flake-module.nix
+        ./documentation/module.nix
       ];
 
       perSystem =
