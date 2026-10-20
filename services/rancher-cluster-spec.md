@@ -34,7 +34,7 @@ clanService extends VIP reachability to non-Kubernetes NixOS hosts. Artifact
 flake (`external-systems/pkgs`) pins every chart/image/CRD; airgap-ready is
 the tested default. Day two = Flux/Argo against base APIs.
 
-## 3. Decision record (D1–D19; rounds 1–7, locked 2026-10-19)
+## 3. Decision record (D1–D22; rounds 1–8, locked 2026-10-19)
 
 - **D1 Cilium is networking-only.** `gatewayAPI.enabled=false`,
   `ingressController.enabled=false` permanently. Reasons: no Gateway HTTP/3
@@ -83,7 +83,10 @@ the tested default. Day two = Flux/Argo against base APIs.
   ONE cert-manager Certificate SAN list; cert-manager Gateway annotation
   (`cert-manager.io/issuer`); no ListenerSets (experimental). Optional named
   extra listeners (e.g. `cloudflare`). Tenants own Routes; platform owns
-  listeners. Fluid domains → Flux-owned Gateway with own address.
+  listeners. Fluid domains → Flux-owned Gateway with own address. The `web`
+  profile is IDENTICAL on both default Gateways (HTTP/3, terminate-default,
+  hostname-mandatory passthrough, per-listener mTLS); only class, address
+  source, and issuing CA differ.
 - **D8 Pool model: 2 scopes × 4 delivery modes.** Pool = address inventory +
   `serviceSelector` only. Scope: *per-machine* → node-named pools (auto
   join-address /32+/128 + declared primary/extra blocks; always
@@ -133,9 +136,13 @@ the tested default. Day two = Flux/Argo against base APIs.
 - **D12 ClusterMesh apiserver exposure stays node-bound** mesh addresses +
   selectorless-Service DNS fan-in. Not a shared-BGP VIP: consumers are mesh
   members with direct routes; control plane takes fewest dependencies.
-- **D13 Pod CIDR advertisement to hosts: opt-in, default off.** Hosts reach
-  Services via VIPs, never pods. Opt-in per cluster for admin use; caveats:
-  ephemeral IPs, `world` policy identity, trust extension, no readiness.
+- **D13 Pod/ClusterIP advertisement to hosts: opt-in, default off.**
+  Hosts reach Services via VIPs, never pods or ClusterIPs directly.
+  Per-cluster opt-ins may advertise `CiliumPodIPPool` prefixes (pods) and
+  Service ClusterIPs/CIDR (services) to the host routing domain for
+  deliberate admin use. Caveats: ephemeral IPs, `world` policy identity,
+  trust extension, no readiness. Pairs with the client-role opt-in DNS
+  zones (D22).
 - **D14 Raw L4 (Minecraft/Simple Voice Chat/games).** Plain
   `type: LoadBalancer` Services, NEVER Gateways (no SNI in Minecraft ⇒ one
   IP:25565 = one backend or one Velocity proxy). Mixed TCP+UDP on one
@@ -183,6 +190,32 @@ the tested default. Day two = Flux/Argo against base APIs.
   check remains the validator. One BIRD per host; fleet-routing roles on a
   cluster member merge into its existing BIRD; eval asserts no second BGP
   stack / ASN conflict.
+- **D20 Fleet-wide east-west mTLS is the PREFERRED path, gated on proof.**
+  Private-Gateway ClientTrafficPolicy `clientValidation` against the fleet
+  CA + per-machine client-cert vars generators gives mutual TLS on the
+  east-west path. Default-on only after a VM suite proves accept/reject and
+  client-cert presentation from clan machines. Honest caveat: browser
+  client-cert UX is poor — mTLS is enforced per listener/hostname for
+  machine/admin endpoints while ordinary browser endpoints stay
+  terminate-only.
+- **D21 The internal cluster domain is pinned to `cluster.local`.** Never
+  changed, eval-asserted. ClusterMesh does not depend on it (mesh discovery
+  uses its own identities/zone), but the ecosystem (charts, CSI,
+  cert-manager webhook FQDNs, app configs) hardcodes `cluster.local` — high
+  blast radius, zero benefit. All aliasing needs are served by CoreDNS
+  rewrites (D22) instead.
+- **D22 Private-domain routing contract.** Default: client machines resolve
+  ONLY the zone `<instance>.<meta.domain>` — a clan-rendered CoreDNS zone
+  (served on the cluster's private CoreDNS VIP) with a wildcard → private
+  Gateway VIP; east-west traffic enters through the Gateway, mirroring how
+  internet traffic enters. Per-client-machine opt-ins: (a) service zone
+  `<instance>.svc.<meta.domain>` — CoreDNS rewrites to
+  `<name>.<ns>.svc.cluster.local` with answer-name reversal, resolving to
+  Service IPs (works out of the box for private-pool LB VIPs, which the
+  fabric already routes; ClusterIPs additionally require the D13 service
+  advertisement opt-in); (b) pod zone (CoreDNS `pods insecure` + dash-form
+  rewrites + D13 pod advertisement). `cluster.local` is NEVER served to
+  clients (D21).
 
 ## 4. Invariants (target; eval-asserted or VM-proven)
 
@@ -213,6 +246,8 @@ the tested default. Day two = Flux/Argo against base APIs.
 12. Three-layer ownership / zero-churn (D6); Ingress API deprecated (D4).
 13. One cluster per node (D16); one BIRD per host (D19); one proxy
     implementation per IP:port (D15).
+14. `cluster.local` is pinned and never served to clients (D21); private
+    domains route through the private Gateway by default (D22).
 
 ## 5. Subsystem contracts (condensed)
 
@@ -343,10 +378,15 @@ a Service exposes them; mesh/BGP restricted to expected peers; HTTP/3
 opens UDP+TCP. VM tests assert positive connectivity AND negative exposure.
 
 ### 5.13 Fleet-routing service
-Per D11/D18/D19. Acceptance: client role reaches cluster VIPs (routes +
-DNS stub) on a non-cluster host; router role accepts only owned prefixes;
-cross-inventory prefix assertions; MikroTik-style foreign-router runbook;
-browser trust install (system store + browser policy where supported).
+Per D11/D13/D18/D19/D20/D22. Client role: mesh join, BIRD peering, route
+install, fleet CA trust; DNS stub defaults to the `<instance>.<domain>`
+gateway zone only (D22), with per-machine opt-in service/pod rewrite zones.
+Router role: prefix ownership, filtered VIP acceptance, NDP. Acceptance:
+client role reaches cluster VIPs (routes + DNS stub) on a non-cluster host;
+opt-in svc/pod zones resolve and route only when enabled; router role
+accepts only owned prefixes; cross-inventory prefix assertions; MikroTik-
+style foreign-router runbook; browser trust install; east-west mTLS
+accept/reject proof (D20) before it defaults on.
 
 ## 6. Testing contract
 
@@ -366,7 +406,8 @@ suite (exact defaults, carve-outs, floating semantics — documented
 blackhole window, no withdrawal claim); bgp-ecmp suite (+ private fabric,
 MikroTik-style foreign-router fixture); ClusterMesh matrix; PKI rotation;
 CCM/GitOps handoff; multus + sealed-secrets; openEBS; kubevirt;
-fleet-routing suite. Reserved: MCS-API, upstream-Kubernetes distro.
+fleet-routing suite (incl. opt-in svc/pod rewrite zones and east-west mTLS
+accept/reject, D20/D22). Reserved: MCS-API, upstream-Kubernetes distro.
 
 ## 7. Delivery plan (phases; each lands lib + both distros + docs + pins +
 tests together)
@@ -458,6 +499,13 @@ in-place RKE2↔k3s conversion.
   installed into clan hosts' trust stores by the client role.
 - **Fleet-routing service** — clanService (client/router roles) giving
   non-Kubernetes hosts routed access to cluster VIPs.
+- **Private-domain zones** — per-cluster DNS zones served by cluster
+  CoreDNS on the private VIP: `<instance>.<domain>` (wildcard → Gateway,
+  default) and opt-in `<instance>.svc.<domain>` (rewrite to Service IPs)
+  and pod zone. `cluster.local` never appears on clients.
+- **Fleet-wide mTLS (east-west)** — preferred path: private Gateway
+  validates client certs against the fleet CA; clan machines hold
+  per-machine client certs. Gated on VM proof before default-on.
 - **Managed base** — labeled clan-rendered APIs/resources installed once;
   tenant resources GitOps-owned.
 - **Airgap-ready** — all artifacts pinned and local at boot.
