@@ -1,256 +1,477 @@
-# Rancher clanServices — Normative Decisions (agent edition)
+# Rancher clanServices — Full Specification (agent edition)
 
-Machine-readable companion to `rancher-cluster-spec.html` (the full human
-record with figures and evidence). **Keep both in sync.** This file is the
-normative decision summary; the HTML carries rationale, status evidence, and
-figures. §1 of the HTML is always the current-status authority — decisions
-below are the *target* contract, mostly unimplemented at baseline `692807c`.
+Token-efficient companion to `rancher-cluster-spec.html`. **Same spec, two
+renderings — edit both together.** HTML = rich human record (figures,
+evidence, prose rationale); this file = the full contract in dense form for
+agents (later: mkdocs source). HTML §1 is the *status* authority; this file's
+decisions are the *target* contract. Baseline: `692807c` (imported); recorded
+green: wireguard-mesh + rke2/k3s single/join/HA VM suites in the source fork.
+Revised 2026-10-19 (design rounds 1–7).
 
-## Decision record (locked 2026-10-19, design review rounds 1–6)
+## 1. Problem (condensed)
 
-### D1. Cilium is networking base only
+Declare machines + cluster instances in `inventory.nix`, receive working,
+secure, interconnected k3s/RKE2 clusters. Hard interacting requirements:
+multi-cluster identity/CIDR coherence; mandatory dual-stack regardless of
+underlay; bare-metal LoadBalancing = allocation + delivery + datapath (three
+different things); ingress is not only HTTP (TCP/UDP/TLS-passthrough/mTLS/
+QUIC); source preservation (ETP Local) changes routing behavior; address
+families asymmetric in the real world; artifacts and services have different
+release cycles; batteries-included without host-coupled day two (GitOps);
+Gateway/LB ownership must not force NixOS churn; misconfiguration must fail
+at eval where possible, VM-proven where not.
 
-Cilium = CNI, kube-proxy replacement, LB IPAM, BGP v2, ClusterMesh.
-`gatewayAPI.enabled = false` and `ingressController.enabled = false`
-permanently. The old "Cilium default ingress + Gateway" plan and the
-`cilium-l4`/`cilium-l7` split are deleted. Reasons: Cilium Gateway has no
-HTTP/3 (cilium#28497), no mTLS client validation (GEP-91), no DaemonSet mode,
-no multi-Gateway IP sharing (cilium#25567).
+## 2. Architecture in one paragraph
 
-### D2. Envoy Gateway is THE default Gateway API / ingress implementation
+Thin public `rke2` + `k3s` clanServices over a private shared library
+(`lib/rancher-cluster/`): shared interfaces, pure renderers, vars generators,
+assertions. Integrated dual-stack transport (host WireGuard default; native
+Cilium WireGuard; explicit unencrypted underlay). Cilium = CNI + KPR + VXLAN
+tunnel + multi-pool IPAM + LB IPAM + BGP v2 + ClusterMesh — networking only.
+Envoy Gateway = the only ingress/Gateway implementation (0–N). cert-manager
+always on. Per-node BIRD + default private BGP fleet fabric; a fleet-routing
+clanService extends VIP reachability to non-Kubernetes NixOS hosts. Artifact
+flake (`external-systems/pkgs`) pins every chart/image/CRD; airgap-ready is
+the tested default. Day two = Flux/Argo against base APIs.
 
-- EG controller + CRDs + Gateway API CRDs (standard + experimental) are
-  always clan-rendered base, like cert-manager. Artifact flake gains one
-  atomic `gateway-envoy` component (EG chart + envoy image + CRDs), shared
-  upstream profile for both distros, airgap-locked.
-- Data plane shape via `EnvoyProxy`: **DaemonSet** on labeled worker nodes,
-  `envoyService.externalTrafficPolicy: Local` (EG's default), pool-selector
-  labels + `lbipam.cilium.io/ips` projection via
-  `envoyService.labels`/`envoyService.annotations`. Never annotate the
-  managed Service directly — the controller owns it.
-- `mergeGateways` is NOT used on the default class (one bad tenant listener
-  would NACK the shared IPv4:443 fleet). Opt-in separate class only.
-- mTLS = `ClientTrafficPolicy.spec.tls.clientValidation` (per Gateway or per
-  listener via `sectionName`). HTTP/3 = `ClientTrafficPolicy` http3 + UDP
-  Service port + firewall UDP. Known upstream bug: http3 + proxyProtocol on
-  one ClientTrafficPolicy generates invalid QUIC listeners
-  (envoyproxy/gateway#9798).
+## 3. Decision record (D1–D19; rounds 1–7, locked 2026-10-19)
 
-### D3. Traefik stays first-class 0–N
+- **D1 Cilium is networking-only.** `gatewayAPI.enabled=false`,
+  `ingressController.enabled=false` permanently. Reasons: no Gateway HTTP/3
+  (cilium#28497), no Gateway mTLS (GEP-91), no DaemonSet mode, no
+  multi-Gateway IP sharing (cilium#25567).
+- **D2 Envoy Gateway = default ingress/Gateway.** EG controller + CRDs +
+  Gateway API CRDs (standard + experimental) are always-rendered base (like
+  cert-manager); atomic `gateway-envoy` artifact component (EG chart + envoy
+  image + CRDs), one upstream profile both distros, airgap-locked.
+  Data plane via `EnvoyProxy`: DaemonSet on labeled workers,
+  `envoyService.externalTrafficPolicy: Local` (EG default), pool labels +
+  `lbipam.cilium.io/ips` projections via `envoyService.labels/annotations` —
+  never annotate the controller-managed Service directly. `mergeGateways`
+  only on a separate opt-in class (blast radius: one bad tenant listener
+  NACKs the merged fleet). Known bug: http3+proxyProtocol on one
+  ClientTrafficPolicy → invalid QUIC listener (envoyproxy/gateway#9798).
+- **D3 Traefik is REMOVED** (revised round 7; was "first-class 0–N").
+  Distro-bundled Traefik charts always disabled on both distros;
+  `traefik.instances` deleted; no `ingressGateway.controller` selector
+  remains; multi-instance/IPv6-carve-out stories move to EG Gateways (D17);
+  `*-traefik-multi` suites replaced by EG multi-Gateway suites. Stack becomes
+  pure Gateway API + EG policy CRDs.
+- **D4 Ingress API deprecated entirely.** No `networking.k8s.io/v1 Ingress`,
+  no Cilium Ingress, no Traefik IngressRoute in base or recommended tenant
+  path. Gateway API core lacks mTLS/HTTP3 → controller **policy** CRDs
+  (ClientTrafficPolicy etc.) are the sanctioned extension until GEP-91/HTTP3
+  GEP land.
+- **D5 HAProxy edge-proxy scrapped.** Edge = EG DaemonSet on labeled
+  workers. Dropped requirement recorded: HTTP response caching. Cloudflare
+  mTLS = ClientTrafficPolicy `tls.clientValidation` + Cloudflare client CA;
+  Cloudflare Origin CA issuer is Flux/Sealed-Secrets-owned.
+- **D6 Three-layer Gateway ownership (zero-churn contract).** L1 clan
+  always: EG controller, CRDs, pools. L2 clan 0–N: `gateway.classes` +
+  `gateway.instances` (empty = fully GitOps-owned Gateway layer —
+  first-class shape). L3 GitOps always: Routes, certs, tenant Gateways, raw
+  L4 Services. Tenants draw from labeled pools (one IP per family) or write
+  explicit `lbipam.cilium.io/ips` — no NixOS rebuild. EG controller itself
+  never Flux-managed (artifact pinning is the point); Gateway configuration
+  may be.
+- **D7 Default Gateway pair (0–1 each) — NS + EW.** Default-on when L2
+  non-empty: a **public** Gateway (north-south, primary IPv4 :443 maximizer)
+  and a **private** Gateway (east-west, private fleet-fabric VIP, fleet-CA
+  wildcard cert — D18). Listener profile `web`: `:80` redirect; catch-all
+  `HTTPS:443` terminate (default cert); `TLS:443` passthrough (hostname
+  MANDATORY); HTTP/3 UDP/443 + TCP/443 + firewall both. `domains = [...]` →
+  ONE cert-manager Certificate SAN list; cert-manager Gateway annotation
+  (`cert-manager.io/issuer`); no ListenerSets (experimental). Optional named
+  extra listeners (e.g. `cloudflare`). Tenants own Routes; platform owns
+  listeners. Fluid domains → Flux-owned Gateway with own address.
+- **D8 Pool model: 2 scopes × 4 delivery modes.** Pool = address inventory +
+  `serviceSelector` only. Scope: *per-machine* → node-named pools (auto
+  join-address /32+/128 + declared primary/extra blocks; always
+  node-fate-bound); *cluster-global* → generic-named pools
+  (`helsinki-ipv4-1`, `fsn-ipv6`; never node-fate-bound). Delivery:
+  `node-fate-bound` (no failover, no BGP) | `floating` (runtime controller
+  moves IP, one node at a time; no route withdrawal; blackhole window;
+  requires full local proxy coverage on candidate set) | `shared-bgp` (all
+  healthy nodes advertise /32+/128; router ECMPs; ETP-Local withdrawal) |
+  `external-class` (cloud CCM). `public=true`/`private=true`/`games=true` =
+  selector labels on pools of any scope/mode, not a category. Dynamic draw =
+  one IP per family; multi-IP explicit annotation = deliberate projection.
+  Assertions: blocks non-overlapping; scope⇒mode validity; BGP only for
+  `shared-bgp`; floating ⇒ candidate-set coverage; `shared-bgp` blocks ⊆
+  router-role prefixes when router in same inventory.
+- **D9 BGP topology + foreign-router contract.** Cilium GoBGP originates
+  VIP routes, dials OUT over loopback to per-node BIRD (no :179 listener);
+  BIRD imports only approved exact VIPs, exports only those upstream (never
+  default/mesh/primary/transit), no broad kernel install on cluster nodes;
+  upstream router (NixOS BIRD host | MikroTik | switch) hears the same
+  route from every healthy node → ECMP. Cilium agents never peer with each
+  other. Deterministic 2 private 32-bit ASNs per cluster (BIRD-side,
+  Cilium-side) + per-node router id; uniform ASN ⇒ no multipath-relax.
+  Timers not BFD (none in 1.20): hold 9 / keepalive 3 / connect-retry 5.
+  Foreign-router contract (published): ASNs, timers, accept only pool
+  blocks as /32+/128 with max-prefix + prefix filters, ECMP path count ≥
+  node count, proxy-NDP if on-LAN. BIRD config rendered via a vendored
+  named-fragment module pattern (D19).
+- **D10 Private fleet routing fabric DEFAULT ON.** Per cluster by default:
+  per-node BIRD + BGP v2 resources, one private `shared-bgp` pool (ULA +
+  RFC1918 from derived cluster CIDR space), core VIPs on it (private
+  Gateway, CoreDNS). Public `shared-bgp` opt-in; preconditions:
+  upstream-routed space (DHCPv6-PD carve-out / static / PI) + controlled
+  router. Non-goals: single dynamic residential IPv4 public BGP;
+  heterogeneous multi-WAN inbound failover (DNS failover instead). Hetzner
+  public edge = node-bound + floating + Cloudflare-healthcheck DNS
+  failover. One VIP per cluster — never advertise the same VIP from two
+  clusters (cross-cluster = ClusterMesh global services or DNS).
+- **D11 Fleet-routing clanService (working name `cluster-client`).**
+  Non-Kubernetes clan hosts → cluster VIPs. Role `client`: join
+  wireguard-mesh, BIRD-peer with cluster nodes, install learned routes,
+  DNS stub (resolved/unbound) per cluster domain → cluster CoreDNS VIP,
+  fleet CA trust install (D18); /etc/hosts = zero-BGP fallback. Role
+  `router`: owns prefixes (PD carve-outs, static), accepts prefix-filtered
+  VIP advertisements, NDP, optional default origination. One host may hold
+  both roles (client and upstream router = same BIRD, different peers).
+- **D12 ClusterMesh apiserver exposure stays node-bound** mesh addresses +
+  selectorless-Service DNS fan-in. Not a shared-BGP VIP: consumers are mesh
+  members with direct routes; control plane takes fewest dependencies.
+- **D13 Pod CIDR advertisement to hosts: opt-in, default off.** Hosts reach
+  Services via VIPs, never pods. Opt-in per cluster for admin use; caveats:
+  ephemeral IPs, `world` policy identity, trust extension, no readiness.
+- **D14 Raw L4 (Minecraft/Simple Voice Chat/games).** Plain
+  `type: LoadBalancer` Services, NEVER Gateways (no SNI in Minecraft ⇒ one
+  IP:25565 = one backend or one Velocity proxy). Mixed TCP+UDP on one
+  Service/IP (25565/TCP + 24454/UDP). ETP Local preserves player IPs.
+  Address: labeled pool draw, floating pool, or explicit projection.
+- **D15 One IP:443, all TLS modes.** One IP:443 simultaneously: SNI
+  multi-cert HTTPS terminate + hostname-filtered TLS passthrough +
+  per-listener mTLS + HTTP/3 (UDP/443 beside TCP/443). Only EG satisfies
+  the full set (see D1) ⇒ EG owns the default web path.
+- **D16 One cluster per node.** A machine belongs to at most one cluster
+  instance (rke2 or k3s) — inventory-wide eval assertion.
+- **D17 Gateway classes vs instances (0–N structure).** `gateway.classes.
+  <name>` (0–N): one GatewayClass + one EnvoyProxy per class — the
+  isolation domain: daemonset/deployment, node-label placement, pool
+  selector labels, base annotations, mergeGateways opt-in. `gateway.
+  instances.<name>` (0–N): one clan-rendered Gateway bound to a class —
+  address projection (explicit per-node addresses; deterministic IPv6
+  carve-outs live HERE now: stable hash of cluster+node+instance, explicit
+  offset override, collision = eval error), listener profile (`web` |
+  custom), domains→SAN cert, namespace, allowedRoutes. Defaults: classes
+  `public` (DaemonSet on edge workers, `public=true` pools) + `private`
+  (private fabric VIP, `private=true` pools); instances `public` +
+  `private` (D7). Tenant isolation ladder: listener < Gateway < class.
+  Tenants create Gateways against clan classes via GitOps (zero churn);
+  creating classes is platform work.
+- **D18 Fleet CA + browser trust.** Dedicated fleet root CA (shared vars
+  generator `fleet-ca-<group>`, `share=true`; private key only leaves vars
+  as the cluster's cert-manager CA-issuer Secret via secret-sync). Private
+  Gateway certs issued by cert-manager from it. fleet-routing `client` role
+  installs the CA into `security.pki.certificateFiles` (covers
+  Chromium/curl/most tooling). Firefox-family (incl. zen-browser): Linux
+  does NOT support `security.enterprise_roots.enabled`; use enterprise
+  policy `Certificates.Import` (zen/firefox Nix wrappers expose
+  `policies`) — rendered by the client role when such a browser module is
+  detected; per-profile NSS (certutil) is the documented fallback.
+- **D19 BIRD rendering: vendored named-fragment pattern.** Reviewed
+  NuschtOS/bird.nix (alpha, MIT): its `templates`/`protocols`
+  `attrsOf lines` composition model is the right idea (multiple
+  clanServices contribute named blocks to ONE bird daemon), but it lacks
+  top-level `filter`/`function` blocks and typed fields — do not take as an
+  input. Vendor the pattern into `lib/rancher-cluster` with added
+  `filters`/`functions` maps; keys namespace-prefixed per instance
+  (`bgp.<instance>_cilium`, `bgp.<instance>_upstream`); same-key = text
+  concat (avoid); `routerId` set exactly once; nixpkgs `bird -p` pre-start
+  check remains the validator. One BIRD per host; fleet-routing roles on a
+  cluster member merge into its existing BIRD; eval asserts no second BGP
+  stack / ASN conflict.
 
-`ingressGateway.controller = "envoy-gateway" | "traefik"` (default
-`envoy-gateway`); selecting Traefik makes it the only ingress/Gateway
-implementation. Extra instances default to per-node IPv6 projections.
-Traefik mTLS/UDP need its CRDs — acceptable only under D4's policy-CRD rule.
+## 4. Invariants (target; eval-asserted or VM-proven)
 
-### D4. Ingress API is deprecated entirely
+1. One declarative fleet: instance declaration ⇒ stable identity,
+   non-overlapping defaults, integrated transport, automatic ClusterMesh
+   when mesh group has peers.
+2. Dual-stack inside, always (nodes/pods/Services); public exposure varies
+   per node/Service (v4-only, v6-only, both, neither).
+3. Cilium is the only CNI base: one upstream 1.20+ profile, KPR, VXLAN,
+   multi-pool; networking-only (D1).
+4. L3 only: no VLAN/L2-announce/VRRP/shared-L2. Transport =
+   host-wireguard (default) | cilium-wireguard | unencrypted; every mode
+   dual-stack.
+5. ETP Local on every clan-rendered external proxy Service; no silent
+   Cluster fallback.
+6. One LB-IPAM model: 2 scopes × 4 delivery modes (D8); explicit per-node
+   projection for clan-managed multi-node proxies; no Node IPAM.
+7. BGP ownership unambiguous: only `shared-bgp` pools advertised; private
+   fabric default; public opt-in (D9/D10).
+8. Envoy Gateway by default and only; 0–N classes/instances; default NS+EW
+   pair (D2/D7/D17).
+9. Topology always labeled: region/zone default to instance name,
+   per-machine overrides, non-empty.
+10. cert-manager is base (no disable); fleet CA for EW trust (D18);
+    Sealed Secrets optional with vars-owned key history.
+11. Hermetic proof: pinned artifacts, eval rejection of invalid
+    inventories, hermetic VM suites.
+12. Three-layer ownership / zero-churn (D6); Ingress API deprecated (D4).
+13. One cluster per node (D16); one BIRD per host (D19); one proxy
+    implementation per IP:port (D15).
 
-No `networking.k8s.io/v1 Ingress`, no Cilium Ingress, no Traefik
-IngressRoute in the rendered base or the recommended tenant path. Gateway
-API core lacks mTLS/HTTP3 (GEP-91 experimental, no HTTP3 GEP), so
-controller **policy** CRDs (ClientTrafficPolicy, BackendTrafficPolicy,
-TLSOption where Traefik is selected) are the sanctioned extension point.
-Route CRDs (IngressRoute) are not.
+## 5. Subsystem contracts (condensed)
 
-### D5. HAProxy edge-proxy is scrapped
+### 5.1 Ownership boundaries
+Canonical repo = external-systems/clanServices; thin distro services own
+bootstrap/TLS-dir/join semantics; shared lib owns parity; artifact flake =
+only packaging input (granular atomic component sets; source-built
+RKE2/k3s; locked HEADs); consumers pin immutable revisions; fleet-routing
+and tenant resources are consumers, never hidden dependencies.
 
-Former §5.13 / Phase 11 deleted. Edge = EG DaemonSet on labeled worker
-nodes; every node is Kubernetes-managed. Dropped requirement, recorded:
-HTTP response caching (EG exposes no cache API). Cloudflare mTLS =
-ClientTrafficPolicy clientValidation with the Cloudflare client CA.
-Cloudflare Origin CA issuer is Flux/Sealed-Secrets-owned, never clan vars.
+### 5.2 Identity, CIDRs, topology, exports
+Cluster name = instance name (≤32 chars, DNS-style). `cilium.id` nullable;
+default = stable hash of instance name → 1–127; collision = eval error;
+explicit 1–255 override requires explicit v4 CIDRs above 127. Migration:
+pin existing ids/CIDRs before hashed defaults land. One resolved dual-stack
+CIDR structure feeds distro, Cilium, DNS, pools, assertions, exports.
+region/zone labels default to instance name, per-machine overrides.
+`rancher_cluster` instance export: identity, mesh group, CIDRs, mesh
+endpoints, pool handoff, schema version. `node_transport` per-node export:
+mesh/underlay addresses, interface, MTU, primary/external facts, delivery
+modes, topology. No secrets in exports. Inventory-wide assertions:
+duplicate names/ids/CIDRs, overlapping CIDRs, duplicate NodePorts, missing
+peers, missing labels, node-in-two-clusters (D16).
 
-### D6. Three-layer Gateway ownership (zero-churn contract)
+### 5.3 Transport
+`transport.mode = host-wireguard | cilium-wireguard | unencrypted`.
+host-wireguard: every node gets mesh v4+v6 (deterministic from id + machine
+name); per-machine overrides (addresses, port, endpoint, interface, MTU,
+routes, pool blocks). cilium-wireguard: no host WG resources, Cilium
+transparent encryption, explicit dual-stack node facts required.
+unencrypted: no confidentiality claim, explicit facts required, missing
+family = eval error. Mesh groups: cross-cluster peering from exports +
+public vars keys, remote prefixes only in AllowedIPs; every remote node
+InternalIP reachable before ClusterMesh ready. MTU: transport MTU −50 =
+tunnel budget. Distro HTTP-proxy setting = documented escape only.
 
-| Layer | Owner | Contents |
-|---|---|---|
-| L1 | clan, always | EG controller, CRDs, LB pools — the platform API |
-| L2 | clan, 0–N | `gateway.instances`: GatewayClass + EnvoyProxy + Gateway + projection. **Empty map = fully GitOps-owned Gateway layer, zero NixOS churn — first-class shape, not degenerate** |
-| L3 | GitOps, always | Routes, certs, tenant Gateways, raw L4 Services |
+### 5.4 Cilium base
+Same canonical upstream Cilium 1.20+ chart/images both distros; RKE2
+bundled Cilium disabled. Always: KPR, VXLAN, multi-pool IPAM, BPF
+masquerade+tproxy, Maglev, pmtu, default dual-stack pod pool. Post-merge
+validation rejects helmValues violating routing/tunnel/IPAM/dual-stack/
+CNI-chaining/artifact/ETP invariants. Multus optional: chaining switch is
+explicit + atomic.
 
-Tenants can run a complete Gateway stack against clan pools with no NixOS
-rebuild: dynamic labeled pool draw (one IP per family) or explicit
-`lbipam.cilium.io/ips` annotation (deliberate, documented). The EG
-*controller* is never Flux-managed (artifact pinning is the point); Gateway
-*configuration* may be.
+### 5.5 ClusterMesh (automatic, mixed-distro)
+Mesh groups (default = all Rancher instances; opt-out separates trust).
+Every eligible cluster runs clustermesh-apiserver + mesh certs from first
+boot; singleton peer list empty. Peering rendered from exports into
+`clustermesh.config.clusters` — no CLI. Exposure: LoadBalancer (default,
+node-bound mesh addresses + ETP Local + ClientIP affinity, all servers as
+endpoints, anti-affinity) with collision-checked NodePort escape.
+DNS fan-in: selectorless local ClusterIP Service + eval-rendered
+EndpointSlice per remote cluster. Shared `rancher-clustermesh-ca-<group>`
+vars generator (share=true); per-cluster dependent cert generators; SANs
+include every exported address + fan-in name; endpoint set is a public
+validation input (membership change ⇒ reissue before advertise). CA/cert
+material never in exports/helm/store. Same datapath, same Cilium profile,
+maxConnectedClusters uniform. Global Services opt-in per Service. MCS-API
+reserved (disabled initially). Rotation = separate two-phase CA-bundle
+design; blind regeneration unsupported.
 
-### D7. Default Gateway (0–1) — the :443 maximizer
+### 5.6 Pools, LB, BGP, BIRD
+Per D8/D9/D10/D19. Zero-config single-node example: node-1 with join
+addresses 10.0.0.1/32 + fd0::1/128 ⇒ pool `node-1` with exactly those
+blocks. Declared public primary wins over mesh fallback for the default
+Gateway projection. Generic tenant draw = one IP per family. Pool updates
+may reassign IPs (Cilium-side) ⇒ reviewed network changes. Floating pools:
+runtime controllers (e.g. hcloud-ip-floater) move addresses; clan asserts
+shape + coverage only; failover timing is the controller's contract.
+BIRD-on-hosts (client/router roles) installs routes into the kernel;
+cluster nodes do not broadly install.
 
-Platform-owned shared Gateway, on by default when L2 is non-empty:
+### 5.7 Gateways (Envoy Gateway)
+Per D2/D6/D7/D14/D15/D17/D18. Port uniqueness evaluated per
+node/address/family/protocol (TCP and UDP may share a number). HTTP/3 =
+QUIC listener + TCP+UDP Service ports + NetworkPolicy + firewall together.
+TLS passthrough ⇒ backend terminates; source seen by backend = proxy IP
+(no client-IP promise). XFF/X-Envoy-External-Address documented separately
+from raw-L4 source preservation. Default cert from cert-manager; custom
+certs render once in consumer namespace and suppress defaults.
+`gateway.instances = {}` = fully GitOps-owned, first-class.
 
-- Listeners: `:80` HTTP (redirect); catch-all `HTTPS:443` terminate with
-  the cert-manager default cert; `TLS:443` passthrough (hostname
-  MANDATORY — passthrough is unroutable without SNI); HTTP/3 on UDP/443.
-- `domains = [ ... ]` → ONE cert-manager Certificate with the SAN list.
-  cert-manager Gateway annotation (`cert-manager.io/issuer`) provisions
-  listener certs automatically. No ListenerSets (experimental).
-- Optional named extra listeners (e.g. `cloudflare`: own hostname, own
-  cert, optional ClientTrafficPolicy profile such as Cloudflare mTLS).
-- Tenants own Routes (`allowedRoutes` open); platform owns listeners.
-  Fluid domains/listeners → Flux-owned Gateway with its own address.
-- Exactly one proxy implementation may own a given IP:port. The default
-  Gateway claims the node's primary public IPv4 on 80/443; additional
-  proxies default to IPv6 carve-outs.
+### 5.8 Base and add-ons
+cert-manager: always on (pinned, bootstrap selfsigned CA, voter placement,
+arbitrary issuer refs). CoreDNS rewrites: on, distro-appropriate ConfigMaps.
+Sealed Secrets: off; `keyManagement = clan-vars` (default when enabled;
+persistent keypair, offline public cert, native renewal disabled, old keys
+retained) | `controller` (native + backup runbook). Never a plain
+cert-manager Certificate for sealing keys. Multus/OpenEBS-LVM/OpenEBS-ZFS/
+KubeVirt+CDI: optional add-ons with per-engine artifacts, host prep, and VM
+suites per the HTML §5.8 table (unchanged).
 
-### D8. Pool model: 2 scopes × 4 delivery modes
+### 5.9 Secrets / PKI / airgap
+Clan vars own cluster CAs, tokens, haproxy material, admin kubeconfigs,
+Sealed-Secrets keys, ClusterMesh CA/certs, fleet CA (D18). Public certs
+readable as public values; private material referenced by deployed paths
+only. RKE2 PKI sync non-destructive; k3s init-only seed + native
+replication. Airgap-ready default; one explicit opt-out switch; overrides =
+complete replacement sets or additive lists.
 
-A `CiliumLoadBalancerIPPool` is address inventory + `serviceSelector`.
-Meaning attaches via two axes:
+### 5.10 Rotation and imperative lifecycle
+Leaf certs: upstream 365-day, renew at startup; manual via
+`{rke2,k3s} certificate rotate`. CA rotation: staged dir + `rotate-ca`;
+same-root can be non-disruptive; new root disruptive (tokens, kubeconfigs,
+restarts). Service-account signing key: append/retain. No blanket 100-year
+leaf default; long-lived offline root = explicit risk decision. Inventory
+deletion ≠ cluster GC: cordon/drain, Node deletion, etcd member removal,
+mesh cleanup = documented runbooks. Disruptive changes (pools, CIDRs, ids,
+CA roots, mesh membership) = reviewed operational changes.
 
-- **Scope** (who contributes addresses):
-  - *per-machine* → node-named pools. Auto join-address /32 + /128 blocks +
-    declared primary/extra IPs/subnets (Hetzner fixed extra IP/subnet).
-    Always node-fate-bound.
-  - *cluster-global* → generic-named pools (`helsinki-ipv4-1`, `fsn-ipv6`,
-    `bare-metal-helsinki-ipv4-2`). Never node-fate-bound (that's a modeling
-    error → move the block to the machine's settings).
-- **Delivery mode** (how traffic arrives; failure semantics):
+### 5.11 CCM, managed manifests, GitOps
+`cloudController = none | rancher | external`; provider CCMs never bundled;
+hermetic fake-CCM VM test. Every clan-rendered manifest labeled
+(managed-by, instance, component, config-hash; never in selectors).
+Managed base installs APIs + small base set; tenants use Flux/Argo without
+NixOS activation; base upgrades preserve tenant CRDs.
 
-| Mode | Scope | Mechanism | Failure |
-|---|---|---|---|
-| `node-fate-bound` | per-machine | provider/static routing to one node | none, ever; no BGP |
-| `floating` | cluster-global | runtime controller (hcloud-ip-floater style) moves IP, one node at a time | controller's contract, not eval-visible; no route withdrawal; blackhole window → full local proxy coverage on candidate set |
-| `shared-bgp` | cluster-global | all healthy nodes advertise /32+/128, router ECMPs | ETP-Local next-hop withdrawal |
-| `external-class` | cluster-global | cloud/external controller owns Service class | controller-defined |
+### 5.12 Assertions and firewall
+Eval rejects: multiple bootstraps, duplicate ids/CIDRs/ports, missing
+dual-stack facts, missing topology labels, invalid TLS/entrypoint combos,
+duplicate certs, uncovered cert refs, pool overlap, scope⇒mode violations,
+floating without candidate coverage, `shared-bgp` ⊄ router prefixes,
+node-in-two-clusters, second BGP stack per host, two proxy implementations
+per IP:port, passthrough listener without hostname, mergeGateways on
+non-opt-in class, ETP Cluster / Node IPAM / host-network mode on clan
+proxies. Firewall: API/haproxy on transport only; public ports only where
+a Service exposes them; mesh/BGP restricted to expected peers; HTTP/3
+opens UDP+TCP. VM tests assert positive connectivity AND negative exposure.
 
-- `public=true` / `private=true` / `games=true` are selector LABELS on
-  pools of any scope/mode, not a category. Dynamic draw = one IP per
-  family; multi-IP explicit annotation = deliberate projection.
-- Assertions: blocks non-overlapping; scope⇒mode validity; BGP resources
-  only for `shared-bgp`; floating ⇒ declared candidate-node set with full
-  local coverage; `shared-bgp` blocks ⊆ router-role-owned prefixes when the
-  router is in the same inventory.
+### 5.13 Fleet-routing service
+Per D11/D18/D19. Acceptance: client role reaches cluster VIPs (routes +
+DNS stub) on a non-cluster host; router role accepts only owned prefixes;
+cross-inventory prefix assertions; MikroTik-style foreign-router runbook;
+browser trust install (system store + browser policy where supported).
 
-### D9. BGP topology and the foreign-router contract
+## 6. Testing contract
 
-```
-upstream router (NixOS BIRD host | MikroTik | switch)
-   ▲ eBGP: VIP /32+/128 via node mesh addr — same route from EVERY healthy node
-BIRD (per node): import filter = approved VIPs from localhost only;
-   export = approved VIPs only (never default/mesh/primary/transit);
-   no broad kernel-route install on cluster nodes
-   ▲ eBGP over loopback (Cilium dials OUT; no :179 listener)
-Cilium GoBGP (per node): ORIGINATES VIP routes; ETP-Local-aware withdraw.
-   Agents NEVER peer with each other (no intra-cluster BGP mesh).
-```
+Seams: pure renderer nix-unit tests; throwaway clans via `clanLib.clan`
+(inventory boundary); `clan.nixosTests` hermetic VM suites (one at a time,
+sandboxed authoritative); artifact source/hash/render gates. Rules:
+hermetic/offline; eval-deterministic addresses; dual-stack asserted in
+every boot test; round-trips + failure behavior (HTTPS validates CA, UDP
+echo, HTTP/3 uses QUIC, BGP withdrawal keeps VIP via healthy nodes);
+negative assertions; operational postconditions; fail fast. Suites:
+existing single/join/HA (keep); transport matrix; artifact matrix; EG
+gateway matrix (replaces Cilium gateway + Traefik multi): DaemonSet
+placement, ETP Local, projections, L4+L7 one Gateway, HTTP/3 QUIC, mTLS
+accept/reject, cert-manager Gateway integration, source preservation, 0–N
+multi-Gateway isolation, zero-clan-Gateway tenant round-trip; lb-pool
+suite (exact defaults, carve-outs, floating semantics — documented
+blackhole window, no withdrawal claim); bgp-ecmp suite (+ private fabric,
+MikroTik-style foreign-router fixture); ClusterMesh matrix; PKI rotation;
+CCM/GitOps handoff; multus + sealed-secrets; openEBS; kubevirt;
+fleet-routing suite. Reserved: MCS-API, upstream-Kubernetes distro.
 
-- ECMP exists only at the upstream router; verify its path limit.
-- Deterministic ASNs: 2 private 32-bit ASNs per cluster (BIRD-side,
-  Cilium-side) + unique router id per node; uniform per cluster ⇒ no
-  multipath-relax needed.
-- Timers, not BFD (none in 1.20): hold 9 / keepalive 3 / connect-retry 5.
-- Foreign-router contract (published for MikroTik etc.): these ASNs,
-  these timers, accept only pool blocks as /32+/128 host routes with
-  max-prefix + prefix filters, ECMP path count ≥ node count, proxy-NDP if
-  the block is on-LAN rather than routed.
+## 7. Delivery plan (phases; each lands lib + both distros + docs + pins +
+tests together)
 
-### D10. Private fleet routing fabric is DEFAULT ON
+- **0 done** — canonical import (through 692807c).
+- **1 next** — correctness/permanent-base gate: ETP Local rendering,
+  override rejection, CIDR/id unification, cert-manager permanent +
+  duplication fixes, RKE2 zero-Traefik (now: Traefik always-off), managed
+  labels.
+- **2** — artifact flake (external-systems/pkgs): granular components incl.
+  `gateway-envoy`; source-built distros; one upstream Cilium + Multus
+  profile.
+- **3** — transport modes, hashed ids, topology, dual-stack exports;
+  one-cluster-per-node assertion.
+- **4** — pools + default EG datapath: node pools, carve-outs in
+  `gateway.instances`, `gateway.classes`, default NS+EW Gateway pair, fleet
+  CA, browser trust.
+- **5** — EG 0–N completion + external CCM + GitOps handoff (zero-churn
+  proofs).
+- **6** — BGP v2 + BIRD + private fleet fabric (MOVED before ClusterMesh;
+  default-on private pool + CoreDNS/private-Gateway VIPs; vendored BIRD
+  fragment renderer).
+- **7** — automatic ClusterMesh (apiserver stays node-bound + fan-in).
+- **8** — PKI ops, Sealed Secrets, Multus completion.
+- **9** — OpenEBS Local PV. **10** — KubeVirt + CDI.
+- **11** — fleet-routing service (client/router; replaces edge-proxy).
+- **12** — borg migration + upstream review (suites incl.
+  `rke2-gateway-envoy`, no `*-traefik-*`; production shape = default EG on
+  node addresses + primary IPv4 :443, additional IPv6 EG Gateways).
+- Reserved: upstream Kubernetes distro, MCS-API, clan-operator.
 
-Every cluster renders by default: per-node BIRD + BGP v2 resources, one
-private `shared-bgp` pool (ULA + RFC1918 from the derived cluster CIDR
-space), and core VIPs on it (private Gateway, CoreDNS). BGP/BIRD therefore
-moves EARLIER in the delivery plan (before ClusterMesh and the
-fleet-routing service) — it is base, not an add-on phase.
+## 8. Out of scope
 
-Public `shared-bgp` stays opt-in with stated preconditions: upstream-routed
-address space (DHCPv6-PD carve-out, static block, or PI) + a router the
-clan controls or contracts with. Non-goals (Out of Scope): single dynamic
-residential IPv4 public BGP; heterogeneous multi-WAN inbound failover
-(DNS failover is the answer); Hetzner public edge stays node-bound +
-floating + Cloudflare-healthcheck DNS failover.
+Alternative CNIs / native-routing base / L2 announcements / VRRP /
+Keepalived / host-network Gateways; single-stack internals; Node IPAM for
+clan proxies; Rancher Manager; cross-inventory automatic mesh; implicit
+global Services; early/default-on MCS-API; bundled provider CCMs;
+replicated storage (Longhorn/Mayastor); provider-specific issuers or
+Cloudflare account resources in base; Windows guests / every KubeVirt
+feature; direct-to-pod routing from edges; NAT64/app egress remediation;
+HTTP response caching at the edge (dropped with edge-proxy); ListenerSets
+while experimental; same VIP advertised from two clusters; pod-CIDR
+advertisement to hosts by default; public shared-BGP without
+upstream-routed space (incl. single dynamic residential IPv4);
+heterogeneous multi-WAN inbound failover (use DNS failover); Flux-managed
+EG controller; Cilium Ingress/Gateway and the Ingress API as supported
+surfaces; Traefik; generic UDP relay; untested optional protocol profiles;
+blanket 100-year leaves; cert-manager-generated Sealed-Secrets keys;
+blind live CA regeneration; fully declarative node/etcd/cluster deletion;
+in-place RKE2↔k3s conversion.
 
-### D11. Fleet-routing clanService (new; working name `cluster-client`)
+## 9. Glossary
 
-Gives non-Kubernetes clan NixOS hosts access to cluster VIPs. Two roles:
-
-- `client`: join wireguard-mesh; BIRD peer with cluster nodes; install
-  learned routes into the kernel; DNS stub (systemd-resolved/unbound) for
-  each cluster's domain → that cluster's CoreDNS VIP. /etc/hosts entries
-  remain the zero-BGP fallback.
-- `router`: owns declared prefixes (PD carve-outs, static blocks); accepts
-  prefix-filtered VIP advertisements from cluster nodes; NDP handling;
-  optional default origination. A host may hold both roles — a "client"
-  and an "upstream router" are the same BIRD with different peer roles.
-
-Cross-cluster VIP rule: one VIP per cluster; never advertise the same VIP
-from two clusters (no coherent fate). Cross-cluster backends = ClusterMesh
-global services or DNS across both VIPs.
-
-### D12. ClusterMesh apiserver exposure stays node-bound
-
-Mesh addresses + selectorless-Service DNS fan-in, as already specified.
-NOT moved to a shared-BGP VIP: consumers are all mesh members with direct
-mesh routes; the mesh control plane takes the fewest dependencies.
-
-### D13. Pod CIDR advertisement to hosts: opt-in, default off
-
-Hosts reach Services via VIPs, never pods directly. Per-cluster option may
-advertise `CiliumPodIPPool` prefixes to the host routing domain for
-deliberate admin use. Caveats: ephemeral IPs, `world` policy identity,
-trust extension, no readiness/load-balancing.
-
-### D14. Raw L4 (Minecraft / Simple Voice Chat / game servers)
-
-Plain `type: LoadBalancer` Services — NEVER Gateways (no L7 value, extra
-hop, bad UDP session semantics; Minecraft has no SNI ⇒ one IP:25565 = one
-backend or one Velocity proxy). One Service with mixed protocols
-(`25565/TCP` + `24454/UDP`) shares one IP. ETP Local preserves player
-source IPs. Address: labeled pool draw (e.g. `games=true`), floating pool,
-or explicit projection. Velocity/BungeeCord PROXY protocol is a Velocity
-config concern, not cluster config.
-
-### D15. One :443, all TLS modes — feasibility contract
-
-One IP:443 can simultaneously: terminate TLS (SNI multi-cert HTTPS
-listener), pass through TLS (hostname-filtered TLS listener), validate
-client certs (per-listener ClientTrafficPolicy), and serve HTTP/3 (UDP/443
-beside TCP/443). Firewall opens TCP+UDP together. This full set is only
-satisfiable by EG (see D1), which is why it owns the default web path.
-
-## Delivery-plan deltas (vs HTML §7)
-
-- BGP/BIRD phase moves BEFORE ClusterMesh (D10: private fabric is base).
-- Cilium ingress/Gateway phases/suites replaced by EG equivalents
-  (`rke2-gateway-envoy` / `k3s-gateway-envoy`): DaemonSet placement, ETP
-  Local, projections, L4+L7 on one Gateway, HTTP/3 QUIC proof, mTLS
-  accept/reject, cert-manager Gateway integration, source preservation.
-- New phase: fleet-routing service (client + router roles, CoreDNS VIP
-  DNS stub, route installation, cross-inventory prefix assertions).
-- Edge-proxy phase/suite deleted (D5); caching recorded as dropped.
-- New suite cases: floating-pool failover semantics (documented
-  blackhole window, no route-withdrawal claim), foreign-router peering
-  contract (MikroTik-style fixture), zero-clan-Gateway tenant round-trip
-  (`gateway.instances = {}`, Flux-created Gateway draws from labeled
-  pool), raw-L4 mixed-protocol game Service.
-
-## Glossary deltas (HTML §9.4 additions)
-
+- **Rancher services** — public rke2/k3s clanServices + private shared
+  library; not Rancher Manager.
+- **Artifact flake** — external-systems/pkgs; pinned packages/charts/
+  images/CRDs without fleet policy.
+- **Integrated node transport** — per-cluster routed L3 (host WG default |
+  cilium-wireguard | unencrypted) carrying dual-stack node InternalIPs,
+  API, VXLAN.
+- **Mesh group** — mutually trusted Rancher instances forming one
+  ClusterMesh.
 - **Pool scope** — per-machine (node-named) vs cluster-global
   (generic-named); who contributes a pool's addresses.
 - **Delivery mode** — node-fate-bound | floating | shared-bgp |
-  external-class; how traffic reaches a pool's addresses and what failure
-  means.
-- **Floating delivery** — a runtime controller moves the address to one
-  node at a time; failover is the controller's contract, not eval-visible.
-- **Private fleet fabric** — the default per-cluster private shared-bgp
-  pool + BIRD/BGP base + CoreDNS/private-Gateway VIPs that lets clan
-  NixOS hosts route into every cluster.
-- **Shared-gateway model** — platform owns the Gateway + listeners,
-  tenants own Routes; cert-manager Gateway integration provisions certs.
-- **Zero-churn contract** — `gateway.instances = {}` plus clan pools lets
-  tenants run the full Gateway stack via GitOps with no NixOS rebuild.
-- **Fleet-routing service** — the clanService (client/router roles)
-  giving non-Kubernetes hosts routed access to cluster VIPs.
+  external-class; how traffic reaches pool addresses + failure semantics.
+- **Node-fate-bound delivery** — provider/static routing to one node; no
+  failover, no BGP.
+- **Floating delivery** — runtime controller moves the address to one node
+  at a time; failover is the controller's contract, not eval-visible.
+- **Shared BGP VIP** — address advertised from all healthy nodes (ETP-Local
+  withdrawal); the `shared-bgp` mode of a cluster-global pool.
+- **Private fleet fabric** — default per-cluster private shared-bgp pool +
+  BIRD/BGP base + CoreDNS/private-Gateway VIPs; lets clan hosts route into
+  every cluster.
+- **Node-named pool** — per-machine pool of join + declared extra blocks.
+- **Explicit projection** — eval-time `lbipam.cilium.io/ips` list of
+  per-node addresses for deterministic multi-IP Service status.
+- **ETP Local** — externalTrafficPolicy: Local; traffic accepted only with
+  ready local endpoints; direct node traffic avoids SNAT.
+- **Gateway class / instance** — class = GatewayClass + EnvoyProxy
+  (isolation domain); instance = one clan-rendered Gateway bound to a
+  class.
+- **Shared-gateway model** — platform owns Gateway + listeners, tenants own
+  Routes; cert-manager Gateway integration provisions certs.
+- **Zero-churn contract** — `gateway.instances = {}` + clan pools ⇒ full
+  tenant Gateway stack via GitOps, no NixOS rebuild.
+- **Fleet CA** — dedicated shared root CA signing private-Gateway certs;
+  installed into clan hosts' trust stores by the client role.
+- **Fleet-routing service** — clanService (client/router roles) giving
+  non-Kubernetes hosts routed access to cluster VIPs.
+- **Managed base** — labeled clan-rendered APIs/resources installed once;
+  tenant resources GitOps-owned.
+- **Airgap-ready** — all artifacts pinned and local at boot.
+- **VM-proven** — behavior passed fresh, sandboxed, hermetic on final tree.
 
-## Standing rules (unchanged, restated for agents)
+## 10. Key upstream references
 
-- ETP Local on every clan-rendered external proxy Service; no silent
-  Cluster fallback.
-- Dual-stack internally, always; public families vary per node/Service.
-- No Node IPAM for clan-managed proxies; ordinary LB IPAM + explicit
-  projection.
-- L3 only: no L2 announcements, VRRP, Keepalived, host-network Gateway.
-- Everything global is namespaced by `instanceName`.
-- `git add` before eval — Nix reads the git tree.
-- Amend the spec BEFORE implementing when a test disproves an assumption;
-  never edit a test to match a weaker design.
+- Cilium 1.20: LB IPAM, BGP v2, ClusterMesh, Gateway gaps (cilium#28497
+  HTTP/3; cilium#25567 Gateway IP sharing; GEP-91 mTLS).
+- Envoy Gateway (gateway.envoyproxy.io): deployment modes/DaemonSet,
+  mergeGateways, customize EnvoyProxy (envoyService), ClientTrafficPolicy
+  (mTLS, HTTP/3; bug envoyproxy/gateway#9798), ETP Local default.
+- Gateway API: GEP-91 (client cert validation, experimental).
+- BIRD 2 + vendored fragment pattern (D19; NuschtOS/bird.nix reviewed,
+  not adopted).
+- Mozilla: enterprise_roots is Windows/macOS-only; Linux = Certificates.
+  Import policy / per-profile NSS (zen-browser is Firefox-based).
