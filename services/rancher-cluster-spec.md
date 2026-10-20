@@ -151,7 +151,13 @@ the tested default. Day two = Flux/Argo against base APIs.
 - **D15 One IP:443, all TLS modes.** One IP:443 simultaneously: SNI
   multi-cert HTTPS terminate + hostname-filtered TLS passthrough +
   per-listener mTLS + HTTP/3 (UDP/443 beside TCP/443). Only EG satisfies
-  the full set (see D1) ⇒ EG owns the default web path.
+  the full set (see D1) ⇒ EG owns the default web path. **TCP/443
+  terminate + passthrough share an address via SNI; QUIC terminate and
+  QUIC passthrough NEVER share an address** — raw UDP/QUIC has no demux
+  key (Envoy does not parse SNI from QUIC Initials), so a UDPRoute
+  listener and an H3-terminating listener on one IP:UDP:443 would be two
+  owners of one IP:port. QUIC-passthrough Gateways get their own VIP; the
+  `web` profile's UDP/443 is always termination. Eval-asserted.
 - **D16 One cluster per node.** A machine belongs to at most one cluster
   instance (rke2 or k3s) — inventory-wide eval assertion.
 - **D17 Gateway classes vs instances (0–N structure).** `gateway.classes.
@@ -371,7 +377,8 @@ dual-stack facts, missing topology labels, invalid TLS/entrypoint combos,
 duplicate certs, uncovered cert refs, pool overlap, scope⇒mode violations,
 floating without candidate coverage, `shared-bgp` ⊄ router prefixes,
 node-in-two-clusters, second BGP stack per host, two proxy implementations
-per IP:port, passthrough listener without hostname, mergeGateways on
+per IP:port, QUIC terminate + passthrough sharing one address (D15),
+passthrough listener without hostname, mergeGateways on
 non-opt-in class, ETP Cluster / Node IPAM / host-network mode on clan
 proxies. Firewall: API/haproxy on transport only; public ports only where
 a Service exposes them; mesh/BGP restricted to expected peers; HTTP/3
@@ -404,10 +411,12 @@ the node (`curl --http3`); if an in-cluster client is needed, the
 artifact repo builds its own image from `pkgs.curlHTTP3` via
 `dockerTools` — never third-party http3 curl images (unpinned).
 **QUIC passthrough suite** (required): UDPRoute (raw L4 UDP — QUIC cannot
-be SNI-routed at L7; TLS lives inside QUIC) through an EG UDP listener to
-a pinned **Caddy** fixture serving HTTP/3 end-to-end; one UDP/443
-listener per address per backend class (no hostname multiplexing on raw
-UDP). HTTP/3 advertisement: `Alt-Svc` response header via the core
+be SNI-routed at L7; TLS lives inside QUIC) through an EG UDP listener on
+its OWN VIP (D15) to a pinned **Caddy** fixture serving HTTP/3
+end-to-end; one UDP/443 listener per address per backend class (no
+hostname multiplexing on raw UDP). Two fixtures, no replacement: Caddy
+serves QUIC only; go-httpbin remains the L7 oracle (header/status/delay/
+echo assertions) — Caddy is not a test oracle. HTTP/3 advertisement: `Alt-Svc` response header via the core
 `ResponseHeaderModifier` HTTPRoute filter (backend needs no awareness),
 or DNS `HTTPS`/SVCB records with `alpn="h3"` in the private-domain zones
 (D22). Rules:
