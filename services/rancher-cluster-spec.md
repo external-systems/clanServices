@@ -419,13 +419,16 @@ accept/reject, D20/D22). Reserved: MCS-API, upstream-Kubernetes distro.
 tests together)
 
 - **0 done** — canonical import (through 692807c).
-- **1 next** — correctness/permanent-base gate: ETP Local rendering,
+- **1 planned** — correctness/permanent-base gate (follows the artifact
+  bootstrap and lands against pinned artifacts): ETP Local rendering,
   override rejection, CIDR/id unification, cert-manager permanent +
-  duplication fixes, RKE2 zero-Traefik (now: Traefik always-off), managed
-  labels.
-- **2** — artifact flake (external-systems/pkgs): granular components incl.
-  `gateway-envoy`; source-built distros; one upstream Cilium + Multus
-  profile.
+  duplication fixes, Traefik always-off, managed labels.
+- **2 NEXT — ACTIVE (first order of business)** — artifact flake
+  (external-systems/pkgs): granular components incl. distro runtimes
+  (source-built RKE2/k3s, release + locked HEAD constructors), one
+  upstream Cilium 1.20+ profile, Multus, `gateway-envoy` (EG chart +
+  envoy image + Gateway API/EG CRDs), go-httpbin test fixture; atomic
+  updaters, artifact checks, clean-public-fetch proof.
 - **3** — transport modes, hashed ids, topology, dual-stack exports;
   one-cluster-per-node assertion.
 - **4** — pools + default EG datapath: node pools, carve-outs in
