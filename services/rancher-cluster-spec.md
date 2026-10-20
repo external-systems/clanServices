@@ -392,7 +392,13 @@ accept/reject proof (D20) before it defaults on.
 
 Seams: pure renderer nix-unit tests; throwaway clans via `clanLib.clan`
 (inventory boundary); `clan.nixosTests` hermetic VM suites (one at a time,
-sandboxed authoritative); artifact source/hash/render gates. Rules:
+sandboxed authoritative); artifact source/hash/render gates. Standard
+internal HTTP/HTTPS test workload: **go-httpbin** (zero-dependency Go
+stdlib httpbin port; pinned + airgap-carried as a test-fixture artifact;
+HTTPS fixtures use generated certs). go-httpbin speaks HTTP/1.1 + HTTP/2
+only (no QUIC in Go stdlib) ⇒ HTTP/3 suites use an HTTP/3-capable client
+against the Gateway with go-httpbin as plain backend — QUIC terminates at
+EG, which is the architecture under test. Rules:
 hermetic/offline; eval-deterministic addresses; dual-stack asserted in
 every boot test; round-trips + failure behavior (HTTPS validates CA, UDP
 echo, HTTP/3 uses QUIC, BGP withdrawal keeps VIP via healthy nodes);
@@ -523,3 +529,5 @@ in-place RKE2↔k3s conversion.
   not adopted).
 - Mozilla: enterprise_roots is Windows/macOS-only; Linux = Certificates.
   Import policy / per-profile NSS (zen-browser is Firefox-based).
+- go-httpbin (github.com/mccutchen/go-httpbin): standard airgapped
+  HTTP/HTTPS VM-test workload.

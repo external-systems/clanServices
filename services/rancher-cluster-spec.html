@@ -926,6 +926,7 @@
           <li>Operational tests verify the postcondition, not just the command: after PKI rotation the API and workloads still function; after Sealed Secrets recovery old ciphertext still decrypts; after node removal the etcd member and Node object are explicitly reconciled by the runbook.</li>
           <li>Tests fail fast on crash loops and missing diagnostic tools. No timeout inflation, skipped assertion, weakened protocol check, or fallback to Cluster policy is an acceptable fix.</li>
           <li>Sandboxed runs are authoritative. Driver mode is for diagnosis only. VM suites run one at a time to avoid KVM, RAM, disk, and timing collisions.</li>
+          <li>The standard internal HTTP/HTTPS test workload is <a href="https://github.com/mccutchen/go-httpbin">go-httpbin</a>: zero-dependency Go stdlib port of httpbin, pinned and airgap-carried like every other artifact. HTTPS fixtures use generated test certificates. go-httpbin speaks HTTP/1.1 and HTTP/2 only (no QUIC in the Go stdlib), so HTTP/3 suites run an HTTP/3-capable client against the Gateway with go-httpbin as the plain backend — QUIC terminates at Envoy Gateway, which is the architecture under test.</li>
         </ul>
 
         <h3>6.3 Suite plan and prior art</h3>
@@ -1097,6 +1098,7 @@
           <li><a href="https://docs.k3s.io/cli/certificate">k3s: certificate checks and rotation</a></li>
           <li><a href="https://docs.rke2.io/security/certificates">RKE2: certificate checks, custom CAs, and rotation</a></li>
           <li><a href="https://github.com/bitnami-labs/sealed-secrets#secret-rotation">Sealed Secrets: key renewal and retention semantics</a></li>
+          <li><a href="https://github.com/mccutchen/go-httpbin">go-httpbin: standard internal HTTP/HTTPS VM-test workload</a></li>
           <li><a href="https://github.com/bitnami-labs/sealed-secrets/blob/main/docs/bring-your-own-certificates.md">Sealed Secrets: pre-generated key/cert Secrets</a></li>
           <li><a href="https://cert-manager.io/docs/usage/certificate/">cert-manager: Certificate and private-key lifecycle</a></li>
           <li><a href="https://openebs.io/docs">OpenEBS: Local PV engines, prerequisites, and airgap guidance</a></li>
