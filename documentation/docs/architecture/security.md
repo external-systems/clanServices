@@ -24,12 +24,20 @@ Two planes, one rule of thumb: **if Kubernetes or Flux can rotate or serve
 it, clan vars does not store it.**
 
 - **Bootstrap plane (clan vars)** — cluster CAs, join tokens, admin
-  kubeconfigs, the fleet CA (D18), ClusterMesh CA and certs,
-  Sealed-Secrets sealing keys, and the hub↔spoke Flux control-plane
-  credentials (client-cert hub identities, D37 — the documented exception:
-  clan is the issuer).
+  kubeconfigs, per-cluster read-only kubeconfigs (D38), the fleet CA (D18),
+  ClusterMesh CA and certs, Sealed-Secrets sealing keys, and the hub↔spoke
+  Flux control-plane credentials (client-cert hub identities, D37 — the
+  documented exception: clan is the issuer).
 - **Application plane (GitOps + Sealed Secrets)** — external-dns provider
   keys and tenant secrets.
+
+The read-only credential (D38) has a hard line: its ClusterRole
+`cluster-readonly` is the built-in aggregated `view` role plus explicit
+cluster-scoped reads, and it **never** includes `secrets` in any apiGroup
+and never a write verb — renderer-fixed and VM-proven (positive and
+negative). Read-only is not harmless, though: ConfigMaps, pod specs and
+env values, and pod logs are deliberately visible and can carry sensitive
+data. Hand read-only kubeconfigs out accordingly.
 
 Public certificates are readable as public values; private material is
 referenced by deployed paths only and never enters the Nix store. The full

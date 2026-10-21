@@ -4,7 +4,8 @@ You declare machines and cluster instances in one `inventory.nix`. You get
 working, secure, interconnected Kubernetes clusters — rke2, k3s, or upstream
 kubeadm — that bootstrap themselves, network together, and manage themselves
 from day two onward. No cloud provider required, no server rebuilds to change
-an application.
+an application — and every cluster mints a read-only kubeconfig your AI
+agents can use without ever touching a secret.
 
 ## What you get
 

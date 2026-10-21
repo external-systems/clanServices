@@ -25,21 +25,25 @@ One term per concept. From SPEC.md §9.
 - **Hub identity** — the per-spoke client certificate (CN
   `flux-hub-<spoke>`, O `flux-hub`) signed by the spoke's cluster CA that
   the hub authenticates with (D37).
+- **Read-only credential** — the per-cluster client certificate (CN
+  `readonly-<instance>`, O `cluster-readers`) and its kubeconfig for
+  no-secrets read access, minted for AI agents; synced to the hub for
+  spokes (D38).
 - **Impersonation SA** — an optional namespace-scoped ServiceAccount in a
   spoke that hub tenants apply through via `.spec.serviceAccountName`
   (D37; flux2-hub-spoke-example multi-tenant pattern).
 - **Flux bootstrap** — clan-rendered flux-operator + FluxInstance present
   from first boot on standalone and hub clusters (D28).
 - **Hub cluster** — the cluster running the control domain's Flux and
-  holding per-spoke kubeconfig Secrets; never installs Flux remotely
-  (D28/D36/D37).
+  holding per-spoke admin + read-only kubeconfig Secrets; never installs
+  Flux remotely (D28/D36/D37/D38).
 - **Mirror Service** — clan-rendered selectorless ClusterMesh-global
   Service + EndpointSlice exposing a cluster's kube-apiserver to mesh
   members (D30); mandatory for spokes.
 - **Bootstrap plane / application plane** — secrets custody split: clan
-  vars own bootstrap secrets (CAs, tokens, kubeconfigs, sealing keys, hub
-  identities); GitOps + Sealed Secrets own in-cluster application
-  credentials (D35/D37).
+  vars own bootstrap secrets (CAs, tokens, admin + read-only kubeconfigs,
+  sealing keys, hub identities); GitOps + Sealed Secrets own in-cluster
+  application credentials (D35/D37/D38).
 - **Integrated node transport** — per-cluster routed L3 (host WireGuard
   default | cilium-wireguard | unencrypted) carrying dual-stack node
   InternalIPs, API, and VXLAN.

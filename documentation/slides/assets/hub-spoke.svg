@@ -14,9 +14,9 @@
   <text x="190" y="142" text-anchor="middle" font-size="14" font-weight="bold" fill="#111">flux-operator + FluxInstance</text>
   <text x="190" y="164" text-anchor="middle" font-size="13" fill="#333">self-managing after bootstrap</text>
 
-  <text x="190" y="218" text-anchor="middle" font-size="14" fill="#111">per-spoke kubeconfig Secrets</text>
-  <text x="190" y="240" text-anchor="middle" font-size="14" fill="#111">client-cert identities, clan-minted (D37)</text>
-  <text x="190" y="262" text-anchor="middle" font-size="13" fill="#333">namespaces flux-spoke-&lt;spoke&gt;, via secret-sync</text>
+  <text x="190" y="218" text-anchor="middle" font-size="14" fill="#111">per-spoke kubeconfig Secrets:</text>
+  <text x="190" y="240" text-anchor="middle" font-size="14" fill="#111">admin (D37) + read-only (D38)</text>
+  <text x="190" y="262" text-anchor="middle" font-size="13" fill="#333">client-cert identities via secret-sync</text>
   <text x="190" y="286" text-anchor="middle" font-size="14" fill="#111">delivers workloads only —</text>
   <text x="190" y="308" text-anchor="middle" font-size="14" fill="#111">never installs Flux remotely (D28)</text>
 

@@ -7,14 +7,28 @@ vars is the only declarative source (D35).
 ## Bootstrap plane — clan vars
 
 Clan vars own the secrets a cluster needs to exist: cluster CAs, join
-tokens, admin kubeconfigs, the fleet CA (D18), ClusterMesh CA and
-certificates, and the Sealed-Secrets sealing keys (vars keeps custody of
-the sealing keypair history). Private material is referenced by deployed
-paths only — never in the Nix store. Public certificates are readable as
-public values.
+tokens, admin kubeconfigs, per-cluster read-only kubeconfigs (D38), the
+fleet CA (D18), ClusterMesh CA and certificates, and the Sealed-Secrets
+sealing keys (vars keeps custody of the sealing keypair history). Private
+material is referenced by deployed paths only — never in the Nix store.
+Public certificates are readable as public values.
 
 Generate machine secrets with `clan vars generate <machine>` after changing
 membership, as usual.
+
+### Read-only kubeconfigs for AI agents (D38)
+
+Every cluster also mints a read-only, no-secrets identity
+(CN=`readonly-<instance>`, O=`cluster-readers`) whose kubeconfig deploys
+alongside the admin kubeconfig on server machines. To hand one to an AI
+agent operating outside the cluster, the operator runs
+`clan vars get <machine> <generator>` for the cluster's
+`cluster-readonly-<instance>` generator and passes the kubeconfig to the
+agent. It can list and read everything except Secrets — the hard line —
+but ConfigMaps, pod specs/env, and logs remain visible, so treat it as
+sensitive anyway. On a hub, each spoke's read-only kubeconfig is also
+available in-cluster as Secret `kubeconfig-readonly` in
+`flux-spoke-<spoke>`.
 
 ### The D37 exception: hub identity certificates
 

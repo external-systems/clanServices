@@ -1,14 +1,14 @@
-# Decision record (D1–D37)
+# Decision record (D1–D38)
 
 Every normative choice in the project, locked 2026-10-20 after design
-rounds 1–8 and 10. Round-8 amendments: A1 (artifact flake carries last 3
+rounds 1–8, 10, and 11. Round-8 amendments: A1 (artifact flake carries last 3
 k8s minors → D34), A2 (external-dns credentials are not clan-vars-owned →
 D31), A3 (clan vars avoid owning in-cluster secrets → D35, exception
 carved out in round 10 → D37), A4 (round 8 locked the spec; no code
 changes in the same commit). Round 10 locked the Flux control domain:
-D36/D37 are new, and D28/D29/D30/D35 are revised (marked below). Repo
-history's "round 9" was the QUIC/two-fixture rule, already in D15 and the
-testing contract.
+D36/D37 are new, and D28/D29/D30/D35 are revised (marked below). Round 11
+added the read-only cluster credential (D38). Repo history's "round 9" was
+the QUIC/two-fixture rule, already in D15 and the testing contract.
 
 | ID | Decision | Rationale |
 | --- | --- | --- |
@@ -49,8 +49,9 @@ testing contract.
 | D35 | Secrets planes: clan vars = bootstrap plane only (revised round 10) | If k8s/Flux can rotate or serve it, clan vars does not store it — unless clan is the issuer (D37 hub credentials are the exception) |
 | D36 | Flux control domain: three modes, linked to the mesh trust domain | standalone (default) / hub / spoke; hub+spokes share one mesh group, ≤1 hub per group, spoke requires a hub — eval-asserted |
 | D37 | Hub credential plane: clan-minted client-cert identities | Per-spoke cert signed by the spoke's cluster CA (CN=`flux-hub-<spoke>`, O=`flux-hub`); SA-token extraction is emergency-runbook-only; offline JWTs and bearer-token refresh CronJobs rejected |
+| D38 | Read-only cluster credential for AI-agent access | Every cluster mints a no-secrets read-only identity (aggregated `view` + cluster-scoped reads; never `secrets`, never write verbs); the hub holds each spoke's read-only kubeconfig beside the admin one |
 
-## Decisions in detail (rounds 8 and 10)
+## Decisions in detail (rounds 8, 10, and 11)
 
 ### D23 — Upstream `kubernetes` distro
 
@@ -204,3 +205,21 @@ spoke machines never receive the client key. Rotation is a vars regenerate
 plus secret-sync re-apply with spokes unaffected. Manual SA-token
 extraction is the documented emergency runbook only; offline-minted SA JWTs
 and expiring bearer-token kubeconfigs with refresh CronJobs are rejected.
+
+### D38 — Read-only cluster credential (AI-agent access)
+
+Every cluster auto-renders a read-only, no-secrets identity alongside the
+admin kubeconfig: ClusterRole `cluster-readonly` = the built-in aggregated
+`view` role plus explicit cluster-scoped reads (nodes, namespaces, PVs,
+storage/ingress/gateway classes, CRDs, clusterroles/-bindings,
+priorityclasses) — never `secrets` in any apiGroup, never a write verb —
+bound to group `cluster-readers`; a vars generator signs a client cert with
+the cluster CA (CN=`readonly-<instance>`, O=`cluster-readers`). The
+read-only kubeconfig deploys alongside the admin one on server machines;
+the primary consumer is AI agents outside the cluster, handed the
+kubeconfig via `clan vars get`. The hub receives each spoke's read-only
+kubeconfig as Secret `kubeconfig-readonly` in `flux-spoke-<spoke>` beside
+the D37 admin `kubeconfig`, so hub-resident tooling gets fleet-wide read
+access without admin keys. Caveat recorded: read-only ≠ harmless —
+ConfigMaps, pod specs/env, and logs stay visible; the `secrets` exclusion
+is the hard line, VM-proven positive and negative.

@@ -46,7 +46,7 @@ and the hub's kubeconfig points at the mirror DNS name directly — the
 spoke's API certificate SANs must include it (eval-asserted). Details in
 [Multi-cluster](multi-cluster.md).
 
-## The hub credential plane (D37)
+## The hub credential plane (D37/D38)
 
 The hub's spoke access is fully declarative — zero manual steps:
 
@@ -64,6 +64,12 @@ The hub's spoke access is fully declarative — zero manual steps:
    `kubeconfig` Secret (mirror DNS server + spoke CA public value + client
    cert/key), delivered via secret-sync from vars. Spoke machines never
    receive the client key.
+4. Beside it, the hub holds each spoke's **read-only** kubeconfig as
+   Secret `kubeconfig-readonly` in the same namespace (D38): every cluster
+   mints a no-secrets read-only identity (CN=`readonly-<instance>`,
+   O=`cluster-readers`) alongside its admin kubeconfig, and the hub copy —
+   server = mirror DNS name — gives hub-resident tooling and AI agents
+   fleet-wide read access without admin keys.
 
 Rotation is `clan vars generate --regenerate` plus a secret-sync re-apply;
 spokes are unaffected (same CA). Manual SA-token extraction survives only
@@ -73,7 +79,7 @@ machinery for a problem client certs do not have (D37).
 
 These control-plane credentials are the documented exception to the
 secrets-planes rule: clan vars owns them because clan is the issuer
-(D35/D37). See [Secrets](../guides/secrets.md).
+(D35/D37/D38). See [Secrets](../guides/secrets.md).
 
 ## The hub tree convention
 
