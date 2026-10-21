@@ -50,7 +50,12 @@ multi-Gateway isolation, zero-clan-Gateway tenant round-trip; lb-pool
 suite; bgp-ecmp suite (private fabric, MikroTik-style foreign-router
 fixture); ClusterMesh matrix including kube-api mirror Service reachability
 (D30); PKI rotation; CCM/GitOps handoff (Flux adoption no-op proof, D29);
-the `flux.enable=false` direct-apply suite (D28); rke2 CIS profile suite
+the `flux.enable=false` direct-apply suite (D28); the flux control-domain
+suite (D36/D37: one hub + two spokes + one standalone in a mesh — the hub
+applies to spokes via kubeconfig Secrets, spokes run no Flux deployments,
+mirror-SAN assertion, an impersonation negative test, cert rotation keeps
+reconciliation green, and the standalone cluster is unaffected but
+mesh-reachable); rke2 CIS profile suite
 (D25); external-dns annotation rendering (D31); sealed-secrets plane
 separation (D35); multus; openEBS; kubevirt; and the fleet-routing suite
 (client/admin split, dual-role cluster member, opt-in svc/pod zones,

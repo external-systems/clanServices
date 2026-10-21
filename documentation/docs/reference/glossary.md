@@ -14,22 +14,37 @@ One term per concept. From SPEC.md §9.
   exception (D24).
 - **Kubenix rendering** — manifests built as typed Nix module resources;
   Helm inflation only at artifact-flake build time (D26).
+- **Flux control domain** — the set of clusters one Flux control plane
+  manages: a hub plus its spokes (D36). Bounded by a mesh trust domain.
+- **Flux mode** — per-cluster control-domain role: `standalone` (own Flux,
+  shares nothing), `hub` (own Flux + reconciles spokes), `spoke` (no Flux;
+  hub-reconciled) — D28/D36.
+- **Trust domain** — the ClusterMesh mesh group string (default
+  `meta.domain`); bounds ClusterMesh peering AND flux control domains,
+  which are linked but distinct (D36).
+- **Hub identity** — the per-spoke client certificate (CN
+  `flux-hub-<spoke>`, O `flux-hub`) signed by the spoke's cluster CA that
+  the hub authenticates with (D37).
+- **Impersonation SA** — an optional namespace-scoped ServiceAccount in a
+  spoke that hub tenants apply through via `.spec.serviceAccountName`
+  (D37; flux2-hub-spoke-example multi-tenant pattern).
 - **Flux bootstrap** — clan-rendered flux-operator + FluxInstance present
-  from first boot on every cluster (D28).
-- **Hub cluster** — the cluster holding spoke kubeconfigs and delivering
-  workloads fleet-wide via Flux `kubeConfig.secretRef`; never installs Flux
-  remotely (D28).
+  from first boot on standalone and hub clusters (D28).
+- **Hub cluster** — the cluster running the control domain's Flux and
+  holding per-spoke kubeconfig Secrets; never installs Flux remotely
+  (D28/D36/D37).
 - **Mirror Service** — clan-rendered selectorless ClusterMesh-global
   Service + EndpointSlice exposing a cluster's kube-apiserver to mesh
-  members (D30).
+  members (D30); mandatory for spokes.
 - **Bootstrap plane / application plane** — secrets custody split: clan
-  vars own bootstrap secrets (CAs, tokens, kubeconfigs, sealing keys);
-  GitOps + Sealed Secrets own in-cluster application credentials (D35).
+  vars own bootstrap secrets (CAs, tokens, kubeconfigs, sealing keys, hub
+  identities); GitOps + Sealed Secrets own in-cluster application
+  credentials (D35/D37).
 - **Integrated node transport** — per-cluster routed L3 (host WireGuard
   default | cilium-wireguard | unencrypted) carrying dual-stack node
   InternalIPs, API, and VXLAN.
 - **Mesh group** — mutually trusted cluster instances forming one
-  ClusterMesh.
+  ClusterMesh; the trust domain string.
 - **Pool scope** — per-machine (node-named) vs cluster-global
   (generic-named); who contributes a pool's addresses.
 - **Delivery mode** — node-fate-bound | floating | shared-bgp |

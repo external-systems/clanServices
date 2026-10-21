@@ -24,10 +24,12 @@ Two planes, one rule of thumb: **if Kubernetes or Flux can rotate or serve
 it, clan vars does not store it.**
 
 - **Bootstrap plane (clan vars)** — cluster CAs, join tokens, admin
-  kubeconfigs, the fleet CA (D18), ClusterMesh CA and certs, and
-  Sealed-Secrets sealing keys (including custody of the keypair history).
+  kubeconfigs, the fleet CA (D18), ClusterMesh CA and certs,
+  Sealed-Secrets sealing keys, and the hub↔spoke Flux control-plane
+  credentials (client-cert hub identities, D37 — the documented exception:
+  clan is the issuer).
 - **Application plane (GitOps + Sealed Secrets)** — external-dns provider
-  keys, hub↔spoke kubeconfigs (D30), tenant secrets.
+  keys and tenant secrets.
 
 Public certificates are readable as public values; private material is
 referenced by deployed paths only and never enters the Nix store. The full

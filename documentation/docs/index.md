@@ -14,9 +14,10 @@ an application.
 - **Secure by default.** Dual-stack everywhere, encrypted transport, RKE2
   CIS-hardened by default, secrets only through clan vars and Sealed Secrets
   — never in the Nix store.
-- **GitOps day two.** Every cluster runs Flux from first boot. A hub cluster
-  delivers workloads to the rest of the fleet. Tenant changes are git
-  commits, not NixOS rebuilds.
+- **GitOps day two.** A hub cluster runs the Flux control plane and pushes
+  workloads to spoke clusters — spokes run no Flux at all. Standalone
+  clusters run their own Flux. Either way, tenant changes are git commits,
+  not NixOS rebuilds.
 - **Multi-cluster networking built in.** Clusters mesh automatically
   (Cilium ClusterMesh), share a private BGP-routed fleet fabric, and expose
   a default pair of gateways — one public, one private — with one IP

@@ -51,7 +51,7 @@ Note: Bottom-up: hosts and transport, distro, Cilium, gateways, Flux. Secrets on
 - **Distro**: k3s / rke2 (CIS default) / kubernetes (kubeadm, reserved); thin clanServices over one shared library
 - **Networking**: Cilium — CNI, LB IPAM (2 scopes × 4 delivery modes), BGP v2, ClusterMesh; networking only, no Gateway/Ingress
 - **Edge**: Envoy Gateway — classes/instances, one IP for HTTPS + TLS passthrough + mTLS + HTTP/3; cert-manager always on
-- **Day two**: Flux per cluster; hub delivers to spokes; external-dns optional; Sealed Secrets for app secrets
+- **Day two**: Flux per control domain — standalone clusters run their own; a hub runs the control plane and pushes to spokes (spokes run no Flux); external-dns optional; Sealed Secrets for app secrets
 - **Packaging**: artifact flake — pinned charts/images/CRDs, source-built distros, airgap default
 
 ---

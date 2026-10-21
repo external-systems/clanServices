@@ -4,7 +4,7 @@
   <!-- layer stack -->
   <rect x="40" y="40" width="570" height="72" rx="6" fill="#fdf3e3" stroke="#333" stroke-width="1.5"/>
   <text x="325" y="70" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Flux — GitOps day two</text>
-  <text x="325" y="94" text-anchor="middle" font-size="14" fill="#111">flux-operator + FluxInstance per cluster; hub delivers workloads</text>
+  <text x="325" y="94" text-anchor="middle" font-size="14" fill="#111">standalone + hub clusters run Flux; hubs push to spokes (spokes run none)</text>
 
   <rect x="40" y="132" width="570" height="72" rx="6" fill="#efe8f7" stroke="#333" stroke-width="1.5"/>
   <text x="325" y="162" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Envoy Gateway + cert-manager</text>
@@ -30,17 +30,17 @@
   <text x="760" y="70" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">Sealed Secrets</text>
   <text x="760" y="94" text-anchor="middle" font-size="14" fill="#111">application plane</text>
   <text x="760" y="118" text-anchor="middle" font-size="13" fill="#333">external-dns provider keys,</text>
-  <text x="760" y="138" text-anchor="middle" font-size="13" fill="#333">hub↔spoke kubeconfigs,</text>
-  <text x="760" y="158" text-anchor="middle" font-size="13" fill="#333">tenant secrets</text>
-  <text x="760" y="186" text-anchor="middle" font-size="13" fill="#333">GitOps-owned (D35)</text>
+  <text x="760" y="138" text-anchor="middle" font-size="13" fill="#333">tenant secrets</text>
+  <text x="760" y="166" text-anchor="middle" font-size="13" fill="#333">GitOps-owned (D35)</text>
 
   <rect x="650" y="276" width="220" height="204" rx="6" fill="#fdeaea" stroke="#333" stroke-width="1.5"/>
   <text x="760" y="306" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">clan vars</text>
   <text x="760" y="330" text-anchor="middle" font-size="14" fill="#111">bootstrap plane</text>
   <text x="760" y="354" text-anchor="middle" font-size="13" fill="#333">cluster CAs, join tokens,</text>
   <text x="760" y="374" text-anchor="middle" font-size="13" fill="#333">kubeconfigs, fleet CA,</text>
-  <text x="760" y="394" text-anchor="middle" font-size="13" fill="#333">ClusterMesh certs, sealing keys</text>
-  <text x="760" y="422" text-anchor="middle" font-size="13" fill="#333">never in the Nix store</text>
+  <text x="760" y="394" text-anchor="middle" font-size="13" fill="#333">ClusterMesh certs, sealing keys,</text>
+  <text x="760" y="414" text-anchor="middle" font-size="13" fill="#333">hub identity certs (D37)</text>
+  <text x="760" y="442" text-anchor="middle" font-size="13" fill="#333">never in the Nix store</text>
 
   <!-- connectors from secrets bar to the layers they serve -->
   <line x1="650" y1="142" x2="614" y2="76" stroke="#333" stroke-width="1.5" stroke-dasharray="6 4"/>

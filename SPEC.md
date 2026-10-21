@@ -4,8 +4,10 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority* (the old HTML spec is
 retired). Baseline: `692807c` (imported); recorded green: wireguard-mesh +
-rke2/k3s single/join/HA VM suites in the source fork. Revised 2026-10-20
-(design rounds 1–8; round 8 locked with amendments A1–A4 below).
+rke2/k3s single/join/HA VM suites in the source fork. Revised 2026-10-20:
+rounds 1–8 locked with amendments A1–A4; round 10 locked the Flux control
+domain (D36/D37; D28/D29/D30/D35 revised; repo history's "round 9" was the
+QUIC/two-fixture rule, already in D15/§6).
 
 Round-8 amendments (user, 2026-10-20):
 - **A1** Artifact flake packages the last 3 k8s minors per distro (latest
@@ -13,7 +15,7 @@ Round-8 amendments (user, 2026-10-20):
 - **A2** external-dns is an optional Flux component; its credentials are
   NOT clan-vars-owned; annotations where needed, overridable. → D31.
 - **A3** Clan vars avoid owning in-cluster secrets better managed by
-  Sealed Secrets. → D35.
+  Sealed Secrets. → D35 (exception carved out in round 10: D37).
 - **A4** Round 8 locked the spec; no code changes in the same commit.
 
 ## 1. Problem (condensed)
@@ -45,12 +47,13 @@ extends VIP/pod/Service reachability to non-Kubernetes NixOS hosts.
 Artifact flake (`external-systems/pkgs`) pins every chart/image/CRD and
 source-builds the last 3 minors of each distro; airgap-ready is the tested
 default. Manifests are kubenix-rendered (no IFD here; Helm inflation is
-the artifact flake's build-time job). Day two = Flux (default on):
-flux-operator + FluxInstance bootstrapped on every cluster, Cilium adopted
-by Flux after bootstrap, hub cluster delivers workloads to spokes through
-ClusterMesh-reachable API endpoints.
+the artifact flake's build-time job). Day two = Flux (default on) in three
+control-domain modes: standalone clusters run their own Flux; a hub
+cluster runs the only Flux control plane for its control domain and pushes
+to spoke clusters (which run no Flux) over ClusterMesh-reachable mirror
+Services, authenticating with clan-minted client-cert kubeconfigs.
 
-## 3. Decision record (D1–D35; rounds 1–8, locked 2026-10-20)
+## 3. Decision record (D1–D37; rounds 1–8 + 10, locked 2026-10-20)
 
 ### Rounds 1–7 (unchanged)
 
@@ -153,7 +156,7 @@ ClusterMesh-reachable API endpoints.
 - **D12 ClusterMesh apiserver exposure stays node-bound** mesh addresses
   + selectorless-Service DNS fan-in. Not a shared-BGP VIP: consumers are
   mesh members with direct routes; control plane takes fewest
-  dependencies. Round 8: the same fan-in pattern is generalized for the
+  dependencies. Round 8+: the same fan-in pattern is generalized for the
   kube-apiserver mirror Services (D30).
 - **D13 Pod/ClusterIP advertisement to hosts: opt-in, default off.**
   Hosts reach Services via VIPs, never pods or ClusterIPs directly —
@@ -244,7 +247,7 @@ ClusterMesh-reachable API endpoints.
   dash-form rewrites + D13 pod advertisement). `cluster.local` is NEVER
   served to clients (D21).
 
-### Round 8 (2026-10-20; locked)
+### Round 8 (2026-10-20)
 
 - **D23 Upstream `kubernetes` distro = first-class target, Reserved.**
   Third public clanService, kubeadm-based (kubeadm is the CNCF-sponsored
@@ -280,36 +283,15 @@ ClusterMesh-reachable API endpoints.
   (`disable-helm-controller`); manifests flow kubenix → distro manifests
   dir → optional Flux adoption. Explicit opt-in re-enables it. Distro
   bundled charts (Traefik, servicelb, etc.) remain disabled per D3.
-- **D28 Flux everywhere; hub delivers, never installs.** Every cluster
-  bootstraps its own flux-operator + FluxInstance from pinned artifacts
-  (clan-rendered; self-managing thereafter). Evidence:
-  flux-operator#624 closed not_planned — FluxInstance has no remote
-  field; the fleet model is per-cluster autopilot. The **hub** cluster is
-  distinguished only by holding spoke kubeconfigs and delivering
-  workloads via `Kustomization/HelmRelease.spec.kubeConfig.secretRef`
-  (ResourceSet matrix templating optional). `flux.enable` default `true`;
-  `false` = no Flux rendered anywhere, clan applies all manifests
-  directly via the distro manifests dir, Cilium stays clan-owned.
 - **D29 Cilium lifecycle: bootstrap → Flux adoption.** Bootstrap installs
   Cilium from the pinned chart/values (enough for Flux pods); a Flux
   HelmRelease then adopts the release (matching releaseName/namespace —
   no `createNamespace`) and owns upgrades. Eval-time assertion:
   bootstrap-rendered values ≡ HelmRelease values, so adoption is a no-op
-  upgrade, never a dataplane flap. When `flux.enable = false` the
+  upgrade, never a dataplane flap. On standalone/hub clusters adoption is
+  local; on spokes the hub's HelmRelease adopts remotely via
+  `kubeConfig.secretRef` (D36/D37). When `flux.enable = false` the
   bootstrap install is permanent.
-- **D30 Hub → spoke API reachability via ClusterMesh mirror Services.**
-  Never touch the real `kubernetes.default` Service. Per spoke cluster:
-  clan-rendered selectorless mirror Service `kube-api-<spoke>` +
-  EndpointSlice of the spoke's API endpoints (D12 fan-in pattern,
-  generalized), annotated `service.cilium.io/global: "true"`. Hub
-  renders the same-name Service (no local backends), ClusterMesh merges
-  remote endpoints, hub pods reach the spoke API via that ClusterIP. Hub
-  CoreDNS rewrite (rendered from exports):
-  `kubernetes.<spoke>.<meta.domain>` →
-  `kube-api-<spoke>.<ns>.svc.cluster.local`. NetworkPolicy restricts
-  access to flux namespaces. Credentials: GitOps-owned kubeconfig Secrets
-  via Sealed Secrets (D35); interim = documented token-minting runbook;
-  long-term = clan-operator mints/rotates (Reserved).
 - **D31 external-dns = optional Flux component, creds via Sealed
   Secrets.** Not clan base; deployed per cluster through the GitOps
   layer. Provider credentials (GoDaddy/Cloudflare API keys, RFC2136
@@ -355,14 +337,98 @@ ClusterMesh-reachable API endpoints.
   extended). Eval WARNING (not failure) when the pinned Cilium/Envoy
   Gateway support matrices don't list a pinned k8s minor (today: 1.37.1
   is ahead of EG 1.9's 1.33–1.36 matrix — accepted bleeding-edge risk).
-- **D35 Secrets planes: clan vars = bootstrap plane only.** Clan vars own
-  node/cluster bootstrap secrets: cluster CAs, join tokens, admin
-  kubeconfigs, fleet CA (D18), ClusterMesh CA/certs, Sealed-Secrets
-  sealing keys (D35 owns custody of the sealing keypair history). All
-  in-cluster application credentials — external-dns provider keys,
-  hub↔spoke kubeconfigs, tenant secrets — are GitOps-owned via Sealed
-  Secrets (A3). Rule of thumb: if k8s/Flux can rotate or serve it, clan
-  vars does not store it.
+
+### Round 10 (2026-10-20) — Flux control domain
+
+- **D28 Flux runs per control domain; it is never installed remotely.**
+  (Revised round 10.) flux-operator + FluxInstance are clan-rendered from
+  pinned artifacts on **standalone and hub clusters only**; **spokes run
+  no Flux control plane** — the hub's controllers reconcile into them via
+  core-Flux `Kustomization/HelmRelease.spec.kubeConfig.secretRef`
+  (D36/D37). Evidence: flux-operator#624 closed not_planned —
+  FluxInstance is local-only; hub→spoke delivery is a Flux feature, not
+  an operator feature. `flux.enable` default `true`; `false` = no Flux
+  anywhere, clan applies all manifests directly via the distro manifests
+  dir, Cilium stays clan-owned. Mode `hub`/`spoke` with
+  `flux.enable = false` is an eval error.
+- **D30 Hub → spoke API reachability via ClusterMesh mirror Services.**
+  (Revised round 10.) Never touch the real `kubernetes.default` Service.
+  Per cluster that exports its API (**mandatory for `flux.mode =
+  "spoke"`**, optional otherwise): clan-rendered selectorless mirror
+  Service `kube-api-<cluster>` + EndpointSlice of the cluster's API
+  endpoints (D12 fan-in pattern, generalized), annotated
+  `service.cilium.io/global: "true"`. Consumers (the hub, admin tooling)
+  render the same-name Service (no local backends); ClusterMesh merges
+  remote endpoints; pods reach the remote API via that ClusterIP.
+  Consumer CoreDNS rewrite (rendered from exports):
+  `kubernetes.<cluster>.<meta.domain>` →
+  `kube-api-<cluster>.<ns>.svc.cluster.local` (human/tooling path).
+  Kubeconfigs (D37) use the mirror DNS name directly as `server` — no
+  rewrite dependency — and the cluster's API certificate SANs MUST
+  include it (eval-asserted; deterministic at bootstrap). NetworkPolicy
+  restricts mirror-Service access to flux namespaces. Mesh connectivity
+  is symmetric: spokes reach the hub (and standalone mesh members reach
+  both) through the same global-service mechanism when they export/consume
+  mirror Services.
+- **D35 Secrets planes: clan vars = bootstrap plane only.** (Revised
+  round 10.) Clan vars own node/cluster bootstrap secrets: cluster CAs,
+  join tokens, admin kubeconfigs, fleet CA (D18), ClusterMesh CA/certs,
+  Sealed-Secrets sealing keys (vars owns custody of the sealing keypair
+  history), and — the round-10 exception — hub↔spoke Flux control-plane
+  credentials (D37: clan owns the issuing CA and delivery happens at
+  bootstrap; they are control-plane, not application, secrets). All
+  in-cluster application credentials — external-dns provider keys, tenant
+  secrets — are GitOps-owned via Sealed Secrets (A3). Rule of thumb: if
+  k8s/Flux can rotate or serve it, clan vars does not store it — unless
+  clan is the issuer, in which case vars is the only declarative source.
+- **D36 Flux control domain: three modes, linked to the mesh trust
+  domain.** `flux.mode = standalone | hub | spoke` (default
+  `standalone`), per cluster instance. **standalone**: shares no
+  kubeconfig with any cluster; runs its own Flux when `flux.enable`.
+  **spoke**: no local Flux; exports its API via a mirror Service (D30)
+  and accepts reconciliation from its group's hub (D37); still runs all
+  non-Flux base (sealed-secrets controller included — the hub applies
+  SealedSecrets remotely). **hub**: runs Flux like standalone PLUS the
+  control-domain plane (D37). The **trust domain** is the ClusterMesh
+  mesh group string (default `meta.domain`): a hub and all its spokes
+  MUST share one mesh group; at most ONE hub per mesh group; a spoke
+  requires exactly one hub in its group (all eval-asserted). Mesh
+  membership and flux control are linked but distinct: standalone
+  clusters may be full mesh members, and mesh members may consume each
+  other's mirror Services without any flux relationship. Multiple mesh
+  groups = multiple independent trust domains, each optionally with its
+  own hub.
+- **D37 Hub credential plane: clan-minted client-cert identities.**
+  How the hub gets its spoke access — fully declarative, zero manual
+  steps. Per spoke: shared dependent vars generator
+  `flux-hub-client-<spoke>` (share=true, `dependencies` on the spoke's
+  cluster CA generator) signs a client certificate with the **spoke's
+  cluster CA** (bootstrap plane, clan-owned): CN=`flux-hub-<spoke>`,
+  O=`flux-hub`, 365-day validity, `validation` pins spoke+group.
+  In-spoke clan-rendered RBAC: ClusterRoleBinding `flux-hub` binding
+  group `flux-hub` → `cluster-admin` (default posture; configurable
+  ClusterRole), plus optional per-tenant impersonation ServiceAccounts
+  (namespace-scoped RoleBindings) so hub tenants apply with
+  `.spec.serviceAccountName` — the flux2-hub-spoke-example multi-tenant
+  pattern, with its `dependsOn` ordering convention (tenants →
+  infra-controllers → infra-configs → apps) as the documented hub tree
+  shape. Hub-side: per-spoke namespace `flux-spoke-<spoke>` holding
+  Secret `kubeconfig` (data key `value`); kubeconfig = mirror DNS server
+  (D30) + spoke CA public value + client cert/key; delivered via the D18
+  secret-sync mechanism (vars → hub machines → in-cluster Secret; spoke
+  machines never receive the client key). Spoke Cilium adoption (D29)
+  and all spoke-bound delivery flow through hub Kustomizations/
+  HelmReleases with `kubeConfig.secretRef`. Rotation =
+  `clan vars generate --regenerate` + secret-sync re-apply; spokes
+  unaffected (same CA); cert expiry alarms documented. Alternatives
+  rejected: manual SA-token extraction + kubeseal round-trip (retained as
+  the documented emergency runbook only — a manual step in the bring-up
+  path); offline-minted SA JWTs signed with the cluster's SA key
+  (fragile iss/aud across distros, non-expiring, bypasses apiserver
+  token APIs); expiring bearer-token kubeconfigs + refresh CronJobs
+  (machinery for a problem client certs don't have). Evidence:
+  flux2-hub-spoke-example itself authenticates with client-cert
+  kubeconfigs and warns bearer tokens need refresh loops.
 
 ## 4. Invariants (target; eval-asserted or VM-proven)
 
@@ -398,11 +464,13 @@ ClusterMesh-reachable API endpoints.
     domains route through the private Gateway by default (D22).
 15. Kubenix renders everything; no IFD in clanServices eval (D26); no
     Rancher helm-controller by default (D27).
-16. Flux default-on, per-cluster bootstrap; hub delivers workloads only
-    (D28); Cilium adopted by Flux with values parity (D29).
+16. Flux default-on with control-domain modes standalone/hub/spoke
+    (D28/D36): only standalone+hub run Flux; spokes are hub-reconciled
+    through mirror Services with clan-minted client-cert kubeconfigs
+    (D30/D37); Cilium adopted by Flux with values parity (D29).
 17. CNCF in-cluster posture (D24); rke2 CIS-hardened by default (D25).
-18. Clan vars = bootstrap plane only; app secrets via Sealed Secrets
-    (D35).
+18. Clan vars = bootstrap plane only; app secrets via Sealed Secrets;
+    hub↔spoke control-plane credentials are the D37 exception (D35).
 19. Artifact flake carries the last 3 k8s minors per distro (D34).
 
 ## 5. Subsystem contracts (condensed)
@@ -424,13 +492,15 @@ Migration: pin existing ids/CIDRs before hashed defaults land. One
 resolved dual-stack CIDR structure feeds distro, Cilium, DNS, pools,
 assertions, exports. region/zone labels default to instance name,
 per-machine overrides. `rancher_cluster` instance export: identity, mesh
-group, CIDRs, mesh endpoints, pool handoff, API mirror facts (D30),
-schema version. `node_transport` per-node export: mesh/underlay
-addresses, interface, MTU, primary/external facts, delivery modes,
-topology. No secrets in exports. Inventory-wide assertions: duplicate
-names/ids/CIDRs, overlapping CIDRs (incl. fleet-wide PodCIDR non-overlap
-for meshed clusters, D33), duplicate NodePorts, missing peers, missing
-labels, node-in-two-clusters (D16).
+group, flux mode (D36), CIDRs, mesh endpoints, pool handoff, API mirror
+facts (D30), schema version. `node_transport` per-node export:
+mesh/underlay addresses, interface, MTU, primary/external facts, delivery
+modes, topology. No secrets in exports. Inventory-wide assertions:
+duplicate names/ids/CIDRs, overlapping CIDRs (incl. fleet-wide PodCIDR
+non-overlap for meshed clusters, D33), duplicate NodePorts, missing
+peers, missing labels, node-in-two-clusters (D16), flux mode⇔mesh group
+consistency (D36: hub+spokes same group, ≤1 hub per group, spoke⇒hub
+exists, hub/spoke⇒flux.enable).
 
 ### 5.3 Transport
 `transport.mode = host-wireguard | cilium-wireguard | unencrypted`.
@@ -452,18 +522,19 @@ masquerade+tproxy, Maglev, pmtu, default dual-stack pod pool. Post-merge
 validation rejects helmValues violating routing/tunnel/IPAM/dual-stack/
 CNI-chaining/artifact/ETP invariants. Multus optional: chaining switch is
 explicit + atomic. Lifecycle: bootstrap → Flux adoption (D29); values
-parity asserted at eval.
+parity asserted at eval (local or hub-remote).
 
 ### 5.5 ClusterMesh (automatic, mixed-distro)
-Mesh groups (default = all cluster instances; opt-out separates trust).
-Every eligible cluster runs clustermesh-apiserver + mesh certs from first
+Mesh groups (default = all cluster instances under `meta.domain`;
+opt-out separates trust — and bounds flux control domains, D36). Every
+eligible cluster runs clustermesh-apiserver + mesh certs from first
 boot; singleton peer list empty. Peering rendered from exports into
 `clustermesh.config.clusters` — no CLI. Exposure: LoadBalancer (default,
 node-bound mesh addresses + ETP Local + ClientIP affinity, all servers as
 endpoints, anti-affinity) with collision-checked NodePort escape. DNS
 fan-in: selectorless local ClusterIP Service + eval-rendered
 EndpointSlice per remote cluster — the same pattern, generalized, carries
-the kube-apiserver mirror Services (D30). Shared
+the kube-apiserver mirror Services (D30; mandatory for spokes). Shared
 `rancher-clustermesh-ca-<group>` vars generator (share=true); per-cluster
 dependent cert generators; SANs include every exported address + fan-in
 name; endpoint set is a public validation input (membership change ⇒
@@ -499,37 +570,40 @@ external-dns annotation knobs on instances (D31).
 ### 5.8 Base and add-ons
 Base (always rendered): cert-manager (pinned, bootstrap selfsigned CA,
 voter placement, arbitrary issuer refs), CoreDNS rewrites (distro-
-appropriate ConfigMaps), EG + Gateway API CRDs (D2), flux-operator +
-FluxInstance (D28; only absent when `flux.enable = false`). Sealed
-Secrets: off by default but REQUIRED before any GitOps-owned secret
-(D35); `keyManagement = clan-vars` (default when enabled; persistent
-keypair, offline public cert, native renewal disabled, old keys
-retained) | `controller` (native + backup runbook). Never a plain
-cert-manager Certificate for sealing keys. Optional add-ons (Flux-owned
-unless noted): external-dns (D31), Multus, OpenEBS-LVM, OpenEBS-ZFS,
-KubeVirt+CDI — per-engine artifacts, host prep, and VM suites per the old
-HTML §5.8 table (unchanged). OLM: rejected (D32).
+appropriate ConfigMaps), EG + Gateway API CRDs (D2), sealed-secrets
+controller (when enabled — including on spokes, whose SealedSecrets are
+hub-applied). Base on standalone/hub only (D28/D36): flux-operator +
+FluxInstance. Sealed Secrets: off by default but REQUIRED before any
+GitOps-owned secret (D35); `keyManagement = clan-vars` (default when
+enabled; persistent keypair, offline public cert, native renewal
+disabled, old keys retained) | `controller` (native + backup runbook).
+Never a plain cert-manager Certificate for sealing keys. Optional add-ons
+(Flux-owned unless noted): external-dns (D31), Multus, OpenEBS-LVM,
+OpenEBS-ZFS, KubeVirt+CDI — per-engine artifacts, host prep, and VM
+suites per the old HTML §5.8 table (unchanged). OLM: rejected (D32).
 
 ### 5.9 Secrets / PKI / airgap
 Two planes (D35). Bootstrap plane (clan vars): cluster CAs, tokens, admin
-kubeconfigs, Sealed-Secrets sealing keys, ClusterMesh CA/certs, fleet CA.
-Application plane (GitOps + Sealed Secrets): provider credentials,
-hub↔spoke kubeconfigs (D30), tenant secrets. Public certs readable as
-public values; private material referenced by deployed paths only. RKE2
-PKI sync non-destructive; k3s init-only seed + native replication.
-Airgap-ready default; one explicit opt-out switch; overrides = complete
-replacement sets or additive lists.
+kubeconfigs, Sealed-Secrets sealing keys, ClusterMesh CA/certs, fleet CA,
+hub↔spoke control-plane credentials (D37). Application plane (GitOps +
+Sealed Secrets): provider credentials, tenant secrets. Public certs
+readable as public values; private material referenced by deployed paths
+only. RKE2 PKI sync non-destructive; k3s init-only seed + native
+replication. Airgap-ready default; one explicit opt-out switch; overrides
+= complete replacement sets or additive lists.
 
 ### 5.10 Rotation and imperative lifecycle
 Leaf certs: upstream 365-day, renew at startup; manual via
 `{rke2,k3s} certificate rotate` (kubeadm: `kubeadm certs renew`). CA
 rotation: staged dir + `rotate-ca`; same-root can be non-disruptive; new
 root disruptive (tokens, kubeconfigs, restarts). Service-account signing
-key: append/retain. No blanket 100-year leaf default; long-lived offline
-root = explicit risk decision. Inventory deletion ≠ cluster GC:
-cordon/drain, Node deletion, etcd member removal, mesh cleanup =
-documented runbooks. Disruptive changes (pools, CIDRs, ids, CA roots,
-mesh membership) = reviewed operational changes.
+key: append/retain. Hub identity certs (D37): 365-day, regenerate via
+vars + secret-sync, spokes untouched. No blanket 100-year leaf default;
+long-lived offline root = explicit risk decision. Inventory deletion ≠
+cluster GC: cordon/drain, Node deletion, etcd member removal, mesh
+cleanup, hub kubeconfig/CRB removal = documented runbooks. Disruptive
+changes (pools, CIDRs, ids, CA roots, mesh membership) = reviewed
+operational changes.
 
 ### 5.11 CCM, managed manifests, GitOps
 `cloudController = none | rancher | external`; provider CCMs never
@@ -537,8 +611,9 @@ bundled; hermetic fake-CCM VM test. Every clan-rendered manifest labeled
 (managed-by, instance, component, config-hash; never in selectors).
 Rendering = kubenix (D26); delivery = distro manifests dir; Rancher
 helm-controller disabled by default (D27). Managed base installs APIs +
-small base set; Flux owns lifecycle post-bootstrap (D28/D29); tenants use
-Flux/Argo without NixOS activation; base upgrades preserve tenant CRDs.
+small base set; Flux owns lifecycle post-bootstrap per control domain
+(D28/D29/D36); tenants use Flux/Argo without NixOS activation; base
+upgrades preserve tenant CRDs.
 
 ### 5.12 Assertions and firewall
 Eval rejects: multiple bootstraps, duplicate ids/CIDRs/ports, missing
@@ -552,7 +627,10 @@ non-opt-in class, ETP Cluster / Node IPAM / host-network mode on clan
 proxies, Cilium bootstrap/HelmRelease values drift (D29), IFD-smuggling
 manifest paths (D26), unsupported k8s minor without acknowledgment (D34
 warning), clan vars generators declared for application-plane secrets
-(D35 lint). Firewall: API on transport only; public ports only where a
+(D35 lint), flux mode⇔mesh violations (D36: hub+spoke group mismatch,
+>1 hub per group, spoke without hub, hub/spoke with flux disabled),
+spoke without mirror Service / mirror SAN missing from API cert
+(D30/D37). Firewall: API on transport only; public ports only where a
 Service exposes them; mesh/BGP restricted to expected peers; HTTP/3 opens
 UDP+TCP; mirror Services reachable only from flux namespaces (D30). VM
 tests assert positive connectivity AND negative exposure.
@@ -570,15 +648,22 @@ assertions; MikroTik-style foreign-router runbook; browser trust install;
 east-west mTLS accept/reject proof (D20) before it defaults on;
 cluster-member + admin dual-role suite (kamrui-h1 shape).
 
-### 5.14 Flux hub-spoke (D28/D29/D30)
-Every cluster: flux-operator + FluxInstance from pinned artifacts at
-bootstrap. Adoption set (Flux owns post-bootstrap): Cilium (D29),
-external-dns (D31), add-ons. Never Flux-owned: EG controller (D6),
-distro runtime, cluster PKI. Hub cluster: spoke kubeconfigs as Sealed
-Secrets in the flux namespace (D35), ResourceSet/Kustomization/HelmRelease
-with `kubeConfig.secretRef` per spoke; spoke API reachable via mirror
-Service + CoreDNS rewrite `kubernetes.<spoke>.<meta.domain>` (D30).
-Singleton cluster = no hub config, Flux manages only itself.
+### 5.14 Flux control domain (D28/D29/D30/D36/D37)
+Per-cluster `flux.mode`: **standalone** (default) — own Flux, nothing
+shared; **hub** — own Flux + control plane for the group's spokes;
+**spoke** — no Flux, hub-reconciled. Spoke bootstrap renders: mirror
+Service + SAN (D30), CRB `flux-hub` (group `flux-hub` → cluster-admin or
+configured role), optional tenant impersonation SAs. Hub bootstrap
+renders: per-spoke namespace `flux-spoke-<spoke>` + `kubeconfig` Secret
+(secret-sync from vars, D37), NetworkPolicy, and the documented
+Kustomization tree shape (tenants → infra-controllers → infra-configs →
+apps; per-spoke overlays `clusters/<spoke>/`). All spoke-bound objects
+carry `kubeConfig.secretRef`. Adoption set (Flux owns post-bootstrap,
+locally or hub-remote): Cilium (D29), external-dns (D31), add-ons. Never
+Flux-owned: EG controller (D6), distro runtime, cluster PKI. Standalone
+clusters may still join the mesh and consume/export mirror Services —
+mesh ≠ flux (D36). Singleton standalone cluster = no hub config, Flux
+manages only itself.
 
 ## 6. Testing contract
 
@@ -620,8 +705,13 @@ semantics — documented blackhole window, no withdrawal claim); bgp-ecmp
 suite (+ private fabric, MikroTik-style foreign-router fixture);
 ClusterMesh matrix (+ kube-api mirror Service reachability, D30); PKI
 rotation; CCM/GitOps handoff (Flux adoption no-op proof, D29);
-flux-enable=false direct-apply suite (D28); rke2 CIS profile suite (D25:
-PSA restricted enforced, exemptions work); external-dns annotation
+flux-enable=false direct-apply suite (D28); **flux control-domain suite**
+(D36/D37: one hub + two spokes + one standalone in a mesh — hub applies
+to spokes via kubeconfig Secrets; spokes run NO flux deployments;
+mirror-SAN assertion; impersonation negative test (restricted SA cannot
+write cluster-wide); cert rotation re-issue keeps reconciliation green;
+standalone cluster unaffected but mesh-reachable); rke2 CIS profile suite
+(D25: PSA restricted enforced, exemptions work); external-dns annotation
 rendering suite (D31); sealed-secrets plane separation eval (D35);
 multus; openEBS; kubevirt; fleet-routing suite (incl. client/admin split,
 dual-role cluster member, opt-in svc/pod rewrite zones, east-west mTLS
@@ -659,7 +749,7 @@ tests together)
   default-on private pool + CoreDNS/private-Gateway VIPs; vendored BIRD
   fragment renderer).
 - **7** — automatic ClusterMesh (apiserver stays node-bound + fan-in;
-  kube-api mirror Services + hub CoreDNS rewrites, D30).
+  kube-api mirror Services + consumer CoreDNS rewrites, D30).
 - **8** — PKI ops, Sealed Secrets (plane separation, D35), Multus
   completion, RKE2 CIS defaults (D25).
 - **9** — OpenEBS Local PV. **10** — KubeVirt + CDI.
@@ -670,11 +760,13 @@ tests together)
   on node addresses + primary IPv4 :443, additional IPv6 EG Gateways).
 - **13** — kubenix renderer migration + helm-controller default-off
   (D26/D27; may land earlier per-phase as rendering is touched).
-- **14** — external-dns add-on + hub-spoke workload delivery proofs
-  (D30/D31).
+- **14** — Flux control domain: hub/spoke/standalone modes (D36),
+  client-cert credential plane + secret-sync (D37), mirror-SAN plumbing
+  (D30), hub tree convention + control-domain VM suite; external-dns
+  add-on (D31).
 - Reserved: upstream `kubernetes` distro implementation (D23; spec'd,
   hard requirement), MCS-API, clan-operator (spoke credential
-  minting/rotation, D30).
+  minting/rotation automation beyond D37, tenant lifecycle).
 
 ## 8. Out of scope
 
@@ -691,7 +783,9 @@ advertisement to hosts by default (admin role excepted, D33); public
 shared-BGP without upstream-routed space (incl. single dynamic
 residential IPv4); heterogeneous multi-WAN inbound failover (use DNS
 failover); Flux-managed EG controller; hub-side remote Flux INSTALLATION
-(upstream-declined, D28); Cilium Ingress/Gateway and the Ingress API as
+(upstream-declined, D28); Flux control planes on spokes (D36);
+offline-minted SA JWTs and expiring bearer-token kubeconfigs with
+refresh CronJobs (D37); Cilium Ingress/Gateway and the Ingress API as
 supported surfaces; Traefik; generic UDP relay; untested optional
 protocol profiles; blanket 100-year leaves; cert-manager-generated
 Sealed-Secrets keys; blind live CA regeneration; fully declarative
@@ -713,22 +807,37 @@ inter-cluster DNS (D31).
   (D24).
 - **Kubenix rendering** — manifests built as typed Nix module resources;
   Helm inflation only at artifact-flake build time (D26).
+- **Flux control domain** — the set of clusters one Flux control plane
+  manages: a hub plus its spokes (D36). Bounded by a mesh trust domain.
+- **Flux mode** — per-cluster control-domain role: `standalone` (own
+  Flux, shares nothing), `hub` (own Flux + reconciles spokes), `spoke`
+  (no Flux; hub-reconciled) — D28/D36.
+- **Trust domain** — the ClusterMesh mesh group string (default
+  `meta.domain`); bounds ClusterMesh peering AND flux control domains,
+  which are linked but distinct (D36).
+- **Hub identity** — the per-spoke client certificate (CN
+  `flux-hub-<spoke>`, O `flux-hub`) signed by the spoke's cluster CA
+  that the hub authenticates with (D37).
+- **Impersonation SA** — optional namespace-scoped ServiceAccount in a
+  spoke that hub tenants apply through via `.spec.serviceAccountName`
+  (D37; flux2-hub-spoke-example multi-tenant pattern).
 - **Flux bootstrap** — clan-rendered flux-operator + FluxInstance present
-  from first boot on every cluster (D28).
-- **Hub cluster** — the cluster holding spoke kubeconfigs and delivering
-  workloads fleet-wide via Flux `kubeConfig.secretRef`; never installs
-  Flux remotely (D28).
+  from first boot on standalone and hub clusters (D28).
+- **Hub cluster** — the cluster running the control domain's Flux and
+  holding per-spoke kubeconfig Secrets; never installs Flux remotely
+  (D28/D36/D37).
 - **Mirror Service** — clan-rendered selectorless ClusterMesh-global
   Service + EndpointSlice exposing a cluster's kube-apiserver to mesh
-  members (D30).
+  members (D30); mandatory for spokes.
 - **Bootstrap plane / application plane** — secrets custody split: clan
-  vars own bootstrap secrets (CAs, tokens, kubeconfigs, sealing keys);
-  GitOps + Sealed Secrets own in-cluster application credentials (D35).
+  vars own bootstrap secrets (CAs, tokens, kubeconfigs, sealing keys, hub
+  identities); GitOps + Sealed Secrets own in-cluster application
+  credentials (D35/D37).
 - **Integrated node transport** — per-cluster routed L3 (host WG default
   | cilium-wireguard | unencrypted) carrying dual-stack node InternalIPs,
   API, VXLAN.
 - **Mesh group** — mutually trusted cluster instances forming one
-  ClusterMesh.
+  ClusterMesh; the trust domain string.
 - **Pool scope** — per-machine (node-named) vs cluster-global
   (generic-named); who contributes a pool's addresses.
 - **Delivery mode** — node-fate-bound | floating | shared-bgp |
@@ -786,8 +895,12 @@ inter-cluster DNS (D31).
 - Gateway API: GEP-91 (client cert validation, experimental).
 - Flux: flux-operator fleet model (flux-operator#624 not_planned —
   FluxInstance local-only); `Kustomization/HelmRelease.spec.kubeConfig`
-  remote delivery; `flux-operator distro mirror` airgap; HelmRelease
-  adoption via matching releaseName/namespace (no createNamespace).
+  remote delivery (secretRef, `value` key, same-namespace rule);
+  flux2-hub-spoke-example (client-cert kubeconfigs, per-spoke hub
+  namespaces, flux-cluster-admin/flux-restricted impersonation SAs,
+  tenants→infra-controllers→infra-configs→apps dependsOn ordering);
+  `flux-operator distro mirror` airgap; HelmRelease adoption via matching
+  releaseName/namespace (no createNamespace).
 - external-dns (kubernetes-sigs): provider model (GoDaddy, Cloudflare,
   RFC2136); CoreDNS provider requires etcd backend — rejected for
   inter-cluster (D31).
