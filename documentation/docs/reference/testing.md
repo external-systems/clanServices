@@ -10,7 +10,7 @@ where possible, and is VM-proven where it cannot be.
 - **`clan.nixosTests` hermetic VM suites** — one at a time, sandboxed and
   authoritative.
 - **Artifact gates** — source/hash/render checks in the artifact flake,
-  including build-time Helm inflation proofs (D26).
+  including the inflation and publish-freshness gates (D26/D29).
 
 ## Test fixtures
 
@@ -49,7 +49,8 @@ accept/reject, cert-manager Gateway integration, source preservation, 0–N
 multi-Gateway isolation, zero-clan-Gateway tenant round-trip; lb-pool
 suite; bgp-ecmp suite (private fabric, MikroTik-style foreign-router
 fixture); ClusterMesh matrix including kube-api mirror Service reachability
-(D30); PKI rotation; CCM/GitOps handoff (Flux adoption no-op proof, D29);
+(D30); PKI rotation; CCM/GitOps handoff (Flux Kustomization no-op
+first-reconcile proof, D29);
 the `flux.enable=false` direct-apply suite (D28); the flux control-domain
 suite (D36/D37: one hub + two spokes + one standalone in a mesh — the hub
 applies to spokes via kubeconfig Secrets, spokes run no Flux deployments,

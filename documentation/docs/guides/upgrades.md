@@ -25,9 +25,11 @@ verify your component versions line up before upgrading the fleet.
 
 ## What upgrades are safe
 
-- **Component upgrades via Flux.** Cilium upgrades are owned by the
-  adopting HelmRelease after bootstrap (D29); values parity is asserted at
-  eval, so adoption itself is never a dataplane event.
+- **Component upgrades via Flux.** After the bootstrap apply, a Flux
+  Kustomization owns Cilium (D29): upgrades flow pkgs bump → rebuild →
+  republish → Flux applies. The first reconcile after handoff is a no-op by
+  construction, and a publish-freshness CI gate keeps the published
+  manifests equal to a fresh render.
 - **Tenant changes.** Routes, tenant Gateways, certificates — GitOps, no
   NixOS rebuild (D6).
 - **Base upgrades preserve tenant CRDs** (SPEC.md §5.11).

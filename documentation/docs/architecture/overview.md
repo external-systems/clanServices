@@ -46,12 +46,17 @@ nodes. A private fleet fabric is on by default (D10). See
 **Flux (D28/D36).** Three control-domain modes: standalone clusters run
 their own flux-operator and FluxInstance; a hub runs Flux plus the
 control-domain plane and pushes to its spokes, which run no Flux at all.
-Cilium is adopted by Flux after bootstrap with an eval-time values-parity
-guarantee (D29) — locally, or hub-remote on spokes. See [GitOps](gitops.md).
+Cilium is handed to Flux after bootstrap as construction-identical
+manifests — a Flux Kustomization over the same rendered set bootstrap
+applied, so the first reconcile is a no-op by construction (D29) — locally,
+or hub-remote on spokes. See [GitOps](gitops.md).
 
 **Artifact flake** (`external-systems/pkgs`). Pins every chart, image, and
 CRD; source-builds the last three Kubernetes minors of each distro (D34).
-Hermetic and airgap-ready by default.
+Rendering is two-layer: charts are helm-inflated at update time and
+committed as source next to the pins (zero IFD downstream); clanServices
+applies per-cluster variation by kubenix module merging over the typed
+resource tree (D26). Hermetic and airgap-ready by default.
 
 **Secrets planes (D35).** Clan vars own bootstrap secrets only — CAs, join
 tokens, kubeconfigs, sealing keys. In-cluster application credentials are

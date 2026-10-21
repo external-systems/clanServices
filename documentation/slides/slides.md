@@ -59,7 +59,7 @@ Note: Bottom-up: hosts and transport, distro, Cilium, gateways, Flux. Secrets on
 ## Status and roadmap
 
 - **Done**: imported baseline (`692807c`); wireguard-mesh + rke2/k3s single/join/HA VM suites green
-- **Next**: artifact flake — last-3-minor packaging, pinned components, build-time Helm inflation
+- **Next**: artifact flake — last-3-minor packaging, pinned components, update-time Helm inflation committed as source
 - **Then**: transport modes, pools + default gateways, BGP fabric, automatic ClusterMesh, PKI ops
 - **Reserved**: upstream `kubernetes` distro implementation, MCS-API, clan-operator (spoke credential minting)
 

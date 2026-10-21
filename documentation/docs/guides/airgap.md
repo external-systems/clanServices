@@ -7,10 +7,13 @@ and local at boot.
 
 The artifact flake (`external-systems/pkgs`) is the only packaging input.
 It pins every chart, image, and CRD, source-builds the distro runtimes
-(RKE2/k3s at release tags, last three minors each — D34), and inflates Helm
-charts at build time so clanServices evaluation never fetches and never
-uses import-from-derivation (D26). A clean-public-fetch proof is part of
-the artifact checks.
+(RKE2/k3s at release tags, last three minors each — D34), and renders each
+pinned chart with the canonical fleet profile at **update time**, committing
+the rendered base manifests as source next to the version pins (D26).
+Consumers read committed files, so clanServices evaluation never fetches
+and never uses import-from-derivation. A clean-public-fetch proof and the
+publish-freshness gate (published manifest ≡ fresh render, D29) are part
+of the artifact checks.
 
 Envoy Gateway ships as one atomic `gateway-envoy` component (EG chart +
 envoy image + Gateway API/EG CRDs), airgap-locked with one upstream profile

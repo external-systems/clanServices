@@ -6,7 +6,13 @@ check these first.
 - **Cilium 1.20** — LB IPAM, BGP v2, ClusterMesh (global Services with
   `service.cilium.io/global|shared|affinity`, EndpointSlice sync). Known
   Gateway gaps behind D1: no HTTP/3 (cilium#28497), no multi-Gateway IP
-  sharing (cilium#25567), no mTLS (GEP-91). No BFD.
+  sharing (cilium#25567), no mTLS (GEP-91). No BFD. Configuration via the
+  rendered `cilium-config` ConfigMap (the D26 layer-2 override seam).
+- **Kubenix** (hall/kubenix) — helm inflation via
+  `kubernetes.helm.releases` is IFD at eval, which is why it lives in pkgs
+  at update time; patching chart output by re-declaring rendered objects in
+  the typed resource tree is the D26 layer-2 mechanism; includeCRDs
+  discipline.
 - **Envoy Gateway** (gateway.envoyproxy.io) — deployment modes including
   DaemonSet, mergeGateways, EnvoyProxy customization (`envoyService` —
   labels/annotations only, never annotate the managed Service directly),
@@ -20,8 +26,9 @@ check these first.
   not_planned, FluxInstance is local-only (motivates D28 per-cluster
   bootstrap). Remote delivery via
   `Kustomization/HelmRelease.spec.kubeConfig.secretRef`. Airgap via
-  `flux-operator distro mirror`. HelmRelease adoption via matching
-  releaseName/namespace without `createNamespace` (D29).
+  `flux-operator distro mirror`. Helm ownership metadata makes HelmRelease
+  adoption of non-helm-installed resources impossible — why D29 uses the
+  Kustomization handoff.
 - **external-dns** (kubernetes-sigs) — provider model (GoDaddy, Cloudflare,
   RFC2136). The CoreDNS provider requires an etcd backend the clusters do
   not run — rejected for inter-cluster DNS (D31).

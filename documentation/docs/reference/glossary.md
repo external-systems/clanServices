@@ -13,7 +13,13 @@ One term per concept. From SPEC.md §9.
   components (BIRD, WireGuard) are exempt; rke2 is the documented distro
   exception (D24).
 - **Kubenix rendering** — manifests built as typed Nix module resources;
-  Helm inflation only at artifact-flake build time (D26).
+  chart inflation only at artifact-flake update time (D26).
+- **IFD (import-from-derivation)** — evaluation reading a derivation's
+  output, forcing a build during eval; forbidden in clanServices (D26).
+- **Base manifest** — a chart rendered with the canonical fleet-uniform
+  profile, committed as source in the artifact flake; layer 1 of the
+  rendering pipeline (D26). Per-cluster variation is layered on by kubenix
+  module merging (layer 2), never by re-running helm.
 - **Flux control domain** — the set of clusters one Flux control plane
   manages: a hub plus its spokes (D36). Bounded by a mesh trust domain.
 - **Flux mode** — per-cluster control-domain role: `standalone` (own Flux,

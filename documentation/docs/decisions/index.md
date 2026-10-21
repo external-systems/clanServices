@@ -1,14 +1,17 @@
 # Decision record (D1–D38)
 
 Every normative choice in the project, locked 2026-10-20 after design
-rounds 1–8, 10, and 11. Round-8 amendments: A1 (artifact flake carries last 3
+rounds 1–8 and 10–12. Round-8 amendments: A1 (artifact flake carries last 3
 k8s minors → D34), A2 (external-dns credentials are not clan-vars-owned →
 D31), A3 (clan vars avoid owning in-cluster secrets → D35, exception
 carved out in round 10 → D37), A4 (round 8 locked the spec; no code
 changes in the same commit). Round 10 locked the Flux control domain:
 D36/D37 are new, and D28/D29/D30/D35 are revised (marked below). Round 11
-added the read-only cluster credential (D38). Repo history's "round 9" was
-the QUIC/two-fixture rule, already in D15 and the testing contract.
+added the read-only cluster credential (D38). Round 12 corrected the
+rendering pipeline: D26 and D29 are revised again (two-layer rendering;
+Flux Kustomization handoff replaces HelmRelease adoption). Repo history's
+"round 9" was the QUIC/two-fixture rule, already in D15 and the testing
+contract.
 
 | ID | Decision | Rationale |
 | --- | --- | --- |
@@ -37,10 +40,10 @@ the QUIC/two-fixture rule, already in D15 and the testing contract.
 | D23 | Upstream `kubernetes` (kubeadm) distro = first-class target, Reserved | Third public clanService; same interfaces and pipeline; implementation waits for rke2/k3s to stabilize |
 | D24 | CNCF in-cluster posture | Every in-cluster component is a CNCF project; rke2 is the documented distro exception |
 | D25 | RKE2 hardened by default (`profile: cis`) | PSA restricted cluster-wide with rendered host prerequisites; explicit opt-out |
-| D26 | Kubenix is the manifest renderer; no IFD | Helm inflation happens at artifact-flake build time; preserves eval speed and airgap |
-| D27 | Rancher helm-controller disabled by default | Manifests flow kubenix → manifests dir → optional Flux adoption |
+| D26 | Kubenix is the manifest renderer; two layers, zero IFD (revised round 12) | Charts are helm-inflated at update time and committed as source in pkgs; per-cluster variation lands by kubenix module merging, never re-run helm values |
+| D27 | Rancher helm-controller disabled by default | Manifests flow kubenix → manifests dir → Flux Kustomization handoff |
 | D28 | Flux runs per control domain; never installed remotely (revised round 10) | flux-operator + FluxInstance on standalone and hub clusters only; spokes run no Flux — the hub reconciles into them via `kubeConfig.secretRef` |
-| D29 | Cilium lifecycle: bootstrap → Flux adoption | Eval-asserted values parity makes adoption a no-op upgrade; local on standalone/hub, hub-remote on spokes |
+| D29 | Cilium lifecycle: bootstrap apply → Flux Kustomization handoff (revised round 12) | Identical rendered set from one kubenix eval ⇒ no-op first reconcile by construction; HelmRelease adoption rejected (no release storage); parity is a publish-freshness CI gate |
 | D30 | Hub → spoke API via ClusterMesh mirror Services (revised round 10) | Selectorless global Service + EndpointSlice + CoreDNS rewrite; mandatory for spokes; kubeconfigs use the mirror DNS name (SAN-asserted) |
 | D31 | external-dns = optional Flux component, creds via Sealed Secrets | Authoritative providers only; never for inter-cluster DNS; annotation knobs on clan objects |
 | D32 | OLM v1 rejected | Catalog coverage gaps, OpenShift-only airgap docs, cert-manager collision risk; duplicates Flux+kubenix |
@@ -51,7 +54,7 @@ the QUIC/two-fixture rule, already in D15 and the testing contract.
 | D37 | Hub credential plane: clan-minted client-cert identities | Per-spoke cert signed by the spoke's cluster CA (CN=`flux-hub-<spoke>`, O=`flux-hub`); SA-token extraction is emergency-runbook-only; offline JWTs and bearer-token refresh CronJobs rejected |
 | D38 | Read-only cluster credential for AI-agent access | Every cluster mints a no-secrets read-only identity (aggregated `view` + cluster-scoped reads; never `secrets`, never write verbs); the hub holds each spoke's read-only kubeconfig beside the admin one |
 
-## Decisions in detail (rounds 8, 10, and 11)
+## Decisions in detail (rounds 8, 10, 11, and 12)
 
 ### D23 — Upstream `kubernetes` distro
 
@@ -78,20 +81,27 @@ sysctls, with host prerequisites rendered by the NixOS module.
 components come with the upstream profile; tenants get a namespace-exemption
 runbook. k3s/kubernetes get equivalent PSA defaults where supported.
 
-### D26 — Kubenix rendering, no IFD
+### D26 — Kubenix rendering, two layers (revised round 12)
 
-All clan-rendered manifests are kubenix typed resources. Helm chart
-inflation happens only at build time inside the artifact flake; clanServices
-evaluation composes typed resources and imports pre-rendered YAML, with
-eval-asserted rejection of IFD-smuggling manifest paths. This keeps
-`nix flake check --no-build` fast and airgap operation intact.
+All clan-rendered manifests are kubenix typed resources, produced in two
+layers. Layer 1: the artifact flake's atomic updater renders each pinned
+chart with the canonical fleet-uniform profile via `helm template` at
+**update time** and commits the rendered manifest into the pkgs repo next
+to the version pins — consumers read committed source files, so evaluation
+has zero import-from-derivation (reading a package output at eval would
+itself be IFD). Layer 2: clanServices imports the base manifest and applies
+per-cluster variation by Nix module merging over the typed resource tree
+(the `cilium-config` ConfigMap and sibling CRs), never by re-running helm
+with per-cluster values. Fleet-uniform knobs stay frozen in layer 1;
+IFD-smuggling manifest paths are eval-rejected, keeping cold-store
+`nix flake check --no-build` green.
 
 ### D27 — Rancher helm-controller off
 
 `disable-helm-controller` is the default on both distros; explicit opt-in
 re-enables it. The distro bundled charts (Traefik, servicelb, and friends)
 remain disabled per D3. Manifests flow kubenix → distro manifests dir →
-optional Flux adoption.
+Flux Kustomization handoff (D29).
 
 ### D28 — Flux runs per control domain (revised round 10)
 
@@ -104,15 +114,20 @@ feature. `flux.enable = false` renders no Flux at all — the clan applies
 manifests directly and Cilium stays clan-owned — and combining it with mode
 `hub` or `spoke` is an eval error.
 
-### D29 — Cilium bootstrap → Flux adoption
+### D29 — Cilium bootstrap apply → Flux Kustomization handoff (revised round 12)
 
-Bootstrap installs just enough Cilium for Flux pods; a HelmRelease with
-matching releaseName/namespace (no `createNamespace`) adopts the release
-and owns upgrades. On standalone and hub clusters adoption is local; on
-spokes the hub's HelmRelease adopts remotely via `kubeConfig.secretRef`.
-An eval-time assertion proves bootstrap values ≡ HelmRelease values, so
-adoption is a no-op upgrade and never a dataplane flap. With
-`flux.enable = false` the bootstrap install is permanent.
+Bootstrap and Flux apply the same rendered manifest set from one kubenix
+evaluation: bootstrap applies it via the distro manifests dir at first boot
+(the CNI must exist before Flux pods run), then a Flux Kustomization
+(prune on, drift correction) takes over the identical set published to the
+GitOps repo/OCI artifact — locally on standalone/hub, hub-remote on spokes.
+The first reconcile is a no-op by construction; thereafter Flux owns
+upgrades (pkgs bump → rebuild → republish → Flux applies). HelmRelease
+adoption was rejected: with the helm-controller off there is no helm
+release storage to adopt, and a HelmRelease install over helm-unowned
+resources fails on ownership metadata. "Parity" is now a publish-freshness
+CI gate (published manifest ≡ fresh render), not an eval assertion. With
+`flux.enable = false` the bootstrap apply is permanent.
 
 ### D30 — Mirror Services for API reachability (revised round 10)
 

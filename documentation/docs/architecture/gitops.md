@@ -88,20 +88,32 @@ The documented hub repository shape follows flux2-hub-spoke-example's
 apps**, with per-spoke overlays under `clusters/<spoke>/`. Every
 spoke-bound object carries `kubeConfig.secretRef`.
 
-## Cilium adoption with values parity (D29)
+## Cilium handoff: bootstrap apply → Flux Kustomization (D29)
 
-Bootstrap installs Cilium from the pinned chart and values — just enough
-for Flux pods to run. A Flux HelmRelease then adopts the release (matching
-releaseName and namespace, no `createNamespace`) and owns upgrades. On
-standalone and hub clusters adoption is local; on spokes the hub's
-HelmRelease adopts remotely via `kubeConfig.secretRef`. An eval-time
-assertion guarantees bootstrap-rendered values are identical to the
-HelmRelease values, so adoption is a no-op upgrade — never a dataplane
-flap. With `flux.enable = false` the bootstrap install is permanent.
+Bootstrap and Flux apply **the same rendered manifest set from one kubenix
+evaluation**. Bootstrap applies it via the distro manifests dir at first
+boot — the CNI must exist before Flux pods can run. The handoff is a Flux
+**Kustomization** (prune on, drift correction) over that identical set,
+published to the GitOps repo / OCI artifact by the cluster's publish step —
+locally for standalone and hub clusters, hub-remote via
+`kubeConfig.secretRef` for spokes. The first reconcile is a no-op **by
+construction**: identical bytes, one Nix source, so there is no dataplane
+flap and no values-parity problem at all. Thereafter Flux owns upgrades —
+pkgs bump → rebuild → republish → Flux applies — and prunes.
 
-The adoption set (Flux-owned post-bootstrap, locally or hub-remote):
-Cilium, external-dns, and the optional add-ons. Never Flux-owned: the
-Envoy Gateway controller (D6), the distro runtime, and cluster PKI.
+HelmRelease adoption was rejected: with the helm-controller off (D27) there
+is no helm release storage to adopt, and a HelmRelease install over
+helm-unowned resources fails on ownership metadata. What used to be a
+values-parity eval assertion is now a **publish-freshness gate** — the
+published manifest must equal a fresh render — enforced as an artifact/CI
+check. Helm chart upgrade hooks are replaced by explicit rendered ordering
+(CRDs-first artifacts, includeCRDs discipline). With `flux.enable = false`
+the bootstrap apply is permanent.
+
+The handoff set (Flux-owned post-bootstrap, locally or hub-remote, as
+Kustomizations over the rendered sets): Cilium, external-dns, and the
+optional add-ons. Never Flux-owned: the Envoy Gateway controller (D6), the
+distro runtime, and cluster PKI.
 
 ## external-dns (D31)
 
@@ -128,15 +140,25 @@ old keys retained) or `controller` (native Sealed Secrets lifecycle plus a
 backup runbook). Sealing keys are never a plain cert-manager Certificate.
 See [Secrets](../guides/secrets.md).
 
-## Rendering pipeline
+## Rendering pipeline (D26)
 
-All clan-rendered manifests are kubenix typed resources (D26). There is no
-import-from-derivation during clanServices evaluation — Helm chart inflation
-happens at build time inside the artifact flake, and clanServices composes
-typed resources plus imports pre-rendered YAML. This preserves fast
-`nix flake check --no-build` evaluation and airgap operation. The Rancher
-helm-controller is disabled by default on both distros (D27); manifests flow
-kubenix → distro manifests dir → optional Flux adoption.
+Rendering is two layers. **Layer 1 — base inflation (artifact flake, update
+time):** the atomic updater renders each pinned chart with the canonical
+fleet-uniform profile via `helm template` and **commits** the rendered
+manifest into the pkgs repo next to the version pins, regenerated and
+reviewed like `versions.nix`. Consumers read committed source files — zero
+import-from-derivation (IFD) anywhere in clanServices evaluation.
+**Layer 2 — per-cluster composition (clanServices, pure eval):** kubenix
+imports the base manifest and applies cluster variation by Nix module
+merging over the typed resource tree — cluster name/id, pod CIDRs, mesh
+peers land in the `cilium-config` ConfigMap and sibling CRs, never in
+re-run helm values. Fleet-uniform knobs stay frozen in layer 1 by design;
+post-merge validation rejects overrides that violate invariants.
+
+This keeps cold-store `nix flake check --no-build` green and makes
+inflation diffs ordinary reviewable git diffs. The Rancher helm-controller
+is disabled by default on both distros (D27); manifests flow kubenix →
+distro manifests dir → Flux Kustomization handoff (D29).
 
 Every clan-rendered manifest carries labels (managed-by, instance,
 component, config-hash — never in selectors), so you can always tell what
