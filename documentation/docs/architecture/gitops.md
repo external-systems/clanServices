@@ -1,165 +1,88 @@
 # GitOps
 
-Day two is Flux, on by default — but not on every cluster. Flux runs per
-**control domain** (D36): standalone clusters run their own Flux, a hub
-cluster runs the only Flux control plane for its domain and pushes to its
-spokes, and spokes run no Flux at all. Flux is never installed remotely
-(upstream declined it — flux-operator#624); hub→spoke delivery is a core
-Flux feature, not an operator feature.
+Clan renders the day-1 in-cluster surface exactly once and then stops.
+**Clan never installs a GitOps controller** — which tool you run (Flux,
+Argo CD, anything else) and how it is installed is your repo's decision.
+This page covers the delivery mechanism and the handoff; the recipes are in
+the [Day-2 GitOps guide](../guides/day-2-gitops.md).
 
-## The three flux modes (D36)
+## The bootstrap bundle (D40)
 
-`flux.mode` is set per cluster instance:
+The whole day-1 in-cluster surface is ONE kubenix-rendered manifest set per
+cluster — Cilium, pools, ClusterMesh config, CoreDNS zones, mirror Services,
+RBAC. A systemd oneshot on the `clusterInit` machine applies it once at
+first boot: wait for apiserver health, then
+`kubectl apply --server-side --field-manager=clan-bootstrap`.
 
-- **`standalone`** (default) — runs its own flux-operator and FluxInstance,
-  shares no kubeconfig with any cluster. A singleton standalone cluster is
-  the simplest shape: Flux manages only itself.
-- **`hub`** — runs Flux like standalone, plus the control-domain plane
-  (D37): per-spoke kubeconfig Secrets and the Kustomizations/HelmReleases
-  that reconcile into spokes.
-- **`spoke`** — runs **no Flux control plane**. The hub's controllers
-  reconcile into it via `Kustomization/HelmRelease.spec.kubeConfig.secretRef`.
-  A spoke still runs all non-Flux base — including the sealed-secrets
-  controller, whose SealedSecrets the hub applies remotely.
+Properties of the mechanism:
 
-`flux.enable` defaults to `true`. `false` renders no Flux anywhere: the
-clan applies all manifests directly through the distro manifests dir and
-Cilium stays clan-owned. Declaring mode `hub` or `spoke` with
-`flux.enable = false` is an eval error.
+- **Never the distro manifests dir.** Nothing host-resident tracks or
+  redeploys in-cluster state; `clan machines update` never churns the
+  cluster.
+- **Idempotent.** Server-side apply is a no-op when cluster state matches
+  the bundle.
+- **Off-ramp.** `bootstrap.apply = false` removes the unit once your GitOps
+  owns the set.
 
-## Trust domains: mesh ≠ flux
+## Day-2 adoption: the handoff
 
-The trust domain is the ClusterMesh mesh group string (default
-`meta.domain`). A hub and all its spokes must share one mesh group; at most
-one hub per group; a spoke requires exactly one hub in its group — all
-eval-asserted. Multiple mesh groups are multiple independent trust domains,
-each optionally with its own hub.
+The identical rendered set is published to your GitOps repo. Your GitOps
+adopts it — Flux as a Kustomization with prune on, Argo CD via resource
+tracking — and the **first reconcile is a no-op by construction**: identical
+bytes, one Nix source, so there is no dataplane flap and no values-parity
+problem. Thereafter your GitOps owns upgrades: pkgs bump → rebuild →
+republish → GitOps applies — and prunes.
 
-Mesh membership and flux control are linked but **distinct**: standalone
-clusters may be full mesh members, and mesh members may consume each
-other's mirror Services without any flux relationship.
+Adoption is safe by upstream design: Flux prune garbage-collects only the
+Kustomization's own `.status.inventory`, so pre-applied objects are adopted,
+not deleted; SSA bootstrap (`--server-side`) avoids client-side-apply
+field-ownership friction; and the Cilium chart ships no `crds/` directory —
+the operator manages CRDs at runtime — so manifest rendering loses nothing
+and no Helm hooks are needed.
 
-## Mirror Services are mandatory for spokes
+Rejected alternatives (D40):
 
-A spoke exports its API through a ClusterMesh-global mirror Service (D30),
-and the hub's kubeconfig points at the mirror DNS name directly — the
-spoke's API certificate SANs must include it (eval-asserted). Details in
-[Multi-cluster](multi-cluster.md).
+- `cilium install` CLI — hidden environment-autodetected values make
+  HelmRelease parity fragile, with documented crash-loop migrations and
+  cert-generation mode skew.
+- Rancher helm-controller — off per D42.
+- HelmRelease adoption of the bundle — impossible without helm release
+  storage. If you want HelmRelease ownership, bootstrap Cilium yourself with
+  plain `helm install` from the pinned chart (the Flux-maintainer-recommended
+  pattern); that variant is documented in the day-2 guide.
 
-## The hub credential plane (D37/D38)
+## Publish freshness
 
-The hub's spoke access is fully declarative — zero manual steps:
+What used to be a values-parity eval assertion is now a **publish-freshness
+gate** — the published manifest set must equal a fresh render — enforced as
+an artifact/CI check, not at eval.
 
-1. A shared vars generator `flux-hub-client-<spoke>` (dependent on the
-   spoke's cluster CA generator) signs a client certificate with the
-   **spoke's cluster CA**: CN=`flux-hub-<spoke>`, O=`flux-hub`, 365-day
-   validity.
-2. The spoke renders RBAC: a ClusterRoleBinding `flux-hub` binding group
-   `flux-hub` to `cluster-admin` (default posture; configurable
-   ClusterRole), plus optional per-tenant impersonation ServiceAccounts
-   with namespace-scoped RoleBindings — the flux2-hub-spoke-example
-   multi-tenant pattern. Hub tenants apply with
-   `.spec.serviceAccountName`.
-3. The hub renders a per-spoke namespace `flux-spoke-<spoke>` holding a
-   `kubeconfig` Secret (mirror DNS server + spoke CA public value + client
-   cert/key), delivered via secret-sync from vars. Spoke machines never
-   receive the client key.
-4. Beside it, the hub holds each spoke's **read-only** kubeconfig as
-   Secret `kubeconfig-readonly` in the same namespace (D38): every cluster
-   mints a no-secrets read-only identity (CN=`readonly-<instance>`,
-   O=`cluster-readers`) alongside its admin kubeconfig, and the hub copy —
-   server = mirror DNS name — gives hub-resident tooling and AI agents
-   fleet-wide read access without admin keys.
+## The control domain substrate (D43)
 
-Rotation is `clan vars generate --regenerate` plus a secret-sync re-apply;
-spokes are unaffected (same CA). Manual SA-token extraction survives only
-as the documented emergency runbook. Offline-minted SA JWTs and
-expiring bearer-token kubeconfigs with refresh CronJobs are rejected —
-machinery for a problem client certs do not have (D37).
-
-These control-plane credentials are the documented exception to the
-secrets-planes rule: clan vars owns them because clan is the issuer
-(D35/D37/D38). See [Secrets](../guides/secrets.md).
-
-## The hub tree convention
-
-The documented hub repository shape follows flux2-hub-spoke-example's
-`dependsOn` ordering: **tenants → infra-controllers → infra-configs →
-apps**, with per-spoke overlays under `clusters/<spoke>/`. Every
-spoke-bound object carries `kubeConfig.secretRef`.
-
-## Cilium handoff: bootstrap apply → Flux Kustomization (D29)
-
-Bootstrap and Flux apply **the same rendered manifest set from one kubenix
-evaluation**. Bootstrap applies it via the distro manifests dir at first
-boot — the CNI must exist before Flux pods can run. The handoff is a Flux
-**Kustomization** (prune on, drift correction) over that identical set,
-published to the GitOps repo / OCI artifact by the cluster's publish step —
-locally for standalone and hub clusters, hub-remote via
-`kubeConfig.secretRef` for spokes. The first reconcile is a no-op **by
-construction**: identical bytes, one Nix source, so there is no dataplane
-flap and no values-parity problem at all. Thereafter Flux owns upgrades —
-pkgs bump → rebuild → republish → Flux applies — and prunes.
-
-HelmRelease adoption was rejected: with the helm-controller off (D27) there
-is no helm release storage to adopt, and a HelmRelease install over
-helm-unowned resources fails on ownership metadata. What used to be a
-values-parity eval assertion is now a **publish-freshness gate** — the
-published manifest must equal a fresh render — enforced as an artifact/CI
-check. Helm chart upgrade hooks are replaced by explicit rendered ordering
-(CRDs-first artifacts, includeCRDs discipline). With `flux.enable = false`
-the bootstrap apply is permanent.
-
-The handoff set (Flux-owned post-bootstrap, locally or hub-remote, as
-Kustomizations over the rendered sets): Cilium, external-dns, and the
-optional add-ons. Never Flux-owned: the Envoy Gateway controller (D6), the
-distro runtime, and cluster PKI.
-
-## external-dns (D31)
-
-external-dns is an optional Flux component, deployed per cluster through the
-GitOps layer — it is not part of the clan base. Its provider credentials
-(GoDaddy, Cloudflare, RFC2136 keys) are **never** clan vars generators; they
-live as Sealed Secrets in the GitOps repo. Clan provides annotation knobs:
-`dns.hostnames` on `gateway.instances` and LB Service renderings emits
-`external-dns.alpha.kubernetes.io/hostname`, overridable per object.
-
-Scope is authoritative DNS providers only. external-dns is not used for
-inter-cluster DNS (its CoreDNS provider needs an etcd backend the clusters
-do not run); ClusterMesh plus the private-domain zones (D22) cover private
-naming. The multi-cluster value is the same public hostname with
-per-cluster targets.
-
-## Sealed Secrets
-
-Off by default, but **required** before any GitOps-owned secret exists
-(D35) — on spokes too, where the hub applies SealedSecrets remotely. Key
-management is either `clan-vars` (default when enabled: a persistent
-keypair with the public cert available offline, native renewal disabled,
-old keys retained) or `controller` (native Sealed Secrets lifecycle plus a
-backup runbook). Sealing keys are never a plain cert-manager Certificate.
-See [Secrets](../guides/secrets.md).
+For hub/spoke fleets, clan renders the tool-agnostic substrate any GitOps
+tool consumes: mirror Services (D30), `gitops-hub` client-cert identities
+and in-spoke RBAC, and hub-side `gitops-spoke-<spoke>` namespaces holding
+`kubeconfig` + `kubeconfig-readonly` Secrets. Wiring a specific tool to that
+substrate is day-2. See [Multi-cluster](multi-cluster.md).
 
 ## Rendering pipeline (D26)
 
 Rendering is two layers. **Layer 1 — base inflation (artifact flake, update
-time):** the atomic updater renders each pinned chart with the canonical
-fleet-uniform profile via `helm template` and **commits** the rendered
-manifest into the pkgs repo next to the version pins, regenerated and
-reviewed like `versions.nix`. Consumers read committed source files — zero
-import-from-derivation (IFD) anywhere in clanServices evaluation.
-**Layer 2 — per-cluster composition (clanServices, pure eval):** kubenix
-imports the base manifest and applies cluster variation by Nix module
-merging over the typed resource tree — cluster name/id, pod CIDRs, mesh
-peers land in the `cilium-config` ConfigMap and sibling CRs, never in
-re-run helm values. Fleet-uniform knobs stay frozen in layer 1 by design;
-post-merge validation rejects overrides that violate invariants.
+time):** the atomic updater renders the pinned Cilium chart with the
+canonical fleet-uniform profile via `helm template` semantics and **commits**
+the rendered manifest into the pkgs repo next to the version pins,
+regenerated and reviewed like `versions.nix`. Consumers read committed
+source files — zero import-from-derivation (IFD) anywhere in clanServices
+evaluation. **Layer 2 — per-cluster composition (clanServices, pure eval):**
+kubenix imports the base manifest and applies cluster variation by Nix
+module merging over the typed resource tree — cluster name/id, pod CIDRs,
+nodeipam, mesh peers land in the `cilium-config` ConfigMap and sibling CRs,
+never in re-run helm values. Fleet-uniform knobs stay frozen in layer 1 by
+design; post-merge validation rejects overrides that violate invariants.
 
-This keeps cold-store `nix flake check --no-build` green and makes
-inflation diffs ordinary reviewable git diffs. The Rancher helm-controller
-is disabled by default on both distros (D27); manifests flow kubenix →
-distro manifests dir → Flux Kustomization handoff (D29).
+This keeps cold-store `nix flake check --no-build` green and makes inflation
+diffs ordinary reviewable git diffs.
 
 Every clan-rendered manifest carries labels (managed-by, instance,
 component, config-hash — never in selectors), so you can always tell what
-the clan owns from what GitOps owns.
+clan owns from what GitOps owns.

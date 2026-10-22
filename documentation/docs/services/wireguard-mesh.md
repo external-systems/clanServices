@@ -21,8 +21,8 @@ a 25-second keepalive maintains the path.
 The service publishes `node_transport` exports (addresses, interface, port,
 MTU, endpoint) — exactly what a cluster service needs to derive node IPs
 and its tunnel MTU budget without depending on WireGuard internals. This is
-the default `host-wireguard` transport under the cluster services
-(SPEC.md §5.3).
+the host WireGuard full mesh that the cluster services use as their only
+tested node transport (SPEC.md §6.3).
 
 For options, exports, and firewall details see the service's own
 `services/wireguard-mesh/README.md` in the repo.

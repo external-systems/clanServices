@@ -39,13 +39,12 @@ nav:
   - Architecture:
       - Overview: architecture/overview.md
       - Networking: architecture/networking.md
-      - Gateways: architecture/gateways.md
       - Multi-cluster: architecture/multi-cluster.md
       - Fleet routing: architecture/fleet-routing.md
       - GitOps: architecture/gitops.md
       - Security: architecture/security.md
   - Decisions:
-      - Decision record D1–D35: decisions/index.md
+      - Decision record D1–D45: decisions/index.md
   - Services:
       - Overview: services/index.md
       - rke2: services/rke2.md
@@ -54,6 +53,7 @@ nav:
       - wireguard-mesh: services/wireguard-mesh.md
       - fleet-routing: services/fleet-routing.md
   - Guides:
+      - Day-2 GitOps: guides/day-2-gitops.md
       - Airgap operation: guides/airgap.md
       - Upgrades: guides/upgrades.md
       - Secrets: guides/secrets.md

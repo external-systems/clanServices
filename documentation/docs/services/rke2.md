@@ -14,18 +14,28 @@ comes from the private library.
 - **Distro-layer exception to the CNCF posture (D24).** rke2 is
   SUSE/Rancher-owned; k3s and the upstream `kubernetes` distro are the
   fully-CNCF paths.
-- **Bundled components off.** The RKE2-bundled Cilium is disabled in favor
-  of the canonical upstream profile; the Rancher helm-controller is
-  disabled by default (D27); bundled Traefik is always off (D3).
-- **PKI sync is non-destructive** (SPEC.md §5.10).
+- **Minimal base by default (D42).** The RKE2-bundled Cilium is disabled in
+  favor of the canonical upstream profile, and with
+  `distroDefaults.enable = false` (the default) the service passes the
+  distro's disable flags: no helm-controller, no Traefik, no servicelb, no
+  distro add-ons — the same minimal base as k3s and kubernetes. Set
+  `distroDefaults.enable = true` to let RKE2's own machinery deploy its
+  stock components and configure them through HelmChartConfig — your day-2
+  concern. servicelb stays off in both modes; Node IPAM (D41) replaces it.
+- **PKI sync is non-destructive** (SPEC.md §6.10).
 
 ## What is shared
 
-Transport, Cilium base, pools/BGP/BIRD, Envoy Gateway, cert-manager,
-ClusterMesh, Flux day two, secrets planes, assertions — all from the shared
-library. See [Architecture](../architecture/overview.md).
+Transport, the Cilium base with Node IPAM, pools/BGP/BIRD, ClusterMesh, the
+bootstrap bundle and its GitOps handoff, the control-domain substrate,
+secrets planes, assertions — all from the shared library. See
+[Architecture](../architecture/overview.md).
+
+The entire day-1 in-cluster surface is delivered as one kubenix-rendered
+bootstrap bundle, applied once via server-side apply on the `clusterInit`
+machine (D40) — nothing is written to RKE2's watched manifests dir.
 
 ## Status
 
 Implemented. Single-node, join, and HA VM suites are green (recorded at the
-imported baseline `692807c` in the source fork).
+imported baseline `896acdf` in the source fork).
