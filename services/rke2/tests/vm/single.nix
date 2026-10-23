@@ -112,13 +112,12 @@ _: {
             "ip route >&2; ip -6 route >&2",
             "kubectl describe pod -n kube-system -l k8s-app=cilium >&2 || true",
             "kubectl logs -n kube-system -l k8s-app=cilium --tail=200 >&2 || true",
-            "kubectl get configmap -n kube-system rke2-coredns-rke2-coredns -o yaml >&2 || true",
-            "kubectl get configmap -n kube-system coredns-custom -o yaml >&2 || true",
-            "kubectl logs -n kube-system -l app.kubernetes.io/name=rke2-coredns --tail=200 >&2 || true",
-            "for ip in $(kubectl get pod -n kube-system -l app.kubernetes.io/name=rke2-coredns -o jsonpath='{.items[*].status.podIP}'); do echo === coredns $ip === >&2; kubectl exec -n rke2-probe api-probe -- nslookup kubernetes.default.svc.cluster.local \"$ip\" >&2; done || true",
-            "for j in $(kubectl get jobs -n kube-system -o name); do echo === $j === >&2; kubectl logs -n kube-system $j --all-containers=true --tail=40 >&2; done",
+            # The clan CoreDNS (D46): configmap + pod logs.
+            "kubectl get configmap -n kube-system coredns -o yaml >&2 || true",
+            "kubectl logs -n kube-system -l k8s-app=kube-dns --tail=100 >&2 || true",
             "kubectl get events -A --sort-by=.lastTimestamp | tail -n 120 >&2 || true",
             "echo show stat | socat - UNIX-CONNECT:/run/haproxy/haproxy.sock >&2 || true",
+            "journalctl -u rke2-rke2-bootstrap-apply --no-pager -l | tail -n 60 >&2 || true",
             "cilium status >&2 || true",
         ]:
             m.execute(cmd)
@@ -129,6 +128,20 @@ _: {
         alpha.wait_for_unit("systemd-networkd.service", timeout=120)
         alpha.wait_for_unit("haproxy.service", timeout=240)
         alpha.wait_for_unit("rke2-server.service", timeout=600)
+
+        # The bootstrap bundle was applied by the oneshot (D40): unit
+        # succeeded, bundle at the clan-owned path, nothing in the distro's
+        # watched manifests dir.
+        alpha.wait_until_succeeds(
+            "systemctl show -p Result --value rke2-rke2-bootstrap-apply | grep -q '^success$'",
+            timeout=900,
+        )
+        alpha.succeed("test -f /etc/clan-bootstrap/rke2/bundle.yaml")
+        # Nothing clan-owned in the distro's watched manifests dir (D40):
+        # no rke2-cilium chart manifest, no clan manifests.
+        alpha.succeed(
+            "! ls /var/lib/rancher/rke2/server/manifests/ 2>/dev/null | grep -qi cilium"
+        )
 
         # The pre-generated PKI was synced in before rke2-server started,
         # and the per-node haproxy LB is bound on the mesh address.
@@ -190,25 +203,52 @@ _: {
             "kubectl get endpoints -n rke2-test server -o jsonpath='{.subsets[0].addresses[0].ip}'",
             timeout=60,
         )
-        out = alpha.succeed("""
+        cluster_ip = alpha.succeed(
+            "kubectl get service -n rke2-test server -o jsonpath='{.spec.clusterIP}'"
+        ).strip()
+        out = alpha.succeed(f"""
             kubectl run -n rke2-test --rm --attach --restart=Never --image=busybox:1.36.1 client \
-                -- wget -qO- http://server.rke2-test.svc.cluster.local/
+                -- wget -qO- http://{cluster_ip}/
         """)
         assert "OK" in out, f"ClusterIP round-trip returned {out!r}"
 
-        # CoreDNS default lookup from a pod.
+        # --- The clan CoreDNS (D46): uniform cluster.local DNS ----------
+        alpha.wait_until_succeeds(
+            "kubectl wait -n kube-system --for=condition=Available deployment/coredns --timeout=180s",
+            timeout=240,
+        )
+        # The Service is pinned to the derived clusterDNS IP.
+        dns_ip = alpha.succeed(
+            "kubectl get service -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'"
+        ).strip()
+        assert dns_ip == "10.2.0.10", f"kube-dns clusterIP is {dns_ip!r}, expected 10.2.0.10"
+
+        # cluster.local resolution from a pod (through the pod's
+        # resolv.conf -> the pinned clusterDNS Service IP).
         out = alpha.succeed("""
             kubectl run -n rke2-test --rm --attach --restart=Never --image=busybox:1.36.1 coredns-default \
                 -- nslookup kubernetes.default.svc.cluster.local
         """)
         assert "10.2.0.1" in out, f"kubernetes.default lookup failed: {out!r}"
 
-        # CoreDNS rewrite from a pod.
-        out = alpha.succeed("""
-            kubectl run -n rke2-test --rm --attach --restart=Never --image=busybox:1.36.1 coredns-rewrite \
-                -- nslookup foo.test.clan
+        # Direct query against the CoreDNS POD IP: cluster.local and the
+        # coredns.rewrites aliasing (D21/D22).
+        pod_ip = alpha.succeed(
+            "kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{.items[0].status.podIP}'"
+        ).strip()
+        out = alpha.succeed(f"""
+            kubectl exec -n rke2-probe api-probe -- nslookup kubernetes.default.svc.cluster.local {pod_ip}
+        """)
+        assert "10.2.0.1" in out, f"pod-IP direct lookup failed: {out!r}"
+        out = alpha.succeed(f"""
+            kubectl exec -n rke2-probe api-probe -- nslookup foo.test.clan {pod_ip}
         """)
         assert "10.2.0.1" in out, f"foo.test.clan rewrite failed: {out!r}"
+
+        # Negative: a name outside the served zones does not resolve.
+        alpha.fail(f"""
+            kubectl exec -n rke2-probe api-probe -- nslookup nowhere.test.clan {pod_ip}
+        """)
 
         # etcd smoke check
         alpha.succeed("kubectl create configmap rke2-smoke --from-literal=probe=ok")

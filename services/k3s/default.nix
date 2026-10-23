@@ -25,6 +25,16 @@ let
     in
     if matches == [ ] then null else (builtins.head matches).node_transport;
 
+  # Artifact-flake Cilium facts (chart version -> committed manifest path;
+  # image set -> airgap tarball packages). Pure: committed source files.
+  ciliumVersions = import (inputs.pkgs + "/pkgs/cilium/versions.nix");
+  ciliumManifest = inputs.pkgs + "/manifests/cilium/${ciliumVersions.chartVersion}.yaml";
+
+  # Artifact-flake CoreDNS pin (D46): the uniform clan-rendered
+  # cluster.local DNS image. Pure: committed source file.
+  corednsVersions = import (inputs.pkgs + "/pkgs/coredns/versions.nix");
+  coreDNSImageRef = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
+
   roleInterface =
     { lib, ... }:
     {
@@ -96,6 +106,21 @@ let
           };
 
       initMember = lib.findFirst (m: m.settings.clusterInit) null serverMembers;
+
+      # Members with known addresses — pool rendering skips null-addressed
+      # members (the address assertions in mkClusterAssertions cover them).
+      poolMembers = lib.filter (m: m.ipv4 != null && m.ipv6 != null) (
+        map (m: {
+          inherit (m) machineName;
+          inherit (memberAddr m.machineName) ipv4 ipv6;
+          inherit (m.settings) poolBlocks;
+        }) roleMembers
+      );
+
+      resolvedPools = kube.render.resolvePools {
+        inherit settings;
+        members = poolMembers;
+      };
     in
     {
       nixosModule =
@@ -134,13 +159,6 @@ let
           isInit = initMember != null && machine.name == initMember.machineName;
           joinUrl = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
 
-          mkBootstrapHelmChartSpec = name: {
-            chart = "https://127.0.0.1:${toString kubeapiPort}/static/charts/${name}.tgz";
-            bootstrap = true;
-          };
-
-          manifestLabels = kube.render.mkManifestLabels { inherit instanceName; };
-
           computedNodeLabels = [
             "cluster=${instanceName}"
             "role=${role}"
@@ -148,31 +166,41 @@ let
           ]
           ++ lib.mapAttrsToList (k: v: "${k}=${v}") machineSettings.nodeLabels;
 
-          resolvedCidrs = kube.cidrs settings.cilium.id;
-          podCidrs = lib.splitString "," resolvedCidrs.clusterCidr;
+          resolvedCidrs = kube.render.resolveCidrs settings;
 
-          ciliumValues =
-            lib.recursiveUpdate
-              {
-                global = {
-                  clusterCIDRv4 = builtins.elemAt podCidrs 0;
-                  clusterCIDRv6 = builtins.elemAt podCidrs 1;
-                };
-              }
-              (
-                kube.render.mkCiliumValues {
-                  inherit settings instanceName;
-                  transportFacts = {
-                    interface = if transportInterface != null then transportInterface else "eth0";
-                    mtu = if transportMtu != null then transportMtu else 1500;
-                  };
-                  k8sServiceHost = kubeapiAddr;
-                  k8sServicePort = haproxyKubeapiPort;
-                }
-              );
+          # The canonical Cilium profile (§6.4) with the admin's
+          # cilium.helmValues folded in — translated into bundle patches by
+          # profilePatches (never re-run through helm, D26).
+          ciliumProfile = kube.render.mkCiliumValues {
+            inherit settings instanceName;
+            transportFacts = {
+              interface = if transportInterface != null then transportInterface else "eth0";
+              mtu = if transportMtu != null then transportMtu else 1500;
+            };
+            k8sServiceHost = kubeapiAddr;
+            k8sServicePort = haproxyKubeapiPort;
+          };
 
-          corednsManifests = kube.render.mkCoreDNSManifests {
-            inherit settings instanceName manifestLabels;
+          manifestLabels = kube.render.mkManifestLabels { inherit instanceName; };
+
+          # The kubenix bootstrap bundle (D26 layer 2, D40). Evaluated only
+          # for the clusterInit node when bootstrap.apply is on.
+          bundle = kube.render.mkBundle {
+            inherit
+              pkgs
+              settings
+              instanceName
+              manifestLabels
+              ;
+            kubenixSrc = inputs.kubenix;
+            baseManifest = ciliumManifest;
+            profile = ciliumProfile;
+            pools = resolvedPools;
+            podIPCidr = resolvedCidrs.clusterCidr;
+            inherit (resolvedCidrs) clusterDNS;
+            coreDNSImage = coreDNSImageRef;
+            k8sServiceHost = kubeapiAddr;
+            k8sServicePort = haproxyKubeapiPort;
           };
 
           effectiveK3sPackage =
@@ -180,22 +208,6 @@ let
               settings.packages.k3s
             else
               self.inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}.k3s;
-
-          ciliumImagePackage = self.inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}.rke2;
-
-          packChart =
-            name: src:
-            pkgs.runCommand "${name}.tgz" { } ''
-              if [ -d ${src} ]; then
-                tar czf $out -C ${src} .
-              else
-                cp ${src} $out
-              fi
-            '';
-
-          effectiveCiliumChart = packChart "rke2-cilium" (
-            if settings.packages.ciliumChart != null then settings.packages.ciliumChart else inputs.cilium-chart
-          );
 
           imageArchSuffix =
             if pkgs.stdenv.hostPlatform.isx86_64 then
@@ -205,10 +217,47 @@ let
             else
               throw "k3s/${instanceName}: unsupported platform ${pkgs.stdenv.hostPlatform.system}";
 
+          # The artifact flake's digest-pinned Cilium image tarballs match
+          # the bundle's manifest exactly (D26/D40 airgap). The pins come
+          # from the pkgs flake's committed versions.nix; the pullImage
+          # FODs are content-addressed by the same hashes, so they are
+          # byte-identical to pkgs' image-cilium-* / cilium-airgap-images
+          # tarballs. amd64 only (the pkgs airgap set is x86_64-linux);
+          # other systems fall back to registry pulls.
+          ciliumImages = lib.optionals pkgs.stdenv.hostPlatform.isx86_64 (
+            map (
+              img:
+              pkgs.dockerTools.pullImage {
+                inherit (img) sha256;
+                imageName = img.repo;
+                imageDigest = img.digest;
+                finalImageName = img.repo;
+                finalImageTag = img.tag;
+                os = "linux";
+                arch = "amd64";
+              }
+            ) ciliumVersions.images
+          );
+
+          # The clan CoreDNS image (D46), digest-pinned like the Cilium set
+          # (same content-addressed FOD as the pkgs flake's image-coredns).
+          coreDNSImages = lib.optional pkgs.stdenv.hostPlatform.isx86_64 (
+            pkgs.dockerTools.pullImage {
+              inherit (corednsVersions) sha256;
+              imageName = corednsVersions.repo;
+              imageDigest = corednsVersions.digest;
+              finalImageName = corednsVersions.repo;
+              finalImageTag = corednsVersions.tag;
+              os = "linux";
+              arch = "amd64";
+            }
+          );
+
           defaultImages = [
             effectiveK3sPackage."airgap-images-${imageArchSuffix}-tar-zst"
-            ciliumImagePackage."images-cilium-linux-${imageArchSuffix}-tar-zst"
-          ];
+          ]
+          ++ ciliumImages
+          ++ coreDNSImages;
 
           effectiveImages =
             if settings.packages.images != [ ] then settings.packages.images else defaultImages;
@@ -246,17 +295,20 @@ let
 
           # distroDefaults (D42): servicelb/klipper is disabled in BOTH
           # modes — Cilium Node IPAM (D41) replaces it. In the minimal base
-          # (the default) the distro's packaged add-ons are disabled too;
+          # (the default) the distro's packaged add-ons AND the embedded
+          # helm-controller are disabled: the kubenix bootstrap bundle
+          # (D40) replaced helm-controller delivery in phase 3. The distro
+          # CoreDNS is disabled too (D46): the bundle renders the uniform
+          # clan CoreDNS for cluster.local instead.
           # distroDefaults.enable = true refrains so stock components
-          # deploy via the distro's own helm-controller (day-2 concern).
-          # The helm-controller itself stays on in both modes for now: it
-          # is the interim delivery mechanism for the clan-rendered Cilium
-          # bootstrap HelmChart until the kubenix bootstrap bundle (D40)
-          # lands in phase 3.
+          # (including the distro CoreDNS) deploy via the distro's own
+          # helm-controller (day-2 concern) — and the bundle skips its
+          # cluster.local CoreDNS (mode-exclusive).
           disabledAddons = [
             "servicelb"
           ]
           ++ lib.optionals (!settings.distroDefaults.enable) [
+            "coredns"
             "traefik"
             "local-storage"
             "metrics-server"
@@ -289,6 +341,9 @@ let
             disable-network-policy = true;
             node-label = computedNodeLabels;
           }
+          // lib.optionalAttrs (!settings.distroDefaults.enable) {
+            disable-helm-controller = true;
+          }
           // lib.optionalAttrs isInit {
             cluster-init = true;
           }
@@ -312,223 +367,235 @@ let
             if isServer then baseServerConfig else baseAgentConfig
           );
           configPath = pkgs.writeText "k3s-config.yaml" (builtins.toJSON cleanConfig);
+        in
+        {
+          # Internal eval seam for tests (rendered distro config.yaml and
+          # the bundle's object JSON; bundleJson only on the clusterInit
+          # node with bootstrap.apply on).
+          options.clan.kubeClusters = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = {
+                  renderedDistroConfig = lib.mkOption {
+                    type = lib.types.attrs;
+                    internal = true;
+                  };
+                  bundleJson = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    internal = true;
+                    default = null;
+                  };
+                };
+              }
+            );
+            internal = true;
+            default = { };
+          };
 
-          renderedManifests = lib.mkMerge [
+          config = lib.mkMerge [
             {
-              cilium = {
-                enable = isServer;
-                content = {
-                  apiVersion = "helm.cattle.io/v1";
-                  kind = "HelmChart";
-                  metadata = {
-                    name = "cilium";
-                    namespace = "kube-system";
-                    inherit manifestLabels;
-                  };
-                  spec = (mkBootstrapHelmChartSpec "cilium") // {
-                    targetNamespace = "kube-system";
-                    valuesContent = builtins.toJSON (lib.filterAttrsRecursive (_: v: v != null) ciliumValues);
-                  };
+              clan.kubeClusters.${instanceName} = {
+                renderedDistroConfig = cleanConfig;
+                bundleJson = lib.mkIf (isInit && settings.bootstrap.apply) bundle.json;
+              };
+
+              assertions =
+                (kube.assertions.mkClusterAssertions {
+                  inherit
+                    instanceName
+                    roleMembers
+                    settings
+                    ;
+                  transportFacts = if transportEnabled then allTransportFacts else null;
+                })
+                ++ (kube.assertions.mkPoolAssertions {
+                  inherit instanceName settings;
+                  members = poolMembers;
+                })
+                ++ [
+                  {
+                    assertion = settings.coredns.helmValues == { };
+                    message = "k3s/${instanceName}: coredns.helmValues is not supported; k3s uses its bundled CoreDNS with coredns.rewrites";
+                  }
+                ];
+
+              clan.core.vars.generators = lib.mkMerge (
+                [
+                  (kube.vars.mkTokenGenerators { inherit pkgs instanceName; })
+                  (kube.vars.mkHaproxyGenerator { inherit pkgs instanceName; })
+                ]
+                ++ lib.optionals isServer [
+                  (kube.vars.mkAdminKubeconfigGenerator {
+                    inherit pkgs instanceName;
+                    server = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
+                  })
+                ]
+                ++ lib.optional isInit (kube.vars.mkPkiGenerator { inherit pkgs instanceName; })
+              );
+
+              services.k3s = {
+                enable = true;
+                package = effectiveK3sPackage;
+                inherit role;
+                clusterInit = isInit;
+                serverAddr = if isInit then "" else joinUrl;
+                tokenFile = if isServer then serverTokenPath else agentTokenPath;
+                agentTokenFile = lib.mkIf isServer agentTokenPath;
+                nodeIP = "${nodeIPv4},${nodeIPv6}";
+                nodeLabel = computedNodeLabels;
+                images = effectiveImages;
+                # NO services.k3s.manifests / services.k3s.charts: clan
+                # manifests are delivered by the bootstrap bundle only (D40;
+                # §6.12 eval-rejects the distro manifests dir for clan
+                # manifests — structurally enforced by never writing there).
+              };
+
+              environment.etc."rancher/k3s/config.yaml".source = configPath;
+
+              systemd.tmpfiles.rules = lib.optionals isServer [
+                "L+ /etc/rancher/k3s/admin-kubeconfig - - - - ${
+                  config.clan.core.vars.generators."rancher-admin-kubeconfig-${instanceName}".files."kubeconfig.yaml".path
+                }"
+              ];
+
+              boot = {
+                kernelModules = [
+                  "br_netfilter"
+                  "overlay"
+                ];
+                kernel.sysctl = {
+                  "net.ipv4.conf.all.rp_filter" = lib.mkForce 2;
+                  "net.ipv4.ip_forward" = lib.mkForce true;
+                  "net.ipv6.conf.all.forwarding" = lib.mkForce true;
                 };
               };
 
-              cilium-pod-ip-pool = {
-                enable = isServer;
-                content = builtins.head (
-                  kube.render.mkCiliumManifests {
-                    inherit settings;
-                  }
-                );
+              fileSystems."/sys/fs/bpf" = {
+                device = "bpffs";
+                fsType = "bpf";
+                options = [
+                  "rw"
+                  "nosuid"
+                  "nodev"
+                  "noexec"
+                  "relatime"
+                  "mode=700"
+                ];
               };
 
-              coredns-custom = {
-                enable = isServer && corednsManifests ? coredns-custom;
-                content =
-                  if corednsManifests ? coredns-custom then corednsManifests.coredns-custom.content else null;
+              networking = {
+                nftables.enable = true;
+                firewall = {
+                  checkReversePath = "loose";
+                  extraReversePathFilterRules = lib.concatStringsSep "\n" (
+                    lib.optional (transportInterface != null) ''iifname "${transportInterface}" accept''
+                    ++ [ "meta mark and 0x0f00 == 0x0200 accept" ]
+                  );
+                  trustedInterfaces = [
+                    "cilium_host"
+                    "cilium_net"
+                  ]
+                  ++ lib.optional (transportInterface != null) transportInterface;
+                  extraInputRules =
+                    let
+                      interfaceGuard = if transportInterface != null then ''iifname "${transportInterface}" '' else "";
+                    in
+                    ''
+                      iifname { "cilium*", "lxc*" } accept
+                      ${interfaceGuard}tcp dport { ${toString kubeapiPort}, ${toString haproxyKubeapiPort}, 10250, 2379, 2380, 2381 } accept
+                    '';
+                  extraForwardRules = ''
+                    iifname { "cilium*", "lxc*" } accept
+                    oifname { "cilium*", "lxc*" } accept
+                  '';
+                };
+                extraHosts = ''
+                  ${nodeIPv4} ${kubeapiAddr}
+                  ${nodeIPv6} ${kubeapiAddr}
+                '';
+              };
+
+              services.haproxy = {
+                enable = true;
+                config = haproxyConfig;
+              };
+
+              systemd.services.haproxy = {
+                after = [ "systemd-networkd.service" ];
+                unitConfig.StartLimitIntervalSec = 0;
               };
             }
-          ];
-        in
-        lib.mkMerge [
-          {
-            assertions =
-              (kube.assertions.mkClusterAssertions {
-                inherit
-                  instanceName
-                  roleMembers
-                  settings
-                  ;
-                transportFacts = if transportEnabled then allTransportFacts else null;
-              })
-              ++ [
-                {
-                  assertion = settings.coredns.helmValues == { };
-                  message = "k3s/${instanceName}: coredns.helmValues is not supported; k3s uses its bundled CoreDNS with coredns.rewrites";
-                }
-              ];
 
-            clan.core.vars.generators = lib.mkMerge (
-              [
-                (kube.vars.mkTokenGenerators { inherit pkgs instanceName; })
-                (kube.vars.mkHaproxyGenerator { inherit pkgs instanceName; })
-              ]
-              ++ lib.optionals isServer [
-                (kube.vars.mkAdminKubeconfigGenerator {
-                  inherit pkgs instanceName;
-                  server = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
-                })
-              ]
-              ++ lib.optional isInit (kube.vars.mkPkiGenerator { inherit pkgs instanceName; })
-            );
-
-            services.k3s = {
-              enable = true;
-              package = effectiveK3sPackage;
-              inherit role;
-              clusterInit = isInit;
-              serverAddr = if isInit then "" else joinUrl;
-              tokenFile = if isServer then serverTokenPath else agentTokenPath;
-              agentTokenFile = lib.mkIf isServer agentTokenPath;
-              nodeIP = "${nodeIPv4},${nodeIPv6}";
-              nodeLabel = computedNodeLabels;
-              images = effectiveImages;
-              manifests = lib.mkIf isServer renderedManifests;
-              charts.cilium = lib.mkIf isServer effectiveCiliumChart;
-            };
-
-            environment.etc."rancher/k3s/config.yaml".source = configPath;
-
-            systemd.tmpfiles.rules = lib.optionals isServer [
-              "L+ /etc/rancher/k3s/admin-kubeconfig - - - - ${
-                config.clan.core.vars.generators."rancher-admin-kubeconfig-${instanceName}".files."kubeconfig.yaml".path
-              }"
-            ];
-
-            boot = {
-              kernelModules = [
-                "br_netfilter"
-                "overlay"
-              ];
-              kernel.sysctl = {
-                "net.ipv4.conf.all.rp_filter" = lib.mkForce 2;
-                "net.ipv4.ip_forward" = lib.mkForce true;
-                "net.ipv6.conf.all.forwarding" = lib.mkForce true;
-              };
-            };
-
-            fileSystems."/sys/fs/bpf" = {
-              device = "bpffs";
-              fsType = "bpf";
-              options = [
-                "rw"
-                "nosuid"
-                "nodev"
-                "noexec"
-                "relatime"
-                "mode=700"
-              ];
-            };
-
-            networking = {
-              nftables.enable = true;
-              firewall = {
-                checkReversePath = "loose";
-                extraReversePathFilterRules = lib.concatStringsSep "\n" (
-                  lib.optional (transportInterface != null) ''iifname "${transportInterface}" accept''
-                  ++ [ "meta mark and 0x0f00 == 0x0200 accept" ]
-                );
-                trustedInterfaces = [
-                  "cilium_host"
-                  "cilium_net"
-                ]
-                ++ lib.optional (transportInterface != null) transportInterface;
-                extraInputRules =
-                  let
-                    interfaceGuard = if transportInterface != null then ''iifname "${transportInterface}" '' else "";
-                  in
-                  ''
-                    iifname { "cilium*", "lxc*" } accept
-                    ${interfaceGuard}tcp dport { ${toString kubeapiPort}, ${toString haproxyKubeapiPort}, 10250, 2379, 2380, 2381 } accept
+            (lib.mkIf isInit {
+              systemd.services."k3s-${instanceName}-pki-seed" = {
+                description = "Seed the initial k3s custom CA certificates";
+                wantedBy = [ "multi-user.target" ];
+                before = [ "k3s.service" ];
+                requiredBy = [ "k3s.service" ];
+                unitConfig.ConditionPathExists =
+                  config.clan.core.vars.generators."rancher-pki-${instanceName}".files."server-ca.key".path;
+                serviceConfig = {
+                  Type = "oneshot";
+                  User = "root";
+                  ExecStart = pkgs.writeShellScript "k3s-${instanceName}-pki-seed" ''
+                    set -euo pipefail
+                    TLS_DIR=/var/lib/rancher/k3s/server/tls
+                    if [ -e "$TLS_DIR/service.current.key" ] || [ -e "$TLS_DIR/server-ca.nochain.crt" ]; then
+                      exit 0
+                    fi
+                    mkdir -p "$TLS_DIR/etcd"
+                    chmod 700 "$TLS_DIR" "$TLS_DIR/etcd"
+                    ${pkgs.coreutils}/bin/install -Dm644 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."server-ca.crt".path
+                    } "$TLS_DIR/server-ca.crt"
+                    ${pkgs.coreutils}/bin/install -Dm600 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."server-ca.key".path
+                    } "$TLS_DIR/server-ca.key"
+                    ${pkgs.coreutils}/bin/install -Dm644 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."client-ca.crt".path
+                    } "$TLS_DIR/client-ca.crt"
+                    ${pkgs.coreutils}/bin/install -Dm600 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."client-ca.key".path
+                    } "$TLS_DIR/client-ca.key"
+                    ${pkgs.coreutils}/bin/install -Dm644 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."request-header-ca.crt".path
+                    } "$TLS_DIR/request-header-ca.crt"
+                    ${pkgs.coreutils}/bin/install -Dm600 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."request-header-ca.key".path
+                    } "$TLS_DIR/request-header-ca.key"
+                    ${pkgs.coreutils}/bin/install -Dm644 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-peer-ca.crt".path
+                    } "$TLS_DIR/etcd/peer-ca.crt"
+                    ${pkgs.coreutils}/bin/install -Dm600 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-peer-ca.key".path
+                    } "$TLS_DIR/etcd/peer-ca.key"
+                    ${pkgs.coreutils}/bin/install -Dm644 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-server-ca.crt".path
+                    } "$TLS_DIR/etcd/server-ca.crt"
+                    ${pkgs.coreutils}/bin/install -Dm600 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-server-ca.key".path
+                    } "$TLS_DIR/etcd/server-ca.key"
+                    ${pkgs.coreutils}/bin/install -Dm600 ${
+                      config.clan.core.vars.generators."rancher-pki-${instanceName}".files."service.key".path
+                    } "$TLS_DIR/service.key"
                   '';
-                extraForwardRules = ''
-                  iifname { "cilium*", "lxc*" } accept
-                  oifname { "cilium*", "lxc*" } accept
-                '';
+                };
               };
-              extraHosts = ''
-                ${nodeIPv4} ${kubeapiAddr}
-                ${nodeIPv6} ${kubeapiAddr}
-              '';
-            };
+            })
 
-            services.haproxy = {
-              enable = true;
-              config = haproxyConfig;
-            };
-
-            systemd.services.haproxy = {
-              after = [ "systemd-networkd.service" ];
-              unitConfig.StartLimitIntervalSec = 0;
-            };
-          }
-
-          (lib.mkIf isInit {
-            systemd.services."k3s-${instanceName}-pki-seed" = {
-              description = "Seed the initial k3s custom CA certificates";
-              wantedBy = [ "multi-user.target" ];
-              before = [ "k3s.service" ];
-              requiredBy = [ "k3s.service" ];
-              unitConfig.ConditionPathExists =
-                config.clan.core.vars.generators."rancher-pki-${instanceName}".files."server-ca.key".path;
-              serviceConfig = {
-                Type = "oneshot";
-                User = "root";
-                ExecStart = pkgs.writeShellScript "k3s-${instanceName}-pki-seed" ''
-                  set -euo pipefail
-                  TLS_DIR=/var/lib/rancher/k3s/server/tls
-                  if [ -e "$TLS_DIR/service.current.key" ] || [ -e "$TLS_DIR/server-ca.nochain.crt" ]; then
-                    exit 0
-                  fi
-                  mkdir -p "$TLS_DIR/etcd"
-                  chmod 700 "$TLS_DIR" "$TLS_DIR/etcd"
-                  ${pkgs.coreutils}/bin/install -Dm644 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."server-ca.crt".path
-                  } "$TLS_DIR/server-ca.crt"
-                  ${pkgs.coreutils}/bin/install -Dm600 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."server-ca.key".path
-                  } "$TLS_DIR/server-ca.key"
-                  ${pkgs.coreutils}/bin/install -Dm644 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."client-ca.crt".path
-                  } "$TLS_DIR/client-ca.crt"
-                  ${pkgs.coreutils}/bin/install -Dm600 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."client-ca.key".path
-                  } "$TLS_DIR/client-ca.key"
-                  ${pkgs.coreutils}/bin/install -Dm644 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."request-header-ca.crt".path
-                  } "$TLS_DIR/request-header-ca.crt"
-                  ${pkgs.coreutils}/bin/install -Dm600 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."request-header-ca.key".path
-                  } "$TLS_DIR/request-header-ca.key"
-                  ${pkgs.coreutils}/bin/install -Dm644 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-peer-ca.crt".path
-                  } "$TLS_DIR/etcd/peer-ca.crt"
-                  ${pkgs.coreutils}/bin/install -Dm600 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-peer-ca.key".path
-                  } "$TLS_DIR/etcd/peer-ca.key"
-                  ${pkgs.coreutils}/bin/install -Dm644 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-server-ca.crt".path
-                  } "$TLS_DIR/etcd/server-ca.crt"
-                  ${pkgs.coreutils}/bin/install -Dm600 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."etcd-server-ca.key".path
-                  } "$TLS_DIR/etcd/server-ca.key"
-                  ${pkgs.coreutils}/bin/install -Dm600 ${
-                    config.clan.core.vars.generators."rancher-pki-${instanceName}".files."service.key".path
-                  } "$TLS_DIR/service.key"
-                '';
-              };
-            };
-          })
-        ];
+            # The bootstrap bundle + apply oneshot on the clusterInit node
+            # only (D40). bootstrap.apply = false is the day-2 off-ramp.
+            (lib.mkIf (isInit && settings.bootstrap.apply) (
+              kube.mkBootstrapApply {
+                inherit pkgs instanceName;
+                namePrefix = "k3s";
+                serverUnit = "k3s.service";
+                kubeconfigPath = "/etc/rancher/k3s/k3s.yaml";
+                bundle = bundle.path;
+              }
+            ))
+          ];
+        };
     };
 in
 {

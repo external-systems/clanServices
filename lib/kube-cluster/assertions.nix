@@ -1,4 +1,9 @@
+# Eval assertions (§6.12). mkClusterAssertions covers cluster shape;
+# mkPoolAssertions covers the D8 pool model.
 { lib }:
+let
+  cidr = import ./cidr.nix { inherit lib; };
+in
 {
   mkClusterAssertions =
     {
@@ -47,6 +52,72 @@
       {
         assertion = lib.all (r: r != "" && !lib.hasInfix "\n" r) settings.coredns.rewrites;
         message = "kube-cluster/${instanceName}: every coredns.rewrites entry must be a single non-empty line";
+      }
+    ];
+
+  # D8 pool assertions. members: [ { machineName, ipv4, ipv6, poolBlocks } ].
+  # The shared-bgp ⊆ router-prefixes assertion is deferred to phase 5 (the
+  # router role does not exist yet) — only shape is checked here.
+  mkPoolAssertions =
+    {
+      instanceName,
+      settings,
+      members,
+    }:
+    let
+      memberNames = map (m: m.machineName) members;
+
+      autoPools = map (m: {
+        name = m.machineName;
+        blocks = [
+          "${m.ipv4}/32"
+          "${m.ipv6}/128"
+        ]
+        ++ m.poolBlocks;
+      }) members;
+
+      declaredPools = lib.mapAttrsToList (name: p: {
+        inherit name;
+        inherit (p) blocks delivery candidates;
+      }) settings.pools;
+
+      allBlocks = lib.concatMap (p: p.blocks) (
+        autoPools ++ map (p: { inherit (p) blocks; }) declaredPools
+      );
+      overlapping = cidr.anyOverlap allBlocks;
+
+      nodeFateBoundDeclared = lib.filter (p: p.delivery == "node-fate-bound") declaredPools;
+      floatingWithoutCoverage = lib.filter (
+        p:
+        p.delivery == "floating"
+        && (p.candidates == [ ] || !lib.all (c: lib.elem c memberNames) p.candidates)
+      ) declaredPools;
+      nameCollisions = lib.filter (p: lib.elem p.name memberNames) declaredPools;
+    in
+    [
+      {
+        assertion = overlapping == [ ];
+        message = "kube-cluster/${instanceName}: overlapping pool blocks: ${
+          lib.concatMapStringsSep ", " (p: "${p.a} ~ ${p.b}") overlapping
+        }";
+      }
+      {
+        assertion = nodeFateBoundDeclared == [ ];
+        message = "kube-cluster/${instanceName}: node-fate-bound delivery is per-machine scope (auto-rendered node pools); invalid on cluster-global pools: ${
+          lib.concatMapStringsSep ", " (p: p.name) nodeFateBoundDeclared
+        }";
+      }
+      {
+        assertion = floatingWithoutCoverage == [ ];
+        message = "kube-cluster/${instanceName}: floating pools need a non-empty candidate set drawn from cluster members: ${
+          lib.concatMapStringsSep ", " (p: p.name) floatingWithoutCoverage
+        }";
+      }
+      {
+        assertion = nameCollisions == [ ];
+        message = "kube-cluster/${instanceName}: cluster-global pool names collide with auto per-machine node pools: ${
+          lib.concatMapStringsSep ", " (p: p.name) nameCollisions
+        }";
       }
     ];
 }

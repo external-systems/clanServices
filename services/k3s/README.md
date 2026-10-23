@@ -91,46 +91,48 @@ a live cluster's CA files.
 
 ## Cilium and CoreDNS
 
-The service disables Flannel, k3s's network-policy controller, and kube-proxy.
-Cilium is rendered as a bootstrap `HelmChart` backed by a static chart
-archive on the local kube-apiserver listener (`127.0.0.1:6443`), so its
-installation does not depend on CNI or ClusterIP routing already being available.
-The `CiliumPodIPPool` and base
-Cilium values are shared with rke2; k3s additionally supplies the
-`global.clusterCIDRv4`/`global.clusterCIDRv6` values that RKE2 normally injects
-into its bundled chart.
+The service disables Flannel, k3s's network-policy controller, kube-proxy,
+and (in the minimal base) the helm-controller. Cilium — plus the
+`CiliumPodIPPool`, LB pools, and the CoreDNS private-zone additions — is
+delivered by the kubenix bootstrap bundle, applied once via server-side
+apply by a systemd oneshot on the `clusterInit` node (D40); nothing is
+written to the k3s manifests dir. The bundle imports the artifact flake's
+committed Cilium manifest and merges per-cluster variation (cluster
+name/id, CIDRs, KPR endpoint, devices/MTU, Node IPAM) into the typed
+resource tree — the chart is never re-run here (D26).
 
-k3s's bundled CoreDNS remains enabled. `coredns.rewrites` renders the
-`coredns-custom` ConfigMap that k3s already mounts and imports. CoreDNS addresses
-are derived from both service CIDR families. `coredns.helmValues` is rejected:
-k3s CoreDNS is a plain AddOn manifest, not a Helm chart.
+k3s's bundled CoreDNS remains enabled (it is a plain AddOn manifest and
+survives the helm-controller being off). `coredns.rewrites` renders the
+`coredns-custom` ConfigMap into the bundle; k3s CoreDNS mounts and imports
+it. `coredns.helmValues` is rejected: k3s CoreDNS is not a Helm chart.
 
 ## distroDefaults
 
 With `distroDefaults.enable = false` (the default, SPEC.md D42) the service
 passes the k3s disable flags for the distro's packaged add-ons — Traefik,
-local-storage, metrics-server — yielding the uniform minimal base. Set
-`distroDefaults.enable = true` to refrain: k3s then deploys its stock
-components through its own helm-controller, and you configure them through
-HelmChartConfig — a day-2 concern, never clan-rendered. servicelb/klipper
+local-storage, metrics-server — and disables the helm-controller, yielding
+the uniform minimal base. Set `distroDefaults.enable = true` to refrain:
+k3s then deploys its stock components through its own helm-controller, and
+you configure them through HelmChartConfig — a day-2 concern, never
+clan-rendered. servicelb/klipper
 stays disabled in both modes: Cilium Node IPAM (D41) gives every classless
 LoadBalancer Service node IPs.
 
 ## Options
 
 Most cluster-wide settings live in `lib/kube-cluster` (`cluster-interface.nix`
-and `node-interface.nix`): `cilium`, `distroDefaults`, `coredns.rewrites`, and
+and `node-interface.nix`): `cilium`, `pools`, `bootstrap.apply`,
+`distroDefaults`, `coredns.rewrites`, and
 the `packages.*` airgap escape hatches. The k3s service adds `configOverrides`,
 extra keys merged into `/etc/rancher/k3s/config.yaml`. There is no rke2
 `profile = "cis"` equivalent.
 
 ## Airgap
 
-The service imports the pinned k3s monolithic airgap archive and the matching
-Cilium image archive exposed by nixpkgs' rke2 package. The rke2 package is only
-an image-artifact source; rke2 itself is not installed. The Cilium chart is a
-pinned flake input. Override `packages.k3s`, `packages.images`, or
-`packages.ciliumChart` to provide a custom airgap set.
+The service imports the pinned k3s monolithic airgap archive plus the
+artifact flake's digest-pinned Cilium image tarballs (matching the bundle's
+manifest exactly). Override `packages.k3s` or `packages.images` to provide
+a custom airgap set.
 
 ## Tests
 
@@ -141,6 +143,7 @@ All suites run on the `wireguard-mesh` transport and are exposed as
 nix build .#checks.x86_64-linux.k3s-single
 nix build .#checks.x86_64-linux.k3s-join
 nix build .#checks.x86_64-linux.k3s-ha
+nix build .#checks.x86_64-linux.k3s-data-plane
 ```
 
 - `k3s-single` — one server: initial PKI seed, haproxy LB, admin kubeconfig
@@ -152,3 +155,10 @@ nix build .#checks.x86_64-linux.k3s-ha
   voting members, then one manager is shut down: the survivors' healthchecks
   mark it DOWN, the API keeps answering through the local LB, fresh etcd writes
   succeed with 2/3 quorum, and pods still schedule.
+- `k3s-data-plane` — the data-plane contract over the bootstrap bundle: the
+  cluster comes up via the bootstrap-apply oneshot, a pool-backed Service
+  (`loadBalancerClass: io.cilium/lb-ipam` + selector) draws from the declared
+  `CiliumLoadBalancerIPPool`, a classless Service gets node IPs from Node
+  IPAM with the ETP-Local candidate restriction (backend pinned to one node),
+  plus firewall positive/negative exposure. Hermetic: go-httpbin fixture,
+  preloaded distro + Cilium airgap images.

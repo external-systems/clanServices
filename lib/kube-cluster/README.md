@@ -22,13 +22,15 @@ The library exposes:
 
 - shared, JSON-serializable option interfaces for role-level and per-machine
   settings;
-- pure render functions for Cilium, CoreDNS, and the per-node haproxy
-  kube-apiserver load balancer;
-- eval-time cluster assertions;
+- the kubenix bootstrap-bundle renderer (`bundle.nix`), the pure-Nix
+  YAML-subset parser that ingests the committed base manifest without IFD
+  (`yaml.nix`), the pure CIDR overlap math (`cidr.nix`), and the per-node
+  haproxy kube-apiserver load balancer renderer;
+- eval-time cluster + pool assertions;
 - distro-neutral clan vars generators (join tokens, cluster PKI, haproxy
   healthcheck material, admin kubeconfig);
-- the NixOS fragment builder for the PKI sync units (distro-parameterized by
-  TLS dir / unit names).
+- the NixOS fragment builders for the PKI sync units and the
+  bootstrap-apply oneshot (distro-parameterized by TLS dir / unit names).
 
 Distro-specific config (rke2 config.yaml vs k3s config), the distro NixOS
 module wiring, and airgap tarball selection stay OUT of this library.
@@ -39,13 +41,15 @@ module wiring, and airgap tarball selection stay OUT of this library.
 |---|---|
 | `interfaces.cluster` | Deferred module of shared role-level options. |
 | `interfaces.node` | Deferred module of shared per-machine options. |
-| `render.mkCiliumValues` | Cilium helm values (tunnel VXLAN, KPR, multi-pool IPAM, Node IPAM default, MTU math). |
-| `render.mkCiliumManifests` | `CiliumPodIPPool` CR (LB-IPAM/BGP left to later phases). |
-| `render.mkCoreDNSValues` | coredns chart values for custom rewrite support. |
-| `render.mkCoreDNSManifests` | `coredns-custom` ConfigMap manifest. |
+| `render.mkCiliumValues` | The canonical Cilium profile tree (tunnel VXLAN, KPR, multi-pool IPAM, Node IPAM default, MTU math) with `cilium.helmValues` folded in. |
+| `render.mkBundle` | The kubenix bootstrap bundle (D26 layer 2 / D40): imports the artifact flake's committed Cilium manifest via the pure-Nix YAML-subset parser (`yaml.nix`, zero IFD), merges per-cluster variation into the typed resource tree (`cilium-config` ConfigMap data, KPR env, pod IP pool, LB pools, `coredns-custom`), validates post-merge invariants (`validateBundle`), and emits one multi-doc YAML + object list + config hash. |
+| `render.mkLBService` | External-facing Service helper: ETP Local + `loadBalancerClass: io.cilium/lb-ipam` + manifest labels (invariants 5/6). |
 | `render.mkHaproxyConfig` | Per-node haproxy kube-apiserver LB config, with an optional rke2 supervisor LB. |
-| `render.mkManifestLabels` | Common labels for all rendered resources. |
+| `render.mkManifestLabels` | §6.11 labels for all rendered resources (managed-by, cluster, component; config-hash is added per object by mkBundle). |
+| `render.resolvePools` | D8 pool resolution: auto per-machine node pools (join /32+/128 + `poolBlocks`) plus declared cluster-global pools. |
 | `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape. |
+| `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (pure-Nix CIDR math, `cidr.nix`), scope⇒mode, floating candidate coverage, node-name collisions. |
+| `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40). |
 | `vars.mkTokenGenerators` | Join token generators (`rancher-server-token-<instance>` / `rancher-agent-token-<instance>`). |
 | `vars.mkPkiGenerator` | `rancher-pki-<instance>` — the pre-generated cluster CA tree. |
 | `vars.mkHaproxyGenerator` | `rancher-haproxy-<instance>` — LB healthcheck client cert + stats password hash. |
@@ -108,9 +112,10 @@ is a later phase).
 `distroDefaults.enable` (default `false`, SPEC.md D42) selects the distro
 base: `false` = the rke2/k3s services pass the flags that disable the
 distro's packaged add-ons (Traefik/ingress, metrics-server, local-storage,
-snapshot controller) for a uniform minimal base; `true` = the service
-refrains from disabling, so stock components deploy via the distro's own
-machinery and are configured day-2 through its HelmChartConfig surface.
+snapshot controller) and the embedded helm-controller (the bootstrap bundle
+replaced helm-controller delivery in phase 3) for a uniform minimal base;
+`true` = the service refrains, so stock components deploy via the distro's
+own machinery and are configured day-2 through its HelmChartConfig surface.
 servicelb/klipper stays disabled in both modes — Cilium Node IPAM
 (`nodeIPAM.enabled = true`, `defaultLBServiceIPAM = "nodeipam"`, D41) is the
 classless LoadBalancer mechanism.

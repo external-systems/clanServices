@@ -1,3 +1,8 @@
+# The canonical Cilium profile (SPEC §6.4). mkCiliumValues produces the
+# profile tree; the admin's cilium.helmValues merge on top (override hatch).
+# The profile is the intermediate language only — it is translated into
+# kubenix typed-tree patches (cilium-config ConfigMap data + KPR env) by
+# bundle.nix profilePatches; the chart is never re-run (D26: zero IFD).
 { lib, cidrs }:
 let
   # Resolve CIDRs from explicit options or derive them from cilium.id.
@@ -31,6 +36,8 @@ let
     };
 in
 {
+  inherit resolveCidrs;
+
   mkCiliumValues =
     {
       settings,
@@ -76,32 +83,4 @@ in
       loadBalancer.algorithm = "maglev";
       pmtuDiscovery.enabled = true;
     } settings.cilium.helmValues;
-
-  mkCiliumManifests =
-    {
-      settings,
-    }:
-    let
-      resolved = resolveCidrs settings;
-      podCidrs = lib.splitString "," resolved.clusterCidr;
-      podCidr4 = builtins.elemAt podCidrs 0;
-      podCidr6 = builtins.elemAt podCidrs 1;
-    in
-    [
-      {
-        apiVersion = "cilium.io/v2alpha1";
-        kind = "CiliumPodIPPool";
-        metadata.name = "default";
-        spec = {
-          ipv4 = {
-            cidrs = [ podCidr4 ];
-            maskSize = 24;
-          };
-          ipv6 = {
-            cidrs = [ podCidr6 ];
-            maskSize = 64;
-          };
-        };
-      }
-    ];
 }

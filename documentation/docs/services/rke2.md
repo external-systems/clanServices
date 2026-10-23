@@ -22,6 +22,14 @@ comes from the private library.
   `distroDefaults.enable = true` to let RKE2's own machinery deploy its
   stock components and configure them through HelmChartConfig — your day-2
   concern. servicelb stays off in both modes; Node IPAM (D41) replaces it.
+  Cluster DNS (D46): RKE2's bundled `rke2-coredns` is a HelmChart and is
+  disabled in BOTH modes in favor of the uniform clan-rendered CoreDNS from
+  the bootstrap bundle — Service pinned to the derived clusterDNS IP,
+  `coredns.rewrites` folded into its Corefile. Under
+  `distroDefaults.enable = true` the stock `rke2-coredns` deploys and the
+  bundle skips its own CoreDNS (mode-exclusive); note the stock chart does
+  not import `coredns-custom`, so private-zone rewrites on rke2 want the
+  minimal base (or day-2 chart config).
 - **PKI sync is non-destructive** (SPEC.md §6.10).
 
 ## What is shared
@@ -38,4 +46,9 @@ machine (D40) — nothing is written to RKE2's watched manifests dir.
 ## Status
 
 Implemented. Single-node, join, and HA VM suites are green (recorded at the
-imported baseline `896acdf` in the source fork).
+imported baseline `896acdf` in the source fork). Phase 3 (SPEC.md §8)
+replaced all helm-controller/manifests-dir delivery with the kubenix
+bootstrap bundle + SSA oneshot (D40) and added the hermetic
+`rke2-data-plane` VM suite (pool allocation, Node IPAM classless Service,
+ETP-Local candidate restriction, firewall positive/negative). Cluster DNS
+is the uniform clan-rendered CoreDNS (D46) in both distros' minimal base.

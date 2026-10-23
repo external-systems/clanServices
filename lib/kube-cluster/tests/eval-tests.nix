@@ -1,4 +1,8 @@
-{ lib }:
+{
+  lib,
+  inputs,
+  pkgs,
+}:
 let
   kube = import ../default.nix { inherit lib; };
 
@@ -17,13 +21,13 @@ let
       id = 1;
       helmValues = { };
     };
+    pools = { };
     distroDefaults.enable = false;
     coredns = {
       rewrites = [ ];
       helmValues = { };
     };
     packages = {
-      ciliumChart = null;
       images = [ ];
     };
   };
@@ -56,15 +60,101 @@ let
     k8sServicePort = 6443;
   };
 
-  ciliumManifests = kube.render.mkCiliumManifests {
-    settings = baseSettings;
-  };
+  # --- Bundle rendering (D26/D40) --------------------------------------
 
-  corednsValues = kube.render.mkCoreDNSValues {
-    settings = evalSettings {
-      coredns.rewrites = [ "name suffix svc.test.cluster svc.cluster.local answer auto" ];
+  ciliumVersions = import (inputs.pkgs + "/pkgs/cilium/versions.nix");
+  baseManifest = inputs.pkgs + "/manifests/cilium/${ciliumVersions.chartVersion}.yaml";
+
+  corednsVersions = import (inputs.pkgs + "/pkgs/coredns/versions.nix");
+
+  members = [
+    {
+      machineName = "node-1";
+      ipv4 = "10.0.0.1";
+      ipv6 = "fd00::1";
+      poolBlocks = [ ];
+    }
+    {
+      machineName = "node-2";
+      ipv4 = "10.0.0.2";
+      ipv6 = "fd00::2";
+      poolBlocks = [ "192.168.9.0/24" ];
+    }
+  ];
+
+  manifestLabels = kube.render.mkManifestLabels { inherit instanceName; };
+
+  mkTestBundle =
+    settings:
+    kube.render.mkBundle {
+      inherit
+        pkgs
+        settings
+        instanceName
+        manifestLabels
+        baseManifest
+        ;
+      kubenixSrc = inputs.kubenix;
+      profile = kube.render.mkCiliumValues {
+        inherit settings transportFacts instanceName;
+        k8sServiceHost = "kubeapi-test.example.org";
+        k8sServicePort = 6443;
+      };
+      pools = kube.render.resolvePools { inherit settings members; };
+      podIPCidr = "10.1.0.0/16,fd10:1::/56";
+      clusterDNS = "10.2.0.10";
+      coreDNSImage = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
+      k8sServiceHost = "kubeapi-test.example.org";
     };
-  };
+
+  bundle = mkTestBundle baseSettings;
+  bundleAgain = mkTestBundle baseSettings;
+  bundleObjects = builtins.fromJSON bundle.json;
+
+  findObj =
+    kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjects;
+
+  ciliumConfig = (findObj "ConfigMap" "cilium-config").data;
+
+  # A bundle whose helmValues violate invariants must throw at eval.
+  violatingBundle = mkTestBundle (evalSettings {
+    cilium.helmValues.gatewayAPI.enabled = true;
+  });
+  violatingThrew =
+    !(builtins.tryEval (builtins.deepSeq violatingBundle.json violatingBundle.json)).success;
+
+  ipamKubernetesBundle = mkTestBundle (evalSettings {
+    cilium.helmValues.ipam.mode = "kubernetes";
+  });
+  ipamKubernetesOk =
+    (builtins.tryEval (builtins.deepSeq ipamKubernetesBundle.json ipamKubernetesBundle.json)).success;
+
+  unknownKeyBundle = mkTestBundle (evalSettings {
+    cilium.helmValues.hubble.relay.enabled = true;
+  });
+  unknownKeyThrew =
+    !(builtins.tryEval (builtins.deepSeq unknownKeyBundle.json unknownKeyBundle.json)).success;
+
+  bundleWithPools = mkTestBundle (evalSettings {
+    pools.ingress = {
+      blocks = [
+        "203.0.113.0/28"
+        "fd20:99::/64"
+      ];
+      serviceSelector."clan.lol/pool" = "ingress";
+      delivery = "external-class";
+    };
+    coredns.rewrites = [ "name suffix svc.test.example.org svc.cluster.local answer auto" ];
+  });
+
+  # D46: distroDefaults=true keeps the distro's stock CoreDNS for
+  # cluster.local; the bundle skips its own (mode-exclusive) and renders
+  # the legacy coredns-custom ConfigMap for the stock Corefile's import.
+  bundleStock = mkTestBundle (evalSettings {
+    distroDefaults.enable = true;
+    coredns.rewrites = [ "name foo.test.example.org kubernetes.default.svc.cluster.local" ];
+  });
+  bundleStockObjects = builtins.fromJSON bundleStock.json;
 
   # Assertion helpers.
   failedAssertion =
@@ -126,38 +216,343 @@ in
     };
   };
 
-  test_ciliumManifestsCidrDerivation = {
+  # --- bundle tests -----------------------------------------------------
+
+  # Two independent evals of the same inputs produce identical bytes.
+  test_bundleDeterministic = {
+    expr = bundle.json == bundleAgain.json;
+    expected = true;
+  };
+
+  # Post-merge invariant validation (§6.4): gatewayAPI.enabled=true throws.
+  test_bundleInvariantGatewayApiThrows = {
+    expr = violatingThrew;
+    expected = true;
+  };
+
+  # ipam.mode=kubernetes is an allowed explicit override (D41).
+  test_bundleIpamKubernetesAllowed = {
+    expr = ipamKubernetesOk;
+    expected = true;
+  };
+
+  # helmValues keys with no layer-2 translation throw instead of being
+  # silently dropped.
+  test_bundleUnknownHelmValueThrows = {
+    expr = unknownKeyThrew;
+    expected = true;
+  };
+
+  # Node IPAM (D41) is patched into the rendered cilium-config ConfigMap.
+  test_bundleNodeIpamInConfigMap = {
     expr = {
-      ipv4 = (builtins.head ciliumManifests).spec.ipv4.cidrs;
-      ipv6 = (builtins.head ciliumManifests).spec.ipv6.cidrs;
+      inherit (ciliumConfig) enable-node-ipam default-lb-service-ipam;
     };
     expected = {
-      ipv4 = [ "10.1.0.0/16" ];
-      ipv6 = [ "fd10:1::/56" ];
+      enable-node-ipam = "true";
+      default-lb-service-ipam = "nodeipam";
     };
   };
 
-  test_ciliumManifestsCidrDerivationId2 = {
+  # Per-cluster identity + KPR endpoint land in the bundle.
+  test_bundleClusterIdentityAndKpr = {
     expr =
       let
-        manifests = kube.render.mkCiliumManifests {
-          settings = baseSettings // {
-            cilium.id = 2;
-          };
-        };
+        ds = findObj "DaemonSet" "cilium";
+        agentContainer = lib.findFirst (c: c.name == "cilium") null ds.spec.template.spec.containers;
+        envHost =
+          (lib.findFirst (e: e.name == "KUBERNETES_SERVICE_HOST") { value = null; } agentContainer.env).value;
+        envPort =
+          (lib.findFirst (e: e.name == "KUBERNETES_SERVICE_PORT") { value = null; } agentContainer.env).value;
       in
       {
-        ipv4 = (builtins.head manifests).spec.ipv4.cidrs;
-        ipv6 = (builtins.head manifests).spec.ipv6.cidrs;
+        inherit (ciliumConfig)
+          cluster-name
+          cluster-id
+          routing-mode
+          tunnel-protocol
+          ;
+        inherit envHost envPort;
       };
     expected = {
-      ipv4 = [ "10.3.0.0/16" ];
-      ipv6 = [ "fd10:3::/56" ];
+      cluster-name = "test";
+      cluster-id = "1";
+      routing-mode = "tunnel";
+      tunnel-protocol = "vxlan";
+      envHost = "kubeapi-test.example.org";
+      envPort = "6443";
     };
   };
 
-  test_corednsValuesHasRewriteImport = {
-    expr = corednsValues.servers != null;
+  # The dual-stack pod CIDRs land in the default CiliumPodIPPool.
+  test_bundlePodIPPool = {
+    expr =
+      let
+        p = findObj "CiliumPodIPPool" "default";
+      in
+      {
+        v4 = p.spec.ipv4.cidrs;
+        v6 = p.spec.ipv6.cidrs;
+      };
+    expected = {
+      v4 = [ "10.1.0.0/16" ];
+      v6 = [ "fd10:1::/56" ];
+    };
+  };
+
+  # Auto per-machine node pools (join /32+/128 + poolBlocks) and declared
+  # cluster-global pools render as CiliumLoadBalancerIPPool CRs (D8).
+  test_bundlePools = {
+    expr =
+      let
+        objects = builtins.fromJSON bundleWithPools.json;
+        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null objects;
+        node1 = find "CiliumLoadBalancerIPPool" "node-1";
+        node2 = find "CiliumLoadBalancerIPPool" "node-2";
+        ingress = find "CiliumLoadBalancerIPPool" "ingress";
+      in
+      {
+        node1Blocks = node1.spec.blocks;
+        node2Blocks = node2.spec.blocks;
+        node1Selector = node1.spec.serviceSelector.matchLabels;
+        ingressBlocks = ingress.spec.blocks;
+        ingressSelector = ingress.spec.serviceSelector.matchLabels;
+      };
+    expected = {
+      node1Blocks = [
+        { cidr = "10.0.0.1/32"; }
+        { cidr = "fd00::1/128"; }
+      ];
+      node2Blocks = [
+        { cidr = "10.0.0.2/32"; }
+        { cidr = "fd00::2/128"; }
+        { cidr = "192.168.9.0/24"; }
+      ];
+      node1Selector."clan.lol/pool" = "node-1";
+      ingressBlocks = [
+        { cidr = "203.0.113.0/28"; }
+        { cidr = "fd20:99::/64"; }
+      ];
+      ingressSelector."clan.lol/pool" = "ingress";
+    };
+  };
+
+  # D46: the uniform clan CoreDNS renders in the minimal base — Service
+  # pinned to the derived clusterDNS IP, rewrites folded into the Corefile,
+  # digest-pinned image.
+  test_bundleCoreDNSMinimal = {
+    expr =
+      let
+        objects = builtins.fromJSON bundleWithPools.json;
+        deploy = lib.findFirst (o: o.kind == "Deployment" && o.metadata.name == "coredns") null objects;
+        svc = lib.findFirst (o: o.kind == "Service" && o.metadata.name == "kube-dns") null objects;
+        cm = lib.findFirst (o: o.kind == "ConfigMap" && o.metadata.name == "coredns") null objects;
+        sa = lib.findFirst (o: o.kind == "ServiceAccount" && o.metadata.name == "coredns") null objects;
+        crb = lib.findFirst (
+          o: o.kind == "ClusterRoleBinding" && o.metadata.name == "coredns"
+        ) null objects;
+        container = lib.findFirst (c: c.name == "coredns") null deploy.spec.template.spec.containers;
+        legacyCm = lib.findFirst (
+          o: o.kind == "ConfigMap" && o.metadata.name == "coredns-custom"
+        ) null objects;
+      in
+      {
+        deployPresent = deploy != null;
+        saPresent = sa != null;
+        crbPresent = crb != null;
+        clusterIP = svc.spec.clusterIP;
+        rewriteFolded = lib.hasInfix "rewrite name suffix svc.test.example.org svc.cluster.local answer auto" cm.data.Corefile;
+        clusterLocalZone = lib.hasInfix "kubernetes cluster.local in-addr.arpa ip6.arpa" cm.data.Corefile;
+        imageDigestPinned = lib.hasInfix "@sha256:" container.image;
+        # minimal mode: the legacy distro-import ConfigMap is NOT rendered
+        # (rewrites fold into the clan Corefile)
+        legacyAbsent = legacyCm == null;
+        replicas = deploy.spec.replicas;
+      };
+    expected = {
+      deployPresent = true;
+      saPresent = true;
+      crbPresent = true;
+      clusterIP = "10.2.0.10";
+      rewriteFolded = true;
+      clusterLocalZone = true;
+      imageDigestPinned = true;
+      legacyAbsent = true;
+      replicas = 2;
+    };
+  };
+
+  # D46 mode exclusivity: distroDefaults=true keeps the distro CoreDNS —
+  # the bundle renders NO cluster.local CoreDNS (Deployment/Service) and
+  # keeps the legacy coredns-custom ConfigMap for the stock Corefile's
+  # import path.
+  test_bundleCoreDNSSkippedUnderDistroDefaults = {
+    expr =
+      let
+        deploy = lib.findFirst (
+          o: o.kind == "Deployment" && o.metadata.name == "coredns"
+        ) null bundleStockObjects;
+        svc = lib.findFirst (
+          o: o.kind == "Service" && o.metadata.name == "kube-dns"
+        ) null bundleStockObjects;
+        legacyCm = lib.findFirst (
+          o: o.kind == "ConfigMap" && o.metadata.name == "coredns-custom"
+        ) null bundleStockObjects;
+      in
+      {
+        deployAbsent = deploy == null;
+        svcAbsent = svc == null;
+        legacyContent = legacyCm.data."test.override" or null;
+      };
+    expected = {
+      deployAbsent = true;
+      svcAbsent = true;
+      legacyContent = "rewrite name foo.test.example.org kubernetes.default.svc.cluster.local";
+    };
+  };
+
+  # Every object carries the §6.11 manifest labels incl. config-hash.
+  test_bundleManifestLabelsEverywhere = {
+    expr = lib.all (
+      o:
+      let
+        l = o.metadata.labels or { };
+      in
+      (l."app.kubernetes.io/managed-by" or null) == "clan"
+      && (l."clan.lol/cluster" or null) == instanceName
+      && l ? "clan.lol/component"
+      && l ? "clan.lol/config-hash"
+    ) bundleObjects;
+    expected = true;
+  };
+
+  # Every container image reference in the bundle is digest-pinned: the
+  # artifact-flake Cilium images plus the clan CoreDNS image (D46). The
+  # validateBundle check enforces that the committed base manifest's
+  # references survive unchanged.
+  test_bundleImagesPinned = {
+    expr =
+      let
+        imageStringsOf =
+          v:
+          if builtins.isAttrs v then
+            lib.concatMap (kv: imageStringsOf kv.value) (lib.attrsToList v)
+          else if builtins.isList v then
+            lib.concatMap imageStringsOf v
+          else if
+            builtins.isString v
+            && (lib.hasPrefix "quay.io/cilium/" v || lib.hasPrefix "registry.k8s.io/coredns/" v)
+          then
+            [ v ]
+          else
+            [ ];
+        images = lib.unique (lib.concatMap imageStringsOf bundleObjects);
+      in
+      {
+        count = builtins.length images;
+        allDigestPinned = lib.all (i: lib.hasInfix "@sha256:" i) images;
+      };
+    expected = {
+      count = 5;
+      allDigestPinned = true;
+    };
+  };
+
+  # The mkLBService helper pins ETP Local + the LB-IPAM class (invariants
+  # 5/6) for clan-rendered external-facing Services.
+  test_mkLBService = {
+    expr = kube.render.mkLBService {
+      name = "probe";
+      namespace = "kube-system";
+      inherit manifestLabels;
+      ports = [
+        {
+          port = 80;
+          targetPort = 8080;
+        }
+      ];
+      selector.app = "probe";
+    };
+    expected = {
+      metadata = {
+        name = "probe";
+        namespace = "kube-system";
+        labels = manifestLabels;
+      };
+      spec = {
+        type = "LoadBalancer";
+        externalTrafficPolicy = "Local";
+        loadBalancerClass = "io.cilium/lb-ipam";
+        ports = [
+          {
+            port = 80;
+            targetPort = 8080;
+          }
+        ];
+        selector.app = "probe";
+      };
+    };
+  };
+
+  # Pool assertions (D8): overlap, scope⇒mode, floating coverage, name
+  # collisions with auto node pools.
+  test_poolOverlapAssertion = {
+    expr = failedAssertion (kube.assertions.mkPoolAssertions {
+      inherit instanceName members;
+      settings = evalSettings {
+        pools.bad = {
+          blocks = [ "10.0.0.1/32" ];
+          serviceSelector."clan.lol/pool" = "bad";
+          delivery = "external-class";
+        };
+      };
+    }) "overlapping pool blocks";
+    expected = true;
+  };
+
+  test_poolScopeModeAssertion = {
+    expr = failedAssertion (kube.assertions.mkPoolAssertions {
+      inherit instanceName members;
+      settings = evalSettings {
+        pools.bound = {
+          blocks = [ "198.51.100.0/28" ];
+          serviceSelector."clan.lol/pool" = "bound";
+          delivery = "node-fate-bound";
+        };
+      };
+    }) "node-fate-bound delivery is per-machine scope";
+    expected = true;
+  };
+
+  test_poolFloatingCoverageAssertion = {
+    expr = failedAssertion (kube.assertions.mkPoolAssertions {
+      inherit instanceName members;
+      settings = evalSettings {
+        pools.float = {
+          blocks = [ "198.51.100.16/28" ];
+          serviceSelector."clan.lol/pool" = "float";
+          delivery = "floating";
+          candidates = [
+            "node-1"
+            "not-a-member"
+          ];
+        };
+      };
+    }) "floating pools need a non-empty candidate set";
+    expected = true;
+  };
+
+  test_poolNameCollisionAssertion = {
+    expr = failedAssertion (kube.assertions.mkPoolAssertions {
+      inherit instanceName members;
+      settings = evalSettings {
+        pools.node-1 = {
+          blocks = [ "198.51.100.32/28" ];
+          serviceSelector."clan.lol/pool" = "node-1";
+          delivery = "shared-bgp";
+        };
+      };
+    }) "collide with auto per-machine node pools";
     expected = true;
   };
 
@@ -168,6 +563,11 @@ in
 
   test_distroDefaultsOptIn = {
     expr = (evalSettings { distroDefaults.enable = true; }).distroDefaults.enable;
+    expected = true;
+  };
+
+  test_bootstrapApplyOnByDefault = {
+    expr = baseSettings.bootstrap.apply;
     expected = true;
   };
 
@@ -481,6 +881,46 @@ in
       "app.kubernetes.io/managed-by" = "clan";
       "clan.lol/kube-cluster" = "core-component";
       "clan.lol/cluster" = "test";
+      "clan.lol/component" = "bootstrap";
+    };
+  };
+
+  # The bootstrap-apply oneshot (D40): etc path + SSA apply + retry.
+  test_bootstrapApplyFragment = {
+    expr =
+      let
+        frag = kube.mkBootstrapApply {
+          pkgs = {
+            kubectl = "/nix/store/fake-kubectl";
+            coreutils = "/nix/store/fake-coreutils";
+            writeShellScript = name: text: "script:${name}:${text}";
+          };
+          inherit instanceName;
+          namePrefix = "k3s";
+          serverUnit = "k3s.service";
+          kubeconfigPath = "/etc/rancher/k3s/k3s.yaml";
+          bundle = "/nix/store/fake-bundle.yaml";
+        };
+        unit = frag.systemd.services."k3s-test-bootstrap-apply";
+      in
+      {
+        etcPath = frag.environment.etc ? "clan-bootstrap/test/bundle.yaml";
+        inherit (unit) after requires;
+        inherit (unit.serviceConfig) Type RemainAfterExit Restart;
+        noStartLimit = unit.unitConfig.StartLimitIntervalSec == 0;
+        ssaApply = lib.hasInfix "kubectl apply --server-side --field-manager=clan-bootstrap" unit.serviceConfig.ExecStart;
+        waitsReadyz = lib.hasInfix "get --raw=/readyz" unit.serviceConfig.ExecStart;
+      };
+    expected = {
+      etcPath = true;
+      after = [ "k3s.service" ];
+      requires = [ "k3s.service" ];
+      Type = "oneshot";
+      RemainAfterExit = true;
+      Restart = "on-failure";
+      noStartLimit = true;
+      ssaApply = true;
+      waitsReadyz = true;
     };
   };
 }

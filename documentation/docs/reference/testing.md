@@ -36,8 +36,11 @@ fast.
 - Artifact matrix — 3-minor version pins eval (D34).
 - **Data-plane suite** — pool allocation via `io.cilium/lb-ipam`, classless
   Service → Node IPAM node IPs (ServiceLB parity), ETP-Local candidate
-  restriction under nodeipam, `shared-bgp` ECMP + withdrawal, floating-pool
-  documented blackhole window, firewall positive AND negative exposure.
+  restriction under nodeipam, firewall positive AND negative exposure;
+  go-httpbin workload fixture, hermetic (artifact-flake Cilium airgap
+  images preloaded). Registered as `k3s-data-plane` and `rke2-data-plane`
+  since phase 3. The `shared-bgp` ECMP + withdrawal and floating-pool
+  blackhole-window assertions land with the BGP/BIRD phases (§8 phase 5).
 - bgp-ecmp suite — private fabric, MikroTik-style foreign-router fixture.
 - ClusterMesh matrix — including kube-api mirror Service reachability (D30).
 - PKI rotation — including cert bootstrap runbook execution.

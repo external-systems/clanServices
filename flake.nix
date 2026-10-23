@@ -28,11 +28,29 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Cilium chart (rke2-charts packaging) — the only in-cluster chart the
-    # cluster services consume; matches the nixpkgs rke2 airgap image bundle.
-    cilium-chart = {
-      url = "https://rke2-charts.rancher.io/assets/rke2-cilium/rke2-cilium-1.19.601.tgz";
-      flake = false;
+    # Artifact flake: distro runtimes, the Cilium chart + committed inflated
+    # base manifest (manifests/cilium/<version>.yaml, D26 layer 1), and the
+    # digest-pinned Cilium airgap image tarballs for hermetic VM tests.
+    pkgs = {
+      url = "github:external-systems/pkgs/feb7946fa83769f839ab5f835d3c84bd93b43fa5";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-parts.follows = "flake-parts";
+      };
+    };
+
+    # Kubenix renders the bootstrap bundle (D26 layer 2): the committed base
+    # manifest is imported as source (pure Nix YAML subset parser, zero IFD)
+    # into the typed resource tree; per-cluster variation merges on top.
+    # Helm inflation (renderChart) is never used here — update-time only,
+    # in the artifact flake.
+    kubenix = {
+      url = "github:hall/kubenix/6a37ce99125b068a7da9eb7bebd29898ed043eb5";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-parts.follows = "flake-parts";
+        treefmt-nix.follows = "treefmt-nix";
+      };
     };
 
     nix-unit = {
@@ -92,8 +110,24 @@
 
       perSystem =
         { pkgs, ... }:
+        let
+          # The nix-unit check re-evaluates this flake in a network-less
+          # sandbox with each direct input overridden to its store path.
+          # Overriding `pkgs` to a path makes Nix re-resolve the pkgs
+          # flake's OWN lock transitively (its nixpkgs/flake-parts/
+          # import-tree), so those get explicit nested overrides pointing
+          # at our already-fetched equivalents (identical revisions).
+          lock = builtins.fromJSON (builtins.readFile ./flake.lock);
+          # Resolve the pkgs flake's import-tree through the flattened lock
+          # (node name via pkgs' inputs map, so lock renumbering is safe).
+          pkgsImportTree = builtins.fetchTree lock.nodes.${lock.nodes.pkgs.inputs."import-tree"}.locked;
+        in
         {
-          nix-unit.inputs = inputs;
+          nix-unit.inputs = inputs // {
+            "pkgs/nixpkgs" = inputs.nixpkgs;
+            "pkgs/flake-parts" = inputs.flake-parts;
+            "pkgs/import-tree" = pkgsImportTree;
+          };
 
           devShells.default = pkgs.mkShell {
             # bash/jq/git are what scripts/update-pins.sh needs; the CI runner

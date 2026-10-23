@@ -126,13 +126,23 @@ let
     machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
 
-  # Extract the Cilium HelmChart valuesContent for inspection.
-  alphaManifests = alphaTransport.services.k3s.manifests;
-  ciliumConfigContent = builtins.fromJSON alphaManifests.cilium.content.spec.valuesContent;
+  # The rendered bootstrap bundle on the clusterInit node (D40).
+  bundleObjs = builtins.fromJSON alphaTransport.clan.kubeClusters.k3s.bundleJson;
+  findObj = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
+  ciliumConfigData = (findObj "ConfigMap" "cilium-config").data;
+  agentEnv =
+    (lib.findFirst (c: c.name == "cilium") null
+      (findObj "DaemonSet" "cilium").spec.template.spec.containers
+    ).env;
+  envValue = name: (lib.findFirst (e: e.name == name) { value = null; } agentEnv).value;
 
   # The rendered config.yaml (via the environment.etc source derivation is
-  # not directly inspectable; the nixpkgs module mirrors the join URL into
-  # serverAddr and the token files into tokenFile).
+  # not directly inspectable; the service mirrors it into the internal
+  # clan.kubeClusters seam, and the nixpkgs module mirrors the join URL
+  # into serverAddr and the token files into tokenFile).
+  alphaRenderedConfig = alphaTransport.clan.kubeClusters.k3s.renderedDistroConfig;
+  alphaStockRenderedConfig = alphaStock.clan.kubeClusters.k3s.renderedDistroConfig;
+
   alphaHaproxyConfig = alphaTransport.services.haproxy.config;
   gammaHaproxyConfig = gammaTransport.services.haproxy.config;
 
@@ -210,58 +220,131 @@ in
   };
 
   test_ciliumValuesTunnelMode = {
-    expr = ciliumConfigContent.routingMode;
+    expr = ciliumConfigData."routing-mode";
     expected = "tunnel";
   };
 
   test_ciliumValuesKubeProxyReplacement = {
-    expr = ciliumConfigContent.kubeProxyReplacement;
-    expected = true;
+    expr = ciliumConfigData."kube-proxy-replacement";
+    expected = "true";
   };
 
   test_ciliumValuesMtu = {
-    expr = ciliumConfigContent.MTU;
-    expected = 1370;
+    expr = ciliumConfigData."mtu";
+    expected = "1370";
   };
 
   test_ciliumValuesApiViaLocalHaproxy = {
     expr = {
-      inherit (ciliumConfigContent) k8sServiceHost k8sServicePort;
+      host = envValue "KUBERNETES_SERVICE_HOST";
+      port = envValue "KUBERNETES_SERVICE_PORT";
     };
     expected = {
-      k8sServiceHost = "kubeapi-k3s.clan";
-      k8sServicePort = 7443;
+      host = "kubeapi-k3s.clan";
+      port = "7443";
     };
   };
 
   test_ciliumValuesClusterCidrs = {
-    expr = ciliumConfigContent.global;
+    expr =
+      let
+        pool = findObj "CiliumPodIPPool" "default";
+      in
+      {
+        v4 = pool.spec.ipv4.cidrs;
+        v6 = pool.spec.ipv6.cidrs;
+      };
     expected = {
-      clusterCIDRv4 = "10.1.0.0/16";
-      clusterCIDRv6 = "fd10:1::/56";
+      v4 = [ "10.1.0.0/16" ];
+      v6 = [ "fd10:1::/56" ];
     };
   };
 
-  test_ciliumBootstrapAndStaticChart = {
+  # The bootstrap bundle replaces the distro manifests dir and charts
+  # (D40): bundle at the clan-owned etc path, SSA oneshot on the
+  # clusterInit node, and NO distro manifests/charts wiring.
+  test_bootstrapBundleWiring = {
     expr = {
-      inherit (alphaManifests.cilium.content.spec) bootstrap chart;
-      staticChart = alphaTransport.services.k3s.charts ? cilium;
+      bundleEtc = alphaTransport.environment.etc ? "clan-bootstrap/k3s/bundle.yaml";
+      applyUnit = alphaTransport.systemd.services ? k3s-k3s-bootstrap-apply;
+      oneshotRetries =
+        let
+          u = alphaTransport.systemd.services.k3s-k3s-bootstrap-apply;
+        in
+        u.serviceConfig.Type == "oneshot"
+        && u.serviceConfig.Restart == "on-failure"
+        && u.unitConfig.StartLimitIntervalSec == 0
+        && u.after == [ "k3s.service" ];
+      noManifests = alphaTransport.services.k3s.manifests == { };
+      noCharts = alphaTransport.services.k3s.charts == { };
+      agentNoBundle = !(gammaTransport.environment.etc ? "clan-bootstrap/k3s/bundle.yaml");
+      agentNoUnit = !(gammaTransport.systemd.services ? k3s-k3s-bootstrap-apply);
+      nonInitServerNoUnit = !(betaTransport.systemd.services ? k3s-k3s-bootstrap-apply);
     };
     expected = {
-      bootstrap = true;
-      chart = "https://127.0.0.1:6443/static/charts/cilium.tgz";
-      staticChart = true;
+      bundleEtc = true;
+      applyUnit = true;
+      oneshotRetries = true;
+      noManifests = true;
+      noCharts = true;
+      agentNoBundle = true;
+      agentNoUnit = true;
+      nonInitServerNoUnit = true;
+    };
+  };
+
+  # bootstrap.apply = false removes the oneshot (day-2 off-ramp).
+  test_bootstrapApplyOffRamp = {
+    expr =
+      let
+        off = mkEvaled (
+          lib.recursiveUpdate explicitInventory {
+            instances.k3s.roles.server.settings.bootstrap.apply = false;
+          }
+        );
+        alphaOff = off.config.nixosConfigurations.alpha.config;
+      in
+      {
+        noUnit = !(alphaOff.systemd.services ? k3s-k3s-bootstrap-apply);
+        noEtc = !(alphaOff.environment.etc ? "clan-bootstrap/k3s/bundle.yaml");
+      };
+    expected = {
+      noUnit = true;
+      noEtc = true;
+    };
+  };
+
+  # Minimal base disables the helm-controller (phase 3: the bundle
+  # replaced helm-controller delivery); distroDefaults keeps it.
+  test_helmControllerModes = {
+    expr = {
+      minimalDisabled = alphaRenderedConfig.disable-helm-controller or false;
+      minimalAddons = alphaRenderedConfig.disable;
+      stockKeeps = !(alphaStockRenderedConfig ? disable-helm-controller);
+      stockAddons = alphaStockRenderedConfig.disable;
+    };
+    expected = {
+      minimalDisabled = true;
+      minimalAddons = [
+        "servicelb"
+        "coredns"
+        "traefik"
+        "local-storage"
+        "metrics-server"
+      ];
+      stockKeeps = true;
+      stockAddons = [ "servicelb" ];
     };
   };
 
   test_ciliumNodeIpamDefault = {
     expr = {
-      inherit (ciliumConfigContent) defaultLBServiceIPAM;
-      inherit (ciliumConfigContent.nodeIPAM) enabled;
+      nodeIpam = ciliumConfigData."enable-node-ipam";
+      defaultLbIpam = ciliumConfigData."default-lb-service-ipam";
     };
     expected = {
-      defaultLBServiceIPAM = "nodeipam";
-      enabled = true;
+      nodeIpam = "true";
+      defaultLbIpam = "nodeipam";
     };
   };
 

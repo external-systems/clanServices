@@ -126,13 +126,23 @@ let
     machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
 
-  # Extract the rke2-cilium HelmChartConfig valuesContent for inspection.
-  alphaManifests = alphaTransport.services.rke2.manifests;
-  ciliumConfigContent = builtins.fromJSON alphaManifests.rke2-cilium-config.content.spec.valuesContent;
+  # The rendered bootstrap bundle on the clusterInit node (D40).
+  bundleObjs = builtins.fromJSON alphaTransport.clan.kubeClusters.rke2.bundleJson;
+  findObj = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
+  ciliumConfigData = (findObj "ConfigMap" "cilium-config").data;
+  agentEnv =
+    (lib.findFirst (c: c.name == "cilium") null
+      (findObj "DaemonSet" "cilium").spec.template.spec.containers
+    ).env;
+  envValue = name: (lib.findFirst (e: e.name == name) { value = null; } agentEnv).value;
 
   # The rendered config.yaml (via the environment.etc source derivation is
-  # not directly inspectable; the nixpkgs module mirrors the join URL into
-  # serverAddr and the token files into tokenFile).
+  # not directly inspectable; the service mirrors it into the internal
+  # clan.kubeClusters seam, and the nixpkgs module mirrors the join URL
+  # into serverAddr and the token files into tokenFile).
+  alphaRenderedConfig = alphaTransport.clan.kubeClusters.rke2.renderedDistroConfig;
+  alphaStockRenderedConfig = alphaStock.clan.kubeClusters.rke2.renderedDistroConfig;
+
   alphaHaproxyConfig = alphaTransport.services.haproxy.config;
   gammaHaproxyConfig = gammaTransport.services.haproxy.config;
 
@@ -210,38 +220,100 @@ in
   };
 
   test_ciliumValuesTunnelMode = {
-    expr = ciliumConfigContent.routingMode;
+    expr = ciliumConfigData."routing-mode";
     expected = "tunnel";
   };
 
   test_ciliumValuesKubeProxyReplacement = {
-    expr = ciliumConfigContent.kubeProxyReplacement;
-    expected = true;
+    expr = ciliumConfigData."kube-proxy-replacement";
+    expected = "true";
   };
 
   test_ciliumValuesMtu = {
-    expr = ciliumConfigContent.MTU;
-    expected = 1370;
+    expr = ciliumConfigData."mtu";
+    expected = "1370";
   };
 
   test_ciliumValuesApiViaLocalHaproxy = {
     expr = {
-      inherit (ciliumConfigContent) k8sServiceHost k8sServicePort;
+      host = envValue "KUBERNETES_SERVICE_HOST";
+      port = envValue "KUBERNETES_SERVICE_PORT";
     };
     expected = {
-      k8sServiceHost = "kubeapi-rke2.clan";
-      k8sServicePort = 7443;
+      host = "kubeapi-rke2.clan";
+      port = "7443";
+    };
+  };
+
+  # The bootstrap bundle replaces the distro manifests dir and the
+  # HelmChartConfig machinery (D40): bundle at the clan-owned etc path,
+  # SSA oneshot on the clusterInit node, no distro manifests wiring.
+  test_bootstrapBundleWiring = {
+    expr = {
+      bundleEtc = alphaTransport.environment.etc ? "clan-bootstrap/rke2/bundle.yaml";
+      applyUnit = alphaTransport.systemd.services ? rke2-rke2-bootstrap-apply;
+      oneshotRetries =
+        let
+          u = alphaTransport.systemd.services.rke2-rke2-bootstrap-apply;
+        in
+        u.serviceConfig.Type == "oneshot"
+        && u.serviceConfig.Restart == "on-failure"
+        && u.unitConfig.StartLimitIntervalSec == 0
+        && u.after == [ "rke2-server.service" ];
+      noManifests = alphaTransport.services.rke2.manifests == { };
+      agentNoBundle = !(gammaTransport.environment.etc ? "clan-bootstrap/rke2/bundle.yaml");
+      agentNoUnit = !(gammaTransport.systemd.services ? rke2-rke2-bootstrap-apply);
+      nonInitServerNoUnit = !(betaTransport.systemd.services ? rke2-rke2-bootstrap-apply);
+    };
+    expected = {
+      bundleEtc = true;
+      applyUnit = true;
+      oneshotRetries = true;
+      noManifests = true;
+      agentNoBundle = true;
+      agentNoUnit = true;
+      nonInitServerNoUnit = true;
+    };
+  };
+
+  # Minimal base disables the helm-controller and BYO-CNI is selected
+  # (cni: none — canonical Cilium comes from the bundle, §6.4); the
+  # bundled rke2-cilium chart is disabled in BOTH modes.
+  test_helmControllerModes = {
+    expr = {
+      minimalDisabled = alphaRenderedConfig.disable-helm-controller or false;
+      minimalCni = alphaRenderedConfig.cni;
+      minimalAddons = alphaRenderedConfig.disable;
+      stockKeeps = !(alphaStockRenderedConfig ? disable-helm-controller);
+      stockAddons = alphaStockRenderedConfig.disable;
+    };
+    expected = {
+      minimalDisabled = true;
+      minimalCni = "none";
+      minimalAddons = [
+        "rke2-cilium"
+        "rke2-coredns"
+        "rke2-ingress-nginx"
+        "rke2-metrics-server"
+        "rke2-snapshot-controller"
+        "rke2-snapshot-validation-webhook"
+      ];
+      stockKeeps = true;
+      stockAddons = [
+        "rke2-cilium"
+        "rke2-coredns"
+      ];
     };
   };
 
   test_ciliumNodeIpamDefault = {
     expr = {
-      inherit (ciliumConfigContent) defaultLBServiceIPAM;
-      inherit (ciliumConfigContent.nodeIPAM) enabled;
+      nodeIpam = ciliumConfigData."enable-node-ipam";
+      defaultLbIpam = ciliumConfigData."default-lb-service-ipam";
     };
     expected = {
-      defaultLBServiceIPAM = "nodeipam";
-      enabled = true;
+      nodeIpam = "true";
+      defaultLbIpam = "nodeipam";
     };
   };
 

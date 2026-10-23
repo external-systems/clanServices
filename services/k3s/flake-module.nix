@@ -32,6 +32,10 @@ rec {
         imports = [ ./tests/vm/ha.nix ];
         inherit clan;
       };
+      k3s-data-plane = {
+        imports = [ (import ./tests/vm/data-plane.nix { inherit inputs; }) ];
+        inherit clan;
+      };
     };
   };
 }

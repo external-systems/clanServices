@@ -34,6 +34,13 @@ spec:
 Flux prune garbage-collects only the Kustomization's own
 `.status.inventory`, so adopting the pre-applied objects is safe.
 
+### The off-ramp
+
+Once your GitOps owns the set, stop the bootstrap oneshot from re-applying
+on every boot: set `bootstrap.apply = false` on the cluster instance. The
+bundle file stays at `/etc/clan-bootstrap/<instance>/bundle.yaml` for
+reference; the systemd unit is removed.
+
 ### With Argo CD
 
 Adopt by resource tracking: apply the published set through an Application

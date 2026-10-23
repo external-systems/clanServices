@@ -12,17 +12,49 @@ let
   nodeInterface = import ./node-interface.nix;
 
   cilium = import ./cilium.nix { inherit lib cidrs; };
-  coredns = import ./coredns.nix { inherit lib; };
   assertFns = import ./assertions.nix { inherit lib; };
+  bundle = import ./bundle.nix { inherit lib; };
+  bootstrap = import ./bootstrap.nix { };
   haproxy = import ./haproxy.nix { inherit lib; };
   nixos = import ./nixos.nix { inherit lib; };
   vars = import ./vars.nix { inherit lib; };
 
-  mkManifestLabels = { instanceName }: {
-    "app.kubernetes.io/managed-by" = "clan";
-    "clan.lol/kube-cluster" = "core-component";
-    "clan.lol/cluster" = instanceName;
-  };
+  # §6.11 manifest labels: on every clan-rendered object, never in
+  # selectors. bundle.nix adds clan.lol/config-hash per object at the end
+  # of the render.
+  mkManifestLabels =
+    {
+      instanceName,
+      component ? "bootstrap",
+    }:
+    {
+      "app.kubernetes.io/managed-by" = "clan";
+      "clan.lol/kube-cluster" = "core-component";
+      "clan.lol/cluster" = instanceName;
+      "clan.lol/component" = component;
+    };
+
+  # Resolve the full pool set for a cluster (D8): the auto per-machine
+  # node-named pools (join-address /32+/128 + declared poolBlocks, always
+  # node-fate-bound) plus the declared cluster-global pools.
+  # members: [ { machineName, ipv4, ipv6, poolBlocks } ].
+  # Returns an attrset: pool name -> { blocks, serviceSelector }.
+  resolvePools =
+    { settings, members }:
+    lib.listToAttrs (
+      map (m: {
+        name = m.machineName;
+        value = {
+          blocks = [
+            "${m.ipv4}/32"
+            "${m.ipv6}/128"
+          ]
+          ++ m.poolBlocks;
+          serviceSelector."clan.lol/pool" = m.machineName;
+        };
+      }) members
+    )
+    // lib.mapAttrs (_: p: { inherit (p) blocks serviceSelector; }) settings.pools;
 in
 rec {
   inherit cidrs;
@@ -33,15 +65,24 @@ rec {
   };
 
   render = {
-    inherit (cilium) mkCiliumValues mkCiliumManifests;
-    inherit (coredns) mkCoreDNSValues mkCoreDNSManifests;
+    inherit (cilium) mkCiliumValues resolveCidrs;
+    inherit (bundle)
+      mkBundle
+      mkLBService
+      mkCoreDNSResources
+      validateBundle
+      unsupportedHelmValues
+      ;
     inherit (haproxy) mkHaproxyConfig;
-    inherit mkManifestLabels;
+    inherit mkManifestLabels resolvePools;
   };
 
   assertions = {
-    inherit (assertFns) mkClusterAssertions;
+    inherit (assertFns) mkClusterAssertions mkPoolAssertions;
   };
+
+  # Bootstrap-apply oneshot fragment (D40).
+  inherit (bootstrap) mkBootstrapApply;
 
   # Vars generators (bare generator attrsets — the distro service merges
   # them into clan.core.vars.generators, gated by role as documented in

@@ -47,5 +47,19 @@
         '';
       };
     };
+
+    # Extra blocks for this machine's auto-rendered node-named
+    # CiliumLoadBalancerIPPool (D8 per-machine scope: the join-address
+    # /32+/128 pair is always included; these are the declared
+    # primary/extra blocks). Always node-fate-bound.
+    poolBlocks = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Additional CIDR blocks for the node-named LB pool of this machine
+        (pool name = machine name, serviceSelector label
+        clan.lol/pool=<machine>).
+      '';
+    };
   };
 }

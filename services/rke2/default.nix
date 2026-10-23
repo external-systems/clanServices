@@ -1,4 +1,4 @@
-{ self, ... }:
+{ self, inputs }:
 {
   clanLib,
   lib,
@@ -27,6 +27,16 @@ let
       );
     in
     if matches == [ ] then null else (builtins.head matches).node_transport;
+
+  # Artifact-flake Cilium facts (chart version -> committed manifest path;
+  # image set -> airgap tarball packages). Pure: committed source files.
+  ciliumVersions = import (inputs.pkgs + "/pkgs/cilium/versions.nix");
+  ciliumManifest = inputs.pkgs + "/manifests/cilium/${ciliumVersions.chartVersion}.yaml";
+
+  # Artifact-flake CoreDNS pin (D46): the uniform clan-rendered
+  # cluster.local DNS image. Pure: committed source file.
+  corednsVersions = import (inputs.pkgs + "/pkgs/coredns/versions.nix");
+  coreDNSImageRef = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
 
   # Shared role interface: both server and agent consume the same cluster/node
   # options plus the distro-specific rke2 escape hatches.
@@ -117,6 +127,21 @@ let
           };
 
       initMember = lib.findFirst (m: m.settings.clusterInit) null serverMembers;
+
+      # Members with known addresses — pool rendering skips null-addressed
+      # members (the address assertions in mkClusterAssertions cover them).
+      poolMembers = lib.filter (m: m.ipv4 != null && m.ipv6 != null) (
+        map (m: {
+          inherit (m) machineName;
+          inherit (memberAddr m.machineName) ipv4 ipv6;
+          inherit (m.settings) poolBlocks;
+        }) roleMembers
+      );
+
+      resolvedPools = kube.render.resolvePools {
+        inherit settings;
+        members = poolMembers;
+      };
     in
     {
       nixosModule =
@@ -170,8 +195,6 @@ let
           isInit = initMember != null && machine.name == initMember.machineName;
           joinUrl = "https://${kubeapiAddr}:${toString haproxySupervisorPort}";
 
-          manifestLabels = kube.render.mkManifestLabels { inherit instanceName; };
-
           computedNodeLabels = [
             "cluster=${instanceName}"
             "role=${role}"
@@ -179,9 +202,12 @@ let
           ]
           ++ lib.mapAttrsToList (k: v: "${k}=${v}") machineSettings.nodeLabels;
 
-          resolvedCidrs = kube.cidrs settings.cilium.id;
+          resolvedCidrs = kube.render.resolveCidrs settings;
 
-          ciliumValues = kube.render.mkCiliumValues {
+          # The canonical Cilium profile (§6.4) with the admin's
+          # cilium.helmValues folded in — translated into bundle patches by
+          # profilePatches (never re-run through helm, D26).
+          ciliumProfile = kube.render.mkCiliumValues {
             inherit settings instanceName;
             transportFacts = {
               interface = if transportInterface != null then transportInterface else "eth0";
@@ -191,12 +217,26 @@ let
             k8sServicePort = haproxyKubeapiPort;
           };
 
-          corednsValues = kube.render.mkCoreDNSValues {
-            inherit settings;
-          };
+          manifestLabels = kube.render.mkManifestLabels { inherit instanceName; };
 
-          corednsManifests = kube.render.mkCoreDNSManifests {
-            inherit settings instanceName manifestLabels;
+          # The kubenix bootstrap bundle (D26 layer 2, D40). Evaluated only
+          # for the clusterInit node when bootstrap.apply is on.
+          bundle = kube.render.mkBundle {
+            inherit
+              pkgs
+              settings
+              instanceName
+              manifestLabels
+              ;
+            kubenixSrc = inputs.kubenix;
+            baseManifest = ciliumManifest;
+            profile = ciliumProfile;
+            pools = resolvedPools;
+            podIPCidr = resolvedCidrs.clusterCidr;
+            inherit (resolvedCidrs) clusterDNS;
+            coreDNSImage = coreDNSImageRef;
+            k8sServiceHost = kubeapiAddr;
+            k8sServicePort = haproxyKubeapiPort;
           };
 
           effectiveRke2Package =
@@ -213,10 +253,47 @@ let
             else
               throw "rke2/${instanceName}: unsupported platform ${pkgs.stdenv.hostPlatform.system}";
 
+          # The artifact flake's digest-pinned Cilium image tarballs match
+          # the bundle's manifest exactly (D26/D40 airgap). The pins come
+          # from the pkgs flake's committed versions.nix; the pullImage
+          # FODs are content-addressed by the same hashes, so they are
+          # byte-identical to pkgs' image-cilium-* / cilium-airgap-images
+          # tarballs. amd64 only (the pkgs airgap set is x86_64-linux);
+          # other systems fall back to registry pulls.
+          ciliumImages = lib.optionals pkgs.stdenv.hostPlatform.isx86_64 (
+            map (
+              img:
+              pkgs.dockerTools.pullImage {
+                inherit (img) sha256;
+                imageName = img.repo;
+                imageDigest = img.digest;
+                finalImageName = img.repo;
+                finalImageTag = img.tag;
+                os = "linux";
+                arch = "amd64";
+              }
+            ) ciliumVersions.images
+          );
+
+          # The clan CoreDNS image (D46), digest-pinned like the Cilium set
+          # (same content-addressed FOD as the pkgs flake's image-coredns).
+          coreDNSImages = lib.optional pkgs.stdenv.hostPlatform.isx86_64 (
+            pkgs.dockerTools.pullImage {
+              inherit (corednsVersions) sha256;
+              imageName = corednsVersions.repo;
+              imageDigest = corednsVersions.digest;
+              finalImageName = corednsVersions.repo;
+              finalImageTag = corednsVersions.tag;
+              os = "linux";
+              arch = "amd64";
+            }
+          );
+
           defaultImages = [
             effectiveRke2Package."images-core-linux-${imageArchSuffix}-tar-zst"
-            effectiveRke2Package."images-cilium-linux-${imageArchSuffix}-tar-zst"
-          ];
+          ]
+          ++ ciliumImages
+          ++ coreDNSImages;
 
           effectiveImages =
             if settings.packages.images != [ ] then settings.packages.images else defaultImages;
@@ -257,15 +334,19 @@ let
           };
 
           # distroDefaults (D42): in the minimal base (the default) the
-          # distro's packaged add-ons are disabled; distroDefaults.enable =
-          # true refrains so stock components (ingress-nginx,
-          # metrics-server, snapshot controller, Multus) deploy via the
-          # distro's own helm-controller — the operator's day-2 concern.
-          # RKE2 ships no servicelb/klipper. The helm-controller itself
-          # stays on in both modes for now: it is the interim delivery
-          # mechanism for the clan-rendered Cilium/CoreDNS HelmChartConfigs
-          # until the kubenix bootstrap bundle (D40) lands in phase 3.
-          disabledAddons = lib.optionals (!settings.distroDefaults.enable) [
+          # distro's packaged add-ons AND the embedded helm-controller are
+          # disabled — the kubenix bootstrap bundle (D40) replaced
+          # helm-controller delivery in phase 3. The bundled rke2-cilium
+          # and rke2-coredns charts are disabled in BOTH modes: canonical
+          # Cilium comes from the bundle (§6.4) and cluster.local DNS comes
+          # from the uniform clan-rendered CoreDNS in the bundle (D46;          # distroDefaults=true restores the distro's stock CoreDNS and the
+          # bundle skips its own — mode-exclusive). RKE2 ships no
+          # servicelb/klipper.
+          disabledAddons = [
+            "rke2-cilium"
+            "rke2-coredns"
+          ]
+          ++ lib.optionals (!settings.distroDefaults.enable) [
             "rke2-ingress-nginx"
             "rke2-metrics-server"
             "rke2-snapshot-controller"
@@ -294,10 +375,14 @@ let
             service-cidr = resolvedCidrs.serviceCidr;
             cluster-dns = resolvedCidrs.clusterDNS;
             disable-kube-proxy = true;
+            # BYO CNI: canonical Cilium comes from the bootstrap bundle,
+            # not the bundled rke2-cilium chart (§6.4).
+            cni = "none";
             node-label = computedNodeLabels;
           }
           // lib.optionalAttrs (!settings.distroDefaults.enable) {
             ingress-controller = "none";
+            disable-helm-controller = true;
           }
           // lib.optionalAttrs isInit {
             cluster-init = true;
@@ -327,222 +412,226 @@ let
             if isServer then baseServerConfig else baseAgentConfig
           );
           configPath = pkgs.writeText "rke2-config.yaml" (builtins.toJSON cleanConfig);
-
-          renderedManifests = lib.mkMerge [
-            {
-              rke2-cilium-config = {
-                enable = isServer;
-                content = {
-                  apiVersion = "helm.cattle.io/v1";
-                  kind = "HelmChartConfig";
-                  metadata = {
-                    name = "rke2-cilium";
-                    namespace = "kube-system";
-                    inherit manifestLabels;
-                  };
-                  spec.valuesContent = builtins.toJSON (lib.filterAttrsRecursive (_: v: v != null) ciliumValues);
-                };
-              };
-
-              cilium-pod-ip-pool = {
-                enable = isServer;
-                content = builtins.head (
-                  kube.render.mkCiliumManifests {
-                    inherit settings;
-                  }
-                );
-              };
-
-              rke2-coredns-config = {
-                enable = isServer && (settings.coredns.rewrites != [ ] || settings.coredns.helmValues != { });
-                content = {
-                  apiVersion = "helm.cattle.io/v1";
-                  kind = "HelmChartConfig";
-                  metadata = {
-                    name = "rke2-coredns";
-                    namespace = "kube-system";
-                    inherit manifestLabels;
-                  };
-                  spec.valuesContent = builtins.toJSON (
-                    lib.recursiveUpdate (lib.optionalAttrs (
-                      settings.coredns.rewrites != [ ]
-                    ) corednsValues) settings.coredns.helmValues
-                  );
-                };
-              };
-
-              coredns-custom = {
-                enable = isServer && corednsManifests ? coredns-custom;
-                content =
-                  if corednsManifests ? coredns-custom then corednsManifests.coredns-custom.content else null;
-              };
-            }
-          ];
         in
-        lib.mkMerge [
-          {
-            assertions = kube.assertions.mkClusterAssertions {
-              inherit
-                instanceName
-                roleMembers
-                settings
-                ;
-              transportFacts = if transportEnabled then allTransportFacts else null;
-            };
-
-            clan.core.vars.generators = lib.mkMerge (
-              [
-                (kube.vars.mkTokenGenerators { inherit pkgs instanceName; })
-                (kube.vars.mkHaproxyGenerator { inherit pkgs instanceName; })
-              ]
-              ++ lib.optionals isServer [
-                (kube.vars.mkPkiGenerator { inherit pkgs instanceName; })
-                (kube.vars.mkAdminKubeconfigGenerator {
-                  inherit pkgs instanceName;
-                  server = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
-                })
-              ]
+        {
+          # Internal eval seam for tests (rendered distro config.yaml and
+          # the bundle's object JSON; bundleJson only on the clusterInit
+          # node with bootstrap.apply on).
+          options.clan.kubeClusters = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = {
+                  renderedDistroConfig = lib.mkOption {
+                    type = lib.types.attrs;
+                    internal = true;
+                  };
+                  bundleJson = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    internal = true;
+                    default = null;
+                  };
+                };
+              }
             );
+            internal = true;
+            default = { };
+          };
 
-            services.rke2 = {
-              enable = true;
-              inherit role;
-              serverAddr = if isInit then "" else joinUrl;
-              tokenFile = if isServer then serverTokenPath else agentTokenPath;
-              agentTokenFile = lib.mkIf isServer agentTokenPath;
-              extraFlags = lib.optionals isServer [ "--cni=cilium" ];
-              nodeIP = "${nodeIPv4},${nodeIPv6}";
-              nodeLabel = computedNodeLabels;
-              images = effectiveImages;
-              manifests = lib.mkIf isServer renderedManifests;
-              cisHardening = settings.profile == "cis";
-            };
-
-            # Keep /etc/rancher/rke2 under NixOS's etc machinery so the
-            # directory exists and is writable; rke2 writes its Pod
-            # Security Admission config (rke2-pss.yaml) there at runtime.
-            # rke2 reads /etc/rancher/rke2/config.yaml by default (the
-            # nixpkgs module adds --config only when its configPath is
-            # set), so the etc entry IS the config.
-            environment.etc."rancher/rke2/config.yaml".source = configPath;
-
-            # RKE2's runtime-image loader scans /var/lib/rancher/rke2/agent/images
-            # for tarballs at the top level. The nixpkgs rke2 module links images
-            # into a `nixos/` subdirectory, so we add top-level symlinks plus the
-            # `.cache.json` marker that airgap imports expect.
-            systemd.tmpfiles.rules = [
-              "f /var/lib/rancher/rke2/agent/images/.cache.json 0600 root root -"
-            ]
-            # Admin kubeconfig (clan var) at the documented path.
-            ++ lib.optionals isServer [
-              "L+ /etc/rancher/rke2/admin-kubeconfig - - - - ${
-                config.clan.core.vars.generators."rancher-admin-kubeconfig-${instanceName}".files."kubeconfig.yaml".path
-              }"
-            ]
-            ++ map (
-              img:
-              "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf img)} - - - - ${toString img}"
-            ) effectiveImages;
-
-            boot = {
-              kernelModules = [
-                "br_netfilter"
-                "overlay"
-              ];
-              kernel.sysctl = {
-                "net.ipv4.conf.all.rp_filter" = lib.mkForce 2;
-                "net.ipv4.ip_forward" = lib.mkForce true;
-                "net.ipv6.conf.all.forwarding" = lib.mkForce true;
+          config = lib.mkMerge [
+            {
+              clan.kubeClusters.${instanceName} = {
+                renderedDistroConfig = cleanConfig;
+                bundleJson = lib.mkIf (isInit && settings.bootstrap.apply) bundle.json;
               };
-            };
 
-            fileSystems."/sys/fs/bpf" = {
-              device = "bpffs";
-              fsType = "bpf";
-              options = [
-                "rw"
-                "nosuid"
-                "nodev"
-                "noexec"
-                "relatime"
-                "mode=700"
-              ];
-            };
+              assertions =
+                (kube.assertions.mkClusterAssertions {
+                  inherit
+                    instanceName
+                    roleMembers
+                    settings
+                    ;
+                  transportFacts = if transportEnabled then allTransportFacts else null;
+                })
+                ++ (kube.assertions.mkPoolAssertions {
+                  inherit instanceName settings;
+                  members = poolMembers;
+                })
+                ++ [
+                  {
+                    assertion = settings.coredns.helmValues == { };
+                    message = "rke2/${instanceName}: coredns.helmValues is not supported; the HelmChartConfig machinery was removed in phase 3 — the distro's CoreDNS is configured by the operator (distroDefaults) or day-2";
+                  }
+                ];
 
-            networking = {
-              nftables.enable = true;
-              firewall = {
-                checkReversePath = "loose";
-                extraReversePathFilterRules = lib.concatStringsSep "\n" (
-                  lib.optional (transportInterface != null) ''iifname "${transportInterface}" accept''
-                  ++ [ "meta mark and 0x0f00 == 0x0200 accept" ]
-                );
-                trustedInterfaces = [
-                  "cilium_host"
-                  "cilium_net"
+              clan.core.vars.generators = lib.mkMerge (
+                [
+                  (kube.vars.mkTokenGenerators { inherit pkgs instanceName; })
+                  (kube.vars.mkHaproxyGenerator { inherit pkgs instanceName; })
                 ]
-                ++ lib.optional (transportInterface != null) transportInterface;
-                extraInputRules =
-                  let
-                    interfaceGuard = if transportInterface != null then ''iifname "${transportInterface}" '' else "";
-                  in
-                  ''
-                    # Pod traffic: pod->apiserver flows (ClusterIP DNAT'd to
-                    # the node endpoint on 6443) re-enter the input hook on a
-                    # cilium_*/lxc* veth — without this accept every in-cluster
-                    # API client crash-loops.
+                ++ lib.optionals isServer [
+                  (kube.vars.mkPkiGenerator { inherit pkgs instanceName; })
+                  (kube.vars.mkAdminKubeconfigGenerator {
+                    inherit pkgs instanceName;
+                    server = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
+                  })
+                ]
+              );
+
+              services.rke2 = {
+                enable = true;
+                inherit role;
+                serverAddr = if isInit then "" else joinUrl;
+                tokenFile = if isServer then serverTokenPath else agentTokenPath;
+                agentTokenFile = lib.mkIf isServer agentTokenPath;
+                nodeIP = "${nodeIPv4},${nodeIPv6}";
+                nodeLabel = computedNodeLabels;
+                images = effectiveImages;
+                cisHardening = settings.profile == "cis";
+                # NO services.rke2.manifests: clan manifests are delivered
+                # by the bootstrap bundle only (D40; §6.12 eval-rejects the
+                # distro manifests dir for clan manifests — structurally
+                # enforced by never writing there).
+              };
+
+              # Keep /etc/rancher/rke2 under NixOS's etc machinery so the
+              # directory exists and is writable; rke2 writes its Pod
+              # Security Admission config (rke2-pss.yaml) there at runtime.
+              # rke2 reads /etc/rancher/rke2/config.yaml by default (the
+              # nixpkgs module adds --config only when its configPath is
+              # set), so the etc entry IS the config.
+              environment.etc."rancher/rke2/config.yaml".source = configPath;
+
+              # RKE2's runtime-image loader scans /var/lib/rancher/rke2/agent/images
+              # for tarballs at the top level. The nixpkgs rke2 module links images
+              # into a `nixos/` subdirectory, so we add top-level symlinks plus the
+              # `.cache.json` marker that airgap imports expect.
+              systemd.tmpfiles.rules = [
+                "f /var/lib/rancher/rke2/agent/images/.cache.json 0600 root root -"
+              ]
+              # Admin kubeconfig (clan var) at the documented path.
+              ++ lib.optionals isServer [
+                "L+ /etc/rancher/rke2/admin-kubeconfig - - - - ${
+                  config.clan.core.vars.generators."rancher-admin-kubeconfig-${instanceName}".files."kubeconfig.yaml".path
+                }"
+              ]
+              ++ map (
+                img:
+                "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf img)} - - - - ${toString img}"
+              ) effectiveImages;
+
+              boot = {
+                kernelModules = [
+                  "br_netfilter"
+                  "overlay"
+                ];
+                kernel.sysctl = {
+                  "net.ipv4.conf.all.rp_filter" = lib.mkForce 2;
+                  "net.ipv4.ip_forward" = lib.mkForce true;
+                  "net.ipv6.conf.all.forwarding" = lib.mkForce true;
+                };
+              };
+
+              fileSystems."/sys/fs/bpf" = {
+                device = "bpffs";
+                fsType = "bpf";
+                options = [
+                  "rw"
+                  "nosuid"
+                  "nodev"
+                  "noexec"
+                  "relatime"
+                  "mode=700"
+                ];
+              };
+
+              networking = {
+                nftables.enable = true;
+                firewall = {
+                  checkReversePath = "loose";
+                  extraReversePathFilterRules = lib.concatStringsSep "\n" (
+                    lib.optional (transportInterface != null) ''iifname "${transportInterface}" accept''
+                    ++ [ "meta mark and 0x0f00 == 0x0200 accept" ]
+                  );
+                  trustedInterfaces = [
+                    "cilium_host"
+                    "cilium_net"
+                  ]
+                  ++ lib.optional (transportInterface != null) transportInterface;
+                  extraInputRules =
+                    let
+                      interfaceGuard = if transportInterface != null then ''iifname "${transportInterface}" '' else "";
+                    in
+                    ''
+                      # Pod traffic: pod->apiserver flows (ClusterIP DNAT'd to
+                      # the node endpoint on 6443) re-enter the input hook on a
+                      # cilium_*/lxc* veth — without this accept every in-cluster
+                      # API client crash-loops.
+                      iifname { "cilium*", "lxc*" } accept
+                      ${interfaceGuard}tcp dport { 6443, 9345, ${toString haproxyKubeapiPort}, ${toString haproxySupervisorPort}, 10250, 2379, 2380, 2381 } accept
+                    '';
+                  extraForwardRules = ''
                     iifname { "cilium*", "lxc*" } accept
-                    ${interfaceGuard}tcp dport { 6443, 9345, ${toString haproxyKubeapiPort}, ${toString haproxySupervisorPort}, 10250, 2379, 2380, 2381 } accept
+                    oifname { "cilium*", "lxc*" } accept
                   '';
-                extraForwardRules = ''
-                  iifname { "cilium*", "lxc*" } accept
-                  oifname { "cilium*", "lxc*" } accept
+                };
+                # kubeapi FQDN -> the node's OWN transport address: every
+                # node talks to its LOCAL haproxy (the per-node
+                # kube-apiserver load balancer), which balances across the
+                # servers' transport addresses with TLS /readyz
+                # healthchecks.
+                extraHosts = ''
+                  ${nodeIPv4} ${kubeapiAddr}
+                  ${nodeIPv6} ${kubeapiAddr}
                 '';
               };
-              # kubeapi FQDN -> the node's OWN transport address: every
-              # node talks to its LOCAL haproxy (the per-node
-              # kube-apiserver load balancer), which balances across the
-              # servers' transport addresses with TLS /readyz
-              # healthchecks.
-              extraHosts = ''
-                ${nodeIPv4} ${kubeapiAddr}
-                ${nodeIPv6} ${kubeapiAddr}
-              '';
-            };
 
-            # --- haproxy: per-node kube-apiserver load balancer --------
-            # Servers run kube-apiserver/supervisor, but every node needs
-            # the LB path: an agent's join and its API traffic ride ITS
-            # OWN haproxy.
-            services.haproxy = {
-              enable = true;
-              config = haproxyConfig;
-            };
+              # --- haproxy: per-node kube-apiserver load balancer --------
+              # Servers run kube-apiserver/supervisor, but every node needs
+              # the LB path: an agent's join and its API traffic ride ITS
+              # OWN haproxy.
+              services.haproxy = {
+                enable = true;
+                config = haproxyConfig;
+              };
 
-            # haproxy binds the transport addresses: with a networkd
-            # transport the interface is created and the addresses
-            # assigned moments after boot — order the LB after networkd
-            # and let Restart=always ride out any bind race (no
-            # burst-limit kill).
-            systemd.services.haproxy = {
-              after = [ "systemd-networkd.service" ];
-              unitConfig.StartLimitIntervalSec = 0;
-            };
-          }
-
-          # --- PKI sync (servers only): the pre-generated rancher-pki
-          # CA tree lands in rke2's tls dir BEFORE rke2-server starts, so
-          # rke2 adopts the custom CAs instead of generating its own.
-          (lib.mkIf isServer (
-            kube.nixos.mkPkiSync {
-              inherit pkgs;
-              pkiGenerator = config.clan.core.vars.generators."rancher-pki-${instanceName}";
-              tlsDir = "/var/lib/rancher/rke2/server/tls";
-              beforeUnit = "rke2-server.service";
-              namePrefix = "rke2-${instanceName}";
+              # haproxy binds the transport addresses: with a networkd
+              # transport the interface is created and the addresses
+              # assigned moments after boot — order the LB after networkd
+              # and let Restart=always ride out any bind race (no
+              # burst-limit kill).
+              systemd.services.haproxy = {
+                after = [ "systemd-networkd.service" ];
+                unitConfig.StartLimitIntervalSec = 0;
+              };
             }
-          ))
-        ];
+
+            # --- PKI sync (servers only): the pre-generated rancher-pki
+            # CA tree lands in rke2's tls dir BEFORE rke2-server starts, so
+            # rke2 adopts the custom CAs instead of generating its own.
+            (lib.mkIf isServer (
+              kube.nixos.mkPkiSync {
+                inherit pkgs;
+                pkiGenerator = config.clan.core.vars.generators."rancher-pki-${instanceName}";
+                tlsDir = "/var/lib/rancher/rke2/server/tls";
+                beforeUnit = "rke2-server.service";
+                namePrefix = "rke2-${instanceName}";
+              }
+            ))
+
+            # The bootstrap bundle + apply oneshot on the clusterInit node
+            # only (D40). bootstrap.apply = false is the day-2 off-ramp.
+            (lib.mkIf (isInit && settings.bootstrap.apply) (
+              kube.mkBootstrapApply {
+                inherit pkgs instanceName;
+                namePrefix = "rke2";
+                serverUnit = "rke2-server.service";
+                kubeconfigPath = "/etc/rancher/rke2/rke2.yaml";
+                bundle = bundle.path;
+              }
+            ))
+          ];
+        };
     };
 in
 {

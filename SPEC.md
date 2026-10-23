@@ -78,8 +78,9 @@ manifest, and test fixtures; airgap-ready is the tested default.
   endpoints rendered from exports; join URL and agent kubeconfigs point at
   it (§6.6).
 - The bootstrap bundle: one kubenix-rendered manifest set per cluster
-  (Cilium, pools, ClusterMesh config, CoreDNS zones, mirror Services,
-  RBAC), applied once by a oneshot on the `clusterInit` node via
+  (Cilium, clan CoreDNS (D46), pools, ClusterMesh config, CoreDNS private
+  zones, mirror Services, RBAC), applied once by a oneshot on the
+  `clusterInit` node via
   `kubectl apply --server-side --field-manager=clan-bootstrap`; nothing
   written to the distro's watched manifests dir; `bootstrap.apply = false`
   is the day-2 off-ramp (D40).
@@ -383,7 +384,11 @@ unless noted) — revoked entries keep one-line reasons for history.
 - **D42 `distroDefaults` knob; servicelb permanently off.** Default
   `distroDefaults.enable = false` gives a uniform minimal base across
   rke2/k3s/kubernetes: no helm-controller, no Traefik, no servicelb, no
-  distro add-ons. `true` (rke2/k3s only): the service refrains from
+  distro add-ons. (Phase-3 reality note: rke2 deploys every packaged
+  component as a HelmChart — including rke2-coredns — so D46's uniform
+  clan-rendered CoreDNS is also what gives minimal rke2 cluster DNS at
+  all; k3s's CoreDNS is a plain AddOn manifest but is disabled too, for
+  uniformity.) `true` (rke2/k3s only): the service refrains from
   passing the distro `--disable`/`disable-helm-controller` flags, so the
   distro's packaged components deploy stock and are configured through
   the distro's own HelmChartConfig surface — the operator's day-2
@@ -432,6 +437,23 @@ unless noted) — revoked entries keep one-line reasons for history.
   rename gate (was: on kubernetes-distro landing). The lib serves all
   three distros' bootstrap+data-plane; "rancher" is the misleading name.
   Code rename landed in phase 1 (§8).
+- **D46 Uniform clan-rendered CoreDNS (2026-10-23).** The minimal base
+  ships ONE clan-rendered CoreDNS on every distro — rke2, k3s, and the
+  Reserved `kubernetes` (kubeadm addon phase skipped) — rendered into the
+  bootstrap bundle via kubenix typed resources (no chart, no IFD):
+  Deployment + Service (pinned to the derived clusterDNS IP) + Corefile
+  ConfigMap + RBAC, digest-pinned image airgap-carried by the artifact
+  flake. The distro's bundled CoreDNS is disabled in minimal mode (k3s
+  `--disable=coredns`, rke2 `rke2-coredns` always disabled);
+  `distroDefaults.enable = true` restores the distro's stock CoreDNS for
+  `cluster.local` and skips the clan one (the private-zone CoreDNS, D22,
+  stays clan-rendered in both modes — own VIP, no conflict). Rationale:
+  rke2's bundled CoreDNS cannot carry the rewrite/private-zone import
+  uniformly; one DNS implementation makes the base identical across
+  distros and anticipates D23. NOT bundled, ever: etcd (the distro's
+  datastore, not an addon), metrics-server (kubectl top/HPA only,
+  non-CNCF, day-2), local-storage/snapshot controllers (day-2). The
+  uniform minimal base = distro runtime + Cilium + clan CoreDNS.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -523,10 +545,13 @@ bundled Cilium disabled. Always: KPR, VXLAN, multi-pool pod IPAM
 Maglev, pmtu, Node IPAM for classless LB Services (D41). Per-cluster
 variation lands in the `cilium-config` ConfigMap and CRs via kubenix
 module merging over the committed base manifest (D26). Admin escape
-hatch: arbitrary helm-values overrides, post-merge validated against
+hatch: helm-values overrides (`cilium.helmValues`) merged post-profile,
+restricted to the layer-2-expressible profile tree (keys with no
+ConfigMap/env translation throw at eval — arbitrary chart surgery would
+require re-running helm, which D26's zero-IFD rule forbids), post-merge
+validated against
 routing/tunnel/IPAM/dual-stack/CNI-chaining/artifact/ETP invariants —
-the base must never block an operator from using Cilium in any way they
-see fit; the contract only guarantees the un-overridden profile.
+the contract only guarantees the un-overridden profile.
 Multus optional: chaining switch is explicit + atomic (and under
 `distroDefaults` the distro's own Multus is stock, D42). Lifecycle:
 bootstrap bundle apply → GitOps adoption (D40); publish-freshness gated
@@ -729,15 +754,25 @@ tests together)
   `lib/rancher-cluster/` renamed to `lib/kube-cluster/` (D45); interfaces
   pruned to bootstrap + data plane; `distroDefaults` knob (D42); static
   gates green.
-- **2 NEXT — ACTIVE** — artifact flake narrowing (external-systems/pkgs): drop
+- **2 done** — artifact flake narrowing (external-systems/pkgs): drop
   envoy-gateway/cert-manager/flux/external-dns/multus/sealed-secrets
   components + freshness checks; keep distro runtimes (3 minors), Cilium
   chart + committed inflated manifest, go-httpbin; add Cilium image
-  airgap set; clean-public-fetch proof.
-- **3** — kubenix bootstrap bundle + bootstrap-apply oneshot
+  airgap set; clean-public-fetch proof; CoreDNS image artifact added for
+  D46 (2026-10-23). Consumed at pinned rev
+  `feb7946fa83769f839ab5f835d3c84bd93b43fa5`.
+- **3 done** — kubenix bootstrap bundle + bootstrap-apply oneshot
   (`clusterInit` node, SSA, `bootstrap.apply` off-ramp, D40); canonical
   Cilium profile with Node IPAM (D41); pools (D8); ETP-Local rendering;
-  override validation.
+  override validation. Implementation notes: the committed base manifest is
+  imported into kubenix's typed tree with a pure-Nix YAML-subset parser
+  (kubenix's own importYAML is yq-based IFD — forbidden by D26);
+  `cilium.helmValues` overrides are limited to the layer-2-expressible
+  profile tree (untranslatable keys throw at eval — §6.4 wording adjusted);
+  clan-rendered CoreDNS in the bundle gives every distro the same DNS
+  base (D46, added 2026-10-23 — supersedes the interim "minimal rke2 runs
+  no distro CoreDNS" state); data-plane VM suite registered per distro
+  (`k3s-data-plane`, `rke2-data-plane`).
 - **4** — host-wireguard transport, hashed ids, topology, dual-stack
   exports; one-cluster-per-node assertion.
 - **5** — BGP v2 + BIRD + private fleet fabric (vendored BIRD fragment
