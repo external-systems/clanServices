@@ -67,16 +67,9 @@
           module.input = "self";
 
           roles.server = {
-            settings = {
-              network.transport = {
-                service = "wireguard-mesh";
-                instance = "mesh";
-              };
-
-              # Focus HA on membership, the LB path and Cilium; skip the
-              # optional stacks.
-              traefik.enabled = false;
-              certManager.enabled = false;
+            settings.network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
             };
             machines = {
               alpha.settings.clusterInit = true;

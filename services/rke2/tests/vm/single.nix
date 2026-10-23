@@ -47,14 +47,6 @@ _: {
                 instance = "mesh";
               };
 
-              # Prove the default stack: Traefik + Gateway API + cert-manager.
-              traefik.instances.rke2-traefik = {
-                gatewayAPI.enabled = true;
-                # The test has no cloud provider; use ClusterIP and exercise
-                # the Gateway via kubectl port-forward.
-                service.type = "ClusterIP";
-              };
-
               coredns.rewrites = [
                 "name foo.test.clan kubernetes.default.svc.cluster.local"
               ];
@@ -92,7 +84,6 @@ _: {
       environment.systemPackages = [
         pkgs.kubectl
         pkgs.cilium-cli
-        pkgs.curl
         pkgs.socat
       ];
       environment.sessionVariables.KUBECONFIG = "/etc/rancher/rke2/rke2.yaml";
@@ -110,7 +101,7 @@ _: {
         for cmd in [
             "journalctl -u rke2-server --no-pager -l | tail -n 80",
             "journalctl -u haproxy --no-pager -l | tail -n 40 >&2",
-            "kubectl get nodes,pods,certificates,gateways -A -o wide >&2 || true",
+            "kubectl get nodes,pods -A -o wide >&2 || true",
             "kubectl get service,endpoints,endpointslices -A -o wide >&2 || true",
             "kubectl get endpoints kubernetes -o yaml >&2 || true",
             "kubectl get configmap -n kube-system cilium-config -o yaml >&2 || true",
@@ -125,12 +116,6 @@ _: {
             "kubectl get configmap -n kube-system coredns-custom -o yaml >&2 || true",
             "kubectl logs -n kube-system -l app.kubernetes.io/name=rke2-coredns --tail=200 >&2 || true",
             "for ip in $(kubectl get pod -n kube-system -l app.kubernetes.io/name=rke2-coredns -o jsonpath='{.items[*].status.podIP}'); do echo === coredns $ip === >&2; kubectl exec -n rke2-probe api-probe -- nslookup kubernetes.default.svc.cluster.local \"$ip\" >&2; done || true",
-            "kubectl logs -n kube-system -l app.kubernetes.io/name=rke2-traefik --tail=200 >&2 || true",
-            "kubectl describe pod -n kube-system -l app.kubernetes.io/instance=cert-manager >&2 || true",
-            "kubectl logs -n kube-system -l app.kubernetes.io/instance=cert-manager --all-containers=true --prefix=true --tail=120 >&2 || true",
-            "kubectl logs -n kube-system -l app.kubernetes.io/instance=cert-manager --all-containers=true --prefix=true --previous --tail=120 >&2 || true",
-            "kubectl get endpoints -n kube-system cert-manager-webhook -o yaml >&2 || true",
-            "kubectl get secret -n kube-system cert-manager-webhook-ca -o yaml >&2 || true",
             "for j in $(kubectl get jobs -n kube-system -o name); do echo === $j === >&2; kubectl logs -n kube-system $j --all-containers=true --tail=40 >&2; done",
             "kubectl get events -A --sort-by=.lastTimestamp | tail -n 120 >&2 || true",
             "echo show stat | socat - UNIX-CONNECT:/run/haproxy/haproxy.sock >&2 || true",
@@ -169,7 +154,7 @@ _: {
         )
 
         # Pod API clients need both the real apiserver endpoint and Cilium's
-        # ClusterIP translation before any cert-manager component can converge.
+        # ClusterIP translation.
         alpha.succeed("kubectl create namespace rke2-probe")
         alpha.succeed(
             "kubectl run -n rke2-probe api-probe --image=busybox:1.36.1 --restart=Never -- sleep infinity"
@@ -183,26 +168,6 @@ _: {
                 f"kubectl exec -n rke2-probe api-probe -- nc -z -w 3 {host} {port}",
                 timeout=60,
             )
-
-        # cert-manager must be ready before the Gateway certificate can be issued.
-        alpha.wait_until_succeeds(
-            "kubectl wait --for=condition=Ready -n kube-system -l app.kubernetes.io/instance=cert-manager pod --timeout=120s",
-            timeout=180,
-        )
-
-        # Default Traefik instance and its Gateway must converge.
-        alpha.wait_until_succeeds(
-            "kubectl wait --for=condition=Ready -n kube-system -l app.kubernetes.io/name=rke2-traefik pod --timeout=120s",
-            timeout=180,
-        )
-        alpha.wait_until_succeeds(
-            "kubectl wait --for=condition=Ready -n kube-system certificate/rke2-traefik-gateway-tls --timeout=120s",
-            timeout=180,
-        )
-        alpha.wait_until_succeeds(
-            "kubectl wait --for=condition=Programmed gateway/rke2-traefik-gateway -n kube-system --timeout=120s",
-            timeout=180,
-        )
 
         # Cilium health (kube-proxy replacement is enabled).
         alpha.wait_until_succeeds(
@@ -244,41 +209,6 @@ _: {
                 -- nslookup foo.test.clan
         """)
         assert "10.2.0.1" in out, f"foo.test.clan rewrite failed: {out!r}"
-
-        # cert-manager-backed Gateway HTTPS: extract the CA and port-forward to Traefik.
-        alpha.succeed("""
-            kubectl get secret rancher-ca -n kube-system -o jsonpath='{.data.tls\\.crt}' \
-                | base64 -d > /tmp/rancher-ca.crt
-        """)
-        alpha.succeed("""
-            nohup kubectl port-forward -n kube-system service/rke2-traefik 8443:443 8080:80 \
-                >/tmp/pf.log 2>&1 </dev/null &
-        """)
-        alpha.wait_for_open_port(8443)
-        alpha.wait_for_open_port(8080)
-
-        # Valid CA: TLS succeeds. No matching route means 404.
-        out = alpha.succeed("""
-            curl --cacert /tmp/rancher-ca.crt -s -o /dev/null -w '%{http_code}' \
-                -H 'Host: test.clan' --resolve test.clan:8443:127.0.0.1 \
-                https://test.clan:8443/
-        """)
-        assert out.strip() == "404", f"expected 404 from HTTPS Gateway, got {out!r}"
-
-        # Plain certless request fails TLS verification as designed.
-        alpha.fail("""
-            curl -s -o /dev/null -w '%{http_code}' \
-                -H 'Host: test.clan' --resolve test.clan:8443:127.0.0.1 \
-                https://test.clan:8443/
-        """)
-
-        # HTTP listener is also reachable (no routes, so 404).
-        out = alpha.succeed("""
-            curl -s -o /dev/null -w '%{http_code}' \
-                -H 'Host: test.clan' --resolve test.clan:8080:127.0.0.1 \
-                http://test.clan:8080/
-        """)
-        assert out.strip() == "404", f"expected 404 from HTTP Gateway, got {out!r}"
 
         # etcd smoke check
         alpha.succeed("kubectl create configmap rke2-smoke --from-literal=probe=ok")

@@ -1,15 +1,11 @@
-{ self, inputs }:
+{ self, ... }:
 {
   clanLib,
   lib,
   ...
 }:
 let
-  rancher = import ../../lib/rancher-cluster { inherit lib; };
-  certManagerImages = import ../../lib/rancher-cluster/cert-manager-images.nix;
-  sealedSecretsImages = import ../../lib/rancher-cluster/sealed-secrets-images.nix;
-
-  defaultInstanceName = "rke2-traefik";
+  kube = import ../../lib/kube-cluster { inherit lib; };
 
   # Resolve the transport facts for a single member from the configured
   # node_transport source. Returns null when the source has no export for
@@ -38,8 +34,8 @@ let
     { lib, ... }:
     {
       imports = [
-        rancher.interfaces.cluster
-        rancher.interfaces.node
+        kube.interfaces.cluster
+        kube.interfaces.node
       ];
 
       options = {
@@ -65,8 +61,6 @@ let
           '';
         };
       };
-
-      config.traefik.instances.${defaultInstanceName}.namespace = lib.mkDefault "kube-system";
     };
 
   perInstanceFn =
@@ -176,7 +170,7 @@ let
           isInit = initMember != null && machine.name == initMember.machineName;
           joinUrl = "https://${kubeapiAddr}:${toString haproxySupervisorPort}";
 
-          manifestLabels = rancher.render.mkManifestLabels { inherit instanceName; };
+          manifestLabels = kube.render.mkManifestLabels { inherit instanceName; };
 
           computedNodeLabels = [
             "cluster=${instanceName}"
@@ -185,9 +179,9 @@ let
           ]
           ++ lib.mapAttrsToList (k: v: "${k}=${v}") machineSettings.nodeLabels;
 
-          resolvedCidrs = rancher.cidrs settings.cilium.id;
+          resolvedCidrs = kube.cidrs settings.cilium.id;
 
-          ciliumValues = rancher.render.mkCiliumValues {
+          ciliumValues = kube.render.mkCiliumValues {
             inherit settings instanceName;
             transportFacts = {
               interface = if transportInterface != null then transportInterface else "eth0";
@@ -197,42 +191,12 @@ let
             k8sServicePort = haproxyKubeapiPort;
           };
 
-          traefikInstances = rancher.render.mkTraefikInstances {
-            inherit settings members;
-            certManagerEnabled = settings.certManager.enabled;
-            getChartSource =
-              name:
-              if name == defaultInstanceName then
-                {
-                  kind = "helmChartConfig";
-                  chartName = "rke2-traefik";
-                }
-              else
-                {
-                  kind = "helmChart";
-                  chartName = "traefik-${name}";
-                };
-          };
-
-          defaultTraefikInstance = lib.findFirst (i: i.name == defaultInstanceName) null traefikInstances;
-          extraTraefikInstances = lib.filter (i: i.name != defaultInstanceName) traefikInstances;
-          gatewayApiCrdEnabled = lib.any (i: i.gatewayAPI.enabled) traefikInstances;
-
-          corednsValues = rancher.render.mkCoreDNSValues {
+          corednsValues = kube.render.mkCoreDNSValues {
             inherit settings;
           };
 
-          corednsManifests = rancher.render.mkCoreDNSManifests {
+          corednsManifests = kube.render.mkCoreDNSManifests {
             inherit settings instanceName manifestLabels;
-          };
-
-          certManagerManifests = rancher.render.mkCertManagerManifests {
-            inherit settings domain manifestLabels;
-          };
-
-          traefikManifests = rancher.render.mkTraefikManifests {
-            instances = traefikInstances;
-            inherit domain manifestLabels;
           };
 
           effectiveRke2Package =
@@ -240,98 +204,6 @@ let
               settings.packages.rke2
             else
               self.inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}.rke2;
-
-          # The chart flake inputs are unpacked source trees (flake type
-          # "tarball"); the rke2 helm-controller fetches <name>.tgz from
-          # the supervisor's static content dir, so repack into a real
-          # archive. A user-supplied packages.*Chart that already is a
-          # file passes through untouched.
-          packChart =
-            name: src:
-            pkgs.runCommand "${name}.tgz" { } ''
-              if [ -d ${src} ]; then
-                tar czf $out -C ${src} .
-              else
-                cp ${src} $out
-              fi
-            '';
-          effectiveCertManagerChart = packChart "cert-manager" (
-            if settings.packages.certManagerChart != null then
-              settings.packages.certManagerChart
-            else
-              inputs.cert-manager-chart
-          );
-          effectiveSealedSecretsChart = packChart "sealed-secrets" (
-            if settings.packages.sealedSecretsChart != null then
-              settings.packages.sealedSecretsChart
-            else
-              inputs.sealed-secrets-chart
-          );
-          effectiveTraefikChart = settings.packages.traefikChart;
-          rke2CoreImages = effectiveRke2Package."images-core-linux-${imageArchSuffix}-tar-zst";
-          traefikCrdChartSource =
-            pkgs.runCommand "rke2-traefik-crd-without-gateway-api"
-              {
-                nativeBuildInputs = [
-                  pkgs.gnutar
-                  pkgs.zstd
-                  pkgs.gzip
-                  pkgs.jq
-                  pkgs.python3
-                ];
-              }
-              ''
-                layer=$(tar --zstd -xOf ${rke2CoreImages} manifest.json | jq -r '.[] | select(.RepoTags[0] | test("rancher/rke2-runtime")) | .Layers[0]')
-                tar --zstd -xOf ${rke2CoreImages} "$layer" > runtime.tar.gz
-                gzip -dc runtime.tar.gz | tar -xOf - charts/rke2-traefik-crd.yaml > chart.yaml
-                python3 - <<'PYEOF'
-                import base64
-                from pathlib import Path
-                payload = next(
-                    line.strip().split(" ", 1)[1]
-                    for line in Path("chart.yaml").read_text().splitlines()
-                    if line.strip().startswith("chartContent:")
-                )
-                Path("chart.tgz").write_bytes(base64.b64decode(payload))
-                PYEOF
-                mkdir -p $out
-                tar -xzf chart.tgz -C $out
-                rm -f $out/rke2-traefik-crd/templates/gateway-standard-install.yaml
-              '';
-          effectiveTraefikCrdChart = pkgs.runCommand "traefik-crd.tgz" { } ''
-            tar czf $out -C ${traefikCrdChartSource} rke2-traefik-crd
-          '';
-          effectiveGatewayApiCrds =
-            if settings.packages.gatewayApiCrds != null then
-              settings.packages.gatewayApiCrds
-            else
-              pkgs.runCommand "gateway-api-crds-v1.6.1.yaml"
-                {
-                  nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ];
-                }
-                ''
-                  python3 - ${inputs.gateway-api-crds}/config/crd/experimental $out <<'PYEOF'
-                  import glob
-                  import os
-                  import sys
-                  import yaml
-
-                  src, out = sys.argv[1], sys.argv[2]
-                  docs = []
-                  for f in sorted(glob.glob(os.path.join(src, "*.yaml"))):
-                      for d in yaml.safe_load_all(open(f)):
-                          # The upstream experimental dir carries one stray
-                          # kustomize `resources:` doc (inside xmeshes.yaml)
-                          # with no kind — the rke2 deploy agent would retry
-                          # it forever. Only real API objects pass.
-                          if d and d.get("kind"):
-                              docs.append(d)
-                  with open(out, "w") as fh:
-                      yaml.safe_dump_all(docs, fh, explicit_start=True, sort_keys=False)
-                  PYEOF
-                  chmod +w $out
-                '';
-          effectiveGatewayApiCrdsSource = "${effectiveGatewayApiCrds}";
 
           imageArchSuffix =
             if pkgs.stdenv.hostPlatform.isx86_64 then
@@ -344,10 +216,7 @@ let
           defaultImages = [
             effectiveRke2Package."images-core-linux-${imageArchSuffix}-tar-zst"
             effectiveRke2Package."images-cilium-linux-${imageArchSuffix}-tar-zst"
-            effectiveRke2Package."images-traefik-linux-${imageArchSuffix}-tar-zst"
-          ]
-          ++ lib.optionals settings.certManager.enabled (certManagerImages.mkImages { inherit pkgs; })
-          ++ lib.optionals settings.sealedSecrets.enabled (sealedSecretsImages.mkImages { inherit pkgs; });
+          ];
 
           effectiveImages =
             if settings.packages.images != [ ] then settings.packages.images else defaultImages;
@@ -372,7 +241,7 @@ let
             }
           );
 
-          haproxyConfig = rancher.render.mkHaproxyConfig {
+          haproxyConfig = kube.render.mkHaproxyConfig {
             inherit
               instanceName
               nodeIPv4
@@ -386,6 +255,22 @@ let
             statsPasswordHash = haproxyStatsPasswordHash;
             healthCheckSni = kubeapiAddr;
           };
+
+          # distroDefaults (D42): in the minimal base (the default) the
+          # distro's packaged add-ons are disabled; distroDefaults.enable =
+          # true refrains so stock components (ingress-nginx,
+          # metrics-server, snapshot controller, Multus) deploy via the
+          # distro's own helm-controller — the operator's day-2 concern.
+          # RKE2 ships no servicelb/klipper. The helm-controller itself
+          # stays on in both modes for now: it is the interim delivery
+          # mechanism for the clan-rendered Cilium/CoreDNS HelmChartConfigs
+          # until the kubenix bootstrap bundle (D40) lands in phase 3.
+          disabledAddons = lib.optionals (!settings.distroDefaults.enable) [
+            "rke2-ingress-nginx"
+            "rke2-metrics-server"
+            "rke2-snapshot-controller"
+            "rke2-snapshot-validation-webhook"
+          ];
 
           baseServerConfig = {
             token-file = serverTokenPath;
@@ -408,10 +293,11 @@ let
             cluster-cidr = resolvedCidrs.clusterCidr;
             service-cidr = resolvedCidrs.serviceCidr;
             cluster-dns = resolvedCidrs.clusterDNS;
-            ingress-controller =
-              if settings.traefik.enabled && settings.traefik.instances != { } then "traefik" else "none";
             disable-kube-proxy = true;
             node-label = computedNodeLabels;
+          }
+          // lib.optionalAttrs (!settings.distroDefaults.enable) {
+            ingress-controller = "none";
           }
           // lib.optionalAttrs isInit {
             cluster-init = true;
@@ -422,28 +308,10 @@ let
           // lib.optionalAttrs (settings.profile != null && settings.profile != "cis") {
             inherit (settings) profile;
           }
-          //
-            lib.optionalAttrs
-              (
-                gatewayApiCrdEnabled
-                || (
-                  settings.traefik.enabled
-                  && settings.traefik.instances != { }
-                  && !(settings.traefik.instances ? ${defaultInstanceName})
-                )
-              )
-              {
-                disable =
-                  (settings.configOverrides.disable or [ ])
-                  ++ lib.optional gatewayApiCrdEnabled "rke2-gateway-api-crd"
-                  ++ lib.optional gatewayApiCrdEnabled "rke2-traefik-crd"
-                  ++ lib.optional (
-                    settings.traefik.enabled
-                    && settings.traefik.instances != { }
-                    && !(settings.traefik.instances ? ${defaultInstanceName})
-                  ) "rke2-traefik";
-              }
-          // settings.configOverrides;
+          // settings.configOverrides
+          // lib.optionalAttrs (disabledAddons != [ ] || settings.configOverrides ? disable) {
+            disable = (settings.configOverrides.disable or [ ]) ++ disabledAddons;
+          };
 
           baseAgentConfig = {
             server = joinUrl;
@@ -461,205 +329,62 @@ let
           configPath = pkgs.writeText "rke2-config.yaml" (builtins.toJSON cleanConfig);
 
           renderedManifests = lib.mkMerge [
-            (
-              {
-                rke2-cilium-config = {
-                  enable = isServer;
-                  content = {
-                    apiVersion = "helm.cattle.io/v1";
-                    kind = "HelmChartConfig";
-                    metadata = {
-                      name = "rke2-cilium";
-                      namespace = "kube-system";
-                      inherit manifestLabels;
-                    };
-                    spec.valuesContent = builtins.toJSON (lib.filterAttrsRecursive (_: v: v != null) ciliumValues);
+            {
+              rke2-cilium-config = {
+                enable = isServer;
+                content = {
+                  apiVersion = "helm.cattle.io/v1";
+                  kind = "HelmChartConfig";
+                  metadata = {
+                    name = "rke2-cilium";
+                    namespace = "kube-system";
+                    inherit manifestLabels;
                   };
+                  spec.valuesContent = builtins.toJSON (lib.filterAttrsRecursive (_: v: v != null) ciliumValues);
                 };
+              };
 
-                cilium-pod-ip-pool = {
-                  enable = isServer;
-                  content = builtins.head (
-                    rancher.render.mkCiliumManifests {
-                      inherit settings;
-                    }
+              cilium-pod-ip-pool = {
+                enable = isServer;
+                content = builtins.head (
+                  kube.render.mkCiliumManifests {
+                    inherit settings;
+                  }
+                );
+              };
+
+              rke2-coredns-config = {
+                enable = isServer && (settings.coredns.rewrites != [ ] || settings.coredns.helmValues != { });
+                content = {
+                  apiVersion = "helm.cattle.io/v1";
+                  kind = "HelmChartConfig";
+                  metadata = {
+                    name = "rke2-coredns";
+                    namespace = "kube-system";
+                    inherit manifestLabels;
+                  };
+                  spec.valuesContent = builtins.toJSON (
+                    lib.recursiveUpdate (lib.optionalAttrs (
+                      settings.coredns.rewrites != [ ]
+                    ) corednsValues) settings.coredns.helmValues
                   );
                 };
+              };
 
-                rke2-traefik-config = {
-                  enable = isServer && defaultTraefikInstance != null;
-                  content =
-                    if defaultTraefikInstance != null then
-                      {
-                        apiVersion = "helm.cattle.io/v1";
-                        kind = "HelmChartConfig";
-                        metadata = {
-                          name = "rke2-traefik";
-                          namespace = "kube-system";
-                          inherit manifestLabels;
-                        };
-                        spec.valuesContent = builtins.toJSON (
-                          rancher.render.mkTraefikValues { instance = defaultTraefikInstance; }
-                        );
-                      }
-                    else
-                      null;
-                };
-
-                gateway-api-crds = {
-                  enable = isServer && gatewayApiCrdEnabled;
-                  source = effectiveGatewayApiCrdsSource;
-                };
-
-                rke2-coredns-config = {
-                  enable = isServer && (settings.coredns.rewrites != [ ] || settings.coredns.helmValues != { });
-                  content = {
-                    apiVersion = "helm.cattle.io/v1";
-                    kind = "HelmChartConfig";
-                    metadata = {
-                      name = "rke2-coredns";
-                      namespace = "kube-system";
-                      inherit manifestLabels;
-                    };
-                    spec.valuesContent = builtins.toJSON (
-                      lib.recursiveUpdate (lib.optionalAttrs (
-                        settings.coredns.rewrites != [ ]
-                      ) corednsValues) settings.coredns.helmValues
-                    );
-                  };
-                };
-
-                coredns-custom = {
-                  enable = isServer && corednsManifests ? coredns-custom;
-                  content =
-                    if corednsManifests ? coredns-custom then corednsManifests.coredns-custom.content else null;
-                };
-
-                cert-manager-bootstrap = {
-                  enable = isServer && settings.certManager.enabled;
-                  content = certManagerManifests;
-                };
-
-                cert-manager-certificates = {
-                  enable = isServer && settings.certManager.enabled && settings.certManager.certificates != [ ];
-                  content = map (c: {
-                    apiVersion = "cert-manager.io/v1";
-                    kind = "Certificate";
-                    metadata = {
-                      name = c.secretName;
-                      namespace = "kube-system";
-                      inherit manifestLabels;
-                    };
-                    spec = {
-                      inherit (c) secretName dnsNames;
-                      issuerRef = {
-                        inherit (c.issuer) name;
-                        kind = if c.issuer.kind == "cluster-issuer" then "ClusterIssuer" else "Issuer";
-                        group = "cert-manager.io";
-                      };
-                    }
-                    // lib.optionalAttrs (c.renewBefore != null) {
-                      inherit (c) renewBefore;
-                    };
-                  }) settings.certManager.certificates;
-                };
-              }
-              // lib.mapAttrs' (
-                name: cert:
-                lib.nameValuePair "traefik-cert-${name}" {
-                  enable = isServer && cert.enable;
-                  inherit (cert) content;
-                }
-              ) traefikManifests.certificates
-              // lib.mapAttrs' (
-                name: gw:
-                lib.nameValuePair "traefik-gateway-${name}" {
-                  enable = isServer && gw.enable;
-                  inherit (gw) content;
-                }
-              ) traefikManifests.gateways
-              // lib.mapAttrs' (
-                name: np:
-                lib.nameValuePair "traefik-netpol-${name}" {
-                  enable = isServer && np.enable;
-                  inherit (np) content;
-                }
-              ) traefikManifests.networkPolicies
-            )
+              coredns-custom = {
+                enable = isServer && corednsManifests ? coredns-custom;
+                content =
+                  if corednsManifests ? coredns-custom then corednsManifests.coredns-custom.content else null;
+              };
+            }
           ];
-
-          renderedAutoDeployCharts = lib.mkIf isServer (
-            lib.optionalAttrs settings.certManager.enabled {
-              cert-manager = {
-                package = effectiveCertManagerChart;
-                targetNamespace = "kube-system";
-                values = lib.recursiveUpdate {
-                  crds.enabled = true;
-                  startupapicheck.enabled = false;
-                  config = {
-                    enableGatewayAPI = true;
-                    enableCertificateOwnerRef = true;
-                  };
-                  global.leaderElection.namespace = "kube-system";
-                } settings.certManager.helmValues;
-              };
-            }
-            // lib.optionalAttrs gatewayApiCrdEnabled {
-              traefik-crd = {
-                package = effectiveTraefikCrdChart;
-                targetNamespace = "kube-system";
-                values = { };
-              };
-            }
-            // lib.optionalAttrs settings.sealedSecrets.enabled {
-              # The pre-generated keypair arrives as the sealed-secrets-key
-              # Secret via the manifest sync below — the chart just runs the
-              # controller (keyrenewperiod 0: never rotate the vars-owned key).
-              sealed-secrets = {
-                package = effectiveSealedSecretsChart;
-                targetNamespace = "kube-system";
-                values = lib.recursiveUpdate {
-                  keyrenewperiod = "0";
-                  fullnameOverride = "sealed-secrets-controller";
-                  networkPolicy.enabled = true;
-                  resources = {
-                    requests = {
-                      cpu = "1m";
-                      memory = "2Mi";
-                    };
-                    limits = {
-                      cpu = "500m";
-                      memory = "256Mi";
-                    };
-                  };
-                } settings.sealedSecrets.helmValues;
-              };
-            }
-            // lib.listToAttrs (
-              map (
-                i:
-                lib.nameValuePair "traefik-${i.name}" {
-                  package =
-                    if effectiveTraefikChart != null then
-                      effectiveTraefikChart
-                    else
-                      throw "rke2/${instanceName}: traefik.instances.${i.name} requires packages.traefikChart to be set";
-                  targetNamespace = i.namespace;
-                  createNamespace = true;
-                  values = rancher.render.mkTraefikValues { instance = i; };
-                }
-              ) extraTraefikInstances
-            )
-          );
         in
         lib.mkMerge [
           {
-            assertions = rancher.assertions.mkClusterAssertions {
+            assertions = kube.assertions.mkClusterAssertions {
               inherit
                 instanceName
                 roleMembers
-                members
-                domain
                 settings
                 ;
               transportFacts = if transportEnabled then allTransportFacts else null;
@@ -667,24 +392,16 @@ let
 
             clan.core.vars.generators = lib.mkMerge (
               [
-                (rancher.vars.mkTokenGenerators { inherit pkgs instanceName; })
-                (rancher.vars.mkHaproxyGenerator { inherit pkgs instanceName; })
+                (kube.vars.mkTokenGenerators { inherit pkgs instanceName; })
+                (kube.vars.mkHaproxyGenerator { inherit pkgs instanceName; })
               ]
-              ++ lib.optionals isServer (
-                [
-                  (rancher.vars.mkPkiGenerator { inherit pkgs instanceName; })
-                  (rancher.vars.mkAdminKubeconfigGenerator {
-                    inherit pkgs instanceName;
-                    server = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
-                  })
-                ]
-                ++ lib.optional settings.sealedSecrets.enabled (
-                  rancher.vars.mkSealedSecretsGenerator {
-                    inherit pkgs instanceName;
-                    labels = manifestLabels;
-                  }
-                )
-              )
+              ++ lib.optionals isServer [
+                (kube.vars.mkPkiGenerator { inherit pkgs instanceName; })
+                (kube.vars.mkAdminKubeconfigGenerator {
+                  inherit pkgs instanceName;
+                  server = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
+                })
+              ]
             );
 
             services.rke2 = {
@@ -698,7 +415,6 @@ let
               nodeLabel = computedNodeLabels;
               images = effectiveImages;
               manifests = lib.mkIf isServer renderedManifests;
-              autoDeployCharts = renderedAutoDeployCharts;
               cisHardening = settings.profile == "cis";
             };
 
@@ -818,26 +534,12 @@ let
           # CA tree lands in rke2's tls dir BEFORE rke2-server starts, so
           # rke2 adopts the custom CAs instead of generating its own.
           (lib.mkIf isServer (
-            rancher.nixos.mkPkiSync {
+            kube.nixos.mkPkiSync {
               inherit pkgs;
               pkiGenerator = config.clan.core.vars.generators."rancher-pki-${instanceName}";
               tlsDir = "/var/lib/rancher/rke2/server/tls";
               beforeUnit = "rke2-server.service";
               namePrefix = "rke2-${instanceName}";
-            }
-          ))
-
-          # --- Sealed Secrets key manifest sync (servers only): the
-          # pre-generated signing keypair drops into the auto-deploy
-          # manifests dir as a SECRET (never through the Nix store).
-          (lib.mkIf (isServer && settings.sealedSecrets.enabled) (
-            rancher.nixos.mkSecretManifestSync {
-              inherit pkgs;
-              namePrefix = "rke2-${instanceName}-sealed-secrets";
-              sourcePath =
-                config.clan.core.vars.generators."rancher-sealed-secrets-${instanceName}".files."sealed-secrets-key.yaml".path;
-              targetPath = "/var/lib/rancher/rke2/server/manifests/sealed-secrets-key.yaml";
-              beforeUnit = "rke2-server.service";
             }
           ))
         ];
@@ -847,7 +549,7 @@ in
   _class = "clan.service";
   manifest = {
     name = "rke2";
-    description = "Thin RKE2 Kubernetes cluster on lib/rancher-cluster";
+    description = "Thin RKE2 Kubernetes cluster on lib/kube-cluster";
     categories = [ "System" ];
     readme = builtins.readFile ./README.md;
     exports.out = [ ];

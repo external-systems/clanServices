@@ -3,7 +3,7 @@
 The whole design in one paragraph: thin public `rke2` and `k3s` clanServices
 (upstream `kubernetes`/kubeadm fully spec'd, implementation reserved — D23)
 sit on top of a private shared library (`lib/kube-cluster/` — renamed from
-`lib/rancher-cluster/` at spec level in round 13, D45) that owns the shared
+`lib/rancher-cluster/` in delivery phase 1, D45) that owns the shared
 interfaces, kubenix renderers, vars generators, and assertions. The library
 delivers exactly two contracts: the **Bootstrap contract** (the cluster
 exists and is reachable) and the **Data-plane contract** (packets flow

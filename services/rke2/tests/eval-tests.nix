@@ -114,34 +114,13 @@ let
   betaTransport = transportEvaled.config.nixosConfigurations.beta.config;
   gammaTransport = transportEvaled.config.nixosConfigurations.gamma.config;
 
-  # Sealed Secrets enabled (single server, explicit addresses).
-  sealedInventory = {
-    instances.rke2 = {
-      module.name = "rke2";
-      module.input = "self";
-      roles.server = {
-        settings = {
-          network.transport = null;
-          sealedSecrets.enabled = true;
-        };
-        machines.alpha.settings = {
-          clusterInit = true;
-          network = {
-            ipv4 = "10.0.0.1";
-            ipv6 = "fd00::1";
-          };
-        };
-      };
-    };
+  # distroDefaults opt-in: the service refrains from disabling the distro's
+  # packaged components (D42).
+  stockInventory = lib.recursiveUpdate explicitInventory {
+    instances.rke2.roles.server.settings.distroDefaults.enable = true;
   };
-  sealedEvaled = mkEvaled sealedInventory;
-  alphaSealed = sealedEvaled.config.nixosConfigurations.alpha.config;
-
-  gatewayInventory = lib.recursiveUpdate explicitInventory {
-    instances.rke2.roles.server.settings.traefik.instances.rke2-traefik.gatewayAPI.enabled = true;
-  };
-  gatewayEvaled = mkEvaled gatewayInventory;
-  alphaGateway = gatewayEvaled.config.nixosConfigurations.alpha.config;
+  stockEvaled = mkEvaled stockInventory;
+  alphaStock = stockEvaled.config.nixosConfigurations.alpha.config;
 
   failedAssertion =
     machineConfig: needle:
@@ -163,21 +142,6 @@ let
   };
   dualInitEvaled = mkEvaled dualInitInventory;
   alphaDualInit = dualInitEvaled.config.nixosConfigurations.alpha.config;
-
-  # A cluster with two gatewayAPI-enabled Traefik instances should fail.
-  dualGatewayInventory = lib.recursiveUpdate explicitInventory {
-    instances.rke2.roles.server.settings.traefik.instances = {
-      rke2-traefik = {
-        gatewayAPI.enabled = true;
-      };
-      extra = {
-        gatewayAPI.enabled = true;
-      };
-    };
-  };
-
-  dualGatewayEvaled = mkEvaled dualGatewayInventory;
-  alphaDualGateway = dualGatewayEvaled.config.nixosConfigurations.alpha.config;
 in
 {
   test_serviceEnabled = {
@@ -234,7 +198,7 @@ in
 
   test_generatorNamesAgentNoPki = {
     # Agents get the join tokens and the haproxy healthcheck material, but
-    # NEVER the PKI / admin kubeconfig / sealed-secrets generators.
+    # NEVER the PKI / admin kubeconfig generators.
     expr = builtins.attrNames gammaTransport.clan.core.vars.generators;
     expected = [
       "rancher-agent-token-rke2"
@@ -268,6 +232,22 @@ in
       k8sServiceHost = "kubeapi-rke2.clan";
       k8sServicePort = 7443;
     };
+  };
+
+  test_ciliumNodeIpamDefault = {
+    expr = {
+      inherit (ciliumConfigContent) defaultLBServiceIPAM;
+      inherit (ciliumConfigContent.nodeIPAM) enabled;
+    };
+    expected = {
+      defaultLBServiceIPAM = "nodeipam";
+      enabled = true;
+    };
+  };
+
+  test_distroDefaultsOptInEvals = {
+    expr = alphaStock.services.rke2.enable;
+    expected = true;
   };
 
   test_haproxyEnabledEverywhere = {
@@ -365,36 +345,6 @@ in
     };
   };
 
-  test_sealedSecretsWiring = {
-    # Note: autoDeployCharts has an apply that maps each chart to its
-    # rendered HelmChart manifest attrs (target/enable/package/source).
-    expr = {
-      generator = alphaSealed.clan.core.vars.generators ? rancher-sealed-secrets-rke2;
-      syncUnit = alphaSealed.systemd.services ? rke2-rke2-sealed-secrets-sync;
-      chart = alphaSealed.services.rke2.autoDeployCharts ? sealed-secrets;
-      chartEnabled = alphaSealed.services.rke2.autoDeployCharts.sealed-secrets.enable;
-    };
-    expected = {
-      generator = true;
-      syncUnit = true;
-      chart = true;
-      chartEnabled = true;
-    };
-  };
-
-  test_sealedSecretsOffByDefault = {
-    expr = {
-      generator = alphaTransport.clan.core.vars.generators ? rancher-sealed-secrets-rke2;
-      syncUnit = alphaTransport.systemd.services ? rke2-rke2-sealed-secrets-sync;
-      chart = alphaTransport.services.rke2.autoDeployCharts ? sealed-secrets;
-    };
-    expected = {
-      generator = false;
-      syncUnit = false;
-      chart = false;
-    };
-  };
-
   test_ciliumFirewallForwarding = {
     expr = {
       nftables = alphaTransport.networking.nftables.enable;
@@ -410,31 +360,6 @@ in
       fromPods = true;
       toPods = true;
     };
-  };
-
-  test_gatewayApiCrdSources = {
-    expr = {
-      replacementChart = alphaGateway.services.rke2.autoDeployCharts ? traefik-crd;
-      pinnedManifest = alphaGateway.services.rke2.manifests ? gateway-api-crds;
-    };
-    expected = {
-      replacementChart = true;
-      pinnedManifest = true;
-    };
-  };
-
-  test_certManagerBootstrapManifest = {
-    expr = map (m: m.kind) alphaManifests.cert-manager-bootstrap.content;
-    expected = [
-      "ClusterIssuer"
-      "Certificate"
-      "ClusterIssuer"
-    ];
-  };
-
-  test_defaultGatewayCertificateAbsentWithoutGatewayApi = {
-    expr = alphaManifests ? "traefik-cert-rke2-traefik-gateway-tls";
-    expected = false;
   };
 
   test_twoClusterInitAssertion = {
@@ -463,11 +388,6 @@ in
         };
       in
       failedAssertion bad.config.nixosConfigurations.alpha.config "network.transport is null";
-    expected = true;
-  };
-
-  test_dualGatewayAssertion = {
-    expr = failedAssertion alphaDualGateway "at most one traefik.instances entry";
     expected = true;
   };
 }

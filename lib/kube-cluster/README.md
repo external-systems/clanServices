@@ -1,29 +1,34 @@
-# `lib/rancher-cluster` — shared cluster rendering library
+# `lib/kube-cluster` — shared cluster rendering library
 
 This is a **private implementation library** for the public `rke2` and `k3s`
 clan services. It is not a clan service itself and is not registered in
 `clan.modules`. Services consume it via a relative import:
 
-The [Rancher clanServices specification](../../services/rancher-cluster-spec.html)
-is the canonical cross-distro architecture, status, and delivery record.
+The [SPEC](../../SPEC.md) is the canonical cross-distro architecture, status,
+and delivery record. Renamed from `lib/rancher-cluster/` in delivery phase 1
+(SPEC.md D45).
 
 ```nix
-rancher = import ../../lib/rancher-cluster { inherit lib; };
+kube = import ../../lib/kube-cluster { inherit lib; };
 ```
 
 ## Scope
+
+The library covers the bootstrap + data-plane contracts (SPEC.md §3) only.
+Day-2 in-cluster software (ingress/Gateway proxies, cert-manager, Sealed
+Secrets, storage, GitOps controllers) is never rendered here (SPEC.md §3.3).
 
 The library exposes:
 
 - shared, JSON-serializable option interfaces for role-level and per-machine
   settings;
-- pure render functions for Cilium, Traefik, cert-manager, CoreDNS, and the
-  per-node haproxy kube-apiserver load balancer;
+- pure render functions for Cilium, CoreDNS, and the per-node haproxy
+  kube-apiserver load balancer;
 - eval-time cluster assertions;
 - distro-neutral clan vars generators (join tokens, cluster PKI, haproxy
-  healthcheck material, admin kubeconfig, Sealed Secrets keypair);
-- NixOS fragment builders for the PKI sync and secret-manifest sync units
-  (distro-parameterized by TLS dir / manifests dir / unit names).
+  healthcheck material, admin kubeconfig);
+- the NixOS fragment builder for the PKI sync units (distro-parameterized by
+  TLS dir / unit names).
 
 Distro-specific config (rke2 config.yaml vs k3s config), the distro NixOS
 module wiring, and airgap tarball selection stay OUT of this library.
@@ -34,12 +39,8 @@ module wiring, and airgap tarball selection stay OUT of this library.
 |---|---|
 | `interfaces.cluster` | Deferred module of shared role-level options. |
 | `interfaces.node` | Deferred module of shared per-machine options. |
-| `render.mkCiliumValues` | Cilium helm values (tunnel VXLAN, KPR, multi-pool IPAM, MTU math). |
+| `render.mkCiliumValues` | Cilium helm values (tunnel VXLAN, KPR, multi-pool IPAM, Node IPAM default, MTU math). |
 | `render.mkCiliumManifests` | `CiliumPodIPPool` CR (LB-IPAM/BGP left to later phases). |
-| `render.mkTraefikInstances` | Resolve raw `traefik.instances` into normalized instances. |
-| `render.mkTraefikValues` | Helm values for one resolved Traefik instance. |
-| `render.mkTraefikManifests` | Gateway, Certificate, and NetworkPolicy manifests. |
-| `render.mkCertManagerManifests` | selfsigned CA bootstrap + user Certificate CRs. |
 | `render.mkCoreDNSValues` | coredns chart values for custom rewrite support. |
 | `render.mkCoreDNSManifests` | `coredns-custom` ConfigMap manifest. |
 | `render.mkHaproxyConfig` | Per-node haproxy kube-apiserver LB config, with an optional rke2 supervisor LB. |
@@ -49,21 +50,18 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `vars.mkPkiGenerator` | `rancher-pki-<instance>` — the pre-generated cluster CA tree. |
 | `vars.mkHaproxyGenerator` | `rancher-haproxy-<instance>` — LB healthcheck client cert + stats password hash. |
 | `vars.mkAdminKubeconfigGenerator` | `rancher-admin-kubeconfig-<instance>` — operator kubeconfig (server URL parameterized). |
-| `vars.mkSealedSecretsGenerator` | `rancher-sealed-secrets-<instance>` — pre-generated signing keypair. |
 | `nixos.mkPkiSync` | systemd service + path unit syncing the PKI vars into the distro TLS dir. |
-| `nixos.mkSecretManifestSync` | systemd service + path unit syncing a secret var file into the manifests dir. |
 
 ## Vars layout (pre-generated PKI, zero user input)
 
-All generators are `share = true` — one CA tree / token set / keypair per
-cluster instance. Role placement is the distro service's job:
+All generators are `share = true` — one CA tree / token set per cluster
+instance. Role placement is the distro service's job:
 
 - **every node**: `rancher-server-token-*` / `rancher-agent-token-*` and
   `rancher-haproxy-*` (agents join and serve API traffic through their own
   haproxy; the healthcheck client cert deploys to all, 0400 owner haproxy);
-- **servers only**: `rancher-admin-kubeconfig-*` and
-  `rancher-sealed-secrets-*` when enabled. `rancher-pki-*` is declared on
-  rke2 servers but only on k3s's initializing server (CA keys never leave
+- **servers only**: `rancher-admin-kubeconfig-*`. `rancher-pki-*` is declared
+  on rke2 servers but only on k3s's initializing server (CA keys never leave
   the control plane).
 
 `rancher-pki-<instance>` produces a root CA + intermediate CA (both
@@ -105,28 +103,14 @@ This lets multiple clusters share one transport when their ids differ (the
 ClusterMesh groundwork: unique ids ⇒ non-overlapping CIDRs; meshing itself
 is a later phase).
 
-## Traefik instances
+## distroDefaults
 
-The library is deliberately distro-neutral:
-
-- `traefik.instances` defaults to `{}`. Distro services supply the default
-  instance name (`rke2-traefik`, `k3s-traefik`, etc.).
-- `namespace` defaults to the instance name.
-- `service.loadBalancerClass` defaults to `null`; distros or external LB
-  services set `io.cilium/node` when appropriate.
-- `gatewayAPI.enabled` defaults to `false`; at most one instance per cluster
-  may enable it.
-
-The caller provides a `getChartSource` function so the resolved instance
-records whether it renders as a `HelmChartConfig` (rke2 default instance)
-or a standalone `HelmChart` CR (extras / k3s).
-
-## Sealed Secrets
-
-`sealedSecrets.enabled` (default `false`) renders: the
-`rancher-sealed-secrets-<instance>` vars generator (4096-bit RSA keypair;
-`tls.crt` is PUBLIC plaintext — the offline sealing key), the
-secret-manifest sync of the `sealed-secrets-key` Secret into the distro's
-manifests dir, and (in the distro service) the pinned sealed-secrets chart
-with `keyrenewperiod = "0"` so the controller never rotates the vars-owned
-key.
+`distroDefaults.enable` (default `false`, SPEC.md D42) selects the distro
+base: `false` = the rke2/k3s services pass the flags that disable the
+distro's packaged add-ons (Traefik/ingress, metrics-server, local-storage,
+snapshot controller) for a uniform minimal base; `true` = the service
+refrains from disabling, so stock components deploy via the distro's own
+machinery and are configured day-2 through its HelmChartConfig surface.
+servicelb/klipper stays disabled in both modes — Cilium Node IPAM
+(`nodeIPAM.enabled = true`, `defaultLBServiceIPAM = "nodeipam"`, D41) is the
+classless LoadBalancer mechanism.

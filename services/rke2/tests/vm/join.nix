@@ -58,15 +58,9 @@
           module.input = "self";
 
           roles.server = {
-            settings = {
-              network.transport = {
-                service = "wireguard-mesh";
-                instance = "mesh";
-              };
-
-              # Focus on the join path; skip the optional stacks.
-              traefik.enabled = false;
-              certManager.enabled = false;
+            settings.network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
             };
             machines.alpha.settings.clusterInit = true;
           };

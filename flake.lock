@@ -1,18 +1,5 @@
 {
   "nodes": {
-    "cert-manager-chart": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1789055334,
-        "narHash": "sha256-AsbUc4Q9aVfTmENGPPmjOwC6V6v3MpTN1cKIl8csi10=",
-        "type": "tarball",
-        "url": "https://charts.jetstack.io/charts/cert-manager-v1.21.2.tgz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://charts.jetstack.io/charts/cert-manager-v1.21.2.tgz"
-      }
-    },
     "cilium-chart": {
       "flake": false,
       "locked": {
@@ -138,19 +125,6 @@
         "owner": "numtide",
         "repo": "flake-utils",
         "type": "github"
-      }
-    },
-    "gateway-api-crds": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1784212646,
-        "narHash": "sha256-Hq3vaCQRSRFjya76qRYw4/BcH00Wu5wE6UQACrjKJSk=",
-        "type": "tarball",
-        "url": "https://github.com/kubernetes-sigs/gateway-api/archive/refs/tags/v1.6.1.tar.gz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://github.com/kubernetes-sigs/gateway-api/archive/refs/tags/v1.6.1.tar.gz"
       }
     },
     "import-tree": {
@@ -457,7 +431,6 @@
     },
     "root": {
       "inputs": {
-        "cert-manager-chart": "cert-manager-chart",
         "cilium-chart": "cilium-chart",
         "clan-core": "clan-core",
         "data-mesher": [
@@ -469,7 +442,6 @@
           "disko"
         ],
         "flake-parts": "flake-parts",
-        "gateway-api-crds": "gateway-api-crds",
         "nix-darwin": [
           "clan-core",
           "nix-darwin"
@@ -485,7 +457,6 @@
           "nixpkgs"
         ],
         "presenting": "presenting",
-        "sealed-secrets-chart": "sealed-secrets-chart",
         "sops-nix": [
           "clan-core",
           "sops-nix"
@@ -494,22 +465,7 @@
           "clan-core",
           "systems"
         ],
-        "traefik-chart": "traefik-chart",
-        "traefik-crd-chart": "traefik-crd-chart",
         "treefmt-nix": "treefmt-nix_2"
-      }
-    },
-    "sealed-secrets-chart": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1787216217,
-        "narHash": "sha256-brsr4XcKA2ytJ3zqUqNG90K49aHURRsgRBJlrmN2cm4=",
-        "type": "tarball",
-        "url": "https://github.com/bitnami-labs/sealed-secrets/releases/download/helm-v2.19.3/sealed-secrets-2.19.3.tgz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://github.com/bitnami-labs/sealed-secrets/releases/download/helm-v2.19.3/sealed-secrets-2.19.3.tgz"
       }
     },
     "sops-nix": {
@@ -577,32 +533,6 @@
         "owner": "nix-systems",
         "repo": "default",
         "type": "github"
-      }
-    },
-    "traefik-chart": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1788177681,
-        "narHash": "sha256-LoU1MiYPNIGj7wrvzO2W8YMyVSael173Tk2ckdbYFRA=",
-        "type": "tarball",
-        "url": "https://k3s.io/k3s-charts/assets/traefik/traefik-40.1.5%2Bup40.1.0.tgz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://k3s.io/k3s-charts/assets/traefik/traefik-40.1.5%2Bup40.1.0.tgz"
-      }
-    },
-    "traefik-crd-chart": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1788174420,
-        "narHash": "sha256-mkz75/i4djmsq4PX5ih9923l3GBLGIZUqKut0LNajRU=",
-        "type": "tarball",
-        "url": "https://k3s.io/k3s-charts/assets/traefik-crd/traefik-crd-40.1.5%2Bup40.1.0.tgz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://k3s.io/k3s-charts/assets/traefik-crd/traefik-crd-40.1.5%2Bup40.1.0.tgz"
       }
     },
     "treefmt-nix": {

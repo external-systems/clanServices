@@ -12,17 +12,15 @@ let
   nodeInterface = import ./node-interface.nix;
 
   cilium = import ./cilium.nix { inherit lib cidrs; };
-  ingress = import ./ingress-traefik.nix { inherit lib; };
-  cert = import ./cert-manager.nix { inherit lib; };
   coredns = import ./coredns.nix { inherit lib; };
-  assertFns = import ./assertions.nix { inherit lib ingress; };
+  assertFns = import ./assertions.nix { inherit lib; };
   haproxy = import ./haproxy.nix { inherit lib; };
   nixos = import ./nixos.nix { inherit lib; };
   vars = import ./vars.nix { inherit lib; };
 
   mkManifestLabels = { instanceName }: {
     "app.kubernetes.io/managed-by" = "clan";
-    "clan.lol/rancher-cluster" = "core-component";
+    "clan.lol/kube-cluster" = "core-component";
     "clan.lol/cluster" = instanceName;
   };
 in
@@ -36,8 +34,6 @@ rec {
 
   render = {
     inherit (cilium) mkCiliumValues mkCiliumManifests;
-    inherit (ingress) mkTraefikInstances mkTraefikValues mkTraefikManifests;
-    inherit (cert) mkCertManagerManifests;
     inherit (coredns) mkCoreDNSValues mkCoreDNSManifests;
     inherit (haproxy) mkHaproxyConfig;
     inherit mkManifestLabels;
@@ -52,6 +48,6 @@ rec {
   # vars.nix).
   inherit vars;
 
-  # NixOS fragment builders (PKI sync, secret manifest sync).
+  # NixOS fragment builders (PKI sync).
   inherit nixos;
 }

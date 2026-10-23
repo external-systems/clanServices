@@ -41,7 +41,7 @@ this revision removes.
 
 Thin public `rke2` + `k3s` clanServices (upstream `kubernetes`/kubeadm
 spec'd, Reserved) over a private shared library (`lib/kube-cluster/` —
-renamed from `lib/rancher-cluster/` at spec level in round 13, D45):
+renamed from `lib/rancher-cluster/` in delivery phase 1, D45):
 shared interfaces, kubenix renderers, vars generators, assertions. Host
 WireGuard full mesh is the only tested node transport (dual-stack,
 all-or-none per mesh trust domain). Cilium = CNI + KPR + VXLAN tunnel +
@@ -431,7 +431,7 @@ unless noted) — revoked entries keep one-line reasons for history.
 - **D45 Shared lib renamed `lib/kube-cluster/`.** Supersedes the D23
   rename gate (was: on kubernetes-distro landing). The lib serves all
   three distros' bootstrap+data-plane; "rancher" is the misleading name.
-  Spec-level now; code rename lands with phase 1 (§8).
+  Code rename landed in phase 1 (§8).
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -723,13 +723,13 @@ sealed-secrets. Reserved: MCS-API, upstream-kubernetes distro suites
 tests together)
 
 - **0 done** — canonical import (`896acdf`).
-- **1 NEXT — ACTIVE** — scope-reduction execution (docs-only round 13
-  landed first, per A4): delete out-of-contract code (traefik renderers
-  and inputs, cert-manager + sealed-secrets renderers/inputs,
-  gateway-api-crds input); rename `lib/rancher-cluster/` →
-  `lib/kube-cluster/` (D45); prune interfaces to bootstrap + data plane;
-  `distroDefaults` knob (D42); static gates green.
-- **2** — artifact flake narrowing (external-systems/pkgs): drop
+- **1 done** — scope-reduction execution (docs-only round 13 landed first,
+  per A4): out-of-contract code deleted (traefik renderers and inputs,
+  cert-manager + sealed-secrets renderers/inputs, gateway-api-crds input);
+  `lib/rancher-cluster/` renamed to `lib/kube-cluster/` (D45); interfaces
+  pruned to bootstrap + data plane; `distroDefaults` knob (D42); static
+  gates green.
+- **2 NEXT — ACTIVE** — artifact flake narrowing (external-systems/pkgs): drop
   envoy-gateway/cert-manager/flux/external-dns/multus/sealed-secrets
   components + freshness checks; keep distro runtimes (3 minors), Cilium
   chart + committed inflated manifest, go-httpbin; add Cilium image

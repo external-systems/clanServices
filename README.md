@@ -9,9 +9,13 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 - [k3s](services/k3s/README.md): k3s Kubernetes cluster
 - [rke2](services/rke2/README.md): RKE2 Kubernetes cluster
 - [wireguard-mesh](services/wireguard-mesh/README.md): dual-stack host-level WireGuard full mesh
-- [rancher-cluster](lib/rancher-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
+- [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
-The [Rancher clanServices specification](services/rancher-cluster-spec.html) is the canonical architecture, status, and delivery record; [rancher-cluster-spec.md](services/rancher-cluster-spec.md) is its normative decision summary for AI agents (edit both together). Its capability matrix distinguishes implemented behavior from planned work.
+[SPEC.md](SPEC.md) is the canonical architecture, status, and delivery record — a single dense
+contract for agents; `documentation/` (MkDocs site + slides) is the human record of the same spec
+(edit both together). Round 13 narrowed the contract to the bootstrap + data-plane promises;
+everything else in-cluster (Envoy Gateway, cert-manager, Sealed Secrets, Flux, external-dns,
+storage, CCMs) is a documented day-2 GitOps pattern, never clan-rendered.
 
 ## Usage
 
@@ -39,13 +43,13 @@ clan.inventory.instances.<instance-name> = {
 
 ## Development
 
-Each service lives under `services/<name>/` with its module, flake-parts registration, README, and tests. Shared Rancher behavior lives under `lib/rancher-cluster/`. Service directories are auto-discovered; there is no central registration list.
+Each service lives under `services/<name>/` with its module, flake-parts registration, README, and tests. Shared cluster behavior lives under `lib/kube-cluster/`. Service directories are auto-discovered; there is no central registration list.
 
 Run the standard static gates before committing:
 
 ```bash
 nix fmt .
-nix flake check --show-trace
+nix flake check --no-build --show-trace
 ```
 
-Hermetic NixOS VM suites and the delivery roadmap are documented in the Rancher specification. Artifact packaging has a separate planned home in `external-systems/pkgs`; the imported implementation has not completed that migration yet.
+Hermetic NixOS VM suites and the delivery roadmap are documented in SPEC.md. Artifact packaging has a separate planned home in `external-systems/pkgs`; the imported implementation has not completed that migration yet.

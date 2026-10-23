@@ -1,6 +1,6 @@
 { lib }:
 let
-  rancher = import ../default.nix { inherit lib; };
+  kube = import ../default.nix { inherit lib; };
 
   # Minimal valid cluster settings for rendering tests.
   domain = "example.org";
@@ -17,26 +17,13 @@ let
       id = 1;
       helmValues = { };
     };
-    traefik = {
-      enabled = true;
-      instances = {
-        traefik = { };
-      };
-    };
-    certManager = {
-      enabled = true;
-      helmValues = { };
-      certificates = [ ];
-    };
+    distroDefaults.enable = false;
     coredns = {
       rewrites = [ ];
       helmValues = { };
     };
     packages = {
       ciliumChart = null;
-      traefikChart = null;
-      certManagerChart = null;
-      gatewayApiCrds = null;
       images = [ ];
     };
   };
@@ -46,7 +33,7 @@ let
     extraConfig:
     (lib.evalModules {
       modules = [
-        rancher.interfaces.cluster
+        kube.interfaces.cluster
         (_: {
           config = lib.recursiveUpdate baseConfig extraConfig;
         })
@@ -60,55 +47,20 @@ let
     mtu = 1420;
   };
 
-  members = [
-    "alpha"
-    "beta"
-  ];
-
   instanceName = "test";
 
-  ciliumValues = rancher.render.mkCiliumValues {
+  ciliumValues = kube.render.mkCiliumValues {
     settings = baseSettings;
     inherit transportFacts instanceName;
     k8sServiceHost = "kubeapi-test.example.org";
     k8sServicePort = 6443;
   };
 
-  ciliumManifests = rancher.render.mkCiliumManifests {
+  ciliumManifests = kube.render.mkCiliumManifests {
     settings = baseSettings;
   };
 
-  traefikInstances = rancher.render.mkTraefikInstances {
-    settings = baseSettings;
-    inherit members;
-  };
-
-  traefikValues = rancher.render.mkTraefikValues {
-    instance = builtins.head traefikInstances;
-  };
-
-  gatewayTraefikInstances = rancher.render.mkTraefikInstances {
-    settings = evalSettings {
-      traefik.instances.ingress = {
-        gatewayAPI.enabled = true;
-      };
-    };
-    inherit members;
-  };
-
-  gatewayTraefikManifests = rancher.render.mkTraefikManifests {
-    instances = gatewayTraefikInstances;
-    inherit domain;
-    manifestLabels = rancher.render.mkManifestLabels { inherit instanceName; };
-  };
-
-  certManagerManifests = rancher.render.mkCertManagerManifests {
-    settings = baseSettings;
-    inherit domain;
-    manifestLabels = rancher.render.mkManifestLabels { inherit instanceName; };
-  };
-
-  corednsValues = rancher.render.mkCoreDNSValues {
+  corednsValues = kube.render.mkCoreDNSValues {
     settings = evalSettings {
       coredns.rewrites = [ "name suffix svc.test.cluster svc.cluster.local answer auto" ];
     };
@@ -118,54 +70,7 @@ let
   failedAssertion =
     assertions: needle: lib.any (item: !item.assertion && lib.hasInfix needle item.message) assertions;
 
-  dualGatewaySettings = evalSettings {
-    traefik.instances = {
-      a = {
-        gatewayAPI.enabled = true;
-      };
-      b = {
-        gatewayAPI.enabled = true;
-      };
-    };
-  };
-
-  roleMembers = [
-    {
-      machineName = "alpha";
-      role = "server";
-      settings = {
-        clusterInit = true;
-        network = {
-          ipv4 = "10.0.0.1";
-          ipv6 = "fd00::1";
-        };
-      };
-    }
-    {
-      machineName = "beta";
-      role = "agent";
-      settings = {
-        clusterInit = false;
-        network = {
-          ipv4 = "10.0.0.2";
-          ipv6 = "fd00::2";
-        };
-      };
-    }
-  ];
-
-  dualGatewayAssertions = rancher.assertions.mkClusterAssertions {
-    inherit
-      instanceName
-      roleMembers
-      members
-      domain
-      transportFacts
-      ;
-    settings = dualGatewaySettings;
-  };
-
-  # A fake package for the missing-package assertion test.
+  # A fake package for the generator tests.
   fakePackage = lib.warn "fake package used for assertion test" (
     builtins.derivation {
       name = "fake";
@@ -199,22 +104,26 @@ in
     };
   };
 
-  test_ciliumValues_nodeIpamOffByDefault = {
-    expr = ciliumValues.nodeIPAM.enabled;
-    expected = false;
+  test_ciliumValues_nodeIpamOnByDefault = {
+    expr = {
+      inherit (ciliumValues) defaultLBServiceIPAM;
+      inherit (ciliumValues.nodeIPAM) enabled;
+    };
+    expected = {
+      defaultLBServiceIPAM = "nodeipam";
+      enabled = true;
+    };
   };
 
-  test_ciliumValues_nodeIpamOnWhenLoadBalancerClassSet = {
-    expr =
-      (rancher.render.mkCiliumValues {
-        settings = evalSettings {
-          traefik.instances.traefik.service.loadBalancerClass = "io.cilium/node";
-        };
-        inherit transportFacts instanceName;
-        k8sServiceHost = "kubeapi-test.example.org";
-        k8sServicePort = 6443;
-      }).nodeIPAM.enabled;
-    expected = true;
+  test_ciliumValues_gatewayAndIngressPermanentlyOff = {
+    expr = {
+      inherit (ciliumValues.gatewayAPI) enabled;
+      ingress = ciliumValues.ingressController.enabled;
+    };
+    expected = {
+      enabled = false;
+      ingress = false;
+    };
   };
 
   test_ciliumManifestsCidrDerivation = {
@@ -231,7 +140,7 @@ in
   test_ciliumManifestsCidrDerivationId2 = {
     expr =
       let
-        manifests = rancher.render.mkCiliumManifests {
+        manifests = kube.render.mkCiliumManifests {
           settings = baseSettings // {
             cilium.id = 2;
           };
@@ -247,89 +156,26 @@ in
     };
   };
 
-  test_traefikInstanceDefaults = {
-    expr =
-      let
-        i = builtins.head traefikInstances;
-      in
-      {
-        inherit (i) namespace workloadKind defaultCertRendered;
-        inherit (lib.findFirst (ep: ep.epName == "web") null i.entrypoints) containerPort;
-        inherit (lib.findFirst (ep: ep.epName == "websecure") null i.entrypoints) servicePort;
-      };
-    expected = {
-      namespace = "traefik";
-      workloadKind = "daemonset";
-      defaultCertRendered = false;
-      containerPort = 8000;
-      servicePort = 443;
-    };
-  };
-
-  test_traefikValuesHasFullnameOverride = {
-    expr = traefikValues.fullnameOverride;
-    expected = "traefik";
-  };
-
-  test_traefikValuesWebDefaults = {
-    expr = traefikValues.ports.web;
-    expected = {
-      port = 8000;
-      hostPort = null;
-      expose.default = true;
-      exposedPort = 80;
-      protocol = "TCP";
-    };
-  };
-
-  test_traefikManifestsDefaultCertificate = {
-    expr =
-      let
-        cert = gatewayTraefikManifests.certificates."ingress-gateway-tls".content;
-      in
-      {
-        inherit (cert.spec) secretName dnsNames;
-        issuerName = cert.spec.issuerRef.name;
-      };
-    expected = {
-      secretName = "ingress-gateway-tls";
-      dnsNames = [
-        "example.org"
-        "*.example.org"
-      ];
-      issuerName = "rancher-ca";
-    };
-  };
-
-  test_certManagerBootstrap = {
-    expr = map (m: m.kind) certManagerManifests;
-    expected = [
-      "ClusterIssuer"
-      "Certificate"
-      "ClusterIssuer"
-    ];
-  };
-
   test_corednsValuesHasRewriteImport = {
     expr = corednsValues.servers != null;
     expected = true;
   };
 
-  test_gatewayApiSingletonAssertion = {
-    expr = failedAssertion dualGatewayAssertions "at most one traefik.instances entry";
+  test_distroDefaultsOffByDefault = {
+    expr = baseSettings.distroDefaults.enable;
+    expected = false;
+  };
+
+  test_distroDefaultsOptIn = {
+    expr = (evalSettings { distroDefaults.enable = true; }).distroDefaults.enable;
     expected = true;
   };
 
   test_missingClusterInitAssertion = {
     expr =
       let
-        assertions = rancher.assertions.mkClusterAssertions {
-          inherit
-            instanceName
-            members
-            domain
-            transportFacts
-            ;
+        assertions = kube.assertions.mkClusterAssertions {
+          inherit instanceName transportFacts;
           settings = baseSettings;
           roleMembers = [
             {
@@ -353,8 +199,8 @@ in
   test_missingTransportAddressesAssertion = {
     expr =
       let
-        assertions = rancher.assertions.mkClusterAssertions {
-          inherit instanceName members domain;
+        assertions = kube.assertions.mkClusterAssertions {
+          inherit instanceName;
           settings = baseSettings;
           transportFacts = null;
           roleMembers = [
@@ -376,10 +222,47 @@ in
     expected = true;
   };
 
+  test_uniqueAddressesAssertion = {
+    expr =
+      let
+        assertions = kube.assertions.mkClusterAssertions {
+          inherit instanceName;
+          settings = baseSettings;
+          transportFacts = null;
+          roleMembers = [
+            {
+              machineName = "alpha";
+              role = "server";
+              settings = {
+                clusterInit = true;
+                network = {
+                  ipv4 = "10.0.0.1";
+                  ipv6 = "fd00::1";
+                };
+              };
+            }
+            {
+              machineName = "beta";
+              role = "agent";
+              settings = {
+                clusterInit = false;
+                network = {
+                  ipv4 = "10.0.0.1";
+                  ipv6 = "fd00::1";
+                };
+              };
+            }
+          ];
+        };
+      in
+      failedAssertion assertions "unique IPv4";
+    expected = true;
+  };
+
   test_tokenGeneratorNames = {
     expr =
       let
-        tokens = rancher.vars.mkTokenGenerators {
+        tokens = kube.vars.mkTokenGenerators {
           pkgs = {
             openssl = fakePackage;
           };
@@ -396,7 +279,7 @@ in
   test_pkiGenerator = {
     expr =
       let
-        pki = rancher.vars.mkPkiGenerator {
+        pki = kube.vars.mkPkiGenerator {
           pkgs = {
             openssl = fakePackage;
             coreutils = fakePackage;
@@ -444,7 +327,7 @@ in
     expr =
       let
         gen =
-          (rancher.vars.mkHaproxyGenerator {
+          (kube.vars.mkHaproxyGenerator {
             pkgs = {
               openssl = fakePackage;
               coreutils = fakePackage;
@@ -476,7 +359,7 @@ in
     expr =
       let
         gen =
-          (rancher.vars.mkAdminKubeconfigGenerator {
+          (kube.vars.mkAdminKubeconfigGenerator {
             pkgs = {
               openssl = fakePackage;
               coreutils = fakePackage;
@@ -496,38 +379,10 @@ in
     };
   };
 
-  test_sealedSecretsGenerator = {
-    expr =
-      let
-        gen =
-          (rancher.vars.mkSealedSecretsGenerator {
-            pkgs = {
-              openssl = fakePackage;
-            };
-            inherit instanceName;
-            labels = {
-              "app.kubernetes.io/managed-by" = "clan";
-            };
-          })."rancher-sealed-secrets-${instanceName}";
-      in
-      {
-        inherit (gen) share;
-        crtPublic = !(gen.files."tls.crt".secret or true);
-        keySecret = gen.files."tls.key".secret or true;
-        manifestHasLabel = lib.hasInfix "sealedsecrets.bitnami.com/sealed-secrets-key: active" gen.script;
-      };
-    expected = {
-      share = true;
-      crtPublic = true;
-      keySecret = true;
-      manifestHasLabel = true;
-    };
-  };
-
   test_haproxyConfigRender = {
     expr =
       let
-        cfg = rancher.render.mkHaproxyConfig {
+        cfg = kube.render.mkHaproxyConfig {
           inherit instanceName;
           nodeIPv4 = "192.168.77.1";
           nodeIPv6 = "fd00:77::1";
@@ -579,7 +434,7 @@ in
   test_pkiSyncFragment = {
     expr =
       let
-        frag = rancher.nixos.mkPkiSync {
+        frag = kube.nixos.mkPkiSync {
           pkgs = {
             coreutils = "/nix/store/fake-coreutils";
             writeShellScript = name: text: "script:${name}:${text}";
@@ -621,10 +476,10 @@ in
   };
 
   test_manifestLabels = {
-    expr = rancher.render.mkManifestLabels { inherit instanceName; };
+    expr = kube.render.mkManifestLabels { inherit instanceName; };
     expected = {
       "app.kubernetes.io/managed-by" = "clan";
-      "clan.lol/rancher-cluster" = "core-component";
+      "clan.lol/kube-cluster" = "core-component";
       "clan.lol/cluster" = "test";
     };
   };

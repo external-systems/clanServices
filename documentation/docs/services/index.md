@@ -17,8 +17,8 @@ library; the others stand alone.
 Distro-specific behavior — bootstrap, TLS directory layout, join semantics —
 lives in the thin `rke2` and `k3s` services. Everything else (interfaces,
 renderers, vars generators, assertions) lives once in the private shared
-library `lib/kube-cluster/` (renamed from `lib/rancher-cluster/` at spec
-level in round 13, D45; the code rename lands with delivery phase 1). A fix
+library `lib/kube-cluster/` (renamed from `lib/rancher-cluster/` in
+delivery phase 1, D45). A fix
 in shared behavior lands once, not twice.
 
 The cluster services deliver the two contracts — bootstrap and data plane —

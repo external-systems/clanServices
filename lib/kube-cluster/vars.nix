@@ -1,24 +1,22 @@
-# Distro-neutral clan vars generators for a Rancher cluster (rke2/k3s):
+# Distro-neutral clan vars generators for a Kubernetes cluster (rke2/k3s):
 # join tokens, the pre-generated cluster PKI, the per-node kube-apiserver
-# load balancer (haproxy) healthcheck material, the admin kubeconfig, and
-# the Sealed Secrets signing keypair.
+# load balancer (haproxy) healthcheck material, and the admin kubeconfig.
+# Bootstrap plane only (SPEC.md D35): no application-plane secrets.
 #
-# Every generator is SHARED (share = true): one CA tree / token set /
-# keypair per cluster instance, generated once, consumed by every member.
+# Every generator is SHARED (share = true): one CA tree / token set per
+# cluster instance, generated once, consumed by every member.
 # Zero user input — `clan vars generate` derives everything.
 #
 # Role placement is the distro service's decision:
 #   - tokens + haproxy material: EVERY node (agents join/serve through
 #     their local haproxy; the healthcheck client cert deploys to all);
-#   - PKI, admin kubeconfig, sealed-secrets keypair: servers only (the CA
-#     keys never leave the control plane; the sealed-secrets key manifest
-#     syncs into the server manifests dir).
+#   - PKI, admin kubeconfig: servers only (the CA keys never leave the
+#     control plane).
 #
 # Naming is distro-neutral: rancher-<what>-<instance>. The PKI layout the
 # certificates are synced INTO differs per distro (rke2 vs k3s tls dirs) —
 # that is nixos.mkPkiSync's parameter, not the generator's.
-{ lib }:
-{
+_: {
   # Join tokens: plain random secrets, one per role.
   mkTokenGenerators =
     { pkgs, instanceName }:
@@ -302,67 +300,6 @@
                 namespace: default
           current-context: admin@${instanceName}
           KUBECONFIG_EOF
-        '';
-      };
-    };
-
-  # Sealed Secrets signing keypair, pre-generated so the cluster never
-  # creates its own (key rotation / loss on reinstall). tls.crt is PUBLIC
-  # plaintext (the offline sealing key — committing it is by design);
-  # tls.key and the rendered Secret manifest stay secret. The manifest is
-  # synced into the distro's manifests dir by nixos.mkSecretManifestSync
-  # (never through the Nix store).
-  mkSealedSecretsGenerator =
-    {
-      pkgs,
-      instanceName,
-      labels ? { },
-    }:
-    let
-      labelsYaml = lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (k: v: "      ${k}: ${v}") (
-          {
-            "sealedsecrets.bitnami.com/sealed-secrets-key" = "active";
-          }
-          // labels
-        )
-      );
-    in
-    {
-      "rancher-sealed-secrets-${instanceName}" = {
-        share = true;
-        files = {
-          "sealed-secrets-key.yaml" = {
-            secret = true;
-          };
-          "tls.key" = {
-            secret = true;
-            deploy = false;
-          };
-          "tls.crt" = {
-            secret = false;
-            deploy = false;
-          };
-        };
-        runtimeInputs = [ pkgs.openssl ];
-        script = ''
-          openssl genrsa -traditional -out $out/tls.key 4096
-          openssl req -new -x509 -days 36500 -key $out/tls.key -out $out/tls.crt -subj "/CN=sealed-secrets-key"
-          CRT=$(base64 -w0 $out/tls.crt)
-          KEY=$(base64 -w0 $out/tls.key)
-          cat > $out/sealed-secrets-key.yaml <<SEALED_SECRETS_EOF
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: sealed-secrets-key
-            namespace: kube-system
-            labels:
-          ${labelsYaml}
-          type: kubernetes.io/tls
-          data:
-            tls.crt: $CRT
-            tls.key: $KEY
-          SEALED_SECRETS_EOF
         '';
       };
     };

@@ -71,45 +71,4 @@ _: {
         };
       };
     };
-
-  # Sync a SECRET manifest (e.g. the Sealed Secrets signing-key Secret)
-  # from its deployed var path into the distro's auto-deploy manifests
-  # dir. NEVER route secret material through the Nix store manifests
-  # mechanism — the store is world-readable.
-  mkSecretManifestSync =
-    {
-      pkgs,
-      # unit name prefix, e.g. "rke2-<instance>-sealed-secrets"
-      namePrefix,
-      # the deployed var file path
-      sourcePath,
-      # e.g. "/var/lib/rancher/rke2/server/manifests/sealed-secrets-key.yaml"
-      targetPath,
-      beforeUnit,
-    }:
-    let
-      unitName = "${namePrefix}-sync";
-    in
-    {
-      systemd.paths."${unitName}" = {
-        description = "Watch ${sourcePath} for changes";
-        wantedBy = [ "multi-user.target" ];
-        pathConfig.PathChanged = [ sourcePath ];
-      };
-
-      systemd.services."${unitName}" = {
-        description = "Sync the ${namePrefix} secret manifest";
-        wantedBy = [ "multi-user.target" ];
-        before = [ beforeUnit ];
-        requiredBy = [ beforeUnit ];
-        unitConfig.ConditionPathExists = sourcePath;
-        serviceConfig = {
-          Type = "oneshot";
-          User = "root";
-          ExecStart = pkgs.writeShellScript unitName ''
-            ${pkgs.coreutils}/bin/install -Dm600 ${sourcePath} ${targetPath}
-          '';
-        };
-      };
-    };
 }

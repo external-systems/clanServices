@@ -8,10 +8,9 @@ is a review destination, not a dependency.
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`, `wireguard-mesh`).
   Auto-discovered via `flake-module.nix`; no central registration list.
-- `lib/rancher-cluster/` — PRIVATE shared implementation for rke2+k3s
+- `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
-  `lib/kube-cluster/` at SPEC level in round 13 (SPEC.md D45); the code
-  rename lands with delivery phase 1.
+  from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
 - `lib/import-flake/` — legacy flake-input adapter (optional).
 - `tests/` — eval-test wiring; every `clan.modules` entry must have a
   nix-unit test (enforced by `checks.coverage`).
@@ -35,8 +34,8 @@ is a review destination, not a dependency.
 3. No spec-implementation drift: amend the spec BEFORE implementing when a
    test disproves an assumption; never weaken a test to fit code.
 4. Distro-specific config lives in the thin `rke2`/`k3s` services; shared
-   behavior goes in the shared lib (`lib/kube-cluster/`, currently still
-   `lib/rancher-cluster/` in code) — fix once, not twice.
+   behavior goes in the shared lib (`lib/kube-cluster/`) — fix once, not
+   twice.
 5. Multi-instance safe: namespace every global (systemd units, generators,
    interfaces) by `instanceName`.
 6. Secrets: clan vars own the bootstrap plane only (CAs, tokens,

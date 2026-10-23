@@ -39,13 +39,6 @@ in
       k8sServiceHost,
       k8sServicePort ? 6443,
     }:
-    let
-      nodeIpamEnabled =
-        settings.traefik.enabled
-        && lib.any (
-          i: i.service.type == "LoadBalancer" && i.service.loadBalancerClass == "io.cilium/node"
-        ) (lib.attrValues settings.traefik.instances);
-    in
     lib.recursiveUpdate {
       cluster = {
         name = instanceName;
@@ -61,7 +54,10 @@ in
       nodePort.directRoutingDevice = transportFacts.interface;
       MTU = transportFacts.mtu - 50;
       ipam.mode = "multi-pool";
-      nodeIPAM.enabled = nodeIpamEnabled;
+      # D41: Node IPAM is the default classless LoadBalancer mechanism
+      # (replaces servicelb, which stays permanently disabled — D42).
+      defaultLBServiceIPAM = "nodeipam";
+      nodeIPAM.enabled = true;
       ipv4.enabled = true;
       ipv6.enabled = true;
       enableIPv4Masquerade = true;
