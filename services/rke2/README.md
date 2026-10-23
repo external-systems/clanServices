@@ -45,7 +45,19 @@ networking invariants, and delivery plan, see [SPEC.md](../../SPEC.md).
 
 Set `settings.network.transport` to a `wireguard-mesh` instance to consume its
 `node_transport` export, or set `network.transport = null` and provide explicit
-`network.ipv4`/`network.ipv6` per machine.
+`network.ipv4`/`network.ipv6` per machine. The posture is all-or-none (SPEC.md
+§6.3): mixing transport-provided and manual member addresses is an eval error.
+
+## Exports
+
+The service consumes `node_transport` and publishes `kube_cluster` per member
+machine (SPEC.md §6.2): schema version, cluster identity (name, resolved cilium
+id, resolved dual-stack pod/service CIDRs, clusterDNS), mesh group, transport
+source, per-member mesh endpoints with effective topology labels, and pool
+handoff facts. Fleet-wide assertions (duplicate names/ids, meshed-CIDR overlap,
+node-in-two-clusters incl. cross-distro, mesh-group transport consistency) are
+computed from these exports as `clan.checks` by the shared lib's fleet-checks
+module.
 
 ## The per-node haproxy kube-apiserver LB
 
@@ -57,8 +69,9 @@ transport addresses (both families):
   joining servers/agents (`server` URL), Cilium (`k8sServiceHost`), the admin
   kubeconfig — goes through the local haproxy.
 - The apiserver owns `:6443` and the supervisor `:9345` on every address, so
-  the LB listens on the derived ports: kubeapi LB = `7442 + cilium.id`,
-  supervisor LB = `+1000` (unique per cluster sharing one transport).
+  the LB listens on the derived ports: kubeapi LB = `7442 + <resolved cilium
+  id>` (explicit pin or hashed default, SPEC.md §6.2), supervisor LB =
+  `+1000` (unique per cluster sharing one transport).
 - Backends are every server member's transport addresses with TLS `/readyz`
   healthchecks (`check check-ssl` — the check connects with TLS, the data path
   stays raw end-to-end TCP). The check verifies the serving chain against the

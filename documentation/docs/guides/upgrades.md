@@ -39,3 +39,22 @@ matrices in your GitOps repos.
 Disruptive changes — pools, CIDRs, cluster ids, CA roots, mesh membership —
 are reviewed operational changes with runbooks, not incidental edits
 (SPEC.md §6.10).
+
+## Migrating to hashed cluster ids (phase 4, SPEC.md §6.2)
+
+`cilium.id` is now nullable and defaults to a stable hash of the instance
+name mapped into 1–127. **Before upgrading a deployment that predates the
+hashed default**, pin the id (and CIDRs) the cluster actually runs:
+
+```nix
+roles.server.settings.cilium.id = 1; # the id this cluster booted with
+```
+
+The resolved id drives the pod/service CIDRs, clusterDNS, and the HAProxy
+kubeapi/supervisor ports (`7442 + id`, `+1000`), so an unpinned upgrade
+re-derives all of them — a disruptive change for a running cluster. An
+explicit id above 127 additionally requires explicit
+`network.podCIDRv4` + `network.serviceCIDRv4` (the derived
+`10.<2id-1>`/`10.<2id>` space overflows the /8). A resolved-id collision
+between two cluster instances is an eval error naming both claimants; pin
+one of them explicitly.

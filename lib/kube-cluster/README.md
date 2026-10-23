@@ -40,15 +40,19 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | Attribute | Purpose |
 |---|---|
 | `interfaces.cluster` | Deferred module of shared role-level options. |
-| `interfaces.node` | Deferred module of shared per-machine options. |
+| `interfaces.node` | Deferred module of shared per-machine options (incl. `topology.region`/`zone`, invariant 7). |
+| `interfaces.kube_cluster` | The custom export interface (§6.2, D45) published by both distro services. |
+| `hashCiliumId` / `resolveCiliumId` | Stable sha256-based hash of the instance name → 1–127 (pure Nix, no IFD); resolution of the nullable `cilium.id` pin. |
 | `render.mkCiliumValues` | The canonical Cilium profile tree (tunnel VXLAN, KPR, multi-pool IPAM, Node IPAM default, MTU math) with `cilium.helmValues` folded in. |
+| `render.resolveCidrs` | Resolved dual-stack CIDR structure from the resolved id + explicit overrides (combined strings, per-family components, clusterDNS). |
 | `render.mkBundle` | The kubenix bootstrap bundle (D26 layer 2 / D40): imports the artifact flake's committed Cilium manifest via the pure-Nix YAML-subset parser (`yaml.nix`, zero IFD), merges per-cluster variation into the typed resource tree (`cilium-config` ConfigMap data, KPR env, pod IP pool, LB pools, `coredns-custom`), validates post-merge invariants (`validateBundle`), and emits one multi-doc YAML + object list + config hash. |
 | `render.mkLBService` | External-facing Service helper: ETP Local + `loadBalancerClass: io.cilium/lb-ipam` + manifest labels (invariants 5/6). |
 | `render.mkHaproxyConfig` | Per-node haproxy kube-apiserver LB config, with an optional rke2 supervisor LB. |
 | `render.mkManifestLabels` | §6.11 labels for all rendered resources (managed-by, cluster, component; config-hash is added per object by mkBundle). |
 | `render.resolvePools` | D8 pool resolution: auto per-machine node pools (join /32+/128 + `poolBlocks`) plus declared cluster-global pools. |
-| `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape. |
+| `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape (clusterInit count, addresses, resolved-id uniformity, id>127 ⇒ explicit v4 CIDRs, all-or-none transport posture, topology non-empty). |
 | `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (pure-Nix CIDR math, `cidr.nix`), scope⇒mode, floating candidate coverage, node-name collisions. |
+| `mkFleetChecks` / `fleetChecksModule` | Fleet-wide assertions (§6.2) computed from the `kube_cluster` exports as `clan.checks`: duplicate names/ids, same-group CIDR overlap, node-in-two-clusters (D16, cross-service), mesh-group transport consistency. Wire into a clan with `clan.imports = [ kube.fleetChecksModule ]`. |
 | `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40). |
 | `vars.mkTokenGenerators` | Join token generators (`rancher-server-token-<instance>` / `rancher-agent-token-<instance>`). |
 | `vars.mkPkiGenerator` | `rancher-pki-<instance>` — the pre-generated cluster CA tree. |
@@ -96,16 +100,26 @@ servers `backup`; agents list all servers plain. Stats page on the stats port
 
 ## CIDR derivation
 
+`cilium.id` is nullable: when unset, the resolved id is a stable hash of the
+instance name mapped into 1–127 (first 8 hex chars of sha256(instanceName),
+mod 127, +1 — pure Nix, no IFD). An explicit id above 127 requires explicit
+v4 CIDRs (the derived space overflows the /8). **Migration**: deployments
+predating the hashed default must pin their current `cilium.id` (and v4
+CIDRs when > 127) before upgrading — the resolved id drives CIDRs,
+clusterDNS, and the HAProxy ports (`7442 + id`, `+1000`).
+
 When `network.podCIDRv4`/`podCIDRv6`/`serviceCIDRv4`/`serviceCIDRv6` are
-`null`, the library derives them from `cilium.id`:
+`null`, the library derives them from the resolved id:
 
 - pods: `10.<2id-1>.0.0/16` + `fd10:<2id-1>::/56`
 - services: `10.<2id>.0.0/16` + `fd10:<2id>::/112`
-- cluster DNS: `10.<2id>.0.10`
+- cluster DNS: `10.<2id>.0.10` (the 10th address of an explicit service v4
+  CIDR when one is pinned)
 
 This lets multiple clusters share one transport when their ids differ (the
 ClusterMesh groundwork: unique ids ⇒ non-overlapping CIDRs; meshing itself
-is a later phase).
+is a later phase). Resolved-id collisions between instances are a fleet-wide
+eval error (`mkFleetChecks`).
 
 ## distroDefaults
 

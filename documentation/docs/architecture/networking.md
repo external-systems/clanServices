@@ -6,16 +6,26 @@ every cluster.
 ## Transport
 
 Host WireGuard full mesh is the only tested node transport (SPEC.md §6.3):
-every machine gets a mesh IPv4 and IPv6 address, deterministic from cluster
-id + machine name, on a host WireGuard interface. Per-machine overrides
-cover addresses, port, endpoint, interface, MTU, routes, and pool blocks.
+every machine gets a mesh IPv4 and IPv6 address — deterministic from the
+mesh instance + machine name (a stable hash into 192.168.0.0/16 +
+fd77::/16), with per-machine overrides for addresses, port, endpoint,
+interface, MTU, routes, and pool blocks — on a host WireGuard interface.
 
-Dual-stack inside the cluster is mandatory. Mesh groups (cross-cluster
-transport peering) are rendered from exports: remote prefixes only in
-`AllowedIPs`, and every remote node InternalIP must be reachable before
-ClusterMesh is considered ready. The tunnel MTU budget is transport MTU
-minus 50. The posture is all-or-none per mesh trust domain: a cluster mesh
-shares one transport.
+Dual-stack inside the cluster is mandatory. The posture is all-or-none per
+mesh trust domain: a cluster whose members mix transport-provided and
+manual addresses is an eval error. **One mesh group = one
+`wireguard-mesh` instance** (phase-4 mapping): a cluster joins a group by
+consuming that instance's `node_transport` exports, so cross-cluster
+peering between group members happens inside the shared mesh; same-group
+clusters consuming different transport instances fail evaluation. Remote
+prefixes only in `AllowedIPs`, and every remote node InternalIP must be
+reachable before ClusterMesh is considered ready. The tunnel MTU budget is
+transport MTU minus 50.
+
+Every node carries topology labels (invariant 7):
+`topology.kubernetes.io/region` and `topology.kubernetes.io/zone` default
+to the cluster's instance name, overridable per machine
+(`topology.region`/`topology.zone`); an empty override is an eval error.
 
 `transport.mode = cilium-wireguard | unencrypted` survive only as untested
 Cilium helm-values overrides — no contract, no VM coverage.

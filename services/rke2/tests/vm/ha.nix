@@ -67,9 +67,13 @@
           module.input = "self";
 
           roles.server = {
-            settings.network.transport = {
-              service = "wireguard-mesh";
-              instance = "mesh";
+            settings = {
+              network.transport = {
+                service = "wireguard-mesh";
+                instance = "mesh";
+              };
+              # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
+              cilium.id = 1;
             };
             machines = {
               alpha.settings.clusterInit = true;
@@ -127,6 +131,11 @@
         "beta": "192.168.77.2",
         "gamma": "192.168.77.3",
     }
+    mesh_ips6 = {
+        "alpha": "fd00:77::1",
+        "beta": "fd00:77::2",
+        "gamma": "fd00:77::3",
+    }
 
     def fail_dump(m):
         for cmd in [
@@ -146,6 +155,19 @@
             m.wait_for_unit("haproxy.service", timeout=240)
             m.wait_for_unit("rke2-server.service", timeout=600)
 
+        # --- Transport (§6.3): full mesh, dual-stack ----------------------
+        # Every node holds both mesh families; remote node InternalIPs are
+        # reachable over the mesh in both families (alpha→beta/gamma and
+        # gamma→alpha/beta).
+        for m in machines:
+            m.succeed(f"ip -br addr show wg-mesh | grep -q '{mesh_ips[m.name]}/32'")
+            m.succeed(f"ip -br addr show wg-mesh | grep -q '{mesh_ips6[m.name]}/128'")
+        for target in ["beta", "gamma"]:
+            alpha.wait_until_succeeds(f"ping -c2 -W2 {mesh_ips[target]}", timeout=120)
+            alpha.wait_until_succeeds(f"ping -6 -c2 -W2 {mesh_ips6[target]}", timeout=120)
+            gamma.wait_until_succeeds(f"ping -c2 -W2 {mesh_ips[target]}", timeout=120)
+            gamma.wait_until_succeeds(f"ping -6 -c2 -W2 {mesh_ips6[target]}", timeout=120)
+
         # --- Non-init managers joined through THEIR OWN haproxy ----------
         # kubeapi FQDN -> own mesh address (/etc/hosts), join URL on the LB
         # supervisor port 8443. The clusterInit manager has NO server URL.
@@ -164,10 +186,18 @@
                 f"kubectl wait --for=condition=Ready node/{name} --timeout=120s", timeout=180
             )
 
-        # Every node registered with its mesh address as the node IP.
-        for name, ip in mesh_ips.items():
+        # Every node registered with its mesh address as the node IP (both
+        # families), and topology labels default to the instance name
+        # (invariant 7).
+        for name in mesh_ips:
+            out = alpha.succeed(
+                f"kubectl get node {name} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'"
+            )
+            assert mesh_ips[name] in out and mesh_ips6[name] in out, (
+                f"{name} InternalIPs {out.strip()!r} missing mesh addresses"
+            )
             alpha.succeed(
-                f"kubectl get node {name} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}' | grep -q '{ip}'"
+                f"kubectl get node {name} --show-labels | grep -q 'topology.kubernetes.io/region=rke2'"
             )
 
         # --- All backends UP on every node --------------------------------

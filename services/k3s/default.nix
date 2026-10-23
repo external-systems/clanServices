@@ -61,6 +61,8 @@ let
       machine,
       roles,
       exports,
+      mkExports,
+      meta,
       ...
     }:
     let
@@ -121,8 +123,107 @@ let
         inherit settings;
         members = poolMembers;
       };
+
+      # --- Resolved identity (§6.2): hashed-default cilium id, resolved
+      # dual-stack CIDRs, mesh group. Single source for distro config,
+      # Cilium profile, HAProxy ports, and the kube_cluster export.
+      resolvedCiliumId = kube.resolveCiliumId { inherit instanceName settings; };
+      resolvedCidrs = kube.render.resolveCidrs {
+        inherit settings;
+        ciliumId = resolvedCiliumId;
+      };
+
+      domain = if settings.domain != null then settings.domain else meta.domain;
+      meshGroup = if settings.meshGroup != null then settings.meshGroup else domain;
+
+      # Effective per-member topology labels (invariant 7: default =
+      # instance name, per-machine override wins; empty = eval-asserted).
+      topologyOf = m: {
+        region = if m.settings.topology.region != null then m.settings.topology.region else instanceName;
+        zone = if m.settings.topology.zone != null then m.settings.topology.zone else instanceName;
+      };
+
+      # kube_cluster export content (§6.2): identity + mesh endpoints +
+      # pool handoff. No secrets; every interface option has a default.
+      memberExportFacts = lib.listToAttrs (
+        map (
+          m:
+          let
+            addr = memberAddr m.machineName;
+            facts = allTransportFacts.${m.machineName};
+          in
+          {
+            name = m.machineName;
+            value = {
+              inherit (m) role;
+              inherit (addr) ipv4 ipv6;
+              topology = topologyOf m;
+            }
+            // lib.optionalAttrs (facts != null) {
+              inherit (facts)
+                endpoint
+                interface
+                mtu
+                port
+                ;
+            };
+          }
+        ) roleMembers
+      );
+
+      poolExportFacts = lib.mapAttrs (
+        name: p:
+        {
+          inherit (p) blocks serviceSelector;
+        }
+        // (
+          if settings.pools ? ${name} then
+            {
+              scope = "cluster-global";
+              inherit (settings.pools.${name}) delivery;
+            }
+          else
+            {
+              scope = "per-machine";
+              delivery = "node-fate-bound";
+            }
+        )
+      ) resolvedPools;
     in
     {
+      exports = mkExports {
+        kube_cluster = {
+          schemaVersion = 1;
+          name = instanceName;
+          ciliumId = resolvedCiliumId;
+          network = {
+            inherit (resolvedCidrs)
+              podCIDRv4
+              podCIDRv6
+              serviceCIDRv4
+              serviceCIDRv6
+              clusterDNS
+              ;
+          };
+          inherit meshGroup;
+          # D43 placeholder: the real controlDomain option lands in
+          # phase 6; the export field is structured now.
+          controlDomain.role = "standalone";
+          transport =
+            if transportEnabled then
+              {
+                inherit (settings.network.transport) service instance;
+              }
+            else
+              {
+                service = null;
+                instance = null;
+              };
+          members = memberExportFacts;
+          pools = poolExportFacts;
+        };
+      };
+
       nixosModule =
         { config, pkgs, ... }:
         let
@@ -130,11 +231,9 @@ let
           isServer = role == "server";
           machineSettings = allMembers.${machine.name}.settings;
 
-          domain = if settings.domain != null then settings.domain else config.clan.core.settings.domain;
-
           kubeapiAddr = "kubeapi-${instanceName}.${domain}";
           kubeapiPort = 6443;
-          haproxyKubeapiPort = 7442 + settings.cilium.id;
+          haproxyKubeapiPort = 7442 + resolvedCiliumId;
 
           ownAddr = memberAddr machine.name;
           nodeIPv4 = ownAddr.ipv4;
@@ -159,14 +258,20 @@ let
           isInit = initMember != null && machine.name == initMember.machineName;
           joinUrl = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
 
+          # Invariant 7: topology labels, defaulting to the instance name
+          # (empty overrides are eval-asserted in mkClusterAssertions).
+          topologyLabels = topologyOf {
+            settings = machineSettings;
+          };
+
           computedNodeLabels = [
             "cluster=${instanceName}"
             "role=${role}"
             "machine=${machine.name}"
+            "topology.kubernetes.io/region=${topologyLabels.region}"
+            "topology.kubernetes.io/zone=${topologyLabels.zone}"
           ]
           ++ lib.mapAttrsToList (k: v: "${k}=${v}") machineSettings.nodeLabels;
-
-          resolvedCidrs = kube.render.resolveCidrs settings;
 
           # The canonical Cilium profile (§6.4) with the admin's
           # cilium.helmValues folded in — translated into bundle patches by
@@ -605,7 +710,10 @@ in
     description = "Thin k3s Kubernetes cluster on lib/kube-cluster";
     categories = [ "System" ];
     readme = builtins.readFile ./README.md;
-    exports.out = [ ];
+    exports = {
+      inputs = [ "node_transport" ];
+      out = [ "kube_cluster" ];
+    };
   };
 
   roles.server = {

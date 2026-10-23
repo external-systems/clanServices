@@ -58,17 +58,24 @@
           module.input = "self";
 
           roles.server = {
-            settings.network.transport = {
-              service = "wireguard-mesh";
-              instance = "mesh";
+            settings = {
+              network.transport = {
+                service = "wireguard-mesh";
+                instance = "mesh";
+              };
+              # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
+              cilium.id = 1;
             };
             machines.alpha.settings.clusterInit = true;
           };
 
           roles.agent = {
-            settings.network.transport = {
-              service = "wireguard-mesh";
-              instance = "mesh";
+            settings = {
+              network.transport = {
+                service = "wireguard-mesh";
+                instance = "mesh";
+              };
+              cilium.id = 1;
             };
             machines.beta = { };
           };
@@ -119,6 +126,25 @@
             m.wait_for_unit("systemd-networkd.service", timeout=120)
             m.wait_for_unit("haproxy.service", timeout=240)
 
+        # --- Transport (§6.3): full mesh, dual-stack ----------------------
+        # Every node holds both mesh families on wg-mesh, and every remote
+        # node InternalIP is reachable over the mesh in both families.
+        mesh_addrs = {
+            "alpha": ("192.168.77.1", "fd00:77::1"),
+            "beta": ("192.168.77.2", "fd00:77::2"),
+        }
+        for m in [alpha, beta]:
+            ipv4, ipv6 = mesh_addrs[m.name]
+            m.succeed(f"ip -br addr show wg-mesh | grep -q '{ipv4}/32'")
+            m.succeed(f"ip -br addr show wg-mesh | grep -q '{ipv6}/128'")
+        for source in [alpha, beta]:
+            for target in [alpha, beta]:
+                if source.name == target.name:
+                    continue
+                ipv4, ipv6 = mesh_addrs[target.name]
+                source.wait_until_succeeds(f"ping -c2 -W2 {ipv4}", timeout=120)
+                source.wait_until_succeeds(f"ping -6 -c2 -W2 {ipv6}", timeout=120)
+
         alpha.wait_for_unit("k3s.service", timeout=600)
         beta.wait_for_unit("k3s.service", timeout=600)
 
@@ -143,16 +169,24 @@
             timeout=300,
         )
 
-        # --- Both nodes Ready with mesh InternalIPs -----------------------
+        # --- Both nodes Ready with mesh InternalIPs (dual-stack) ---------
         alpha.wait_until_succeeds(
             "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=Ready node/alpha node/beta --timeout=120s",
             timeout=240,
         )
-        for name, ip in [("alpha", "192.168.77.1"), ("beta", "192.168.77.2")]:
+        for name, ips in [("alpha", ("192.168.77.1", "fd00:77::1")), ("beta", ("192.168.77.2", "fd00:77::2"))]:
             out = alpha.succeed(
                 f"KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get node {name} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'"
             )
-            assert ip in out, f"{name} InternalIP {out.strip()!r} is not the mesh address {ip}"
+            for ip in ips:
+                assert ip in out, f"{name} InternalIP {out.strip()!r} is missing the mesh address {ip}"
+            # Topology labels default to the instance name (invariant 7).
+            alpha.succeed(
+                f"KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get node {name} --show-labels | grep -q 'topology.kubernetes.io/region=k3s'"
+            )
+            alpha.succeed(
+                f"KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get node {name} --show-labels | grep -q 'topology.kubernetes.io/zone=k3s'"
+            )
 
         # --- Cilium healthy (cluster-wide check covers the agent) --------
         alpha.wait_until_succeeds(

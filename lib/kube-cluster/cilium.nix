@@ -3,36 +3,63 @@
 # The profile is the intermediate language only — it is translated into
 # kubenix typed-tree patches (cilium-config ConfigMap data + KPR env) by
 # bundle.nix profilePatches; the chart is never re-run (D26: zero IFD).
-{ lib, cidrs }:
+{
+  lib,
+  cidrs,
+  hashCiliumId,
+  cidrLib,
+}:
 let
-  # Resolve CIDRs from explicit options or derive them from cilium.id.
+  # Resolve CIDRs from explicit options or derive them from the RESOLVED
+  # cilium id (hashed default or explicit pin, §6.2). Returns the combined
+  # dual-stack strings (distro config) plus the per-family components and
+  # clusterDNS (exports/pools/assertions consume the structure).
+  #
+  # clusterDNS: the 10th address of the service v4 CIDR when explicit,
+  # else derived from the resolved id (10.<2id>.0.10 — identical to the
+  # derivation when the service CIDR is derived).
   resolveCidrs =
-    settings:
+    { settings, ciliumId }:
     let
-      derived = cidrs settings.cilium.id;
+      derived = cidrs ciliumId;
+      explicitPod = settings.network.podCIDRv4 != null || settings.network.podCIDRv6 != null;
+      explicitService = settings.network.serviceCIDRv4 != null || settings.network.serviceCIDRv6 != null;
+
+      podCIDRv4 =
+        if explicitPod then settings.network.podCIDRv4 else "10.${toString (ciliumId * 2 - 1)}.0.0/16";
+      podCIDRv6 =
+        if explicitPod then settings.network.podCIDRv6 else "fd10:${toString (ciliumId * 2 - 1)}::/56";
+      serviceCIDRv4 =
+        if explicitService then settings.network.serviceCIDRv4 else "10.${toString (ciliumId * 2)}.0.0/16";
+      serviceCIDRv6 =
+        if explicitService then settings.network.serviceCIDRv6 else "fd10:${toString (ciliumId * 2)}::/112";
+
+      join = lib.concatStringsSep ",";
     in
     {
-      clusterCidr =
-        if settings.network.podCIDRv4 != null || settings.network.podCIDRv6 != null then
-          lib.concatStringsSep "," (
-            lib.filter (x: x != null) [
-              settings.network.podCIDRv4
-              settings.network.podCIDRv6
-            ]
-          )
+      clusterCidr = join (
+        lib.filter (x: x != null) [
+          podCIDRv4
+          podCIDRv6
+        ]
+      );
+      serviceCidr = join (
+        lib.filter (x: x != null) [
+          serviceCIDRv4
+          serviceCIDRv6
+        ]
+      );
+      clusterDNS =
+        if settings.network.serviceCIDRv4 != null then
+          cidrLib.addressAt settings.network.serviceCIDRv4 10
         else
-          derived.clusterCidr;
-      serviceCidr =
-        if settings.network.serviceCIDRv4 != null || settings.network.serviceCIDRv6 != null then
-          lib.concatStringsSep "," (
-            lib.filter (x: x != null) [
-              settings.network.serviceCIDRv4
-              settings.network.serviceCIDRv6
-            ]
-          )
-        else
-          derived.serviceCidr;
-      inherit (derived) clusterDNS;
+          derived.clusterDNS;
+      inherit
+        podCIDRv4
+        podCIDRv6
+        serviceCIDRv4
+        serviceCIDRv6
+        ;
     };
 in
 {
@@ -49,7 +76,7 @@ in
     lib.recursiveUpdate {
       cluster = {
         name = instanceName;
-        inherit (settings.cilium) id;
+        id = if settings.cilium.id != null then settings.cilium.id else hashCiliumId instanceName;
       };
       kubeProxyReplacement = true;
       inherit k8sServiceHost k8sServicePort;

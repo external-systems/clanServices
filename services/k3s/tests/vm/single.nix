@@ -47,6 +47,9 @@ _: {
                 instance = "mesh";
               };
 
+              # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
+              cilium.id = 1;
+
               coredns.rewrites = [
                 "name foo.test.clan kubernetes.default.svc.cluster.local"
               ];
@@ -125,6 +128,11 @@ _: {
         alpha.wait_for_unit("haproxy.service", timeout=240)
         alpha.wait_for_unit("k3s.service", timeout=600)
 
+        # Transport (§6.3, dual-stack asserted in every boot test): the
+        # node holds both mesh families on the WireGuard interface.
+        alpha.succeed("ip -br addr show wg-mesh | grep -q '192.168.77.1/32'")
+        alpha.succeed("ip -br addr show wg-mesh | grep -q 'fd00:77::1/128'")
+
         # The bootstrap bundle was applied by the oneshot (D40): unit
         # succeeded, bundle at the clan-owned path, nothing clan-owned in
         # the distro's watched manifests dir.
@@ -151,6 +159,15 @@ _: {
         alpha.wait_until_succeeds(
             "kubectl wait --for=condition=Ready node/alpha --timeout=120s", timeout=180
         )
+
+        # The node registers BOTH mesh families as InternalIPs, and the
+        # topology labels default to the instance name (invariant 7).
+        out = alpha.succeed(
+            "kubectl get node alpha -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}'"
+        )
+        assert "192.168.77.1" in out and "fd00:77::1" in out, f"dual-stack InternalIPs: {out!r}"
+        alpha.succeed("kubectl get node alpha --show-labels | grep -q 'topology.kubernetes.io/region=k3s'")
+        alpha.succeed("kubectl get node alpha --show-labels | grep -q 'topology.kubernetes.io/zone=k3s'")
 
         # The admin kubeconfig (vars PKI client cert) works through the
         # local haproxy LB (server URL = kubeapi FQDN on the LB port).

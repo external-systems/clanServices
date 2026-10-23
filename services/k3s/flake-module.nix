@@ -11,12 +11,21 @@ in
 rec {
   clan = {
     modules.k3s = module;
-    exportInterfaces.node_transport = ../wireguard-mesh/node-transport-interface.nix;
+    exportInterfaces = {
+      node_transport = ../wireguard-mesh/node-transport-interface.nix;
+      kube_cluster = ../../lib/kube-cluster/kube-cluster-interface.nix;
+    };
   };
 
   perSystem = _: {
     nix-unit.tests.k3s = import ./tests/eval-tests.nix {
-      inherit lib clanLib module;
+      inherit
+        lib
+        clanLib
+        module
+        self
+        inputs
+        ;
       inherit (clan) exportInterfaces;
     };
     clan.nixosTests = {

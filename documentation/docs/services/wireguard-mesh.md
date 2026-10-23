@@ -6,9 +6,11 @@ transport for ordinary NixOS machines as well as rke2, k3s, or other
 clanServices.
 
 One inventory instance is one independent mesh. Each member gets one `/32`
-IPv4 and one `/128` IPv6 on its WireGuard interface; the default peer
-`AllowedIPs` contain only those host addresses, and no pod, service, or LAN
-prefix is routed implicitly. Per-machine keys come from clan vars
+IPv4 and one `/128` IPv6 on its WireGuard interface — deterministic from the
+mesh instance + machine name by default (a stable hash into 192.168.0.0/16 +
+fd77::/16), overridable per machine — and the default peer `AllowedIPs`
+contain only those host addresses; no pod, service, or LAN prefix is routed
+implicitly. Per-machine keys come from clan vars
 (`clan vars generate <machine>`); private keys deploy only to their own
 machine.
 

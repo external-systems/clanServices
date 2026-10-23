@@ -8,6 +8,7 @@
 let
   k3sModule = module;
   wgModule = ../../wireguard-mesh/default.nix;
+  kube = import ../../../lib/kube-cluster { inherit lib; };
 
   machineConfigs = lib.genAttrs [ "alpha" "beta" "gamma" ] (_: {
     nixpkgs.hostPlatform = "x86_64-linux";
@@ -19,6 +20,9 @@ let
       self = { };
       directory = ./fixtures;
       inherit exportInterfaces;
+      # Fleet-wide kube-cluster assertions (§6.2) as clan.checks — enforced
+      # by clanLib.clan's checkConfig.
+      imports = [ kube.fleetChecksModule ];
       modules = {
         wireguard-mesh = wgModule;
         k3s = k3sModule;
@@ -33,7 +37,11 @@ let
       module.name = "k3s";
       module.input = "self";
       roles.server = {
-        settings.network.transport = null;
+        settings = {
+          network.transport = null;
+          # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
+          cilium.id = 1;
+        };
         machines = {
           alpha.settings = {
             clusterInit = true;
@@ -89,19 +97,29 @@ let
         module.name = "k3s";
         module.input = "self";
         roles.server = {
-          settings.network.transport = {
-            service = "wireguard-mesh";
-            instance = "mesh";
+          settings = {
+            network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
+            };
+            cilium.id = 1;
           };
           machines = {
             alpha.settings.clusterInit = true;
-            beta.settings.clusterInit = false;
+            beta.settings = {
+              clusterInit = false;
+              # Topology override (invariant 7): per-machine wins.
+              topology.zone = "dc2";
+            };
           };
         };
         roles.agent = {
-          settings.network.transport = {
-            service = "wireguard-mesh";
-            instance = "mesh";
+          settings = {
+            network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
+            };
+            cilium.id = 1;
           };
           machines.gamma = { };
         };
@@ -152,6 +170,51 @@ let
   };
   dualInitEvaled = mkEvaled dualInitInventory;
   alphaDualInit = dualInitEvaled.config.nixosConfigurations.alpha.config;
+
+  # The kube_cluster export of the transport-backed instance (per-member
+  # scope; identical content on every member).
+  kubeClusterExport =
+    (clanLib.getExport {
+      serviceName = "k3s";
+      instanceName = "k3s";
+      roleName = "server";
+      machineName = "alpha";
+    } transportEvaled.config.exports).kube_cluster;
+
+  # All-or-none posture (§6.3): gamma is a cluster member but not a mesh
+  # member — the cluster mixes transport-provided and manual addresses.
+  postureInventory = transportInventory // {
+    instances = transportInventory.instances // {
+      mesh = transportInventory.instances.mesh // {
+        roles.peer.machines = {
+          inherit (transportInventory.instances.mesh.roles.peer.machines) alpha beta;
+        };
+      };
+    };
+  };
+  postureEvaled = mkEvaled postureInventory;
+
+  # D16 within one service: a second k3s instance claims alpha, which the
+  # first already runs. The fleet check (clan.checks from the fleet-checks
+  # module) throws at clan eval.
+  dualClaimEvaled = mkEvaled (
+    lib.recursiveUpdate transportInventory {
+      instances.k3s-b = {
+        module.name = "k3s";
+        module.input = "self";
+        roles.server = {
+          settings = {
+            network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
+            };
+            cilium.id = 2;
+          };
+          machines.alpha.settings.clusterInit = true;
+        };
+      };
+    }
+  );
 in
 {
   test_serviceEnabled = {
@@ -480,7 +543,10 @@ in
             module.name = "k3s";
             module.input = "self";
             roles.server = {
-              settings.network.transport = null;
+              settings = {
+                network.transport = null;
+                cilium.id = 1;
+              };
               machines.alpha.settings = {
                 clusterInit = true;
                 network = {
@@ -493,6 +559,122 @@ in
         };
       in
       failedAssertion bad.config.nixosConfigurations.alpha.config "network.transport is null";
+    expected = true;
+  };
+
+  # --- kube_cluster export (§6.2) ------------------------------------------
+
+  test_kubeClusterExport = {
+    expr = {
+      inherit (kubeClusterExport)
+        schemaVersion
+        name
+        ciliumId
+        meshGroup
+        ;
+      inherit (kubeClusterExport) network transport;
+      controlRole = kubeClusterExport.controlDomain.role;
+      memberNames = builtins.attrNames kubeClusterExport.members;
+      alphaMember = kubeClusterExport.members.alpha;
+      betaTopology = kubeClusterExport.members.beta.topology;
+      poolNames = builtins.attrNames kubeClusterExport.pools;
+      gammaPool = kubeClusterExport.pools.gamma;
+    };
+    expected = {
+      schemaVersion = 1;
+      name = "k3s";
+      ciliumId = 1;
+      meshGroup = "clan";
+      network = {
+        podCIDRv4 = "10.1.0.0/16";
+        podCIDRv6 = "fd10:1::/56";
+        serviceCIDRv4 = "10.2.0.0/16";
+        serviceCIDRv6 = "fd10:2::/112";
+        clusterDNS = "10.2.0.10";
+      };
+      transport = {
+        service = "wireguard-mesh";
+        instance = "mesh";
+      };
+      controlRole = "standalone";
+      memberNames = [
+        "alpha"
+        "beta"
+        "gamma"
+      ];
+      alphaMember = {
+        role = "server";
+        ipv4 = "10.42.0.1";
+        ipv6 = "fd10:42::1";
+        endpoint = "alpha:51820";
+        interface = "wg-mesh";
+        mtu = 1420;
+        port = 51820;
+        topology = {
+          region = "k3s";
+          zone = "k3s";
+        };
+      };
+      betaTopology = {
+        region = "k3s";
+        zone = "dc2";
+      };
+      poolNames = [
+        "alpha"
+        "beta"
+        "gamma"
+      ];
+      gammaPool = {
+        blocks = [
+          "10.42.0.3/32"
+          "fd10:42::3/128"
+        ];
+        serviceSelector."clan.lol/pool" = "gamma";
+        scope = "per-machine";
+        delivery = "node-fate-bound";
+      };
+    };
+  };
+
+  # Deep eval of the whole exports tree (the clan CLI trap): every leaf
+  # must be defined.
+  test_exportsDeepEval = {
+    expr = builtins.deepSeq transportEvaled.config.exports true;
+    expected = true;
+  };
+
+  # --- topology labels (invariant 7) ----------------------------------------
+
+  test_topologyLabelsDefaultToInstanceName = {
+    expr = alphaTransport.services.k3s.nodeLabel;
+    expected = [
+      "cluster=k3s"
+      "role=server"
+      "machine=alpha"
+      "topology.kubernetes.io/region=k3s"
+      "topology.kubernetes.io/zone=k3s"
+    ];
+  };
+
+  test_topologyLabelsPerMachineOverride = {
+    expr = builtins.filter (lib.hasPrefix "topology.kubernetes.io/") betaTransport.services.k3s.nodeLabel;
+    expected = [
+      "topology.kubernetes.io/region=k3s"
+      "topology.kubernetes.io/zone=dc2"
+    ];
+  };
+
+  # --- all-or-none transport posture (§6.3) ---------------------------------
+
+  test_postureMissingMemberRejected = {
+    expr = failedAssertion postureEvaled.config.nixosConfigurations.alpha.config "no export from the configured node_transport source";
+    expected = true;
+  };
+
+  # --- D16: one cluster per node (within the same distro service) ------------
+
+  test_nodeInTwoClustersSameServiceThrows = {
+    expr = !(builtins.tryEval (builtins.deepSeq dualClaimEvaled.config true)).success;
     expected = true;
   };
 }

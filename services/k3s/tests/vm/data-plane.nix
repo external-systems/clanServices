@@ -181,6 +181,8 @@ in
                 service = "wireguard-mesh";
                 instance = "mesh";
               };
+              # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
+              cilium.id = 1;
               # Declared cluster-global pool (D8). external-class: no
               # delivery machinery needed for an allocation proof.
               pools.dataplane = {
@@ -196,9 +198,12 @@ in
           };
 
           roles.agent = {
-            settings.network.transport = {
-              service = "wireguard-mesh";
-              instance = "mesh";
+            settings = {
+              network.transport = {
+                service = "wireguard-mesh";
+                instance = "mesh";
+              };
+              cilium.id = 1;
             };
             machines.beta = { };
           };
@@ -274,6 +279,16 @@ in
         for m in [alpha, beta]:
             m.wait_for_unit("systemd-networkd.service", timeout=120)
             m.wait_for_unit("haproxy.service", timeout=240)
+
+        # --- Transport (§6.3): mesh v4+v6 on both nodes; remote node
+        # InternalIPs reachable over the mesh in both families.
+        for m, ipv4, ipv6 in [(alpha, "192.168.77.1", "fd00:77::1"), (beta, "192.168.77.2", "fd00:77::2")]:
+            m.succeed(f"ip -br addr show wg-mesh | grep -q '{ipv4}/32'")
+            m.succeed(f"ip -br addr show wg-mesh | grep -q '{ipv6}/128'")
+        alpha.wait_until_succeeds("ping -c2 -W2 192.168.77.2", timeout=120)
+        alpha.wait_until_succeeds("ping -6 -c2 -W2 fd00:77::2", timeout=120)
+        beta.wait_until_succeeds("ping -c2 -W2 192.168.77.1", timeout=120)
+        beta.wait_until_succeeds("ping -6 -c2 -W2 fd00:77::1", timeout=120)
 
         alpha.wait_for_unit("k3s.service", timeout=600)
         beta.wait_for_unit("k3s.service", timeout=600)

@@ -5,6 +5,7 @@
 }:
 let
   kube = import ../default.nix { inherit lib; };
+  clanLib = inputs.clan-core.lib;
 
   # Minimal valid cluster settings for rendering tests.
   domain = "example.org";
@@ -172,6 +173,157 @@ let
       ];
     }
   );
+
+  # One-member role list for assertion tests.
+  oneServer = [
+    {
+      machineName = "alpha";
+      role = "server";
+      settings = {
+        clusterInit = true;
+        network = {
+          ipv4 = "10.0.0.1";
+          ipv6 = "fd00::1";
+        };
+      };
+    }
+  ];
+
+  # Hand-built kube_cluster exports for the fleet checks (the applied
+  # exports tree shape: scope string -> { kube_cluster = { ... }; }).
+  mkKubeExport =
+    {
+      name,
+      ciliumId,
+      meshGroup ? "clan",
+      transportService ? "wireguard-mesh",
+      transportInstance ? "mesh",
+      podCIDRv4 ? "10.1.0.0/16",
+      podCIDRv6 ? "fd10:1::/56",
+      serviceCIDRv4 ? "10.2.0.0/16",
+      serviceCIDRv6 ? "fd10:2::/112",
+    }:
+    {
+      inherit name ciliumId meshGroup;
+      network = {
+        inherit
+          podCIDRv4
+          podCIDRv6
+          serviceCIDRv4
+          serviceCIDRv6
+          ;
+        clusterDNS = "10.2.0.10";
+      };
+      controlDomain.role = "standalone";
+      transport = {
+        service = transportService;
+        instance = transportInstance;
+      };
+      members = { };
+      pools = { };
+      schemaVersion = 1;
+    };
+
+  # Two clusters (rke2/prod + k3s/prod2), alpha shared → D16 violation;
+  # distinct names/ids/CIDRs otherwise.
+  fleetExportsOverlap = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 1;
+    };
+    "k3s:prod2:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod2";
+      ciliumId = 2;
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  fleetExportsIdCollision = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 5;
+    };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 5;
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # Same name claimed by two instances (different ids/CIDRs).
+  fleetExportsNameCollision = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 1;
+    };
+    "k3s:prod:server:beta".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 2;
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # Same group, overlapping pod CIDRs (different ids, explicit CIDRs).
+  fleetExportsCidrOverlap = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 1;
+    };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      podCIDRv4 = "10.1.128.0/17";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # Same overlap but DIFFERENT mesh groups → allowed.
+  fleetExportsCidrSeparateGroups = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 1;
+    };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      meshGroup = "other";
+      podCIDRv4 = "10.1.128.0/17";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # Same group, different transport instances → rejected.
+  fleetExportsTransportMixed = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 1;
+    };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      transportInstance = "mesh-b";
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  fleetChecksPass = kube.mkFleetChecks clanLib fleetExportsSeparateGroupsPass;
+  fleetExportsSeparateGroupsPass = fleetExportsCidrSeparateGroups;
 in
 {
   test_ciliumValues_tunnelAndMtu = {
@@ -882,6 +1034,396 @@ in
       "clan.lol/kube-cluster" = "core-component";
       "clan.lol/cluster" = "test";
       "clan.lol/component" = "bootstrap";
+    };
+  };
+
+  # --- hashed cilium ids (§6.2) -------------------------------------------
+
+  # The hash contract is pinned: changing the hash function is a
+  # fleet-breaking change and must be deliberate.
+  test_hashCiliumIdPinnedValues = {
+    expr = {
+      foo = kube.hashCiliumId "foo";
+      k3s = kube.hashCiliumId "k3s";
+      rke2 = kube.hashCiliumId "rke2";
+      test = kube.hashCiliumId "test";
+      alpha = kube.hashCiliumId "alpha";
+      borg = kube.hashCiliumId "borg";
+      prod = kube.hashCiliumId "prod";
+      staging = kube.hashCiliumId "staging";
+    };
+    expected = {
+      foo = 83;
+      k3s = 7;
+      rke2 = 39;
+      test = 68;
+      alpha = 106;
+      borg = 94;
+      prod = 10;
+      staging = 96;
+    };
+  };
+
+  test_resolveCiliumId = {
+    expr = {
+      explicit = kube.resolveCiliumId {
+        instanceName = "test";
+        settings = evalSettings { cilium.id = 42; };
+      };
+      hashed = kube.resolveCiliumId {
+        instanceName = "test";
+        settings = evalSettings { cilium.id = lib.mkForce null; };
+      };
+    };
+    expected = {
+      explicit = 42;
+      hashed = 68;
+    };
+  };
+
+  # null id is the interface default (hashed resolution happens at use).
+  test_ciliumIdDefaultNull = {
+    expr = (evalSettings { cilium.id = null; }).cilium.id;
+    expected = null;
+  };
+
+  test_resolveCidrsDerived = {
+    expr = kube.render.resolveCidrs {
+      settings = baseSettings;
+      ciliumId = 1;
+    };
+    expected = {
+      clusterCidr = "10.1.0.0/16,fd10:1::/56";
+      serviceCidr = "10.2.0.0/16,fd10:2::/112";
+      clusterDNS = "10.2.0.10";
+      podCIDRv4 = "10.1.0.0/16";
+      podCIDRv6 = "fd10:1::/56";
+      serviceCIDRv4 = "10.2.0.0/16";
+      serviceCIDRv6 = "fd10:2::/112";
+    };
+  };
+
+  # clusterDNS follows an explicit service v4 CIDR (10th address) — the
+  # >127 path, where the id-derived DNS address would overflow the /8.
+  test_resolveCidrsExplicitServiceDns = {
+    expr =
+      (kube.render.resolveCidrs {
+        settings = evalSettings {
+          network.podCIDRv4 = "172.16.0.0/16";
+          network.serviceCIDRv4 = "172.17.0.0/16";
+        };
+        ciliumId = 200;
+      }).clusterDNS;
+    expected = "172.17.0.10";
+  };
+
+  # Explicit ids above 127 require explicit v4 CIDRs (§6.2).
+  test_idAbove127RequiresCidrs = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = evalSettings { cilium.id = 200; };
+      roleMembers = oneServer;
+    }) "above 127";
+    expected = true;
+  };
+
+  test_idAbove127WithCidrsAccepted = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = evalSettings {
+        cilium.id = 200;
+        network.podCIDRv4 = "172.16.0.0/16";
+        network.serviceCIDRv4 = "172.17.0.0/16";
+      };
+      roleMembers = oneServer;
+    }) "above 127";
+    expected = false;
+  };
+
+  # All members must resolve the same id — per-member pin drift rejected.
+  test_memberIdDriftRejected = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      roleMembers = [
+        {
+          machineName = "alpha";
+          role = "server";
+          settings = {
+            clusterInit = true;
+            cilium.id = 70;
+            network = {
+              ipv4 = "10.0.0.1";
+              ipv6 = "fd00::1";
+            };
+          };
+        }
+      ];
+    }) "same cilium.id";
+    expected = true;
+  };
+
+  # --- topology labels (invariant 7) --------------------------------------
+
+  test_topologyEmptyRejected = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      roleMembers = [
+        {
+          machineName = "alpha";
+          role = "server";
+          settings = {
+            clusterInit = true;
+            network = {
+              ipv4 = "10.0.0.1";
+              ipv6 = "fd00::1";
+            };
+            topology.region = "";
+          };
+        }
+      ];
+    }) "topology.region/zone must be non-empty";
+    expected = true;
+  };
+
+  test_topologyNullAndOverrideAccepted = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      roleMembers = [
+        {
+          machineName = "alpha";
+          role = "server";
+          settings = {
+            clusterInit = true;
+            network = {
+              ipv4 = "10.0.0.1";
+              ipv6 = "fd00::1";
+            };
+            topology.region = "hel1";
+          };
+        }
+      ];
+    }) "topology.region/zone must be non-empty";
+    expected = false;
+  };
+
+  # --- all-or-none transport posture (§6.3) -------------------------------
+
+  test_postureMixedRejected = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      roleMembers = [
+        {
+          machineName = "alpha";
+          role = "server";
+          settings = {
+            clusterInit = true;
+            network = {
+              transport = {
+                service = "wireguard-mesh";
+                instance = "mesh";
+              };
+              ipv4 = "10.0.0.1";
+              ipv6 = "fd00::1";
+            };
+          };
+        }
+        {
+          machineName = "beta";
+          role = "agent";
+          settings = {
+            clusterInit = false;
+            network = {
+              transport = null;
+              ipv4 = "10.0.0.2";
+              ipv6 = "fd00::2";
+            };
+          };
+        }
+      ];
+    }) "all-or-none transport posture";
+    expected = true;
+  };
+
+  test_postureMissingFactsRejected = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      transportFacts = {
+        alpha = {
+          ipv4 = "10.42.0.1";
+          ipv6 = "fd10:42::1";
+        };
+      };
+      roleMembers = [
+        {
+          machineName = "alpha";
+          role = "server";
+          settings = {
+            clusterInit = true;
+            network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
+            };
+          };
+        }
+        {
+          machineName = "beta";
+          role = "agent";
+          settings = {
+            clusterInit = false;
+            network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
+            };
+          };
+        }
+      ];
+    }) "no export from the configured node_transport source";
+    expected = true;
+  };
+
+  test_postureUniformAccepted = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      transportFacts = {
+        alpha = {
+          ipv4 = "10.42.0.1";
+          ipv6 = "fd10:42::1";
+        };
+        beta = {
+          ipv4 = "10.42.0.2";
+          ipv6 = "fd10:42::2";
+        };
+      };
+      roleMembers = [
+        {
+          machineName = "alpha";
+          role = "server";
+          settings = {
+            clusterInit = true;
+            network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
+            };
+          };
+        }
+        {
+          machineName = "beta";
+          role = "agent";
+          settings = {
+            clusterInit = false;
+            network.transport = {
+              service = "wireguard-mesh";
+              instance = "mesh";
+            };
+          };
+        }
+      ];
+    }) "transport posture";
+    expected = false;
+  };
+
+  # --- fleet checks (§6.2, D16/D33) ----------------------------------------
+
+  test_fleetChecksCleanTreePasses = {
+    expr = lib.mapAttrs (_: c: c.assertion) fleetChecksPass;
+    expected = {
+      kube-cluster-meshed-cidr-overlap = true;
+      kube-cluster-mesh-group-transport = true;
+      kube-cluster-node-in-two-clusters = true;
+      kube-cluster-unique-cilium-ids = true;
+      kube-cluster-unique-names = true;
+    };
+  };
+
+  test_fleetCheckNodeInTwoClusters = {
+    expr =
+      let
+        check = (kube.mkFleetChecks clanLib fleetExportsOverlap).kube-cluster-node-in-two-clusters;
+      in
+      {
+        inherit (check) assertion;
+        namesMachine = lib.hasInfix "alpha" check.message;
+        namesBoth = lib.hasInfix "rke2/prod" check.message && lib.hasInfix "k3s/prod2" check.message;
+      };
+    expected = {
+      assertion = false;
+      namesMachine = true;
+      namesBoth = true;
+    };
+  };
+
+  test_fleetCheckIdCollision = {
+    expr =
+      let
+        check = (kube.mkFleetChecks clanLib fleetExportsIdCollision).kube-cluster-unique-cilium-ids;
+      in
+      {
+        inherit (check) assertion;
+        namesInstances = lib.hasInfix "rke2/prod" check.message && lib.hasInfix "k3s/staging" check.message;
+      };
+    expected = {
+      assertion = false;
+      namesInstances = true;
+    };
+  };
+
+  test_fleetCheckNameCollision = {
+    expr =
+      let
+        check = (kube.mkFleetChecks clanLib fleetExportsNameCollision).kube-cluster-unique-names;
+      in
+      {
+        inherit (check) assertion;
+        namesInstances = lib.hasInfix "rke2/prod" check.message && lib.hasInfix "k3s/prod" check.message;
+      };
+    expected = {
+      assertion = false;
+      namesInstances = true;
+    };
+  };
+
+  test_fleetCheckMeshedCidrOverlap = {
+    expr =
+      let
+        check = (kube.mkFleetChecks clanLib fleetExportsCidrOverlap).kube-cluster-meshed-cidr-overlap;
+      in
+      {
+        inherit (check) assertion;
+        namesInstances = lib.hasInfix "rke2/prod" check.message && lib.hasInfix "k3s/staging" check.message;
+      };
+    expected = {
+      assertion = false;
+      namesInstances = true;
+    };
+  };
+
+  # The same CIDR overlap in SEPARATE mesh groups is allowed (the trust
+  # domains never route into each other).
+  test_fleetCheckSeparateGroupsAllowOverlap = {
+    expr =
+      (kube.mkFleetChecks clanLib fleetExportsCidrSeparateGroups)
+      .kube-cluster-meshed-cidr-overlap.assertion;
+    expected = true;
+  };
+
+  test_fleetCheckMeshGroupTransportConsistency = {
+    expr =
+      let
+        check = (kube.mkFleetChecks clanLib fleetExportsTransportMixed).kube-cluster-mesh-group-transport;
+      in
+      {
+        inherit (check) assertion;
+        namesInstances = lib.hasInfix "mesh-b" check.message;
+      };
+    expected = {
+      assertion = false;
+      namesInstances = true;
     };
   };
 

@@ -86,8 +86,8 @@ keepalive maintains that path.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `ipv4` | required | Mesh IPv4 host address, without `/32`. Unique within the instance. |
-| `ipv6` | required | Mesh IPv6 host address, without `/128`. Unique within the instance. |
+| `ipv4` | derived | Mesh IPv4 host address, without `/32`. Unique within the instance (eval-asserted). Default: deterministic from the mesh instance + machine name (192.168.0.0/16). |
+| `ipv6` | derived | Mesh IPv6 host address, without `/128`. Unique within the instance (eval-asserted). Default: deterministic from the mesh instance + machine name (fd77::/16). |
 | `interface` | `null` | Interface name. `null` derives `wg-<instanceName>`; the kernel limit is 15 characters. |
 | `port` | `51820` | UDP listen port for this machine. Peers use each target's own port. |
 | `mtu` | `1420` | WireGuard link MTU. Must be at least 1280 for dual-stack operation. |
@@ -116,7 +116,10 @@ The service declares `peer` as an input and publishes:
 - `peer.hosts = [ "<machine>.<domain>" ]` per member, retaining the standard
   peer port semantics (SSH port 22, not the WireGuard UDP port);
 - `node_transport` per member: `ipv4`, `ipv6`, `interface`, `port`, `mtu`,
-  `endpoint` (nullable), and `instance`.
+  `endpoint` (nullable), `instance`, and the optional `topology.region` /
+  `topology.zone` pass-through fields (null here — effective topology labels
+  are a cluster-node fact, published in the distro services' `kube_cluster`
+  export).
 
 Consumers should use `clanLib.getExport` or `clanLib.selectExports`, never raw
 export scope keys. The mesh addresses, interface, and MTU are sufficient for a

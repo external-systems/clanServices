@@ -117,16 +117,39 @@
           # flake's OWN lock transitively (its nixpkgs/flake-parts/
           # import-tree), so those get explicit nested overrides pointing
           # at our already-fetched equivalents (identical revisions).
+          # Same for `presenting` (mkdocs-flake/reveal-js/import-tree).
           lock = builtins.fromJSON (builtins.readFile ./flake.lock);
           # Resolve the pkgs flake's import-tree through the flattened lock
           # (node name via pkgs' inputs map, so lock renumbering is safe).
           pkgsImportTree = builtins.fetchTree lock.nodes.${lock.nodes.pkgs.inputs."import-tree"}.locked;
+          presentingMkdocsFlake =
+            builtins.fetchTree
+              lock.nodes.${lock.nodes.presenting.inputs."mkdocs-flake"}.locked;
+          presentingRevealJs =
+            builtins.fetchTree
+              lock.nodes.${lock.nodes.presenting.inputs."reveal-js"}.locked;
+          presentingImportTree =
+            builtins.fetchTree
+              lock.nodes.${lock.nodes.presenting.inputs."import-tree"}.locked;
+          kubenixImportTree = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."import-tree"}.locked;
+          kubenixDevshell = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."devshell"}.locked;
+          kubenixFlakeCompat =
+            builtins.fetchTree
+              lock.nodes.${lock.nodes.kubenix.inputs."flake-compat"}.locked;
+          kubenixSystems = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."systems"}.locked;
         in
         {
           nix-unit.inputs = inputs // {
             "pkgs/nixpkgs" = inputs.nixpkgs;
             "pkgs/flake-parts" = inputs.flake-parts;
             "pkgs/import-tree" = pkgsImportTree;
+            "presenting/mkdocs-flake" = presentingMkdocsFlake;
+            "presenting/reveal-js" = presentingRevealJs;
+            "presenting/import-tree" = presentingImportTree;
+            "kubenix/import-tree" = kubenixImportTree;
+            "kubenix/devshell" = kubenixDevshell;
+            "kubenix/flake-compat" = kubenixFlakeCompat;
+            "kubenix/systems" = kubenixSystems;
           };
 
           devShells.default = pkgs.mkShell {

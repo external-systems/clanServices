@@ -511,30 +511,62 @@ here (D39).
 
 ### 6.2 Identity, CIDRs, topology, exports
 Cluster name = instance name (≤32 chars, DNS-style). `cilium.id`
-nullable; default = stable hash of instance name → 1–127; collision =
-eval error; explicit 1–255 override requires explicit v4 CIDRs above 127.
-Migration: pin existing ids/CIDRs before hashed defaults land. One
-resolved dual-stack CIDR structure feeds distro, Cilium, DNS, pools,
-assertions, exports. region/zone labels default to instance name,
-per-machine overrides. `rancher_cluster` instance export: identity, mesh
-group, control-domain role (D43), CIDRs, mesh endpoints, pool handoff,
-API mirror facts (D30), schema version. `node_transport` per-node
-export: mesh/underlay addresses, interface, MTU, primary/external facts,
-delivery modes, topology. No secrets in exports. Inventory-wide
-assertions: duplicate names/ids/CIDRs, overlapping CIDRs (incl.
-fleet-wide PodCIDR non-overlap for meshed clusters, D33), duplicate
-NodePorts, missing peers, missing labels, node-in-two-clusters (D16),
-control-domain⇔mesh-group consistency (D43).
+nullable; default = stable hash of instance name → 1–127 (first 8 hex
+chars of sha256(instanceName) as a 32-bit int, mod 127, +1 — pure Nix,
+no IFD); a collision between two instances' resolved ids = eval error;
+explicit 1–255 override requires explicit v4 CIDRs above 127 (the
+derivation 10.<2id-1>/10.<2id> overflows the /8 past 127).
+**Migration**: deployments predating hashed defaults must pin their
+current ids (and CIDRs, if id > 127) before upgrading — the hash default
+reassigns ids and therefore CIDRs, clusterDNS, and the HAProxy ports
+(7442+id, +1000), which is a disruptive reviewed change (§6.10). One
+resolved dual-stack CIDR structure (resolved id feeding CIDRs,
+clusterDNS — 10th address of the service v4 CIDR when explicit — and
+HAProxy ports) feeds distro, Cilium, DNS, pools, assertions, exports.
+region/zone labels default to instance name, per-machine overrides,
+empty string = eval error (invariant 7). `kube_cluster` instance export
+(renamed from `rancher_cluster`, D45): schema version, identity (name,
+resolved cilium id, resolved dual-stack pod/service CIDRs, clusterDNS),
+mesh group, control-domain role (D43; `"standalone"` placeholder until
+phase 6), transport source (all-or-none posture fact), per-member mesh
+endpoints (from consumed `node_transport` exports + effective topology),
+pool handoff (names, scopes, delivery modes, blocks, selectors; consumed
+by fleet-routing in phase 5), API mirror facts (D30, phase 6).
+`node_transport` per-node export: mesh/underlay addresses, interface,
+MTU, port, endpoint, primary/external facts, delivery modes, topology.
+No secrets in exports; every export-interface option carries a default
+(clan CLI deep-eval). Inventory-wide assertions: duplicate names/ids/
+CIDRs, overlapping CIDRs (incl. fleet-wide PodCIDR non-overlap for
+meshed clusters, D33), duplicate NodePorts, missing peers, missing
+labels, node-in-two-clusters (D16), control-domain⇔mesh-group
+consistency (D43). Cross-service assertions (node-in-two-clusters across
+rke2+k3s, id collisions, meshed-CIDR overlap, mesh-group transport
+consistency) live in `clan.checks`, contributed by the shared lib's
+fleet-checks module (`lib/kube-cluster/fleet-checks.nix`, computed from
+the `kube_cluster` exports) — per-instance/per-machine checks stay in
+the distro services.
 
 ### 6.3 Transport
 Host WireGuard full mesh is the only tested transport: every node gets
-mesh v4+v6 (deterministic from id + machine name); per-machine overrides
-(addresses, port, endpoint, interface, MTU, routes, pool blocks).
+mesh v4+v6 (deterministic from mesh instance + machine name — a stable
+hash into 192.168.0.0/16 + fd77::/16 — with per-machine overrides for
+addresses, port, endpoint, interface, MTU, routes/pool blocks; hash
+collisions fail the mesh's unique-address assertions).
 All-or-none per mesh trust domain: a cluster mesh shares one transport
-posture. Mesh groups: cross-cluster peering from exports + public vars
-keys, remote prefixes only in AllowedIPs; every remote node InternalIP
-reachable before ClusterMesh ready. MTU: transport MTU −50 = tunnel
-budget. `transport.mode = cilium-wireguard | unencrypted` survive only
+posture — members mixing transport-provided and manual addresses are an
+eval error. Mesh groups: **one mesh group = one `wireguard-mesh`
+instance** (phase-4 mapping): a cluster joins a group by consuming that
+instance's `node_transport` exports, so cross-cluster peering between
+group members happens inside the shared mesh instance (exports + public
+vars keys, remote prefixes only in AllowedIPs); same-group clusters must
+consume the same transport instance (eval-asserted fleet-wide from the
+`kube_cluster` exports), and cross-instance peering is neither needed
+nor rendered. The mesh group string (default `meta.domain`, per-cluster
+`meshGroup` override) names the trust domain for ClusterMesh and control
+domains (D43); every remote node InternalIP reachable before ClusterMesh
+ready. MTU: transport MTU −50 = tunnel budget (plumbed into the Cilium
+profile as `MTU = transportFacts.mtu - 50`).
+`transport.mode = cilium-wireguard | unencrypted` survive only
 as untested Cilium helm-values overrides — no contract, no VM coverage.
 Distro HTTP-proxy setting = documented escape only.
 
@@ -773,8 +805,30 @@ tests together)
   base (D46, added 2026-10-23 — supersedes the interim "minimal rke2 runs
   no distro CoreDNS" state); data-plane VM suite registered per distro
   (`k3s-data-plane`, `rke2-data-plane`).
-- **4** — host-wireguard transport, hashed ids, topology, dual-stack
-  exports; one-cluster-per-node assertion.
+- **4 done** — host-wireguard transport, hashed ids, topology, dual-stack
+  exports; one-cluster-per-node assertion. Implementation notes
+  (2026-10-23): `cilium.id` defaults to the sha256-based hash of the
+  instance name mapped into 1–127 (pure Nix, no IFD); all id consumers
+  (CIDRs, clusterDNS — 10th address of an explicit service v4 CIDR — and
+  HAProxy ports) use the resolved id; explicit ids > 127 require explicit
+  v4 CIDRs. Topology labels (`topology.kubernetes.io/region|zone`,
+  default = instance name, per-machine overrides, empty = eval error,
+  invariant 7) render into the distro node labels. The `kube_cluster`
+  custom export interface (renamed from `rancher_cluster`, D45) publishes
+  schemaVersion/identity/CIDRs/meshGroup/transport source/member mesh
+  endpoints incl. effective topology/pool handoff facts from both distro
+  services; `node_transport` gained topology fields. Fleet-wide
+  assertions (id collisions, duplicate names, same-group pod/service CIDR
+  overlap, node-in-two-clusters across rke2+k3s (D16), mesh-group
+  transport consistency) are `clan.checks` computed from the
+  `kube_cluster` exports by the shared lib's fleet-checks module
+  (wired into this flake's own clan and into the eval-test throwaway
+  clans; consumers wire `clan.imports = [ fleetChecksModule ]`).
+  All-or-none transport posture (§6.3) is a per-instance assertion.
+  wireguard-mesh mesh addresses are now derived by default (stable hash
+  of mesh instance + machine name → 192.168.0.0/16 + fd77::/16),
+  per-machine overrides unchanged. Mesh-group mapping refined in §6.3:
+  one group = one wireguard-mesh instance.
 - **5** — BGP v2 + BIRD + private fleet fabric (vendored BIRD fragment
   renderer) + fleet-routing service (client/admin/router; dual-role
   suite).

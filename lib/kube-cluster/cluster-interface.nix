@@ -71,11 +71,19 @@
 
     cilium = {
       id = lib.mkOption {
-        type = lib.types.ints.between 1 255;
-        default = 1;
+        type = lib.types.nullOr (lib.types.ints.between 1 255);
+        default = null;
         description = ''
-          Cilium cluster id (1-255, unique per cluster). Drives the
-          pod/service CIDR derivation.
+          Cilium cluster id (1-255, unique per cluster, eval-asserted).
+          null (default) resolves to a stable hash of the instance name
+          mapped into 1-127. An explicit id above 127 requires explicit
+          network.podCIDRv4 + network.serviceCIDRv4 (the derived
+          10.<2id-1>/10.<2id> space overflows the /8 past 127).
+          Drives the pod/service CIDR derivation, clusterDNS, and the
+          HAProxy ports (7442+id, +1000).
+
+          Migration: deployments predating the hashed default must pin
+          their current id (and v4 CIDRs when > 127) before upgrading.
         '';
       };
       helmValues = lib.mkOption {
@@ -143,6 +151,21 @@
         Cluster-global CiliumLoadBalancerIPPool definitions (D8). Pools
         serve only Services with loadBalancerClass: io.cilium/lb-ipam;
         classless Services go to Node IPAM (D41).
+      '';
+    };
+
+    meshGroup = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        The mesh (trust-domain) group this cluster belongs to. null =
+        the default group: all cluster instances under the clan's
+        meta.domain (or the instance's own domain override). An explicit
+        string names a group; clusters sharing a group form one trust
+        domain (ClusterMesh, control domains — D43). Phase-4 mapping: one
+        mesh group = one wireguard-mesh instance — same-group clusters
+        must consume the same node_transport source (fleet-asserted).
+        Recorded in the kube_cluster export.
       '';
     };
 

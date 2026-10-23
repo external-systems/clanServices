@@ -42,7 +42,19 @@ set it; joining servers and agents use `server` through their local haproxy.
 
 Set `settings.network.transport` to a `wireguard-mesh` instance to consume its
 `node_transport` export, or set `network.transport = null` and provide explicit
-`network.ipv4`/`network.ipv6` per machine.
+`network.ipv4`/`network.ipv6` per machine. The posture is all-or-none (SPEC.md
+§6.3): mixing transport-provided and manual member addresses is an eval error.
+
+## Exports
+
+The service consumes `node_transport` and publishes `kube_cluster` per member
+machine (SPEC.md §6.2): schema version, cluster identity (name, resolved cilium
+id, resolved dual-stack pod/service CIDRs, clusterDNS), mesh group, transport
+source, per-member mesh endpoints with effective topology labels, and pool
+handoff facts. Fleet-wide assertions (duplicate names/ids, meshed-CIDR overlap,
+node-in-two-clusters incl. cross-distro, mesh-group transport consistency) are
+computed from these exports as `clan.checks` by the shared lib's fleet-checks
+module.
 
 ## The per-node haproxy kube-apiserver LB
 
@@ -55,7 +67,8 @@ transport addresses (both families):
   built-in agent client-side API LB so it keeps this path.
 - k3s serves its HTTPS/kube-apiserver endpoint on `6443`
   (`https-listen-port`). The only LB frontend is the derived kubeapi port
-  `7442 + cilium.id`; there is no separate RKE2-style supervisor frontend.
+  `7442 + <resolved cilium id>` (explicit pin or hashed default, SPEC.md
+  §6.2); there is no separate RKE2-style supervisor frontend.
   Join URLs and the admin kubeconfig use the derived LB port, while haproxy
   backends target `6443`.
 - Backends are every server member's transport addresses with TLS `/readyz`

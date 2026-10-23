@@ -52,3 +52,8 @@ bootstrap bundle + SSA oneshot (D40) and added the hermetic
 `rke2-data-plane` VM suite (pool allocation, Node IPAM classless Service,
 ETP-Local candidate restriction, firewall positive/negative). Cluster DNS
 is the uniform clan-rendered CoreDNS (D46) in both distros' minimal base.
+Phase 4 added hashed-default `cilium.id` resolution (pin your id before
+upgrading — see [Upgrades](../guides/upgrades.md)), topology labels
+(invariant 7), the `kube_cluster` dual-stack export, and the fleet-wide
+`clan.checks` (one cluster per node across rke2+k3s, id collisions,
+meshed-CIDR overlap).

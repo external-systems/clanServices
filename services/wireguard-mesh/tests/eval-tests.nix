@@ -130,6 +130,20 @@ let
       };
     }
   );
+
+  # Derived mesh addresses (§6.3): no explicit ipv4/ipv6 — deterministic
+  # from the mesh instance + machine name.
+  derivedInventory = baseInventory // {
+    instances = baseInventory.instances // {
+      mesh = baseInventory.instances.mesh // {
+        roles.peer.machines = lib.genAttrs [ "alpha" "beta" "gamma" ] (_: {
+          settings = { };
+        });
+      };
+    };
+  };
+  derivedEval = mkEvaled derivedInventory;
+  alphaDerived = derivedEval.config.nixosConfigurations.alpha.config;
 in
 {
   rendering = {
@@ -218,6 +232,36 @@ in
         interfaceTrusted = true;
       };
     };
+    # §6.3: mesh addresses derive deterministically from the mesh
+    # instance + machine name when unset (pinned hash contract).
+    test_derivedMeshAddresses = {
+      expr = alphaDerived.systemd.network.networks."40-wireguard-mesh-mesh".address;
+      expected = [
+        "192.168.49.19/32"
+        "fd77:3131:676a:8ad7::516b/128"
+      ];
+    };
+    test_derivedMeshPeerRoutes = {
+      expr = map (
+        route: route.Destination
+      ) alphaDerived.systemd.network.networks."40-wireguard-mesh-mesh".routes;
+      expected = [
+        "192.168.32.0/32"
+        "fd77:2003:1148:a2fe::7e93/128"
+        "192.168.160.8/32"
+        "fd77:a087:a89c:dc45::22e2/128"
+      ];
+    };
+    test_derivedMeshExport = {
+      expr =
+        (clanLib.getExport {
+          serviceName = "wireguard-mesh";
+          instanceName = "mesh";
+          roleName = "peer";
+          machineName = "alpha";
+        } derivedEval.config.exports).node_transport.ipv6;
+      expected = "fd77:3131:676a:8ad7::516b";
+    };
   };
 
   exports = {
@@ -231,6 +275,12 @@ in
         mtu = 1420;
         endpoint = "alpha.example.net:51820";
         instance = "mesh";
+        # Topology is a cluster-node concept (kube_cluster export);
+        # wireguard-mesh leaves the pass-through fields null.
+        topology = {
+          region = null;
+          zone = null;
+        };
       };
     };
     test_standardPeer = {

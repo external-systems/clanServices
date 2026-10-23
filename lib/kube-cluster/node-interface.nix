@@ -19,6 +19,33 @@
       '';
     };
 
+    # Topology labels (invariant 7): rendered as
+    # topology.kubernetes.io/region|zone node labels. null (default) =
+    # the cluster's instance name; a per-machine string overrides; the
+    # empty string is an eval error.
+    topology = {
+      region = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "hel1";
+        description = ''
+          This machine's topology.kubernetes.io/region label. null
+          defaults to the cluster's instance name; empty string is
+          rejected at eval.
+        '';
+      };
+      zone = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "hel1-dc2";
+        description = ''
+          This machine's topology.kubernetes.io/zone label. null defaults
+          to the cluster's instance name; empty string is rejected at
+          eval.
+        '';
+      };
+    };
+
     network = {
       ipv4 = lib.mkOption {
         type = lib.types.nullOr lib.types.str;

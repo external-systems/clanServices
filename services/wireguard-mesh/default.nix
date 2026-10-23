@@ -12,6 +12,38 @@ let
   domainName =
     instanceName: settings: if settings.domain == null then instanceName else settings.domain;
 
+  # Deterministic mesh addresses (SPEC §6.3): sha256 of
+  # "<instanceName>:<machineName>" → 192.168.<b0>.<b1> and
+  # fd77:<h0>:<h1>:<h2>::<h3>. 192.168.0.0/16 and fd77::/16 stay clear of
+  # the derived cluster CIDR space (10.0.0.0/8, fd10::/16). Collisions
+  # fail the mesh's unique-address assertions; per-machine ipv4/ipv6
+  # overrides are the escape.
+  meshHash = instanceName: machineName: builtins.hashString "sha256" "${instanceName}:${machineName}";
+
+  hexVal =
+    c:
+    let
+      digits = lib.stringToCharacters "0123456789abcdef";
+      idx = lib.findFirst (i: builtins.elemAt digits i == c) (-1) (lib.genList (x: x) 16);
+    in
+    if idx == -1 then throw "wireguard-mesh: bad hex digit '${c}' in address hash" else idx;
+
+  hexByte = h: i: hexVal (builtins.substring i 1 h) * 16 + hexVal (builtins.substring (i + 1) 1 h);
+
+  derivedV4 =
+    instanceName: machineName:
+    let
+      h = meshHash instanceName machineName;
+    in
+    "192.168.${toString (hexByte h 0)}.${toString (hexByte h 1)}";
+
+  derivedV6 =
+    instanceName: machineName:
+    let
+      h = meshHash instanceName machineName;
+    in
+    "fd77:${builtins.substring 0 4 h}:${builtins.substring 4 4 h}:${builtins.substring 8 4 h}::${builtins.substring 12 4 h}";
+
   resolveHostValue =
     hostItem:
     hostItem.plain or (
@@ -91,14 +123,24 @@ in
       {
         options = {
           ipv4 = lib.mkOption {
-            type = lib.types.str;
+            type = lib.types.nullOr lib.types.str;
+            default = null;
             example = "192.168.77.1";
-            description = "The machine's mesh IPv4 host address, without a prefix length.";
+            description = ''
+              The machine's mesh IPv4 host address, without a prefix
+              length. null derives a deterministic address from the
+              instance and machine names (192.168.0.0/16, §6.3).
+            '';
           };
           ipv6 = lib.mkOption {
-            type = lib.types.str;
+            type = lib.types.nullOr lib.types.str;
+            default = null;
             example = "fd00:77::1";
-            description = "The machine's mesh IPv6 host address, without a prefix length.";
+            description = ''
+              The machine's mesh IPv6 host address, without a prefix
+              length. null derives a deterministic address from the
+              instance and machine names (fd77::/16, §6.3).
+            '';
           };
           interface = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
@@ -192,6 +234,19 @@ in
         allMembers = roles.peer.machines;
         peerMembers = lib.filterAttrs (name: _: name != machine.name) allMembers;
 
+        # Resolved mesh addresses (§6.3): explicit per-machine overrides
+        # win over the deterministic instance+machine-name derivation.
+        resolvedAddr =
+          name:
+          let
+            memberSettings = allMembers.${name}.settings;
+          in
+          {
+            ipv4 = if memberSettings.ipv4 != null then memberSettings.ipv4 else derivedV4 instanceName name;
+            ipv6 = if memberSettings.ipv6 != null then memberSettings.ipv6 else derivedV6 instanceName name;
+          };
+        ownAddr = resolvedAddr machine.name;
+
         endpointOf =
           name:
           let
@@ -208,9 +263,8 @@ in
 
         peerEntries = lib.mapAttrsToList (name: member: {
           inherit name;
+          inherit (resolvedAddr name) ipv4 ipv6;
           inherit (member.settings)
-            ipv4
-            ipv6
             extraAllowedIPs
             persistentKeepalive
             ;
@@ -224,9 +278,10 @@ in
           name:
           let
             memberSettings = allMembers.${name}.settings;
+            addr = resolvedAddr name;
             hostname = "${name}.${domainName instanceName memberSettings}";
           in
-          "${memberSettings.ipv4} ${hostname}\n${memberSettings.ipv6} ${hostname}"
+          "${addr.ipv4} ${hostname}\n${addr.ipv6} ${hostname}"
         ) (lib.attrNames allMembers);
       in
       {
@@ -237,9 +292,8 @@ in
             }
           ];
           node_transport = {
+            inherit (ownAddr) ipv4 ipv6;
             inherit (settings)
-              ipv4
-              ipv6
               port
               mtu
               ;
@@ -300,8 +354,8 @@ in
               ++ map (prefix: { Destination = prefix; }) peer.extraAllowedIPs
             ) peerEntries;
 
-            allV4s = map (name: allMembers.${name}.settings.ipv4) (lib.attrNames allMembers);
-            allV6s = map (name: allMembers.${name}.settings.ipv6) (lib.attrNames allMembers);
+            allV4s = map (name: (resolvedAddr name).ipv4) (lib.attrNames allMembers);
+            allV6s = map (name: (resolvedAddr name).ipv6) (lib.attrNames allMembers);
             endpoints = map endpointOf (lib.attrNames allMembers);
           in
           {
@@ -319,12 +373,12 @@ in
                 message = "wireguard-mesh/${instanceName}: dual-stack operation requires mtu >= 1280";
               }
               {
-                assertion = !lib.hasInfix "/" settings.ipv4 && !lib.hasInfix ":" settings.ipv4;
-                message = "wireguard-mesh/${instanceName}: ipv4 must be an IPv4 host address without a prefix length";
+                assertion = !lib.hasInfix "/" ownAddr.ipv4 && !lib.hasInfix ":" ownAddr.ipv4;
+                message = "wireguard-mesh/${instanceName}: ipv4 must be an IPv4 host address without a prefix length (got '${ownAddr.ipv4}' for machine '${machine.name}')";
               }
               {
-                assertion = !lib.hasInfix "/" settings.ipv6 && lib.hasInfix ":" settings.ipv6;
-                message = "wireguard-mesh/${instanceName}: ipv6 must be an IPv6 host address without a prefix length";
+                assertion = !lib.hasInfix "/" ownAddr.ipv6 && lib.hasInfix ":" ownAddr.ipv6;
+                message = "wireguard-mesh/${instanceName}: ipv6 must be an IPv6 host address without a prefix length (got '${ownAddr.ipv6}' for machine '${machine.name}')";
               }
               {
                 assertion = lib.length (lib.unique allV4s) == lib.length allV4s;
@@ -388,8 +442,8 @@ in
               networks.${netdevName} = {
                 matchConfig.Name = interface;
                 address = [
-                  "${settings.ipv4}/32"
-                  "${settings.ipv6}/128"
+                  "${ownAddr.ipv4}/32"
+                  "${ownAddr.ipv6}/128"
                 ];
                 routes = peerRoutes;
               };

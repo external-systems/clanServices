@@ -7,11 +7,19 @@ from exports; no CLI steps.
 ## Mesh groups and trust domains
 
 A mesh group is a set of mutually trusted cluster instances — the trust
-domain string (default `meta.domain`). The default mesh group is all cluster
-instances; opting a cluster out separates its trust domain. The trust domain
-also bounds control domains (D43): a hub and its spokes must share one
-group. But mesh ≠ control domain — standalone clusters can be full mesh
-members with no hub relationship to anyone.
+domain string (default `meta.domain`, per-cluster `meshGroup` override).
+The default mesh group is all cluster instances; opting a cluster out
+separates its trust domain. The trust domain also bounds control domains
+(D43): a hub and its spokes must share one group. But mesh ≠ control
+domain — standalone clusters can be full mesh members with no hub
+relationship to anyone.
+
+**One mesh group = one `wireguard-mesh` instance** (phase-4 mapping): a
+cluster joins a group by consuming that instance's `node_transport`
+exports, so cross-cluster WireGuard peering between group members happens
+inside the shared mesh instance (exports + public vars keys). Same-group
+clusters consuming different transport instances — or mixing
+transport-provided and manual member addresses — fail evaluation.
 
 Every eligible cluster runs clustermesh-apiserver and mesh certificates from
 first boot (a singleton's peer list is simply empty). Peering is rendered
@@ -113,3 +121,30 @@ and AI agents fleet-wide read access without admin keys. Details in
 ClusterMesh global Services are opt-in per Service; nothing becomes global
 implicitly. The mirror Services above are clan-rendered globals. MCS-API is
 reserved (disabled initially).
+
+## The `kube_cluster` export
+
+Both distro services publish a `kube_cluster` export per cluster member
+machine (identical content on every member; SPEC.md §6.2). It carries:
+
+- `schemaVersion` (currently `1`);
+- cluster identity: `name` (= instance name), the resolved `ciliumId`, and
+  the resolved dual-stack `network.{podCIDRv4,podCIDRv6,serviceCIDRv4,serviceCIDRv6,clusterDNS}`;
+- `meshGroup` — the trust-domain string (default `meta.domain`);
+- `controlDomain.role` — `"standalone"` placeholder until phase 6 (D43);
+- `transport.{service,instance}` — the consumed `node_transport` source,
+  or nulls for a manual-address cluster (the all-or-none posture fact);
+- `members.<machine>` — per-member mesh endpoints: role, node v4/v6,
+  endpoint/interface/MTU/port from the consumed transport, and the
+  effective `topology.{region,zone}` labels;
+- `pools.<name>` — pool handoff facts (scope, delivery mode, blocks,
+  serviceSelector) from the pools resolution; the phase-5 fleet-routing
+  service consumes these.
+
+The fleet-wide assertions (duplicate cluster names/ids, same-mesh-group
+CIDR overlap, node-in-two-clusters across rke2+k3s, mesh-group transport
+consistency) are computed from these exports as `clan.checks` by the
+shared library's fleet-checks module — wire it into a consumer clan with
+`clan.imports = [ <kube-cluster fleetChecksModule> ]` (this flake's own
+clan and the eval-test clans already do). No secrets ever appear in
+exports.

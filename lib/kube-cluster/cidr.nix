@@ -163,6 +163,28 @@ in
 rec {
   inherit parse;
 
+  # Render an int as a dotted-quad IPv4 address.
+  v4ToString =
+    n:
+    let
+      inherit (builtins) div;
+      inherit (lib) mod;
+    in
+    "${toString (div n 16777216)}.${toString (mod (div n 65536) 256)}.${toString (mod (div n 256) 256)}.${toString (mod n 256)}";
+
+  # The address at `offset` inside an IPv4 CIDR (e.g. the 10th address of
+  # the service CIDR is the derived clusterDNS, §6.2). IPv6 CIDRs throw:
+  # clusterDNS is IPv4 by contract.
+  addressAt =
+    cidr: offset:
+    let
+      p = parse cidr;
+    in
+    if p.family != 4 then
+      throw "cidr.nix: addressAt only supports IPv4 CIDRs ('${cidr}')"
+    else
+      v4ToString (p.start + offset);
+
   # Do two CIDRs overlap? Different families never overlap.
   overlap =
     a: b:

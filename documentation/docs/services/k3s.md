@@ -46,4 +46,8 @@ bootstrap bundle + SSA oneshot (D40) and added the hermetic
 `k3s-data-plane` VM suite (pool allocation, Node IPAM classless Service,
 ETP-Local candidate restriction, firewall positive/negative). The canonical
 fleet-routing test shape — kamrui-h1 — is a single-node k3s cluster holding
-the admin role (D33).
+the admin role (D33). Phase 4 added hashed-default `cilium.id` resolution
+(pin your id before upgrading — see [Upgrades](../guides/upgrades.md)),
+topology labels (invariant 7), the `kube_cluster` dual-stack export, and
+the fleet-wide `clan.checks` (one cluster per node across rke2+k3s, id
+collisions, meshed-CIDR overlap).
