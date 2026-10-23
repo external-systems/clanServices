@@ -36,12 +36,20 @@ fast.
 - Artifact matrix — 3-minor version pins eval (D34).
 - **Data-plane suite** — pool allocation via `io.cilium/lb-ipam`, classless
   Service → Node IPAM node IPs (ServiceLB parity), ETP-Local candidate
-  restriction under nodeipam, firewall positive AND negative exposure;
-  go-httpbin workload fixture, hermetic (artifact-flake Cilium airgap
-  images preloaded). Registered as `k3s-data-plane` and `rke2-data-plane`
-  since phase 3. The `shared-bgp` ECMP + withdrawal and floating-pool
-  blackhole-window assertions land with the BGP/BIRD phases (§8 phase 5).
-- bgp-ecmp suite — private fabric, MikroTik-style foreign-router fixture.
+  restriction under nodeipam, `shared-bgp` ECMP from the default fabric
+  pool to a BIRD foreign-router fixture (all healthy nodes advertise),
+  ETP-Local withdrawal (the VIP survives its node's death via the remaining
+  advertiser), the floating-pool documented blackhole window, firewall
+  positive AND negative exposure (including BGP :179 bound to the loopback
+  link alias only); go-httpbin workload fixture, hermetic (artifact-flake
+  Cilium airgap images preloaded). Registered as `k3s-data-plane` and
+  `rke2-data-plane`.
+- **bgp-ecmp suite** (`k3s-bgp-ecmp`, `rke2-bgp-ecmp`) — private fabric by
+  default on a 3-node cluster: the private CoreDNS VIP is ECMP-advertised
+  and reachable from the MikroTik-style BIRD foreign-router fixture
+  (D9 contract), the `<instance>.<domain>` zone resolves through the VIP
+  (incl. the D22 svc-zone rewrite opt-in), ETP-Local scale-down withdrawal,
+  and the BGP firewall posture.
 - ClusterMesh matrix — including kube-api mirror Service reachability (D30).
 - PKI rotation — including cert bootstrap runbook execution.
 - CCM knob suite — hermetic fake-CCM.

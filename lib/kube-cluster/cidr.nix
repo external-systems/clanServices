@@ -185,6 +185,46 @@ rec {
     else
       v4ToString (p.start + offset);
 
+  # Render an 8×16-bit group list as a full-form IPv6 address (no `::`
+  # compression — always valid, and parse-normalized by consumers).
+  v6ToString = groups: lib.concatStringsSep ":" (map (g: lib.toLower (lib.toHexString g)) groups);
+
+  # The address at `offset` inside an IPv6 CIDR (group-wise carry; offset
+  # must be small — used for well-known addresses inside derived blocks).
+  addressAtV6 =
+    cidr: offset:
+    let
+      p = parse cidr;
+      addCarry =
+        groups: off: idx:
+        if idx < 0 then
+          groups
+        else
+          let
+            g = elemAt groups idx;
+            carry = off / 65536;
+            digit = lib.mod off 65536;
+            sum = g + digit;
+            newGroups = lib.imap1 (i: x: if i - 1 == idx then lib.mod sum 65536 else x) groups;
+          in
+          addCarry newGroups (carry + sum / 65536) (idx - 1);
+    in
+    if p.family != 6 then
+      throw "cidr.nix: addressAtV6 only supports IPv6 CIDRs ('${cidr}')"
+    else if offset < 0 || offset >= 4294967296 then
+      throw "cidr.nix: addressAtV6 offset out of supported range (${toString offset})"
+    else
+      v6ToString (addCarry p.start offset 7);
+
+  # Is `child` fully contained in `parent`? Different families → false.
+  contains =
+    parent: child:
+    let
+      pp = parse parent;
+      pc = parse child;
+    in
+    pp.family == pc.family && leq pp.start pc.start && leq pc.end pp.end;
+
   # Do two CIDRs overlap? Different families never overlap.
   overlap =
     a: b:

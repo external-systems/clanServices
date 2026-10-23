@@ -581,7 +581,7 @@ in
       gammaPool = kubeClusterExport.pools.gamma;
     };
     expected = {
-      schemaVersion = 1;
+      schemaVersion = 2;
       name = "k3s";
       ciliumId = 1;
       meshGroup = "clan";
@@ -623,6 +623,7 @@ in
         "alpha"
         "beta"
         "gamma"
+        "k3s-fabric"
       ];
       gammaPool = {
         blocks = [
@@ -676,5 +677,199 @@ in
   test_nodeInTwoClustersSameServiceThrows = {
     expr = !(builtins.tryEval (builtins.deepSeq dualClaimEvaled.config true)).success;
     expected = true;
+  };
+
+  # --- phase 5: BGP / fabric / BIRD (D9/D10/D19/D22) ---------------------------
+
+  # The default fabric renders the BGP v2 resource set into the bundle.
+  test_bgpResourcesInBundle = {
+    expr =
+      let
+        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
+        ccAlpha = find "CiliumBGPClusterConfig" "k3s-alpha";
+        ccBeta = find "CiliumBGPClusterConfig" "k3s-beta";
+        ccGamma = find "CiliumBGPClusterConfig" "k3s-gamma";
+        pc = find "CiliumBGPPeerConfig" "k3s-bird";
+        adv = find "CiliumBGPAdvertisement" "k3s-service-vips";
+        instance = builtins.head ccAlpha.spec.bgpInstances;
+        fabricPool = find "CiliumLoadBalancerIPPool" "k3s-fabric";
+      in
+      {
+        perNode = ccAlpha != null && ccBeta != null && ccGamma != null;
+        selector = ccAlpha.spec.nodeSelector.matchLabels."kubernetes.io/hostname";
+        asns = {
+          local = instance.localASN;
+          peer = (builtins.head instance.peers).peerASN;
+        };
+        dialOut = (builtins.head instance.peers).peerAddress;
+        noListener = !(instance ? localPort);
+        timers = pc.spec.timers;
+        advPools = (builtins.head adv.spec.advertisements).selector.matchExpressions;
+        fabricBlocks = fabricPool.spec.blocks;
+        # D13 default off
+        noPodAdvert = find "CiliumBGPAdvertisement" "k3s-pod-cidrs" == null;
+        noClusterIpAdvert = find "CiliumBGPAdvertisement" "k3s-cluster-ips" == null;
+      };
+    expected = {
+      perNode = true;
+      selector = "alpha";
+      asns = {
+        local = 4240343820;
+        peer = 4214591604;
+      };
+      dialOut = "169.254.179.1";
+      noListener = true;
+      timers = {
+        holdTimeSeconds = 9;
+        keepAliveTimeSeconds = 3;
+        connectRetryTimeSeconds = 5;
+      };
+      advPools = [
+        {
+          key = "clan.lol/pool";
+          operator = "In";
+          values = [ "k3s-fabric" ];
+        }
+      ];
+      fabricBlocks = [
+        { cidr = "172.16.1.0/24"; }
+        { cidr = "fd11:1::/64"; }
+      ];
+      noPodAdvert = true;
+      noClusterIpAdvert = true;
+    };
+  };
+
+  # The private CoreDNS (D22 substrate) on its fabric VIP.
+  test_privateCoreDNSInBundle = {
+    expr =
+      let
+        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
+        svc = find "Service" "coredns-private";
+        cm = find "ConfigMap" "coredns-private";
+      in
+      {
+        inherit (svc.spec) externalTrafficPolicy loadBalancerClass;
+        ips = svc.metadata.annotations."lbipam.cilium.io/ips";
+        poolLabel = svc.metadata.labels."clan.lol/pool";
+        zone = lib.hasInfix "k3s.clan:53 {" cm.data.Corefile;
+        noClusterLocal = !(lib.hasInfix "cluster.local:53" cm.data.Corefile);
+      };
+    expected = {
+      externalTrafficPolicy = "Local";
+      loadBalancerClass = "io.cilium/bgp-control-plane";
+      ips = "172.16.1.53,fd11:1:0:0:0:0:0:53";
+      poolLabel = "k3s-fabric";
+      zone = true;
+      noClusterLocal = true;
+    };
+  };
+
+  # The per-node BIRD (D19): fragment contributed under the namespaced key,
+  # routerId = the node's mesh IPv4, one bird service, loopback link unit.
+  test_birdWiring = {
+    expr = {
+      birdEnabled = alphaTransport.services.bird.enable;
+      bird2Package = lib.hasInfix "bird-2." (toString alphaTransport.services.bird.package);
+      routerId = alphaTransport.clan.bird.routerId;
+      fragmentKey = alphaTransport.clan.bird.fragments ? kube-cluster-k3s;
+      fragmentHasCilium = lib.hasInfix "protocol bgp k3s_cilium" alphaTransport.clan.bird.fragments.kube-cluster-k3s.config;
+      fragmentStrictBind = lib.hasInfix "strict bind on;" alphaTransport.clan.bird.fragments.kube-cluster-k3s.config;
+      linkUnit = alphaTransport.systemd.services ? kube-cluster-k3s-bgp-link;
+      linkScript = lib.hasInfix "169.254.179.1/32 dev lo" alphaTransport.systemd.services.kube-cluster-k3s-bgp-link.script;
+      birdOrderedAfter = lib.elem "kube-cluster-k3s-bgp-link.service" alphaTransport.systemd.services.bird.after;
+      firewallDrop4179 = lib.hasInfix "tcp dport 4179 drop" alphaTransport.networking.firewall.extraInputRules;
+      checkConfig = alphaTransport.services.bird.checkConfig;
+      # agents too (fragment is per-cluster, identical on all members)
+      agentBird = gammaTransport.services.bird.enable;
+      agentRouterId = gammaTransport.clan.bird.routerId;
+    };
+    expected = {
+      birdEnabled = true;
+      bird2Package = true;
+      routerId = "10.42.0.1";
+      fragmentKey = true;
+      fragmentHasCilium = true;
+      fragmentStrictBind = true;
+      linkUnit = true;
+      linkScript = true;
+      birdOrderedAfter = true;
+      firewallDrop4179 = true;
+      checkConfig = true;
+      agentBird = true;
+      agentRouterId = "10.42.0.3";
+    };
+  };
+
+  # §6.12: disabling the fabric while leaving bgp.enable on is an eval error.
+  test_bgpCouplingServiceAssertion = {
+    expr =
+      let
+        bad = mkEvaled (
+          lib.recursiveUpdate transportInventory {
+            instances.k3s.roles.server.settings.fabric.enable = false;
+          }
+        );
+      in
+      failedAssertion bad.config.nixosConfigurations.alpha.config "BGP only for shared-bgp pools";
+    expected = true;
+  };
+
+  # D19: a second, conflicting routerId on the same host is an eval error.
+  test_routerIdConflictThrows = {
+    expr =
+      let
+        conflicted = clanLib.clan {
+          self = { };
+          directory = ./fixtures;
+          inherit exportInterfaces;
+          imports = [ kube.fleetChecksModule ];
+          modules = {
+            wireguard-mesh = wgModule;
+            k3s = k3sModule;
+          };
+          machines = machineConfigs // {
+            alpha = {
+              nixpkgs.hostPlatform = "x86_64-linux";
+              clan.bird.routerId = "192.0.2.99";
+            };
+          };
+          inventory = transportInventory;
+        };
+      in
+      !(builtins.tryEval (builtins.deepSeq conflicted.config true)).success;
+    expected = true;
+  };
+
+  # The export's phase-5 facts (schema v2).
+  test_kubeClusterExportBgpFabric = {
+    expr = {
+      inherit (kubeClusterExport.bgp)
+        enabled
+        ciliumAsn
+        birdAsn
+        upstreamPeers
+        ;
+      inherit (kubeClusterExport) fabric;
+      fabricPoolDelivery = kubeClusterExport.pools.k3s-fabric.delivery;
+    };
+    expected = {
+      enabled = true;
+      ciliumAsn = 4240343820;
+      birdAsn = 4214591604;
+      upstreamPeers = [ ];
+      fabric = {
+        enabled = true;
+        pool = "k3s-fabric";
+        ipv4Block = "172.16.1.0/24";
+        ipv6Block = "fd11:1::/64";
+        coreDNS = {
+          ipv4 = "172.16.1.53";
+          ipv6 = "fd11:1:0:0:0:0:0:53";
+          zone = "k3s.clan";
+        };
+      };
+      fabricPoolDelivery = "shared-bgp";
+    };
   };
 }

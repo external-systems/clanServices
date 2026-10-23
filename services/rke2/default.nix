@@ -140,11 +140,6 @@ let
         }) roleMembers
       );
 
-      resolvedPools = kube.render.resolvePools {
-        inherit settings;
-        members = poolMembers;
-      };
-
       # --- Resolved identity (§6.2): hashed-default cilium id, resolved
       # dual-stack CIDRs, mesh group. Single source for distro config,
       # Cilium profile, HAProxy ports, and the kube_cluster export.
@@ -156,6 +151,26 @@ let
 
       domain = if settings.domain != null then settings.domain else meta.domain;
       meshGroup = if settings.meshGroup != null then settings.meshGroup else domain;
+
+      # --- Phase-5 data plane (D9/D10/D19/D22): BGP v2 resources, the
+      # fabric pool, the BIRD fragment, and the private CoreDNS — one
+      # resolution seam shared by the bundle, assertions, and the export.
+      dp = kube.resolveDataPlane {
+        inherit
+          instanceName
+          settings
+          domain
+          ;
+        ciliumId = resolvedCiliumId;
+        inherit (resolvedCidrs) clusterDNS;
+        members = poolMembers;
+      };
+
+      resolvedPools = kube.render.resolvePools {
+        inherit settings;
+        members = poolMembers;
+        extraPools = lib.optionalAttrs (dp.fabricPool != null) { ${dp.fabricPool.name} = dp.fabricPool; };
+      };
 
       # Effective per-member topology labels (invariant 7: default =
       # instance name, per-machine override wins; empty = eval-asserted).
@@ -198,10 +213,10 @@ let
           inherit (p) blocks serviceSelector;
         }
         // (
-          if settings.pools ? ${name} then
+          if dp.effectivePools ? ${name} then
             {
               scope = "cluster-global";
-              inherit (settings.pools.${name}) delivery;
+              inherit (dp.effectivePools.${name}) delivery;
             }
           else
             {
@@ -214,7 +229,7 @@ let
     {
       exports = mkExports {
         kube_cluster = {
-          schemaVersion = 1;
+          schemaVersion = 2;
           name = instanceName;
           ciliumId = resolvedCiliumId;
           network = {
@@ -242,6 +257,7 @@ let
               };
           members = memberExportFacts;
           pools = poolExportFacts;
+          inherit (dp.exportFacts) bgp fabric;
         };
       };
 
@@ -343,6 +359,8 @@ let
             coreDNSImage = coreDNSImageRef;
             k8sServiceHost = kubeapiAddr;
             k8sServicePort = haproxyKubeapiPort;
+            bgp = dp.bgpBundle;
+            inherit (dp) privateCoreDNS;
           };
 
           effectiveRke2Package =
@@ -520,6 +538,10 @@ let
           configPath = pkgs.writeText "rke2-config.yaml" (builtins.toJSON cleanConfig);
         in
         {
+          # The vendored BIRD fragment module (D19): path-imported (NixOS
+          # dedups), merges with other contributors into ONE bird daemon.
+          imports = [ kube.birdModule ];
+
           # Internal eval seam for tests (rendered distro config.yaml and
           # the bundle's object JSON; bundleJson only on the clusterInit
           # node with bootstrap.apply on).
@@ -562,6 +584,13 @@ let
                 ++ (kube.assertions.mkPoolAssertions {
                   inherit instanceName settings;
                   members = poolMembers;
+                  ciliumId = resolvedCiliumId;
+                  reservedCidrs = [
+                    resolvedCidrs.podCIDRv4
+                    resolvedCidrs.podCIDRv6
+                    resolvedCidrs.serviceCIDRv4
+                    resolvedCidrs.serviceCIDRv6
+                  ];
                 })
                 ++ [
                   {
@@ -736,6 +765,36 @@ let
                 bundle = bundle.path;
               }
             ))
+
+            # The per-node BIRD (D9/D19): loopback BGP link alias, the
+            # cluster's fragment in the host's single bird daemon, and the
+            # firewall drop for BIRD's unavoidable wildcard listen socket
+            # on the upstream-session port (4179 — :179 itself stays bound
+            # to the loopback alias only).
+            (lib.mkIf dp.bgpActive {
+              systemd.services."kube-cluster-${instanceName}-bgp-link" = {
+                description = "Assign the node-local loopback BGP link address (D9)";
+                wantedBy = [ "multi-user.target" ];
+                before = [ "bird.service" ];
+                serviceConfig = {
+                  Type = "oneshot";
+                  RemainAfterExit = true;
+                };
+                script = ''
+                  ${pkgs.iproute2}/bin/ip addr replace ${kube.bgp.bgpLinkV4}/32 dev lo
+                '';
+              };
+              systemd.services.bird.after = [ "kube-cluster-${instanceName}-bgp-link.service" ];
+
+              clan.bird = {
+                routerId = nodeIPv4;
+                fragments."kube-cluster-${instanceName}".config = dp.birdFragment;
+              };
+
+              networking.firewall.extraInputRules = ''
+                tcp dport 4179 drop
+              '';
+            })
           ];
         };
     };

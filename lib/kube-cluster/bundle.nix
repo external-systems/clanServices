@@ -20,6 +20,7 @@
 { lib }:
 let
   yaml = import ./yaml.nix { inherit lib; };
+  bgpLib = import ./bgp.nix { inherit lib; };
 
   boolStr = b: if b then "true" else "false";
 
@@ -126,6 +127,8 @@ rec {
         # D41: Node IPAM is the default classless LoadBalancer mechanism.
         "default-lb-service-ipam" = profile.defaultLBServiceIPAM;
         "enable-node-ipam" = boolStr profile.nodeIPAM.enabled;
+        # D9: BGP v2 control plane (locked to shared-bgp pool presence).
+        "enable-bgp-control-plane" = boolStr profile.bgpControlPlane.enabled;
         "enable-ipv4" = boolStr profile.ipv4.enabled;
         "enable-ipv6" = boolStr profile.ipv6.enabled;
         "enable-ipv4-masquerade" = boolStr profile.enableIPv4Masquerade;
@@ -184,6 +187,10 @@ rec {
     [ "defaultLBServiceIPAM" ]
     [
       "nodeIPAM"
+      "enabled"
+    ]
+    [
+      "bgpControlPlane"
       "enabled"
     ]
     [
@@ -312,6 +319,14 @@ rec {
           msg = "Node IPAM stays enabled and the default classless LB IPAM (D41)";
         }
         {
+          # D9/§6.12: the control-plane flag tracks the presence of BGP
+          # resources exactly (BGP only for shared-bgp pools).
+          ok =
+            (lib.any (o: o.kind == "CiliumBGPClusterConfig") objects)
+            == (cmData."enable-bgp-control-plane" == "true");
+          msg = "enable-bgp-control-plane must match the presence of BGP resources (BGP only for shared-bgp pools, §6.12)";
+        }
+        {
           # Every base-manifest image reference must survive unchanged
           # (overrides may never retag/repoint them); clan-added resources
           # (e.g. the D46 CoreDNS) may add their own pinned images.
@@ -373,15 +388,20 @@ rec {
     };
 
   # Helper for every clan-rendered external-facing Service (invariants
-  # 5/6): ETP Local + the LB-IPAM class pinned. Phase-3's own bundle has no
-  # such Service yet (mirror Services land in phase 6); the data-plane VM
-  # suite consumes this for its probe Services.
+  # 5/6): ETP Local + a Cilium-handled LB class pinned. The class defaults
+  # to io.cilium/lb-ipam (pool draw only); Services whose VIPs are
+  # BGP-advertised (shared-bgp delivery) MUST pass loadBalancerClass =
+  # "io.cilium/bgp-control-plane" — Cilium 1.20 announces ingress IPs only
+  # for that class or unset, while LB-IPAM allocation works for both
+  # (verified against the v1.20 BGP/LB-IPAM docs).
   mkLBService =
     {
       name,
       namespace ? "default",
       manifestLabels,
       labels ? { },
+      annotations ? { },
+      loadBalancerClass ? "io.cilium/lb-ipam",
       ports,
       selector ? null,
       extraSpec ? { },
@@ -390,11 +410,12 @@ rec {
       metadata = {
         inherit name namespace;
         labels = manifestLabels // labels;
-      };
+      }
+      // lib.optionalAttrs (annotations != { }) { inherit annotations; };
       spec = {
         type = "LoadBalancer";
         externalTrafficPolicy = "Local";
-        loadBalancerClass = "io.cilium/lb-ipam";
+        inherit loadBalancerClass;
         inherit ports;
       }
       // lib.optionalAttrs (selector != null) { inherit selector; }
@@ -636,6 +657,231 @@ rec {
       };
     };
 
+  # The private-zone CoreDNS (D22 substrate, phase 5): a second CoreDNS
+  # instance serving <instance>.<domain> (+ opt-in svc/pod zones) on a
+  # fabric-pool VIP. Distinct from the D46 cluster.local CoreDNS — this one
+  # NEVER serves cluster.local (D21): the svc/pod zones suffix-rewrite and
+  # forward to the cluster CoreDNS instead, so no kubernetes plugin and no
+  # RBAC are needed here. The instance zone's wildcard target is the day-2
+  # proxy (D22 round-13): null wildcardAddress = the zone serves NXDOMAIN
+  # until day-2 sets a target. Rendered in BOTH distroDefaults modes.
+  mkPrivateCoreDNSResources =
+    {
+      instanceName,
+      domain,
+      image,
+      manifestLabels,
+      # deterministic fabric VIPs (fabric blocks + offset 53)
+      vip4,
+      vip6,
+      # the fabric pool's serviceSelector value (clan.lol/pool label)
+      fabricPoolName,
+      wildcardAddress, # nullOr str
+      svcZone, # bool — D22(a)
+      podZone, # bool — D22(b)
+      clusterDNS, # forward target for the svc/pod zones
+    }:
+    let
+      zone = "${instanceName}.${domain}";
+      svcZoneName = "${instanceName}.svc.${domain}";
+      podZoneName = "${instanceName}.pods.${domain}";
+
+      wildcardIsV6 = wildcardAddress != null && lib.hasInfix ":" wildcardAddress;
+
+      baseZone = [
+        "${zone}:53 {"
+        "    errors"
+        "    ready"
+        "    health {"
+        "        lameduck 5s"
+        "    }"
+      ]
+      ++ (
+        if wildcardAddress != null then
+          [
+            "    template IN ${if wildcardIsV6 then "AAAA" else "A"} ${zone} {"
+            "        answer \"{{ .Name }} 60 IN ${if wildcardIsV6 then "AAAA" else "A"} ${wildcardAddress}\""
+            "        fallthrough"
+            "    }"
+          ]
+        else
+          [ ]
+      )
+      ++ [
+        "    template IN ANY ${zone} {"
+        "        rcode NXDOMAIN"
+        "    }"
+        "    cache 30"
+        "    loadbalance"
+        "}"
+      ];
+
+      rewriteZone = name: target: [
+        "${name}:53 {"
+        "    errors"
+        "    ready"
+        "    rewrite name suffix .${name}. .${target}. answer auto"
+        "    forward . ${clusterDNS}"
+        "    cache 30"
+        "}"
+      ];
+
+      corefile = lib.concatStringsSep "\n" (
+        baseZone
+        ++ lib.optionals svcZone (rewriteZone svcZoneName "svc.cluster.local")
+        ++ lib.optionals podZone (rewriteZone podZoneName "pod.cluster.local")
+        ++ [ "" ]
+      );
+    in
+    {
+      "core"."v1".ConfigMap."coredns-private" = {
+        metadata = {
+          namespace = "kube-system";
+          labels = manifestLabels;
+        };
+        data.Corefile = corefile;
+      };
+
+      "apps"."v1".Deployment."coredns-private" = {
+        metadata = {
+          namespace = "kube-system";
+          labels = manifestLabels // {
+            "k8s-app" = "coredns-private";
+          };
+        };
+        spec = {
+          replicas = 2;
+          strategy = {
+            type = "RollingUpdate";
+            rollingUpdate.maxUnavailable = 1;
+          };
+          selector.matchLabels."k8s-app" = "coredns-private";
+          template = {
+            metadata.labels = manifestLabels // {
+              "k8s-app" = "coredns-private";
+            };
+            spec = {
+              tolerations = [
+                {
+                  key = "node-role.kubernetes.io/control-plane";
+                  operator = "Exists";
+                  effect = "NoSchedule";
+                }
+              ];
+              nodeSelector."kubernetes.io/os" = "linux";
+              # Spread across nodes: with ETP Local, the VIP is advertised
+              # exactly by the nodes hosting a replica (D9 withdrawal).
+              affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution = [
+                {
+                  weight = 100;
+                  podAffinityTerm = {
+                    labelSelector.matchLabels."k8s-app" = "coredns-private";
+                    topologyKey = "kubernetes.io/hostname";
+                  };
+                }
+              ];
+              containers.coredns = {
+                inherit image;
+                imagePullPolicy = "IfNotPresent";
+                args = [
+                  "-conf"
+                  "/etc/coredns/Corefile"
+                ];
+                volumeMounts."config-volume" = {
+                  name = "config-volume";
+                  mountPath = "/etc/coredns";
+                  readOnly = true;
+                };
+                ports = {
+                  dns = {
+                    name = "dns";
+                    containerPort = 53;
+                    protocol = "UDP";
+                  };
+                  dns-tcp = {
+                    name = "dns-tcp";
+                    containerPort = 53;
+                    protocol = "TCP";
+                  };
+                };
+                resources = {
+                  limits.memory = "170Mi";
+                  requests = {
+                    cpu = "100m";
+                    memory = "70Mi";
+                  };
+                };
+                securityContext = {
+                  allowPrivilegeEscalation = false;
+                  capabilities = {
+                    add = [ "NET_BIND_SERVICE" ];
+                    drop = [ "all" ];
+                  };
+                  readOnlyRootFilesystem = true;
+                };
+                livenessProbe.httpGet = {
+                  path = "/health";
+                  port = 8080;
+                  scheme = "HTTP";
+                };
+                readinessProbe.httpGet = {
+                  path = "/ready";
+                  port = 8181;
+                  scheme = "HTTP";
+                };
+              };
+              volumes."config-volume" = {
+                name = "config-volume";
+                configMap = {
+                  name = "coredns-private";
+                  items = [
+                    {
+                      key = "Corefile";
+                      path = "Corefile";
+                    }
+                  ];
+                };
+              };
+            };
+          };
+        };
+      };
+
+      # The VIP Service (invariants 5/6): ETP Local, BGP-advertised class
+      # (shared-bgp delivery — Cilium announces only io.cilium/bgp-control-plane
+      # or unset), pinned to the deterministic fabric VIPs.
+      "core"."v1".Service."coredns-private" = mkLBService {
+        name = "coredns-private";
+        namespace = "kube-system";
+        inherit manifestLabels;
+        labels."clan.lol/pool" = fabricPoolName;
+        annotations."lbipam.cilium.io/ips" = "${vip4},${vip6}";
+        loadBalancerClass = "io.cilium/bgp-control-plane";
+        selector."k8s-app" = "coredns-private";
+        ports = [
+          {
+            name = "dns";
+            port = 53;
+            targetPort = 53;
+            protocol = "UDP";
+          }
+          {
+            name = "dns-tcp";
+            port = 53;
+            targetPort = 53;
+            protocol = "TCP";
+          }
+        ];
+        extraSpec = {
+          ipFamilies = [
+            "IPv4"
+            "IPv6"
+          ];
+          ipFamilyPolicy = "RequireDualStack";
+        };
+      };
+    };
+
   # The bundle itself. Returns:
   #   objects    — final object list (labels + config-hash applied)
   #   json       — builtins.toJSON objects (pure; for determinism tests)
@@ -661,6 +907,13 @@ rec {
       # artifact flake's pkgs/coredns/versions.nix
       coreDNSImage,
       manifestLabels,
+      # null or { asns, members, sharedBgpPoolNames, advertisePodCIDRs,
+      # advertiseClusterIPs } — the D9 BGP v2 resource set. Rendered iff
+      # shared-bgp pools exist (§6.12).
+      bgp ? null,
+      # null or { domain, vip4, vip6, fabricPoolName, wildcardAddress,
+      # svcZone, podZone, clusterDNS } — the D22 private-zone CoreDNS.
+      privateCoreDNS ? null,
     }:
     let
       unsupported = unsupportedHelmValues settings.cilium.helmValues;
@@ -705,6 +958,24 @@ rec {
                 version = "v2alpha1";
                 kind = "CiliumLoadBalancerIPPool";
                 attrName = "ciliumLoadBalancerIPPools";
+              }
+              {
+                group = "cilium.io";
+                version = "v2alpha1";
+                kind = "CiliumBGPClusterConfig";
+                attrName = "ciliumBGPClusterConfigs";
+              }
+              {
+                group = "cilium.io";
+                version = "v2alpha1";
+                kind = "CiliumBGPPeerConfig";
+                attrName = "ciliumBGPPeerConfigs";
+              }
+              {
+                group = "cilium.io";
+                version = "v2alpha1";
+                kind = "CiliumBGPAdvertisement";
+                attrName = "ciliumBGPAdvertisements";
               }
             ];
 
@@ -758,6 +1029,23 @@ rec {
                   );
                 };
               }
+              # D9: the BGP v2 resource set — iff shared-bgp pools exist
+              # (the enable-bgp-control-plane flag consistency is validated
+              # post-merge in validateBundle).
+              ++ lib.optional (bgp != null) (
+                bgpLib.mkBgpResources ({ inherit instanceName manifestLabels; } // bgp)
+              )
+              # D22 substrate: the private-zone CoreDNS on its fabric VIP
+              # (rendered in both distroDefaults modes — D46).
+              ++ lib.optional (privateCoreDNS != null) (
+                mkPrivateCoreDNSResources (
+                  {
+                    inherit instanceName manifestLabels;
+                    image = coreDNSImage;
+                  }
+                  // privateCoreDNS
+                )
+              )
             );
           };
         };

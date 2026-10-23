@@ -108,9 +108,13 @@ manifest, and test fixtures; airgap-ready is the tested default.
 - **Node IPAM on by default** (`nodeIPAM.enabled=true`,
   `defaultLBServiceIPAM=nodeipam`, D41): classless `type: LoadBalancer`
   Services get node IPs, ServiceLB-style; ETP-Local-aware candidate
-  selection. Pool/BGP VIP draws use explicit
-  `loadBalancerClass: io.cilium/lb-ipam`, set automatically by every
-  clan-rendered VIP consumer.
+  selection. Pool VIP draws use explicit Cilium-handled
+  `loadBalancerClass`es, set automatically by every clan-rendered VIP
+  consumer: `io.cilium/lb-ipam` for non-BGP deliveries,
+  `io.cilium/bgp-control-plane` for `shared-bgp` (Cilium 1.20 announces
+  ingress IPs only for `io.cilium/bgp-control-plane` or unset — verified
+  against the v1.20 BGP/LB-IPAM docs; LB-IPAM allocation serves both
+  classes).
 - LB-IPAM pool model (D8 revised), BGP v2 + per-node BIRD (D9/D19),
   default private fleet fabric (D10), floating pools via runtime
   controllers (e.g. hcloud-ip-floater pattern).
@@ -151,8 +155,14 @@ unless noted) — revoked entries keep one-line reasons for history.
   multi-Gateway IP sharing (cilium#25567). Round-13 consequence: the
   Cilium dummy-Endpoints Node-IPAM limitation never applies here (D41).
 - **D8 Pool model: 2 scopes × 4 delivery modes.** (REVISED round 13:
-  pools serve only Services with `loadBalancerClass: io.cilium/lb-ipam`;
-  classless Services go to Node IPAM, D41.) Pool = address inventory +
+  pools serve only Services with a Cilium-handled `loadBalancerClass` —
+  `io.cilium/lb-ipam` for non-BGP deliveries, `io.cilium/bgp-control-plane`
+  for `shared-bgp`; classless Services go to Node IPAM, D41. Phase-5 note:
+  Cilium 1.20's BGP control plane announces ingress IPs only when the
+  class is `io.cilium/bgp-control-plane` or unset, while LB-IPAM
+  allocation serves both — verified against the v1.20 docs, so the
+  shared-bgp class pin is forced by upstream reality.) Pool = address
+  inventory +
   `serviceSelector` only. Scope: *per-machine* → node-named pools (auto
   join-address /32+/128 + declared primary/extra blocks; always
   node-fate-bound); *cluster-global* → generic-named pools. Delivery:
@@ -164,8 +174,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   `shared-bgp`; floating ⇒ candidate-set coverage; `shared-bgp` blocks ⊆
   router-role prefixes when router in same inventory.
 - **D9 BGP topology + foreign-router contract.** Cilium GoBGP originates
-  VIP routes, dials OUT over loopback to per-node BIRD (no :179
-  listener); BIRD imports only approved exact VIPs, exports only those
+  VIP routes, dials OUT to per-node BIRD (no :179 listener on the Cilium
+  side); BIRD imports only approved exact VIPs, exports only those
   upstream, no broad kernel install on cluster nodes; upstream router
   hears the same route from every healthy node → ECMP. Cilium agents
   never peer with each other. Deterministic 2 private 32-bit ASNs per
@@ -173,7 +183,28 @@ unless noted) — revoked entries keep one-line reasons for history.
   connect-retry 5. Foreign-router contract (published): ASNs, timers,
   accept only pool blocks as /32+/128 with max-prefix + prefix filters,
   ECMP path count ≥ node count, proxy-NDP if on-LAN. BIRD rendered via
-  the vendored named-fragment pattern (D19).
+  the vendored named-fragment pattern (D19). **Phase-5 implementation
+  concretization:** (a) ASNs derive from sha256 of
+  `kube-cluster-bgp-cilium:<instance>` / `kube-cluster-bgp-bird:
+  <instance>` (first 8 hex chars as u32) mapped modulo into
+  4200000000–4294967293 (RFC 6996), with a deterministic +1 fallback on
+  salt collision and explicit `bgp.ciliumASN`/`bgp.birdASN` pins as the
+  escape hatch (fleet-asserted unique). (b) Router id = the node's IPv4
+  (mesh/transport) address on both sides: Cilium's default
+  routerIDAllocation and BIRD's `router id`. (c) The Cilium↔BIRD link is
+  a node-local loopback alias `169.254.179.1/32` on `lo` — BIRD 2 rejects
+  127/8 neighbor addresses ("Invalid remote address", verified on 2.20),
+  so the link-local alias is the loopback endpoint; BIRD `passive on;
+  strict bind on; free bind on` binds its ONLY :179 listener to that
+  alias, Cilium dials it (peerAddress, no localPort). (d) Upstream
+  sessions are dialed OUT by the node, split per address family (v4
+  session = ipv4 channel, v6 = ipv6; no cross-family next-hop games),
+  `next hop self`, and use `local port 4179` — BIRD 2 opens a wildcard
+  listen socket per BGP protocol (no listen-disable exists), so the
+  upstream protocols' socket lives on :4179 and is firewall-dropped
+  inbound, keeping :179 loopback-only. (e) BIRD imports ONLY the
+  shared-bgp pool blocks as exact /32+/128 (prefix filters) + per-family
+  `import limit` (block capacity, capped 4096).
 - **D10 Private fleet routing fabric DEFAULT ON.** Per cluster by
   default: per-node BIRD + BGP v2 resources, one private `shared-bgp`
   pool (ULA + RFC1918 from derived cluster CIDR space), core VIPs on it
@@ -182,7 +213,16 @@ unless noted) — revoked entries keep one-line reasons for history.
   router. Non-goals: single dynamic residential IPv4 public BGP;
   heterogeneous multi-WAN inbound failover (DNS failover instead).
   Hetzner public edge = node-bound + floating + DNS failover. One VIP per
-  cluster — never advertise the same VIP from two clusters.
+  cluster — never advertise the same VIP from two clusters. **Phase-5
+  concretization:** the fabric pool is `<instance>-fabric` with blocks
+  `172.16.<ciliumId>.0/24` + `fd11:<ciliumId>::/64` (overridable via
+  `fabric.ipv4Block`/`ipv6Block`; ≥64-address prefixes asserted —
+  disjoint from the id-derived pod/service space `10/8`+`fd10::/16` and
+  the mesh hash space `192.168/16`+`fd77::/16` by construction, and from
+  explicit overrides by the eval assertions); the private CoreDNS VIP is
+  offset 53/0x53 in the fabric blocks (`lbipam.cilium.io/ips`-pinned,
+  `io.cilium/bgp-control-plane` class, ETP Local). `bgp.enable` ⇔
+  "any shared-bgp pool exists" is eval-locked (§6.12).
 - **D11 Fleet-routing clanService (working name `cluster-client`).**
   Non-Kubernetes clan hosts → cluster VIPs. Roles per D33.
 - **D12 ClusterMesh apiserver exposure stays node-bound** mesh addresses
@@ -376,8 +416,12 @@ unless noted) — revoked entries keep one-line reasons for history.
   which are permanently disabled (D1) — third-party proxies with real
   backends (Envoy Gateway day-2) are unaffected. Clan-rendered VIP
   consumers (ClusterMesh apiserver, private CoreDNS, mirror Services)
-  always pin `loadBalancerClass: io.cilium/lb-ipam` and draw from pools
-  (D8/D9/D10 unchanged). Multi-pool remains the default pod IPAM with
+  always pin a Cilium-handled `loadBalancerClass` and draw from pools
+  (D8/D9/D10 unchanged): `io.cilium/lb-ipam` for node-fate-bound/floating
+  draws, `io.cilium/bgp-control-plane` for `shared-bgp` draws (the only
+  class Cilium 1.20's BGP control plane announces, besides unset —
+  phase-5 verified against the v1.20 docs). Multi-pool remains the
+  default pod IPAM with
   derived non-clashing CIDRs; `ipam.mode: kubernetes` is an allowed
   explicit override (the old Node-IPAM ban referred to pod IPAM; both
   readings are now permitted/overridden explicitly).
@@ -470,8 +514,10 @@ unless noted) — revoked entries keep one-line reasons for history.
    Services, ClusterMesh apiserver, private CoreDNS VIP); no silent
    Cluster fallback.
 6. LB IPAM ownership unambiguous: classless Services → Node IPAM (D41);
-   `loadBalancerClass: io.cilium/lb-ipam` → pools (D8); BGP only for
-   `shared-bgp` pools; private fabric default, public opt-in (D9/D10).
+   `loadBalancerClass: io.cilium/lb-ipam` → pools (D8), and
+   `io.cilium/bgp-control-plane` → pools + BGP announcement (the
+   `shared-bgp` delivery); BGP only for `shared-bgp` pools; private
+   fabric default, public opt-in (D9/D10).
 7. Topology always labeled: region/zone default to instance name,
    per-machine overrides, non-empty.
 8. Hermetic proof: pinned artifacts, eval rejection of invalid
@@ -531,7 +577,10 @@ mesh group, control-domain role (D43; `"standalone"` placeholder until
 phase 6), transport source (all-or-none posture fact), per-member mesh
 endpoints (from consumed `node_transport` exports + effective topology),
 pool handoff (names, scopes, delivery modes, blocks, selectors; consumed
-by fleet-routing in phase 5), API mirror facts (D30, phase 6).
+by fleet-routing in phase 5), BGP plane facts (D9: enabled, both ASNs,
+upstream peers, D13 opt-in facts), fabric facts (D10/D22: pool name +
+blocks, private CoreDNS VIPs and zone — schema version 2, phase 5), API
+mirror facts (D30, phase 6).
 `node_transport` per-node export: mesh/underlay addresses, interface,
 MTU, port, endpoint, primary/external facts, delivery modes, topology.
 No secrets in exports; every export-interface option carries a default
@@ -625,15 +674,26 @@ IPs (no pools, no BGP — delivery is the node's own address). Zero-config
 single-node example: node-1 with join addresses 10.0.0.1/32 + fd0::1/128
 ⇒ pool `node-1` with exactly those blocks, `loadBalancerClass`
 `io.cilium/lb-ipam`. Generic tenant draw = one IP per family from
-labeled pools. Pool updates may reassign IPs (Cilium-side) ⇒ reviewed
-network changes. Floating pools: runtime controllers (e.g.
-hcloud-ip-floater — unmaintained upstream; fork-don't-depend) move
-addresses; clan asserts shape + coverage only. Node-bound BGP pools can
-hand addresses to non-cluster consumers (e.g. KubeVirt VMs with
-provider-assigned MACs on Hetzner bare metal) — the pool/BGP contract
-is day-1; the consumers are day-2. BIRD-on-hosts (client/admin/router)
-installs routes into the kernel; cluster nodes do not broadly install —
-except `admin` role consumption of D13 advertisements (D33).
+labeled pools (same class for node-fate-bound/floating;
+`io.cilium/bgp-control-plane` for `shared-bgp` draws — otherwise Cilium
+allocates but never announces). Pool updates may reassign IPs
+(Cilium-side) ⇒ reviewed network changes. Floating pools: runtime
+controllers (e.g. hcloud-ip-floater — unmaintained upstream;
+fork-don't-depend) move addresses; clan asserts shape + coverage only;
+the VM suites document the no-controller blackhole window (the VIP dies
+with its holding node until a controller re-homes it). Node-bound BGP
+pools can hand addresses to non-cluster consumers (e.g. KubeVirt VMs
+with provider-assigned MACs on Hetzner bare metal) — the pool/BGP
+contract is day-1; the consumers are day-2. BIRD-on-hosts
+(client/admin/router) installs routes into the kernel; cluster nodes do
+not broadly install (no kernel protocol in the cluster BIRD fragment at
+all) — except `admin` role consumption of D13 advertisements (D33).
+Phase-5 rendering: the cluster BIRD fragment (`kube-cluster-<instance>`
+key in `clan.bird.fragments`, router id = node IPv4, build-time
+`bird -p` via the nixpkgs `services.bird` checkConfig hook — D19's
+validator, stronger than pre-start) terminates the Cilium loopback
+sessions and dials `bgp.upstreamPeers`; the BIRD/Cilium side ASNs and
+timers follow D9's concretization.
 
 ### 6.8 Day-2 proxy layer (out of contract)
 No Gateway API, Ingress, or proxy implementation is clan-rendered
@@ -641,7 +701,10 @@ No Gateway API, Ingress, or proxy implementation is clan-rendered
 recipe: DaemonSet-mode EnvoyProxy on labeled workers, ETP Local (safe
 with Node IPAM — real EndpointSlices, D41), `loadBalancerClass:
 io.cilium/lb-ipam` + pool-label selectors or explicit
-`lbipam.cilium.io/ips` projections for VIP draws, one proxy
+`lbipam.cilium.io/ips` projections for VIP draws from
+node-fate-bound/floating pools — and `io.cilium/bgp-control-plane` when
+the pool is `shared-bgp` (Cilium 1.20 only announces that class) — one
+proxy
 implementation per IP:port, QUIC-passthrough on its own VIP. The
 contract guarantees the substrate (pools, BGP, firewall, DNS zones);
 the proxy is GitOps-owned.
@@ -681,9 +744,16 @@ operator CRDs.
 
 ### 6.12 Assertions and firewall
 Eval rejects: multiple bootstraps, duplicate ids/CIDRs/ports, missing
-dual-stack facts, missing topology labels, pool overlap, scope⇒mode
-violations, floating without candidate coverage, `shared-bgp` ⊄ router
-prefixes, node-in-two-clusters, second BGP stack per host, ETP Cluster
+dual-stack facts, missing topology labels, pool overlap (including
+against the cluster's pod/service CIDRs, phase 5), scope⇒mode
+violations, floating without candidate coverage, `shared-bgp` pools
+without `bgp.enable` or BGP without any `shared-bgp` pool (locked pair,
+phase 5), fabric blocks too small for the core VIP offsets (phase 5),
+fleet-wide BGP ASN collisions (phase 5; escape = `bgp.ciliumASN`/
+`bgp.birdASN` pins), `shared-bgp` ⊄ router prefixes (fleet-wide check
+reading the fleet-routing router role's `routerPrefixes` export; vacuous
+until campaign B lands the service), node-in-two-clusters, second BGP
+stack per host, ETP Cluster
 on clan-rendered external Services, published base manifest drift from
 the renderer (CI gate), IFD-smuggling manifest paths (D26), unsupported
 k8s minor without acknowledgment (D34 warning), clan vars generators

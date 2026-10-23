@@ -552,7 +552,7 @@ in
       alphaPool = kubeClusterExport.pools.alpha;
     };
     expected = {
-      schemaVersion = 1;
+      schemaVersion = 2;
       name = "rke2";
       ciliumId = 1;
       meshGroup = "clan";
@@ -594,6 +594,7 @@ in
         "alpha"
         "beta"
         "gamma"
+        "rke2-fabric"
       ];
       alphaPool = {
         blocks = [
@@ -655,5 +656,194 @@ in
   test_nodeInTwoClustersCrossServiceThrows = {
     expr = !(builtins.tryEval (builtins.deepSeq dualClaimEvaled.config true)).success;
     expected = true;
+  };
+
+  # --- phase 5: BGP / fabric / BIRD (D9/D10/D19/D22) ---------------------------
+
+  # The default fabric renders the BGP v2 resource set into the bundle.
+  test_bgpResourcesInBundle = {
+    expr =
+      let
+        ccAlpha = findObj "CiliumBGPClusterConfig" "rke2-alpha";
+        ccBeta = findObj "CiliumBGPClusterConfig" "rke2-beta";
+        ccGamma = findObj "CiliumBGPClusterConfig" "rke2-gamma";
+        pc = findObj "CiliumBGPPeerConfig" "rke2-bird";
+        adv = findObj "CiliumBGPAdvertisement" "rke2-service-vips";
+        instance = builtins.head ccAlpha.spec.bgpInstances;
+        fabricPool = findObj "CiliumLoadBalancerIPPool" "rke2-fabric";
+      in
+      {
+        perNode = ccAlpha != null && ccBeta != null && ccGamma != null;
+        selector = ccAlpha.spec.nodeSelector.matchLabels."kubernetes.io/hostname";
+        asns = {
+          local = instance.localASN;
+          peer = (builtins.head instance.peers).peerASN;
+        };
+        dialOut = (builtins.head instance.peers).peerAddress;
+        noListener = !(instance ? localPort);
+        timers = pc.spec.timers;
+        fabricBlocks = fabricPool.spec.blocks;
+        advPools = (builtins.head adv.spec.advertisements).selector.matchExpressions;
+        noPodAdvert = findObj "CiliumBGPAdvertisement" "rke2-pod-cidrs" == null;
+        noClusterIpAdvert = findObj "CiliumBGPAdvertisement" "rke2-cluster-ips" == null;
+      };
+    expected = {
+      perNode = true;
+      selector = "alpha";
+      asns = {
+        local = 4200812391;
+        peer = 4226982861;
+      };
+      dialOut = "169.254.179.1";
+      noListener = true;
+      timers = {
+        holdTimeSeconds = 9;
+        keepAliveTimeSeconds = 3;
+        connectRetryTimeSeconds = 5;
+      };
+      fabricBlocks = [
+        { cidr = "172.16.1.0/24"; }
+        { cidr = "fd11:1::/64"; }
+      ];
+      advPools = [
+        {
+          key = "clan.lol/pool";
+          operator = "In";
+          values = [ "rke2-fabric" ];
+        }
+      ];
+      noPodAdvert = true;
+      noClusterIpAdvert = true;
+    };
+  };
+
+  # The private CoreDNS (D22 substrate) on its fabric VIP — rendered in the
+  # minimal base AND under distroDefaults (D46).
+  test_privateCoreDNSInBundle = {
+    expr =
+      let
+        svc = findObj "Service" "coredns-private";
+        cm = findObj "ConfigMap" "coredns-private";
+      in
+      {
+        inherit (svc.spec) externalTrafficPolicy loadBalancerClass;
+        ips = svc.metadata.annotations."lbipam.cilium.io/ips";
+        poolLabel = svc.metadata.labels."clan.lol/pool";
+        zone = lib.hasInfix "rke2.clan:53 {" cm.data.Corefile;
+        noClusterLocal = !(lib.hasInfix "cluster.local:53" cm.data.Corefile);
+      };
+    expected = {
+      externalTrafficPolicy = "Local";
+      loadBalancerClass = "io.cilium/bgp-control-plane";
+      ips = "172.16.1.53,fd11:1:0:0:0:0:0:53";
+      poolLabel = "rke2-fabric";
+      zone = true;
+      noClusterLocal = true;
+    };
+  };
+
+  # The per-node BIRD (D19): fragment contributed under the namespaced key,
+  # routerId = the node's mesh IPv4, one bird service, loopback link unit.
+  test_birdWiring = {
+    expr = {
+      birdEnabled = alphaTransport.services.bird.enable;
+      bird2Package = lib.hasInfix "bird-2." (toString alphaTransport.services.bird.package);
+      routerId = alphaTransport.clan.bird.routerId;
+      fragmentKey = alphaTransport.clan.bird.fragments ? kube-cluster-rke2;
+      fragmentHasCilium = lib.hasInfix "protocol bgp rke2_cilium" alphaTransport.clan.bird.fragments.kube-cluster-rke2.config;
+      fragmentStrictBind = lib.hasInfix "strict bind on;" alphaTransport.clan.bird.fragments.kube-cluster-rke2.config;
+      linkUnit = alphaTransport.systemd.services ? kube-cluster-rke2-bgp-link;
+      birdOrderedAfter = lib.elem "kube-cluster-rke2-bgp-link.service" alphaTransport.systemd.services.bird.after;
+      firewallDrop4179 = lib.hasInfix "tcp dport 4179 drop" alphaTransport.networking.firewall.extraInputRules;
+      checkConfig = alphaTransport.services.bird.checkConfig;
+      agentBird = gammaTransport.services.bird.enable;
+      agentRouterId = gammaTransport.clan.bird.routerId;
+    };
+    expected = {
+      birdEnabled = true;
+      bird2Package = true;
+      routerId = "10.42.0.1";
+      fragmentKey = true;
+      fragmentHasCilium = true;
+      fragmentStrictBind = true;
+      linkUnit = true;
+      birdOrderedAfter = true;
+      firewallDrop4179 = true;
+      checkConfig = true;
+      agentBird = true;
+      agentRouterId = "10.42.0.3";
+    };
+  };
+
+  # §6.12: disabling the fabric while leaving bgp.enable on is an eval error.
+  test_bgpCouplingServiceAssertion = {
+    expr =
+      let
+        bad = mkEvaled (
+          lib.recursiveUpdate transportInventory {
+            instances.rke2.roles.server.settings.fabric.enable = false;
+          }
+        );
+      in
+      failedAssertion bad.config.nixosConfigurations.alpha.config "BGP only for shared-bgp pools";
+    expected = true;
+  };
+
+  # D19: a second, conflicting routerId on the same host is an eval error.
+  test_routerIdConflictThrows = {
+    expr =
+      let
+        conflicted = clanLib.clan {
+          self = { };
+          directory = ./fixtures;
+          inherit exportInterfaces;
+          imports = [ kube.fleetChecksModule ];
+          modules = {
+            wireguard-mesh = wgModule;
+            rke2 = rke2Module;
+          };
+          machines = machineConfigs // {
+            alpha = {
+              nixpkgs.hostPlatform = "x86_64-linux";
+              clan.bird.routerId = "192.0.2.99";
+            };
+          };
+          inventory = transportInventory;
+        };
+      in
+      !(builtins.tryEval (builtins.deepSeq conflicted.config true)).success;
+    expected = true;
+  };
+
+  # The export's phase-5 facts (schema v2).
+  test_kubeClusterExportBgpFabric = {
+    expr = {
+      inherit (kubeClusterExport.bgp)
+        enabled
+        ciliumAsn
+        birdAsn
+        upstreamPeers
+        ;
+      inherit (kubeClusterExport) fabric;
+      fabricPoolDelivery = kubeClusterExport.pools.rke2-fabric.delivery;
+    };
+    expected = {
+      enabled = true;
+      ciliumAsn = 4200812391;
+      birdAsn = 4226982861;
+      upstreamPeers = [ ];
+      fabric = {
+        enabled = true;
+        pool = "rke2-fabric";
+        ipv4Block = "172.16.1.0/24";
+        ipv6Block = "fd11:1::/64";
+        coreDNS = {
+          ipv4 = "172.16.1.53";
+          ipv6 = "fd11:1:0:0:0:0:0:53";
+          zone = "rke2.clan";
+        };
+      };
+      fabricPoolDelivery = "shared-bgp";
+    };
   };
 }

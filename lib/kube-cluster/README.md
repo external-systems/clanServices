@@ -49,9 +49,14 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `render.mkLBService` | External-facing Service helper: ETP Local + `loadBalancerClass: io.cilium/lb-ipam` + manifest labels (invariants 5/6). |
 | `render.mkHaproxyConfig` | Per-node haproxy kube-apiserver LB config, with an optional rke2 supervisor LB. |
 | `render.mkManifestLabels` | §6.11 labels for all rendered resources (managed-by, cluster, component; config-hash is added per object by mkBundle). |
-| `render.resolvePools` | D8 pool resolution: auto per-machine node pools (join /32+/128 + `poolBlocks`) plus declared cluster-global pools. |
+| `render.resolvePools` | D8 pool resolution: auto per-machine node pools (join /32+/128 + `poolBlocks`) plus declared cluster-global pools and `extraPools` (the fabric pool). |
+| `resolveDataPlane` | Phase-5 seam (D9/D10/D19/D22): ASNs, fabric pool, shared-bgp sets, the mkBundle `bgp`/`privateCoreDNS` params, the per-cluster BIRD fragment text, and the export facts — one resolution shared by bundle, assertions, and export. |
+| `bgp.hashBgpAsns` / `bgp.resolveBgpAsns` | Deterministic private 32-bit ASN pairs per cluster (sha256 of salted instance name → RFC 6996 range; pins override). |
+| `bgp.mkFabricPool` / `bgp.fabricBlocks` / `bgp.fabricCoreDNSVips` | The default private fabric pool (D10): `172.16.<id>.0/24` + `fd11:<id>::/64`, private CoreDNS VIP at offset 53/0x53. |
+| `bgp.mkBgpResources` / `bgp.mkBirdFragment` | The BGP v2 CR set (ClusterConfig per node, PeerConfig timers 9/3/5, Advertisements; D13 opt-ins) and the cluster-node BIRD fragment text (loopback link `169.254.179.1`, strict-bind :179, family-split upstream dial-out on local port 4179). |
+| `bird.assemble` / `birdModule` | The vendored BIRD named-fragment renderer (D19): `clan.bird.fragments` + `clan.bird.routerId` (set exactly once), assembled into ONE bird daemon per host, `bird -p`-validated at build time (services.bird checkConfig). |
 | `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape (clusterInit count, addresses, resolved-id uniformity, id>127 ⇒ explicit v4 CIDRs, all-or-none transport posture, topology non-empty). |
-| `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (pure-Nix CIDR math, `cidr.nix`), scope⇒mode, floating candidate coverage, node-name collisions. |
+| `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (incl. against pod/service CIDRs), scope⇒mode, floating coverage, node-name collisions, bgp.enable⇔shared-bgp coupling, fabric block size (§6.12). |
 | `mkFleetChecks` / `fleetChecksModule` | Fleet-wide assertions (§6.2) computed from the `kube_cluster` exports as `clan.checks`: duplicate names/ids, same-group CIDR overlap, node-in-two-clusters (D16, cross-service), mesh-group transport consistency. Wire into a clan with `clan.imports = [ kube.fleetChecksModule ]`. |
 | `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40). |
 | `vars.mkTokenGenerators` | Join token generators (`rancher-server-token-<instance>` / `rancher-agent-token-<instance>`). |

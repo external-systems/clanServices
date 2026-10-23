@@ -1,8 +1,12 @@
 # Eval assertions (§6.12). mkClusterAssertions covers cluster shape;
-# mkPoolAssertions covers the D8 pool model.
+# mkPoolAssertions covers the D8 pool model plus the D9/D10 BGP/fabric
+# coupling.
 { lib, hashCiliumId }:
 let
   cidr = import ./cidr.nix { inherit lib; };
+  bgpLib = import ./bgp.nix { inherit lib; };
+
+  prefixLen = block: builtins.fromJSON (builtins.elemAt (lib.splitString "/" block) 1);
 in
 {
   mkClusterAssertions =
@@ -119,14 +123,20 @@ in
       }
     ];
 
-  # D8 pool assertions. members: [ { machineName, ipv4, ipv6, poolBlocks } ].
-  # The shared-bgp ⊆ router-prefixes assertion is deferred to phase 5 (the
-  # router role does not exist yet) — only shape is checked here.
+  # D8 pool assertions, including the phase-5 fabric pool (D10) and the
+  # BGP coupling (§6.12: BGP only for shared-bgp pools, and shared-bgp
+  # pools require BGP). members: [ { machineName, ipv4, ipv6, poolBlocks } ].
+  # ciliumId: the RESOLVED id (fabric blocks derive from it).
+  # reservedCidrs: pod/service CIDRs — no pool block may overlap them.
+  # The shared-bgp ⊆ router-prefixes assertion is fleet-wide (it needs the
+  # router role's exports) and lives in fleet-checks.nix.
   mkPoolAssertions =
     {
       instanceName,
       settings,
       members,
+      ciliumId,
+      reservedCidrs ? [ ],
     }:
     let
       memberNames = map (m: m.machineName) members;
@@ -140,15 +150,29 @@ in
         ++ m.poolBlocks;
       }) members;
 
+      fabricPool = bgpLib.mkFabricPool { inherit instanceName ciliumId settings; };
+      effectivePools =
+        settings.pools // lib.optionalAttrs (fabricPool != null) { ${fabricPool.name} = fabricPool; };
+
       declaredPools = lib.mapAttrsToList (name: p: {
         inherit name;
         inherit (p) blocks delivery candidates;
-      }) settings.pools;
+      }) effectivePools;
 
       allBlocks = lib.concatMap (p: p.blocks) (
         autoPools ++ map (p: { inherit (p) blocks; }) declaredPools
       );
       overlapping = cidr.anyOverlap allBlocks;
+
+      # No pool block (auto, declared, or fabric) may overlap the cluster's
+      # pod/service CIDRs.
+      reservedOverlap = lib.concatMap (
+        b:
+        map (r: {
+          block = b;
+          reserved = r;
+        }) (builtins.filter (r: cidr.overlap b r) reservedCidrs)
+      ) allBlocks;
 
       nodeFateBoundDeclared = lib.filter (p: p.delivery == "node-fate-bound") declaredPools;
       floatingWithoutCoverage = lib.filter (
@@ -157,12 +181,27 @@ in
         && (p.candidates == [ ] || !lib.all (c: lib.elem c memberNames) p.candidates)
       ) declaredPools;
       nameCollisions = lib.filter (p: lib.elem p.name memberNames) declaredPools;
+
+      sharedBgpPoolNames = builtins.attrNames (
+        lib.filterAttrs (_: p: p.delivery == "shared-bgp") effectivePools
+      );
+
+      # The fabric blocks must hold the well-known core VIPs (private
+      # CoreDNS at offset 53): at least 64 addresses per family.
+      fabricV4Ok = fabricPool == null || prefixLen (builtins.elemAt fabricPool.blocks 0) <= 26;
+      fabricV6Ok = fabricPool == null || prefixLen (builtins.elemAt fabricPool.blocks 1) <= 120;
     in
     [
       {
         assertion = overlapping == [ ];
         message = "kube-cluster/${instanceName}: overlapping pool blocks: ${
           lib.concatMapStringsSep ", " (p: "${p.a} ~ ${p.b}") overlapping
+        }";
+      }
+      {
+        assertion = reservedOverlap == [ ];
+        message = "kube-cluster/${instanceName}: pool blocks overlap the cluster's pod/service CIDRs: ${
+          lib.concatMapStringsSep ", " (x: "${x.block} ~ ${x.reserved}") reservedOverlap
         }";
       }
       {
@@ -182,6 +221,16 @@ in
         message = "kube-cluster/${instanceName}: cluster-global pool names collide with auto per-machine node pools: ${
           lib.concatMapStringsSep ", " (p: p.name) nameCollisions
         }";
+      }
+      {
+        # §6.12: BGP only for shared-bgp pools; shared-bgp pools only with
+        # BGP. The two knobs are locked together.
+        assertion = settings.bgp.enable == (sharedBgpPoolNames != [ ]);
+        message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but shared-bgp pools = [${lib.concatStringsSep ", " sharedBgpPoolNames}] (§6.12: BGP only for shared-bgp pools; shared-bgp pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false)";
+      }
+      {
+        assertion = fabricV4Ok && fabricV6Ok;
+        message = "kube-cluster/${instanceName}: fabric pool blocks must have at least 64 addresses (v4 /26 or shorter, v6 /120 or shorter) — the private CoreDNS VIP lives at offset 53";
       }
     ];
 }

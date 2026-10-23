@@ -6,6 +6,7 @@
 let
   kube = import ../default.nix { inherit lib; };
   clanLib = inputs.clan-core.lib;
+  cidr = import ../cidr.nix { inherit lib; };
 
   # Minimal valid cluster settings for rendering tests.
   domain = "example.org";
@@ -87,6 +88,15 @@ let
 
   mkTestBundle =
     settings:
+    let
+      # The same phase-5 resolution seam the distro services use (D9/D10).
+      dp = kube.resolveDataPlane {
+        inherit settings instanceName members;
+        ciliumId = 1;
+        domain = "example.org";
+        clusterDNS = "10.2.0.10";
+      };
+    in
     kube.render.mkBundle {
       inherit
         pkgs
@@ -101,11 +111,16 @@ let
         k8sServiceHost = "kubeapi-test.example.org";
         k8sServicePort = 6443;
       };
-      pools = kube.render.resolvePools { inherit settings members; };
+      pools = kube.render.resolvePools {
+        inherit settings members;
+        extraPools = lib.optionalAttrs (dp.fabricPool != null) { ${dp.fabricPool.name} = dp.fabricPool; };
+      };
       podIPCidr = "10.1.0.0/16,fd10:1::/56";
       clusterDNS = "10.2.0.10";
       coreDNSImage = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
       k8sServiceHost = "kubeapi-test.example.org";
+      bgp = dp.bgpBundle;
+      inherit (dp) privateCoreDNS;
     };
 
   bundle = mkTestBundle baseSettings;
@@ -324,6 +339,100 @@ let
 
   fleetChecksPass = kube.mkFleetChecks clanLib fleetExportsSeparateGroupsPass;
   fleetExportsSeparateGroupsPass = fleetExportsCidrSeparateGroups;
+
+  # --- phase 5: BGP / fabric / BIRD fixtures (D9/D10/D19/D22) -------------
+
+  findObjKind =
+    objects: kind: name:
+    lib.findFirst (o: o.kind == kind && o.metadata.name == name) null objects;
+
+  # D13 opt-ins on.
+  bundleD13Objects =
+    builtins.fromJSON
+      (mkTestBundle (evalSettings {
+        bgp.advertisePodCIDRs = true;
+        bgp.advertiseClusterIPs = true;
+      })).json;
+
+  # BGP off: fabric off + bgp.enable=false (the consistent pair).
+  bundleNoBgpObjects =
+    builtins.fromJSON
+      (mkTestBundle (evalSettings {
+        fabric.enable = false;
+        bgp.enable = false;
+      })).json;
+
+  # Private CoreDNS with the D22 knobs on.
+  bundleZonesObjects =
+    builtins.fromJSON
+      (mkTestBundle (evalSettings {
+        fabric.coredns = {
+          wildcardAddress = "172.16.1.200";
+          svcZone = true;
+          podZone = true;
+        };
+      })).json;
+  zonesCorefile = (findObjKind bundleZonesObjects "ConfigMap" "coredns-private").data.Corefile;
+
+  privateCorefile = (findObj "ConfigMap" "coredns-private").data.Corefile;
+  privateSvc = findObj "Service" "coredns-private";
+
+  # BGP ASN collision via the export facts (phase-5 schema).
+  fleetExportsAsnCollision = {
+    "rke2:prod:server:alpha".kube_cluster =
+      (mkKubeExport {
+        name = "prod";
+        ciliumId = 1;
+      })
+      // {
+        bgp = {
+          enabled = true;
+          ciliumAsn = 4200000001;
+          birdAsn = 4200000002;
+        };
+      };
+    "k3s:staging:server:beta".kube_cluster =
+      (mkKubeExport {
+        name = "staging";
+        ciliumId = 2;
+        podCIDRv4 = "10.3.0.0/16";
+        podCIDRv6 = "fd10:3::/56";
+        serviceCIDRv4 = "10.4.0.0/16";
+        serviceCIDRv6 = "fd10:4::/112";
+      })
+      // {
+        bgp = {
+          enabled = true;
+          ciliumAsn = 4200000001;
+          birdAsn = 4200000003;
+        };
+      };
+  };
+
+  # A fleet-routing router-role export (campaign-B contract shape:
+  # interface `fleet_routing`, field `routerPrefixes`) plus a cluster
+  # exporting a shared-bgp fabric pool.
+  mkRouterPrefixExports = routerPrefixes: {
+    "rke2:prod:server:alpha".kube_cluster =
+      (mkKubeExport {
+        name = "prod";
+        ciliumId = 1;
+      })
+      // {
+        pools.fabric = {
+          scope = "cluster-global";
+          delivery = "shared-bgp";
+          blocks = [
+            "172.16.1.0/24"
+            "fd11:1::/64"
+          ];
+          serviceSelector = { };
+        };
+      };
+    "fleet-routing:gw:router:gw1".fleet_routing = {
+      inherit routerPrefixes;
+    };
+  };
 in
 {
   test_ciliumValues_tunnelAndMtu = {
@@ -651,6 +760,7 @@ in
   test_poolOverlapAssertion = {
     expr = failedAssertion (kube.assertions.mkPoolAssertions {
       inherit instanceName members;
+      ciliumId = 1;
       settings = evalSettings {
         pools.bad = {
           blocks = [ "10.0.0.1/32" ];
@@ -665,6 +775,7 @@ in
   test_poolScopeModeAssertion = {
     expr = failedAssertion (kube.assertions.mkPoolAssertions {
       inherit instanceName members;
+      ciliumId = 1;
       settings = evalSettings {
         pools.bound = {
           blocks = [ "198.51.100.0/28" ];
@@ -679,6 +790,7 @@ in
   test_poolFloatingCoverageAssertion = {
     expr = failedAssertion (kube.assertions.mkPoolAssertions {
       inherit instanceName members;
+      ciliumId = 1;
       settings = evalSettings {
         pools.float = {
           blocks = [ "198.51.100.16/28" ];
@@ -697,6 +809,7 @@ in
   test_poolNameCollisionAssertion = {
     expr = failedAssertion (kube.assertions.mkPoolAssertions {
       inherit instanceName members;
+      ciliumId = 1;
       settings = evalSettings {
         pools.node-1 = {
           blocks = [ "198.51.100.32/28" ];
@@ -1336,6 +1449,8 @@ in
       kube-cluster-meshed-cidr-overlap = true;
       kube-cluster-mesh-group-transport = true;
       kube-cluster-node-in-two-clusters = true;
+      kube-cluster-shared-bgp-router-prefixes = true;
+      kube-cluster-unique-bgp-asns = true;
       kube-cluster-unique-cilium-ids = true;
       kube-cluster-unique-names = true;
     };
@@ -1463,6 +1578,593 @@ in
       noStartLimit = true;
       ssaApply = true;
       waitsReadyz = true;
+    };
+  };
+
+  # --- phase 5: BGP / fabric / BIRD / private CoreDNS ----------------------
+
+  # The ASN derivation contract is pinned: changing the hash is a
+  # fleet-breaking change and must be deliberate (same discipline as
+  # test_hashCiliumIdPinnedValues).
+  test_hashBgpAsnsPinnedValues = {
+    expr = {
+      foo = kube.bgp.hashBgpAsns "foo";
+      k3s = kube.bgp.hashBgpAsns "k3s";
+      rke2 = kube.bgp.hashBgpAsns "rke2";
+      test = kube.bgp.hashBgpAsns "test";
+      prod = kube.bgp.hashBgpAsns "prod";
+    };
+    expected = {
+      foo = {
+        cilium = 4260531340;
+        bird = 4201913244;
+      };
+      k3s = {
+        cilium = 4240343820;
+        bird = 4214591604;
+      };
+      rke2 = {
+        cilium = 4200812391;
+        bird = 4226982861;
+      };
+      test = {
+        cilium = 4250252234;
+        bird = 4202719071;
+      };
+      prod = {
+        cilium = 4227504799;
+        bird = 4293236873;
+      };
+    };
+  };
+
+  # Deterministic, inside the RFC 6996 private 32-bit range, cilium != bird.
+  test_hashBgpAsnsRangeDeterminism = {
+    expr =
+      let
+        names = [
+          "a"
+          "b"
+          "cluster-1"
+          "prod-eu"
+          "x"
+          "k3s"
+          "rke2"
+          "staging"
+        ];
+        asns = map kube.bgp.hashBgpAsns names;
+        inRange = a: a >= 4200000000 && a <= 4294967294;
+      in
+      {
+        deterministic = kube.bgp.hashBgpAsns "k3s" == kube.bgp.hashBgpAsns "k3s";
+        allInRange = lib.all (a: inRange a.cilium && inRange a.bird) asns;
+        distinct = lib.all (a: a.cilium != a.bird) asns;
+      };
+    expected = {
+      deterministic = true;
+      allInRange = true;
+      distinct = true;
+    };
+  };
+
+  # Explicit pins win over the hashed defaults (collision escape hatch).
+  test_resolveBgpAsnsOverride = {
+    expr = kube.bgp.resolveBgpAsns {
+      instanceName = "test";
+      settings = evalSettings {
+        bgp.ciliumASN = 4290000001;
+      };
+    };
+    expected = {
+      cilium = 4290000001;
+      bird = 4202719071;
+    };
+  };
+
+  # D10: the fabric pool derives from the resolved cilium id, stays inside
+  # 172.16/12 + fd11::/16, and is a cluster-global shared-bgp pool.
+  test_fabricPoolDerived = {
+    expr = kube.bgp.mkFabricPool {
+      instanceName = "test";
+      ciliumId = 1;
+      settings = baseSettings;
+    };
+    expected = {
+      name = "test-fabric";
+      blocks = [
+        "172.16.1.0/24"
+        "fd11:1::/64"
+      ];
+      serviceSelector."clan.lol/pool" = "test-fabric";
+      delivery = "shared-bgp";
+      candidates = [ ];
+    };
+  };
+
+  test_fabricPoolOverrideAndDisabled = {
+    expr = {
+      custom =
+        (kube.bgp.mkFabricPool {
+          instanceName = "test";
+          ciliumId = 1;
+          settings = evalSettings {
+            fabric.ipv4Block = "100.64.7.0/24";
+            fabric.ipv6Block = "fd12:7::/64";
+          };
+        }).blocks;
+      disabled = kube.bgp.mkFabricPool {
+        instanceName = "test";
+        ciliumId = 1;
+        settings = evalSettings {
+          fabric.enable = false;
+        };
+      };
+    };
+    expected = {
+      custom = [
+        "100.64.7.0/24"
+        "fd12:7::/64"
+      ];
+      disabled = null;
+    };
+  };
+
+  # The private CoreDNS VIP is offset 53 in the fabric blocks (v6 rendered
+  # full-form, case-normalized).
+  test_fabricCoreDNSVips = {
+    expr = kube.bgp.fabricCoreDNSVips {
+      ciliumId = 1;
+      settings = baseSettings;
+    };
+    expected = {
+      ipv4 = "172.16.1.53";
+      ipv6 = "fd11:1:0:0:0:0:0:53";
+    };
+  };
+
+  # D9: with the default fabric, the bundle renders the full BGP v2 set —
+  # one ClusterConfig per node, the shared PeerConfig with the D9 timers,
+  # and the Service-VIP Advertisement; NO pod/ClusterIP advertisements
+  # (D13 default off).
+  test_bundleBgpResources = {
+    expr =
+      let
+        cc1 = findObj "CiliumBGPClusterConfig" "test-node-1";
+        cc2 = findObj "CiliumBGPClusterConfig" "test-node-2";
+        pc = findObj "CiliumBGPPeerConfig" "test-bird";
+        adv = findObj "CiliumBGPAdvertisement" "test-service-vips";
+        instance = builtins.head cc1.spec.bgpInstances;
+        peer = builtins.head instance.peers;
+      in
+      {
+        cc1Selector = cc1.spec.nodeSelector.matchLabels;
+        cc2Present = cc2 != null;
+        inherit (instance) localASN;
+        inherit (peer) peerASN peerAddress;
+        noLocalPort = !(instance ? localPort);
+        timers = pc.spec.timers;
+        families = map (f: f.afi) pc.spec.families;
+        advertLabels = pc.spec.families;
+        advType = (builtins.head adv.spec.advertisements).advertisementType;
+        advAddresses = (builtins.head adv.spec.advertisements).service.addresses;
+        advSelector = (builtins.head adv.spec.advertisements).selector.matchExpressions;
+        advMatchedByPeer =
+          (builtins.head pc.spec.families).advertisements.matchLabels
+          == lib.intersectAttrs adv.metadata.labels (builtins.head pc.spec.families)
+          .advertisements.matchLabels;
+        advLabelValue = adv.metadata.labels."clan.lol/bgp-advertisement";
+        # D13 default off: exactly ONE advertisement resource.
+        advertisementNames = builtins.sort builtins.lessThan (
+          map (o: o.metadata.name) (builtins.filter (o: o.kind == "CiliumBGPAdvertisement") bundleObjects)
+        );
+        cmBgp = ciliumConfig."enable-bgp-control-plane";
+      };
+    expected = {
+      cc1Selector."kubernetes.io/hostname" = "node-1";
+      cc2Present = true;
+      localASN = 4250252234;
+      peerASN = 4202719071;
+      peerAddress = "169.254.179.1";
+      noLocalPort = true;
+      timers = {
+        holdTimeSeconds = 9;
+        keepAliveTimeSeconds = 3;
+        connectRetryTimeSeconds = 5;
+      };
+      families = [
+        "ipv4"
+        "ipv6"
+      ];
+      advertLabels = [
+        {
+          afi = "ipv4";
+          safi = "unicast";
+          advertisements.matchLabels."clan.lol/bgp-advertisement" = "test";
+        }
+        {
+          afi = "ipv6";
+          safi = "unicast";
+          advertisements.matchLabels."clan.lol/bgp-advertisement" = "test";
+        }
+      ];
+      advType = "Service";
+      advAddresses = [ "LoadBalancerIP" ];
+      advSelector = [
+        {
+          key = "clan.lol/pool";
+          operator = "In";
+          values = [ "test-fabric" ];
+        }
+      ];
+      advMatchedByPeer = true;
+      advLabelValue = "test";
+      advertisementNames = [ "test-service-vips" ];
+      cmBgp = "true";
+    };
+  };
+
+  # The fabric pool renders as a CiliumLoadBalancerIPPool by default (D10).
+  test_bundleFabricPool = {
+    expr =
+      let
+        p = findObj "CiliumLoadBalancerIPPool" "test-fabric";
+      in
+      {
+        inherit (p.spec) blocks;
+        selector = p.spec.serviceSelector.matchLabels;
+      };
+    expected = {
+      blocks = [
+        { cidr = "172.16.1.0/24"; }
+        { cidr = "fd11:1::/64"; }
+      ];
+      selector."clan.lol/pool" = "test-fabric";
+    };
+  };
+
+  # §6.12: no shared-bgp pools (fabric off, none declared) + bgp.enable =
+  # false ⇒ no BGP resources, and the ConfigMap flag follows.
+  test_bundleNoBgpWithoutSharedBgp = {
+    expr =
+      let
+        bgpKinds = builtins.filter (o: lib.hasPrefix "CiliumBGP" o.kind) bundleNoBgpObjects;
+        cm = (findObjKind bundleNoBgpObjects "ConfigMap" "cilium-config").data;
+        fabricPool = findObjKind bundleNoBgpObjects "CiliumLoadBalancerIPPool" "test-fabric";
+        privateDns = findObjKind bundleNoBgpObjects "Deployment" "coredns-private";
+      in
+      {
+        bgpResourceCount = builtins.length bgpKinds;
+        flag = cm."enable-bgp-control-plane";
+        fabricPoolAbsent = fabricPool == null;
+        privateDnsAbsent = privateDns == null;
+      };
+    expected = {
+      bgpResourceCount = 0;
+      flag = "false";
+      fabricPoolAbsent = true;
+      privateDnsAbsent = true;
+    };
+  };
+
+  # D13 opt-ins render PodCIDR (CiliumPodIPPool) + ClusterIP advertisements.
+  test_bundleBgpD13OptIn = {
+    expr = builtins.sort builtins.lessThan (
+      map (o: o.metadata.name) (builtins.filter (o: o.kind == "CiliumBGPAdvertisement") bundleD13Objects)
+    );
+    expected = [
+      "test-cluster-ips"
+      "test-pod-cidrs"
+      "test-service-vips"
+    ];
+  };
+
+  # §6.12 coupling: bgp.enable must equal "shared-bgp pools exist".
+  test_bgpCouplingAssertions = {
+    expr = {
+      # fabric off but bgp still enabled → error
+      fabricOffBgpOn = failedAssertion (kube.assertions.mkPoolAssertions {
+        inherit instanceName members;
+        ciliumId = 1;
+        settings = evalSettings {
+          fabric.enable = false;
+        };
+      }) "BGP only for shared-bgp pools";
+      # declared shared-bgp pool with BGP disabled → error
+      poolWithoutBgp = failedAssertion (kube.assertions.mkPoolAssertions {
+        inherit instanceName members;
+        ciliumId = 1;
+        settings = evalSettings {
+          fabric.enable = false;
+          bgp.enable = false;
+          pools.public = {
+            blocks = [ "203.0.113.0/28" ];
+            serviceSelector."clan.lol/pool" = "public";
+            delivery = "shared-bgp";
+          };
+        };
+      }) "shared-bgp pools require BGP";
+      # defaults (fabric on, bgp on) → no coupling failure
+      defaultsOk = failedAssertion (kube.assertions.mkPoolAssertions {
+        inherit instanceName members;
+        ciliumId = 1;
+        settings = baseSettings;
+      }) "BGP";
+    };
+    expected = {
+      fabricOffBgpOn = true;
+      poolWithoutBgp = true;
+      defaultsOk = false;
+    };
+  };
+
+  # Fabric/pool blocks may not overlap the pod/service CIDRs
+  # (reservedCidrs), and tiny fabric blocks are rejected (VIP at offset 53).
+  test_fabricReservedOverlapAndSize = {
+    expr = {
+      overlap = failedAssertion (kube.assertions.mkPoolAssertions {
+        inherit instanceName members;
+        ciliumId = 1;
+        reservedCidrs = [ "10.1.0.0/16" ];
+        settings = evalSettings {
+          fabric.ipv4Block = "10.1.64.0/24";
+        };
+      }) "pod/service CIDRs";
+      tooSmall = failedAssertion (kube.assertions.mkPoolAssertions {
+        inherit instanceName members;
+        ciliumId = 1;
+        settings = evalSettings {
+          fabric.ipv4Block = "172.16.1.0/27";
+        };
+      }) "at least 64 addresses";
+    };
+    expected = {
+      overlap = true;
+      tooSmall = true;
+    };
+  };
+
+  # D22 substrate: the private CoreDNS Service pins ETP Local, the
+  # bgp-control-plane class, the fabric-pool selector, and the deterministic
+  # VIPs; the Corefile serves the instance zone and NEVER cluster.local
+  # (D21).
+  test_privateCoreDNSDefault = {
+    expr = {
+      svc = {
+        inherit (privateSvc.spec) externalTrafficPolicy loadBalancerClass;
+        annotations = privateSvc.metadata.annotations;
+        poolLabel = privateSvc.metadata.labels."clan.lol/pool";
+        selector = privateSvc.spec.selector;
+        ipPolicy = privateSvc.spec.ipFamilyPolicy;
+      };
+      zoneServed = lib.hasInfix "test.example.org:53 {" privateCorefile;
+      nxdomainDefault = lib.hasInfix "rcode NXDOMAIN" privateCorefile;
+      noWildcardByDefault = !(lib.hasInfix "172.16.1.200" privateCorefile);
+      # D21: no cluster.local ZONE (rewrites/forward targets to
+      # svc.cluster.local are allowed — those are not served zones).
+      noClusterLocalZone =
+        !(lib.hasInfix "kubernetes cluster.local" privateCorefile)
+        && !(lib.hasInfix "cluster.local:53" privateCorefile)
+        && !(lib.hasInfix "cluster.local {" privateCorefile);
+      deploy = (findObj "Deployment" "coredns-private") != null;
+      imagePinned = lib.hasInfix "@sha256:" (builtins.head (findObj "Deployment" "coredns-private")
+        .spec.template.spec.containers).image;
+    };
+    expected = {
+      svc = {
+        externalTrafficPolicy = "Local";
+        loadBalancerClass = "io.cilium/bgp-control-plane";
+        annotations."lbipam.cilium.io/ips" = "172.16.1.53,fd11:1:0:0:0:0:0:53";
+        poolLabel = "test-fabric";
+        selector."k8s-app" = "coredns-private";
+        ipPolicy = "RequireDualStack";
+      };
+      zoneServed = true;
+      nxdomainDefault = true;
+      noWildcardByDefault = true;
+      noClusterLocalZone = true;
+      deploy = true;
+      imagePinned = true;
+    };
+  };
+
+  # D22 knobs: wildcard answer + svc/pod zone rewrites forwarded to the
+  # cluster DNS — still no cluster.local zone (D21).
+  test_privateCoreDNSZones = {
+    expr = {
+      wildcard = lib.hasInfix "answer \"{{ .Name }} 60 IN A 172.16.1.200\"" zonesCorefile;
+      svcZone = lib.hasInfix "test.svc.example.org:53 {" zonesCorefile;
+      svcRewrite = lib.hasInfix "rewrite name suffix .test.svc.example.org. .svc.cluster.local. answer auto" zonesCorefile;
+      podZone = lib.hasInfix "test.pods.example.org:53 {" zonesCorefile;
+      podRewrite = lib.hasInfix "rewrite name suffix .test.pods.example.org. .pod.cluster.local. answer auto" zonesCorefile;
+      forwardToClusterDns = lib.hasInfix "forward . 10.2.0.10" zonesCorefile;
+      noClusterLocalZone =
+        !(lib.hasInfix "kubernetes cluster.local" zonesCorefile)
+        && !(lib.hasInfix "cluster.local:53" zonesCorefile)
+        && !(lib.hasInfix "cluster.local {" zonesCorefile);
+    };
+    expected = {
+      wildcard = true;
+      svcZone = true;
+      svcRewrite = true;
+      podZone = true;
+      podRewrite = true;
+      forwardToClusterDns = true;
+      noClusterLocalZone = true;
+    };
+  };
+
+  # D19: the vendored fragment assembler — two contributors merge under
+  # sorted keys, routerId renders once, filters are wrapped.
+  test_birdAssembleMerges = {
+    expr =
+      let
+        text = kube.bird.assemble {
+          routerId = "10.42.0.1";
+          fragments = {
+            "kube-cluster-test" = {
+              config = "protocol bgp test_cilium {}\n";
+              filters."test_in4" = "if net ~ [ 172.16.1.0/24{32,32} ] then accept;\n  else reject;";
+            };
+            "fleet-routing-gw" = {
+              config = "protocol bgp fr_peer {}\n";
+            };
+          };
+        };
+      in
+      {
+        hasRouterId = lib.hasInfix "router id 10.42.0.1;" text;
+        fleetFirst =
+          (lib.stringLength (builtins.head (lib.splitString "# ---- fragment fleet-routing-gw ----" text)))
+          < (lib.stringLength (
+            builtins.head (lib.splitString "# ---- fragment kube-cluster-test ----" text)
+          ));
+        filterWrapped = lib.hasInfix "filter test_in4 {\nif net ~ [ 172.16.1.0/24{32,32} ] then accept;\n  else reject;\n}" text;
+        bothPresent =
+          lib.hasInfix "protocol bgp test_cilium {}" text && lib.hasInfix "protocol bgp fr_peer {}" text;
+      };
+    expected = {
+      hasRouterId = true;
+      fleetFirst = true;
+      filterWrapped = true;
+      bothPresent = true;
+    };
+  };
+
+  test_birdAssembleRequiresRouterId = {
+    expr =
+      !(builtins.tryEval (
+        builtins.deepSeq (kube.bird.assemble {
+          routerId = null;
+          fragments."kube-cluster-test".config = "protocol bgp x {}\n";
+        }) true
+      )).success;
+    expected = true;
+  };
+
+  # The cluster-node BIRD fragment (D9): loopback-link listen (strict bind,
+  # passive, free bind), D9 timers, exact-VIP import filters + limits,
+  # family-split upstream dial-out with next-hop-self, BIRD-safe symbols.
+  test_birdFragmentShape = {
+    expr =
+      let
+        asns = kube.bgp.hashBgpAsns "my-cluster";
+        text = kube.bgp.mkBirdFragment {
+          instanceName = "my-cluster";
+          inherit asns;
+          blocks = [
+            "172.16.9.0/24"
+            "fd11:9::/64"
+            "198.51.100.0/28"
+          ];
+          upstreamPeers = [
+            {
+              address = "192.0.2.1";
+              asn = 65001;
+            }
+            {
+              address = "2001:db8::1";
+              asn = 65002;
+            }
+          ];
+        };
+      in
+      {
+        listenAlias = lib.hasInfix "local 169.254.179.1 port 179 as ${toString asns.bird};" text;
+        neighbor = lib.hasInfix "neighbor 169.254.179.1 as ${toString asns.cilium};" text;
+        passiveStrictFree = lib.hasInfix "passive on;\n  strict bind on;\n  free bind on;" text;
+        timers = lib.hasInfix "hold time 9;\n  keepalive time 3;\n  connect retry time 5;" text;
+        filterV4 = lib.hasInfix "[ 172.16.9.0/24{32,32}, fd11:9::/64" text == false; # family split
+        in4 = lib.hasInfix "filter my_cluster_cilium_in4 {\n  if net ~ [ 172.16.9.0/24{32,32}, 198.51.100.0/28{32,32} ] then accept;" text;
+        in6 = lib.hasInfix "filter my_cluster_cilium_in6 {\n  if net ~ [ fd11:9::/64{128,128} ] then accept;" text;
+        limit4 = lib.hasInfix "import limit 272 action block;" text; # 256 + 16
+        noKernel = !(lib.hasInfix "protocol kernel" text);
+        upstreamV4 = lib.hasInfix "protocol bgp my_cluster_upstream_1 {\n  local port 4179 as ${toString asns.bird};\n  neighbor 192.0.2.1 as 65001;" text;
+        upstreamV4Channel = lib.hasInfix "ipv4 {\n    import none;\n    export filter my_cluster_cilium_in4;\n    next hop self;\n  };" text;
+        upstreamV6Channel = lib.hasInfix "ipv6 {\n    import none;\n    export filter my_cluster_cilium_in6;\n    next hop self;\n  };" text;
+        symbolsSanitized = !(lib.hasInfix "my-cluster_cilium" text);
+      };
+    expected = {
+      listenAlias = true;
+      neighbor = true;
+      passiveStrictFree = true;
+      timers = true;
+      filterV4 = true;
+      in4 = true;
+      in6 = true;
+      limit4 = true;
+      noKernel = true;
+      upstreamV4 = true;
+      upstreamV4Channel = true;
+      upstreamV6Channel = true;
+      symbolsSanitized = true;
+    };
+  };
+
+  # The rendered fragment is valid BIRD 2 config — checked at build time by
+  # the services.bird checkConfig hook in the NixOS wiring; here we pin the
+  # textual invariants instead (bird -p runs in the VM builds).
+
+  # Fleet check: ASN collisions across clusters are eval errors.
+  test_fleetCheckAsnCollision = {
+    expr =
+      let
+        check = (kube.mkFleetChecks clanLib fleetExportsAsnCollision).kube-cluster-unique-bgp-asns;
+      in
+      {
+        inherit (check) assertion;
+        namesBoth = lib.hasInfix "rke2/prod" check.message && lib.hasInfix "k3s/staging" check.message;
+      };
+    expected = {
+      assertion = false;
+      namesBoth = true;
+    };
+  };
+
+  # D8: shared-bgp ⊆ router-role prefixes — fires once a fleet-routing
+  # router export exists (campaign-B contract), vacuous before.
+  test_fleetCheckRouterPrefixes = {
+    expr = {
+      covered =
+        (kube.mkFleetChecks clanLib (mkRouterPrefixExports [
+          "172.16.0.0/12"
+          "fd11::/16"
+        ])).kube-cluster-shared-bgp-router-prefixes.assertion;
+      uncovered =
+        (kube.mkFleetChecks clanLib (mkRouterPrefixExports [ "172.20.0.0/16" ]))
+        .kube-cluster-shared-bgp-router-prefixes.assertion;
+      vacuous =
+        (kube.mkFleetChecks clanLib fleetExportsSeparateGroupsPass)
+        .kube-cluster-shared-bgp-router-prefixes.assertion;
+      namesCluster =
+        lib.hasInfix "rke2/prod"
+          (kube.mkFleetChecks clanLib (mkRouterPrefixExports [ "172.20.0.0/16" ]))
+          .kube-cluster-shared-bgp-router-prefixes.message;
+    };
+    expected = {
+      covered = true;
+      uncovered = false;
+      vacuous = true;
+      namesCluster = true;
+    };
+  };
+
+  # cidr.nix phase-5 helpers.
+  test_cidrContainsAndV6 = {
+    expr = {
+      sub4 = cidr.contains "172.16.0.0/12" "172.16.1.5/32";
+      super4 = cidr.contains "172.16.1.0/24" "172.16.0.0/12";
+      crossFamily = cidr.contains "10.0.0.0/8" "fd11::/16";
+      sub6 = cidr.contains "fd11::/16" "fd11:1::5/128";
+      v6at = cidr.addressAtV6 "fd11:1::/64" 83;
+      v6carry = cidr.addressAtV6 "fd11:1::/64" 65537;
+    };
+    expected = {
+      sub4 = true;
+      super4 = false;
+      crossFamily = false;
+      sub6 = true;
+      v6at = "fd11:1:0:0:0:0:0:53";
+      v6carry = "fd11:1:0:0:0:0:1:1";
     };
   };
 }

@@ -1,4 +1,4 @@
-# rke2-data-plane: the Data-plane contract (§3.2, D41/D8, D44) over the
+# rke2-data-plane: the Data-plane contract (§3.2, D41/D8/D9/D10, D44) over the
 # phase-3 bootstrap bundle (D40):
 #   - cluster comes up via the bundle path (bootstrap-apply oneshot),
 #   - pool allocation: a Service with loadBalancerClass io.cilium/lb-ipam
@@ -6,11 +6,23 @@
 #   - classless Service (no class) gets node IPs via Node IPAM,
 #   - ETP-Local candidate restriction: with the backend pinned to one node,
 #     only that node's IPs are advertised,
+#   - shared-bgp ECMP (D9/D10): the default fabric pool's VIPs are
+#     advertised by ALL healthy nodes to a foreign-router fixture (BIRD);
+#     the router ECMPs across both nodes,
+#   - ETP-Local withdrawal: when beta dies, its advertisements withdraw and
+#     the VIP stays reachable via alpha,
+#   - floating-pool documented blackhole window (D8): no controller in the
+#     VM, so the floating VIP dies with its holding node,
 #   - firewall positive (LB port reachable where exposed) AND negative
 #     (a nowhere-exposed port on the mesh address; the LB port on the
-#     untrusted underlay interface),
+#     untrusted underlay interface; BGP :179 bound to the loopback link
+#     alias only, never the underlay),
 #   - hermetic: all images preloaded (distro airgap + artifact-flake Cilium
 #     airgap set via the service defaults + go-httpbin fixture here).
+#
+# Underlay addressing is the test driver's deterministic assignment
+# (alphabetical node order): alpha=192.168.1.1/2001:db8:1::1,
+# beta=192.168.1.2/2001:db8:1::2, router=192.168.1.3/2001:db8:1::3.
 { inputs }:
 { lib, ... }:
 let
@@ -26,7 +38,91 @@ let
     component = "data-plane-test";
   };
 
-  # go-httpbin everywhere (DaemonSet) for the pool service.
+  # The cluster's BIRD-side ASN (D9 derivation — pinned by
+  # test_hashBgpAsnsPinnedValues).
+  clusterBgpAsn = (kube.bgp.hashBgpAsns instanceName).bird;
+
+  # Foreign-router fixture (D9 contract): plain BIRD accepting ONLY the
+  # cluster's shared-bgp pool blocks as exact /32+/128, with max-prefix
+  # limits and per-node passive neighbors; kernel export merges the
+  # per-node paths into ECMP routes (merge paths — the BIRD equivalent of
+  # the contract's "ECMP path count ≥ node count").
+  routerBirdConf = ''
+    router id 192.168.1.3;
+    protocol device {
+      scan time 10;
+    }
+    protocol kernel kernel4 {
+      ipv4 { export all; };
+      merge paths on;
+    }
+    protocol kernel kernel6 {
+      ipv6 { export all; };
+      merge paths on;
+    }
+    filter accept_cluster4 {
+      if net ~ [ 172.16.1.0/24{32,32} ] then accept;
+      else reject;
+    }
+    filter accept_cluster6 {
+      if net ~ [ fd11:1::/64{128,128} ] then accept;
+      else reject;
+    }
+    protocol bgp node_alpha {
+      local as 65001;
+      neighbor 192.168.1.1 as ${toString clusterBgpAsn};
+      passive on;
+      hold time 9;
+      keepalive time 3;
+      connect retry time 5;
+      ipv4 {
+        import filter accept_cluster4;
+        import limit 100 action block;
+        export none;
+      };
+    }
+    protocol bgp node_beta {
+      local as 65001;
+      neighbor 192.168.1.2 as ${toString clusterBgpAsn};
+      passive on;
+      hold time 9;
+      keepalive time 3;
+      connect retry time 5;
+      ipv4 {
+        import filter accept_cluster4;
+        import limit 100 action block;
+        export none;
+      };
+    }
+    protocol bgp node_alpha6 {
+      local as 65001;
+      neighbor 2001:db8:1::1 as ${toString clusterBgpAsn};
+      passive on;
+      hold time 9;
+      keepalive time 3;
+      connect retry time 5;
+      ipv6 {
+        import filter accept_cluster6;
+        import limit 100 action block;
+        export none;
+      };
+    }
+    protocol bgp node_beta6 {
+      local as 65001;
+      neighbor 2001:db8:1::2 as ${toString clusterBgpAsn};
+      passive on;
+      hold time 9;
+      keepalive time 3;
+      connect retry time 5;
+      ipv6 {
+        import filter accept_cluster6;
+        import limit 100 action block;
+        export none;
+      };
+    }
+  '';
+
+  # go-httpbin everywhere (DaemonSet) for the pool services.
   httpbinDaemonSet = {
     apiVersion = "apps/v1";
     kind = "DaemonSet";
@@ -52,6 +148,56 @@ let
     ports = [
       {
         port = 80;
+        targetPort = 8080;
+      }
+    ];
+    selector.app = "httpbin";
+    extraSpec = {
+      ipFamilies = [
+        "IPv4"
+        "IPv6"
+      ];
+      ipFamilyPolicy = "RequireDualStack";
+    };
+  };
+
+  # The shared-bgp probe (D9/D10): draws from the DEFAULT fabric pool with
+  # the BGP-advertised class and a pinned VIP; with a DaemonSet backend and
+  # ETP Local, EVERY healthy node advertises it (router ECMPs).
+  fabricService = kube.render.mkLBService {
+    name = "httpbin-fabric";
+    inherit manifestLabels;
+    labels."clan.lol/pool" = "rke2-fabric";
+    annotations."lbipam.cilium.io/ips" = "172.16.1.80,fd11:1:0:0:0:0:0:80";
+    loadBalancerClass = "io.cilium/bgp-control-plane";
+    ports = [
+      {
+        port = 80;
+        targetPort = 8080;
+      }
+    ];
+    selector.app = "httpbin";
+    extraSpec = {
+      ipFamilies = [
+        "IPv4"
+        "IPv6"
+      ];
+      ipFamilyPolicy = "RequireDualStack";
+    };
+  };
+
+  # The floating-pool probe (D8): allocated from the floating pool (class
+  # io.cilium/lb-ipam — never BGP-advertised). With no runtime controller
+  # in the VM, the test places the VIP on beta by hand and documents the
+  # blackhole window when beta dies.
+  floatService = kube.render.mkLBService {
+    name = "httpbin-float";
+    inherit manifestLabels;
+    labels."clan.lol/pool" = "floaty";
+    annotations."lbipam.cilium.io/ips" = "192.0.2.100,fd20:db8:1::100";
+    ports = [
+      {
+        port = 82;
         targetPort = 8080;
       }
     ];
@@ -117,6 +263,8 @@ let
   probesJson = builtins.toJSON [
     httpbinDaemonSet
     poolService
+    fabricService
+    floatService
     httpbinPinned
     classlessService
   ];
@@ -137,6 +285,9 @@ in
       machines = {
         alpha = { };
         beta = { };
+        # The foreign router joins NO service instance; inventory
+        # membership only gives the test node the clan machine base.
+        router = { };
       };
 
       instances = {
@@ -181,8 +332,23 @@ in
                 service = "wireguard-mesh";
                 instance = "mesh";
               };
-              # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
+              # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports and
+              # the fabric pool blocks (172.16.1.0/24 + fd11:1::/64) stable.
               cilium.id = 1;
+              # Test-only (documented): the upstream-facing interface must
+              # be a Cilium device for VIP ingress from the router VM.
+              cilium.helmValues.devices = "wg-mesh eth1";
+              # D9: the node BIRD dials the foreign router (both families).
+              bgp.upstreamPeers = [
+                {
+                  address = "192.168.1.3";
+                  asn = 65001;
+                }
+                {
+                  address = "2001:db8:1::3";
+                  asn = 65001;
+                }
+              ];
               # Declared cluster-global pool (D8). external-class: no
               # delivery machinery needed for an allocation proof.
               pools.dataplane = {
@@ -192,6 +358,20 @@ in
                 ];
                 serviceSelector."clan.lol/pool" = "dataplane";
                 delivery = "external-class";
+              };
+              # Floating pool (D8): runtime-controller delivery; the VM
+              # documents the no-controller blackhole window.
+              pools.floaty = {
+                blocks = [
+                  "192.0.2.96/28"
+                  "fd20:db8:1::/120"
+                ];
+                serviceSelector."clan.lol/pool" = "floaty";
+                delivery = "floating";
+                candidates = [
+                  "alpha"
+                  "beta"
+                ];
               };
             };
             machines.alpha.settings.clusterInit = true;
@@ -204,6 +384,16 @@ in
                 instance = "mesh";
               };
               cilium.id = 1;
+              bgp.upstreamPeers = [
+                {
+                  address = "192.168.1.3";
+                  asn = 65001;
+                }
+                {
+                  address = "2001:db8:1::3";
+                  asn = 65001;
+                }
+              ];
             };
             machines.beta = { };
           };
@@ -252,12 +442,38 @@ in
         { ... }:
         {
           imports = [ commonNode ];
-          # The Cilium agent runs on every node: beta needs the fixture
-          # image too (the DaemonSet schedules there).
+          # The httpbin DaemonSet schedules on every node — preload the
+          # fixture image here too (hermetic).
           services.rke2.images = [ httpbinImage ];
           systemd.tmpfiles.rules = [
             "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf httpbinImage)} - - - - ${httpbinImage}"
           ];
+        };
+
+      # The foreign router (D9 contract fixture): a plain BIRD, NOT part of
+      # the clan inventory.
+      router =
+        { pkgs, ... }:
+        {
+          virtualisation = {
+            cores = 1;
+            memorySize = 1024;
+          };
+          environment.systemPackages = [
+            pkgs.jq
+            pkgs.curl
+            pkgs.dnsutils
+          ];
+          services.bird = {
+            enable = true;
+            package = pkgs.bird2;
+            # bird -p at build time — the fixture config is validated too.
+            checkConfig = true;
+            config = routerBirdConf;
+          };
+          # The router is a host here (it curls the VIPs itself); forwarding
+          # is not part of the fixture.
+          networking.firewall.enable = false;
         };
     };
 
@@ -266,11 +482,13 @@ in
         for cmd in [
             "journalctl -u rke2-server --no-pager -l | tail -n 80",
             "journalctl -u rke2-rke2-bootstrap-apply --no-pager -l | tail -n 60 >&2 || true",
+            "journalctl -u bird --no-pager -l | tail -n 60 >&2 || true",
             "journalctl -u haproxy --no-pager -l | tail -n 40 >&2",
             "kubectl get nodes,pods -A -o wide >&2 || true",
             "kubectl get service,endpoints,endpointslices -A -o wide >&2 || true",
-            "kubectl get ciliumloadbalancerippools -A >&2 || true",
+            "kubectl get ciliumloadbalancerippools,ciliumbgpclusterconfigs,ciliumbgppeerconfigs,ciliumbgpadvertisements -A >&2 || true",
             "kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.enable-node-ipam}{\"\\n\"}{.data.default-lb-service-ipam}' >&2 || true",
+            "kubectl -n kube-system exec ds/cilium -- cilium-dbg shell -- bgp/peers >&2 || true",
             "kubectl -n kube-system exec ds/cilium -- cilium-dbg service list >&2 || true",
             "nft list chain inet nixos-fw input >&2 || true",
             "ip route >&2; ip -6 route >&2",
@@ -281,12 +499,21 @@ in
         ]:
             m.execute(cmd)
 
+    def safe_dump(m):
+        try:
+            fail_dump(m)
+        except Exception:
+            pass
+
     try:
         start_all()
 
         for m in [alpha, beta]:
             m.wait_for_unit("systemd-networkd.service", timeout=120)
             m.wait_for_unit("haproxy.service", timeout=240)
+            m.wait_for_unit("bird.service", timeout=240)
+
+        router.wait_for_unit("bird.service", timeout=240)
 
         # --- Transport (§6.3): mesh v4+v6 on both nodes; remote node
         # InternalIPs reachable over the mesh in both families.
@@ -306,11 +533,16 @@ in
             "systemctl show -p Result --value rke2-rke2-bootstrap-apply | grep -q '^success$'",
             timeout=900,
         )
-        alpha.succeed("test -f /etc/clan-bootstrap/rke2/bundle.yaml")
+        alpha.succeed("test -f /etc/clan-bootstrap/k3s/bundle.yaml")
         alpha.succeed("kubectl get ciliumloadbalancerippools | grep -q dataplane")
         # The auto per-machine node pools (D8) render for both members.
         alpha.succeed("kubectl get ciliumloadbalancerippools | grep -q '^alpha'")
         alpha.succeed("kubectl get ciliumloadbalancerippools | grep -q '^beta'")
+        # D10: the default fabric pool + the D9 BGP v2 resources render.
+        alpha.succeed("kubectl get ciliumloadbalancerippools | grep -q k3s-fabric")
+        alpha.succeed("kubectl get ciliumbgpclusterconfigs | grep -q rke2-alpha")
+        alpha.succeed("kubectl get ciliumbgppeerconfigs | grep -q rke2-bird")
+        alpha.succeed("kubectl get ciliumbgpadvertisements | grep -q rke2-service-vips")
 
         # --- Both nodes Ready, Cilium healthy --------------------------
         alpha.wait_until_succeeds(
@@ -380,19 +612,95 @@ in
         # alpha's mesh address for this Service.
         alpha.fail("curl -sf --max-time 5 http://192.168.77.1:81/get")
 
+        # --- shared-bgp ECMP (D9/D10) -----------------------------------
+        # The fabric probe drew its pinned VIP from the fabric pool.
+        alpha.wait_until_succeeds(
+            "kubectl get service httpbin-fabric -o jsonpath='{.status.loadBalancer.ingress}' | grep -q 172.16.1.80",
+            timeout=240,
+        )
+        # Every healthy node advertises the VIP (DaemonSet backend + ETP
+        # Local); the router ECMPs across BOTH nodes (v4 and v6).
+        router.wait_until_succeeds(
+            "ip -j route show 172.16.1.80 | jq -e '.[0].nexthops | length == 2' >/dev/null",
+            timeout=300,
+        )
+        router.wait_until_succeeds(
+            "ip -j -6 route show fd11:1::80 | jq -e '.[0].nexthops | length == 2' >/dev/null",
+            timeout=300,
+        )
+        # The private CoreDNS VIP (D10/D22 substrate) is advertised too
+        # (2 replicas, one per node).
+        router.wait_until_succeeds(
+            "ip -j route show 172.16.1.53 | jq -e '.[0].nexthops | length == 2' >/dev/null",
+            timeout=300,
+        )
+        # Round-trip from the router through the fabric.
+        router.wait_until_succeeds(
+            "curl -sf --max-time 5 http://172.16.1.80/get | grep -q '\"url\"'",
+            timeout=120,
+        )
+        router.wait_until_succeeds(
+            "curl -sf --max-time 5 http://[fd11:1::80]/get | grep -q '\"url\"'",
+            timeout=120,
+        )
+        # The router imports ONLY pool VIPs: no pod CIDRs leak (D13
+        # default off).
+        router.fail("ip route show 10.1.0.0/16")
+        router.fail("ip route show 10.2.0.0/16")
+
+        # --- Floating pool: documented blackhole window (D8) ------------
+        # Allocation happened (LB IPAM) but no controller exists in the VM;
+        # simulate the controller's placement on beta + upstream routing.
+        alpha.wait_until_succeeds(
+            "kubectl get service httpbin-float -o jsonpath='{.status.loadBalancer.ingress}' | grep -q 192.0.2.100",
+            timeout=240,
+        )
+        beta.succeed("ip addr add 192.0.2.100/32 dev lo")
+        alpha.succeed("ip route add 192.0.2.100/32 via 192.168.1.2")
+        alpha.wait_until_succeeds(
+            "curl -sf --max-time 5 http://192.0.2.100:82/get | grep -q '\"url\"'",
+            timeout=120,
+        )
+
         # --- Firewall: positive + negative ------------------------------
         # Negative 1: a port nowhere exposed, on the mesh address.
         alpha.fail("nc -z -w3 192.168.77.2 9999")
         # Negative 2: the LB port on the untrusted underlay interface —
-        # Cilium's devices pinning (wg-mesh only) means the underlay hits
-        # the host firewall, which drops it.
+        # the classless Service advertises mesh IPs only.
         beta_underlay = beta.succeed(
             "ip -4 -o addr show scope global | grep -v wg-mesh | awk '{print $4}' | cut -d/ -f1 | head -n1"
         ).strip()
         alpha.fail(f"curl -sf --max-time 5 http://{beta_underlay}:81/get")
+        # D9: BGP :179 listens ONLY on the loopback link alias — never on
+        # the mesh or underlay addresses.
+        for m in [alpha, beta]:
+            m.succeed("ss -tln | grep -q '169.254.179.1:179 '")
+            m.fail("ss -tln | grep ':179 ' | grep -v '169.254.179.1'")
+        # BIRD's upstream-session listen artifact (wildcard :4179) is
+        # firewall-dropped on the untrusted underlay.
+        router.fail("nc -z -w3 192.168.1.1 4179")
+        router.fail("nc -z -w3 192.168.1.1 179")
+
+        # --- ETP-Local withdrawal + floating blackhole (beta dies) ------
+        beta.shutdown()
+        # beta's BGP session drops; the router withdraws its nexthop and
+        # converges to alpha only — the VIP stays reachable (round-trip +
+        # failure behavior, §7).
+        router.wait_until_succeeds(
+            "ip -j route show 172.16.1.80 | jq -e '.[0].nexthops | length == 1 and .[0].nexthops[0].via == \"192.168.1.1\"' >/dev/null",
+            timeout=300,
+        )
+        router.wait_until_succeeds(
+            "curl -sf --max-time 5 http://172.16.1.80/get | grep -q '\"url\"'",
+            timeout=180,
+        )
+        # The floating VIP blackholes: no controller re-homes it. This
+        # assertion DOCUMENTS the window (D8) — it must keep failing.
+        alpha.fail("curl -sf --max-time 5 http://192.0.2.100:82/get")
     except Exception:
-        fail_dump(alpha)
-        fail_dump(beta)
+        safe_dump(alpha)
+        safe_dump(beta)
+        safe_dump(router)
         raise
   '';
 }

@@ -64,12 +64,16 @@ One term per concept. Mirrors SPEC.md §10.
   that advertises node IPs (ExternalIP, else InternalIP) as a Service's LB
   ingress; the classless-Service default (D41). Distinct from
   `ipam.mode: kubernetes` (pod IPAM), which is an allowed override.
-- **LB IPAM pool** — CiliumLoadBalancerIPPool; serves only Services with
-  `loadBalancerClass: io.cilium/lb-ipam` (D41); the only VIP mechanism.
+- **LB IPAM pool** — CiliumLoadBalancerIPPool; serves only Services with a
+  Cilium-handled `loadBalancerClass` (`io.cilium/lb-ipam`,
+  `io.cilium/bgp-control-plane` for BGP-announced draws) (D41/D8); the only
+  VIP mechanism.
 - **Node-fate-bound delivery** — provider/static routing to one node; no
   failover, no BGP.
 - **Floating delivery** — runtime controller moves the address to one node
-  at a time; failover is the controller's contract.
+  at a time; failover is the controller's contract. Without a controller the
+  address is node-fate-bound in practice: the documented blackhole window
+  when the holder dies.
 - **Shared BGP VIP** — address advertised from all healthy nodes (ETP-Local
   withdrawal); the `shared-bgp` mode of a cluster-global pool.
 - **Private fleet fabric** — default per-cluster private shared-bgp pool +

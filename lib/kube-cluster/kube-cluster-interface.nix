@@ -16,8 +16,8 @@ in
   options = {
     schemaVersion = lib.mkOption {
       type = t.ints.positive;
-      default = 1;
-      description = "kube_cluster export schema version.";
+      default = 2;
+      description = "kube_cluster export schema version (2 = phase 5: bgp/fabric facts).";
     };
 
     name = lib.mkOption {
@@ -206,6 +206,100 @@ in
       );
       default = { };
       description = "Resolved LB-IPAM pool handoff facts (phase-3 pools resolution) for fleet-routing.";
+    };
+
+    # BGP plane facts (D9, phase 5): consumed by fleet-routing (its router
+    # role peers with the cluster BIRD ASNs; its client/admin roles learn
+    # where VIP routes come from) and by the fleet checks (ASN collision).
+    bgp = {
+      enabled = lib.mkOption {
+        type = t.bool;
+        default = false;
+        description = "Whether the cluster renders the BGP v2 plane (locked to shared-bgp pool presence, §6.12).";
+      };
+      ciliumAsn = lib.mkOption {
+        type = t.nullOr t.ints.positive;
+        default = null;
+        description = "The Cilium-side ASN (deterministic private 32-bit per cluster, or pinned).";
+      };
+      birdAsn = lib.mkOption {
+        type = t.nullOr t.ints.positive;
+        default = null;
+        description = "The BIRD-side ASN — the cluster's ASN as its upstream/fleet peers see it.";
+      };
+      upstreamPeers = lib.mkOption {
+        type = t.listOf (
+          t.submodule {
+            options = {
+              address = lib.mkOption {
+                type = t.str;
+                default = "";
+                description = "Upstream peer address.";
+              };
+              asn = lib.mkOption {
+                type = t.nullOr t.ints.positive;
+                default = null;
+                description = "Upstream peer ASN.";
+              };
+            };
+          }
+        );
+        default = [ ];
+        description = "Configured upstream BGP peers (D9).";
+      };
+      advertisePodCIDRs = lib.mkOption {
+        type = t.bool;
+        default = false;
+        description = "D13 opt-in fact: pod CIDRs are advertised.";
+      };
+      advertiseClusterIPs = lib.mkOption {
+        type = t.bool;
+        default = false;
+        description = "D13 opt-in fact: ClusterIPs are advertised.";
+      };
+    };
+
+    # Private fleet fabric facts (D10/D22, phase 5): the fabric pool and
+    # the private CoreDNS VIP/zone — consumed by fleet-routing's router
+    # role (pool facts) and client/admin roles (DNS stub target).
+    fabric = {
+      enabled = lib.mkOption {
+        type = t.bool;
+        default = false;
+        description = "Whether the private fleet fabric pool is rendered (D10).";
+      };
+      pool = lib.mkOption {
+        type = t.str;
+        default = "";
+        description = "The fabric pool's name (= its clan.lol/pool selector value).";
+      };
+      ipv4Block = lib.mkOption {
+        type = t.nullOr t.str;
+        default = null;
+        description = "The fabric pool's IPv4 block.";
+      };
+      ipv6Block = lib.mkOption {
+        type = t.nullOr t.str;
+        default = null;
+        description = "The fabric pool's IPv6 block.";
+      };
+      coreDNS = {
+        ipv4 = lib.mkOption {
+          type = t.nullOr t.str;
+          default = null;
+          description = "The private CoreDNS VIP (v4) — the DNS stub target for <instance>.<domain> (D22).";
+        };
+        ipv6 = lib.mkOption {
+          type = t.nullOr t.str;
+          default = null;
+          description = "The private CoreDNS VIP (v6).";
+        };
+        zone = lib.mkOption {
+          type = t.str;
+          default = "";
+          description = "The private DNS zone served on the VIP (<instance>.<domain>); empty when the private CoreDNS is off.";
+        };
+      };
     };
   };
 }

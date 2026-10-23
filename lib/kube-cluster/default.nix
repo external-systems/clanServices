@@ -37,6 +37,8 @@ let
   nodeInterface = import ./node-interface.nix;
 
   cidrLib = import ./cidr.nix { inherit lib; };
+  bgp = import ./bgp.nix { inherit lib; };
+  bird = import ./bird.nix { inherit lib; };
   cilium = import ./cilium.nix {
     inherit
       lib
@@ -72,9 +74,15 @@ let
   # node-named pools (join-address /32+/128 + declared poolBlocks, always
   # node-fate-bound) plus the declared cluster-global pools.
   # members: [ { machineName, ipv4, ipv6, poolBlocks } ].
-  # Returns an attrset: pool name -> { blocks, serviceSelector }.
+  # extraPools: pre-resolved additions (the fabric pool, D10 — see
+  # resolveDataPlane). Returns an attrset: pool name -> { blocks,
+  # serviceSelector }.
   resolvePools =
-    { settings, members }:
+    {
+      settings,
+      members,
+      extraPools ? { },
+    }:
     lib.listToAttrs (
       map (m: {
         name = m.machineName;
@@ -88,14 +96,122 @@ let
         };
       }) members
     )
-    // lib.mapAttrs (_: p: { inherit (p) blocks serviceSelector; }) settings.pools;
+    // lib.mapAttrs (_: p: { inherit (p) blocks serviceSelector; }) (settings.pools // extraPools);
+
+  # The phase-5 data plane in one resolution seam (D9/D10/D19/D22):
+  # shared by both distro services and the eval tests so the bundle, the
+  # BIRD fragment, the assertions, and the export all see the same facts.
+  #
+  # members: [ { machineName, ... } ] (the cluster's member machines with
+  # known addresses). Returns:
+  #   asns              — { cilium, bird } (deterministic private 32-bit)
+  #   fabricPool        — null or the fabric pool attrset (D10)
+  #   effectivePools    — settings.pools + the fabric pool
+  #   sharedBgpPoolNames / sharedBgpBlocks / bgpActive
+  #   bgpBundle         — mkBundle's bgp param (null when bgp inactive)
+  #   birdFragment      — the cluster's BIRD fragment text (null likewise)
+  #   privateCoreDNS    — mkBundle's privateCoreDNS param (null when off)
+  #   exportFacts       — the kube_cluster export's bgp/fabric subtrees
+  resolveDataPlane =
+    {
+      instanceName,
+      settings,
+      ciliumId,
+      domain,
+      clusterDNS,
+      members,
+    }:
+    let
+      asns = bgp.resolveBgpAsns { inherit instanceName settings; };
+      fabricPool = bgp.mkFabricPool { inherit instanceName ciliumId settings; };
+      effectivePools =
+        settings.pools // lib.optionalAttrs (fabricPool != null) { ${fabricPool.name} = fabricPool; };
+      sharedBgpPools = lib.filterAttrs (_: p: p.delivery == "shared-bgp") effectivePools;
+      sharedBgpPoolNames = builtins.attrNames sharedBgpPools;
+      bgpActive = sharedBgpPoolNames != [ ];
+      sharedBgpBlocks = lib.concatMap (p: p.blocks) (builtins.attrValues sharedBgpPools);
+      fabricBlocks' = bgp.fabricBlocks { inherit ciliumId settings; };
+      vips = bgp.fabricCoreDNSVips { inherit ciliumId settings; };
+      privateDnsOn = settings.fabric.enable && settings.fabric.coredns.enable;
+    in
+    {
+      inherit
+        asns
+        fabricPool
+        effectivePools
+        sharedBgpPoolNames
+        bgpActive
+        sharedBgpBlocks
+        ;
+
+      bgpBundle =
+        if bgpActive then
+          {
+            inherit asns sharedBgpPoolNames;
+            members = map (m: m.machineName) members;
+            inherit (settings.bgp) advertisePodCIDRs advertiseClusterIPs;
+          }
+        else
+          null;
+
+      birdFragment =
+        if bgpActive then
+          bgp.mkBirdFragment {
+            inherit instanceName asns;
+            blocks = sharedBgpBlocks;
+            inherit (settings.bgp) upstreamPeers;
+          }
+        else
+          null;
+
+      privateCoreDNS =
+        if privateDnsOn then
+          {
+            inherit domain clusterDNS;
+            vip4 = vips.ipv4;
+            vip6 = vips.ipv6;
+            fabricPoolName = fabricPool.name;
+            inherit (settings.fabric.coredns) wildcardAddress svcZone podZone;
+          }
+        else
+          null;
+
+      exportFacts = {
+        bgp = {
+          enabled = bgpActive;
+          ciliumAsn = asns.cilium;
+          birdAsn = asns.bird;
+          inherit (settings.bgp) upstreamPeers advertisePodCIDRs advertiseClusterIPs;
+        };
+        fabric = {
+          enabled = settings.fabric.enable;
+          pool = if fabricPool != null then fabricPool.name else "";
+          ipv4Block = if settings.fabric.enable then fabricBlocks'.v4 else null;
+          ipv6Block = if settings.fabric.enable then fabricBlocks'.v6 else null;
+          coreDNS = {
+            ipv4 = if privateDnsOn then vips.ipv4 else null;
+            ipv6 = if privateDnsOn then vips.ipv6 else null;
+            zone = if privateDnsOn then "${instanceName}.${domain}" else "";
+          };
+        };
+      };
+    };
 in
 rec {
   inherit
     cidrs
     hashCiliumId
     resolveCiliumId
+    resolveDataPlane
     ;
+
+  # BGP v2 / fabric derivation helpers (D9/D10) and the vendored BIRD
+  # fragment machinery (D19).
+  inherit bgp bird;
+
+  # The vendored BIRD NixOS module (path — NixOS dedups path imports, so
+  # every contributing clanService lands in ONE bird daemon per host).
+  birdModule = ./bird-module.nix;
 
   interfaces = {
     cluster = clusterInterface;

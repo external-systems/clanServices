@@ -59,10 +59,17 @@ One rule decides who serves a `type: LoadBalancer` Service:
   documented Cilium dummy-Endpoints limitation affects only Cilium's own
   Gateway/Ingress implementations, which stay disabled (D1) — third-party
   proxies with real backends (a day-2 Envoy Gateway) are unaffected.
-- **`loadBalancerClass: io.cilium/lb-ipam` → pools.** Every clan-rendered
+- **Cilium-handled `loadBalancerClass` → pools.** Every clan-rendered
   VIP consumer (ClusterMesh apiserver, private CoreDNS, mirror Services)
-  pins this class automatically and draws from LB-IPAM pools. Pools are the
-  only VIP mechanism.
+  pins a pool class automatically and draws from LB-IPAM pools. Pools are
+  the only VIP mechanism. Two classes serve pools:
+  `io.cilium/lb-ipam` for node-fate-bound and floating draws, and
+  `io.cilium/bgp-control-plane` for `shared-bgp` draws — Cilium 1.20's
+  BGP control plane announces ingress IPs only for the latter (or unset
+  classless Services, which Node IPAM owns), while LB-IPAM allocation
+  serves both. Pinning `io.cilium/lb-ipam` on a shared-bgp Service
+  allocates but never announces — the renderer pins the right class for
+  its own consumers; day-2 Services must pick by delivery mode.
 
 servicelb/klipper stays disabled in every mode (D42): two controllers racing
 on `status.loadBalancer.ingress` is a contract violation.
@@ -103,39 +110,98 @@ served under `loadBalancerClass: io.cilium/lb-ipam`.
 
 ## BGP and the BIRD fabric (D9/D19)
 
-Cilium agents (GoBGP) originate VIP routes and dial **out** over loopback to
-a per-machine BIRD daemon — nothing listens on :179. BIRD imports only
-approved exact VIPs and exports only those upstream; it never installs mesh,
-primary, or transit routes into cluster-machine kernels. The upstream router
-(a NixOS BIRD machine, a MikroTik, a switch) hears the same route from every
-healthy machine and ECMPs across them. Cilium agents never peer with each
-other.
+Cilium agents (GoBGP) originate VIP routes and dial **out** to a
+per-machine BIRD daemon over a node-local loopback link: the address
+`169.254.179.1/32` is assigned to `lo` (a systemd oneshot per cluster
+node), BIRD binds its *only* `:179` listener to it (`passive on; strict
+bind on; free bind on`), and Cilium's `CiliumBGPClusterConfig` (one per
+node, selected by `kubernetes.io/hostname`) peers with it — no
+`localPort`, so the Cilium side listens on nothing. BIRD refuses 127/8
+neighbor addresses, hence the link-local alias instead of 127.0.0.1.
 
-Each cluster gets two deterministic private 32-bit ASNs (BIRD-side and
-Cilium-side) plus a per-machine router id; uniform ASNs mean no multipath
-relax. Timers: hold 9, keepalive 3, connect-retry 5 (no BFD in Cilium 1.20).
-A published foreign-router contract covers ASNs, timers, max-prefix and
-prefix filters (accept only pool blocks as /32 + /128), ECMP path counts,
-and proxy-NDP on-LAN.
+BIRD imports only approved exact VIPs — `/32` and `/128` prefixes inside
+the cluster's `shared-bgp` pool blocks, enforced by per-family prefix
+filters *and* an `import limit` (block capacity, capped at 4096) — and
+re-exports exactly those to the cluster's configured
+`bgp.upstreamPeers`. Upstream sessions are dialed out by the node and
+split per address family (a v4 session carries the ipv4 channel, a v6
+session the ipv6 channel), with `next hop self` so the router sees each
+node's own address as the VIP next hop. BIRD installs nothing into the
+cluster node's kernel (no kernel protocol in the fragment). One BIRD
+quirk to know: BIRD 2 opens a wildcard listen socket per BGP protocol
+with no way to disable it, so the upstream-session protocols live on
+`local port 4179` — `:179` stays loopback-only, and inbound `:4179` is
+firewall-dropped (it accepts nothing anyway: only configured neighbor
+addresses match).
+
+The upstream router (a NixOS BIRD machine, a MikroTik, a switch) hears
+the same route from every healthy machine and ECMPs across them. Cilium
+agents never peer with each other.
+
+Each cluster gets two deterministic private 32-bit ASNs (Cilium-side and
+BIRD-side), derived from the instance name: the first 8 hex chars of
+`sha256("kube-cluster-bgp-cilium:<instance>")` resp.
+`sha256("kube-cluster-bgp-bird:<instance>")` as a u32, mapped modulo into
+the RFC 6996 range 4200000000–4294967293 (a deterministic +1 covers the
+salt-collision case). Explicit `bgp.ciliumASN` / `bgp.birdASN` pins are
+the escape hatch; ASN collisions are a fleet-wide eval error. Uniform
+ASNs mean no multipath relax on the router. The router id is the node's
+IPv4 (mesh/transport) address on both sides. Timers: hold 9, keepalive 3,
+connect-retry 5 (no BFD in Cilium 1.20).
+
+**Foreign-router contract (published):** peer with each cluster node's
+BIRD (ASN = the cluster's BIRD-side ASN, exported as
+`kube_cluster.bgp.birdAsn`) over any routed path to the node; timers hold
+9 / keepalive 3 / connect-retry 5; accept **only** the cluster's
+shared-bgp pool blocks (exported as `kube_cluster.pools`) and only as
+exact /32 + /128 (prefix filters + a max-prefix limit); set your ECMP
+path count ≥ the node count; proxy-NDP if the VIPs are on-LAN. The VM
+suites ship a complete reference implementation: the `router` fixture in
+`services/{k3s,rke2}/tests/vm/bgp-ecmp.nix` is a plain BIRD daemon
+realizing exactly this contract.
 
 BIRD config is rendered through a vendored named-fragment pattern (D19):
-multiple clanServices contribute named, instance-prefixed blocks to one BIRD
-per machine, with nixpkgs' `bird -p` pre-start check as the validator.
+multiple clanServices contribute named, instance-prefixed blocks
+(`clan.bird.fragments."kube-cluster-<instance>"`, later
+`fleet-routing-<instance>`) into one BIRD per machine; the router id is
+set exactly once (a conflicting second definition fails evaluation), and
+the assembled config is validated by `bird -p` at **build** time (the
+nixpkgs `services.bird` checkConfig hook — stronger than a pre-start
+check). A second BGP stack on the host (e.g. FRR bgpd) is an eval error
+(invariant 9).
 
 ## The private fleet fabric (D10)
 
-On by default per cluster: one private `shared-bgp` pool (ULA + RFC1918
-carved from the cluster's derived CIDR space), per-machine BIRD and BGP v2
-resources, and core VIPs on it — private CoreDNS, the ClusterMesh apiserver,
-and the mirror Services. This is what lets clan machines route into every
-cluster.
+On by default per cluster (`fabric.enable = true`): one private
+`shared-bgp` pool `<instance>-fabric` with blocks
+`172.16.<ciliumId>.0/24` + `fd11:<ciliumId>::/64` — derived from the
+resolved cluster id, disjoint from the id-derived pod/service space
+(`10/8` + `fd10::/16`) and the mesh hash space (`192.168/16` +
+`fd77::/16`) by construction, and eval-asserted non-overlapping with any
+explicit CIDR overrides (override the blocks via `fabric.ipv4Block` /
+`fabric.ipv6Block` when your RFC1918 plan needs it) — plus per-machine
+BIRD and the BGP v2 resources, and the private CoreDNS on the fabric VIP
+(offset 53/0x53 in the fabric blocks, pinned via `lbipam.cilium.io/ips`,
+advertised with ETP Local withdrawal). This is what lets clan machines
+route into every cluster. `bgp.enable` is locked to "any shared-bgp pool
+exists" — disabling the fabric without declaring another shared-bgp pool
+requires `bgp.enable = false` (both directions are eval errors, §6.12).
+
+Pod/ClusterIP advertisement to hosts stays opt-in and default-off (D13):
+`bgp.advertisePodCIDRs` / `bgp.advertiseClusterIPs`.
+
+Floating pools (D8) have a documented failure mode: with no runtime
+controller, the VIP is node-fate-bound in practice — when the holding
+node dies, the address blackholes until the controller re-homes it. The
+VM suites assert exactly that window (the controller itself, e.g. an
+hcloud-ip-floater fork, is day-2).
 
 Public `shared-bgp` is opt-in and has hard preconditions: upstream-routed
 address space (DHCPv6-PD carve-out, static assignment, or PI space) and a
 router you control. Explicit non-goals: BGP over a single dynamic
 residential IPv4, and heterogeneous multi-WAN inbound failover (use DNS
-failover instead — the Hetzner public edge pattern is node-bound + floating
-pools with health-checked DNS failover).
+failover instead — the Hetzner public edge pattern is node-bound +
+floating pools with health-checked DNS failover).
 
 One VIP per cluster: never advertise the same VIP from two clusters.
 Cross-cluster traffic goes through ClusterMesh global Services or DNS.

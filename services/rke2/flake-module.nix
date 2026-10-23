@@ -45,6 +45,10 @@ rec {
         imports = [ (import ./tests/vm/data-plane.nix { inherit inputs; }) ];
         inherit clan;
       };
+      rke2-bgp-ecmp = {
+        imports = [ ./tests/vm/bgp-ecmp.nix ];
+        inherit clan;
+      };
     };
   };
 }

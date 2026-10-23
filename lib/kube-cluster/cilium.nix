@@ -92,6 +92,9 @@ in
       # (replaces servicelb, which stays permanently disabled — D42).
       defaultLBServiceIPAM = "nodeipam";
       nodeIPAM.enabled = true;
+      # D9: BGP v2 control plane. Locked to shared-bgp pool presence by the
+      # pool assertions (§6.12); validateBundle re-checks post-merge.
+      bgpControlPlane.enabled = settings.bgp.enable;
       ipv4.enabled = true;
       ipv6.enabled = true;
       enableIPv4Masquerade = true;

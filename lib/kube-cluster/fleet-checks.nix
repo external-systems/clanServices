@@ -127,6 +127,51 @@ rec {
           || (p.fst.cluster.transport.instance or null) != (p.snd.cluster.transport.instance or null)
         ) (pairs groupClusters)
       ) (lib.attrValues byGroup);
+
+      # 6. BGP ASN collisions (D9; phase 5): the hashed per-cluster ASNs
+      # must be unique fleet-wide (the escape hatch is the
+      # bgp.ciliumASN/bgp.birdASN pin). Defensive `or null` keeps hand-built
+      # export trees (tests, older publishers) evaluable.
+      asnClaims = lib.concatMap (
+        c:
+        lib.optionals (c.cluster.bgp.enabled or false) [
+          {
+            asn = c.cluster.bgp.ciliumAsn or null;
+            who = "${c.serviceName}/${c.instanceName} (cilium)";
+          }
+          {
+            asn = c.cluster.bgp.birdAsn or null;
+            who = "${c.serviceName}/${c.instanceName} (bird)";
+          }
+        ]
+      ) clusters;
+      byAsn = lib.groupBy (x: toString x.asn) (builtins.filter (x: x.asn != null) asnClaims);
+      duplicateAsns = lib.filterAttrs (_: xs: builtins.length (lib.unique (map (x: x.who) xs)) > 1) byAsn;
+
+      # 7. shared-bgp ⊆ router-role prefixes (D8, phase 5): fires once any
+      # fleet-routing ROUTER-role export exists in the same inventory
+      # (campaign B introduces the service + its fleet_routing export
+      # interface with `routerPrefixes`); vacuous until then. Consumed
+      # through parseScope only.
+      routerPrefixes = lib.concatMap (
+        scope:
+        let
+          v = exports.${scope};
+        in
+        v.fleet_routing.routerPrefixes or [ ]
+      ) (builtins.attrNames exports);
+      sharedBgpOutside = lib.concatMap (
+        c:
+        let
+          sharedPools = lib.filterAttrs (_: p: p.delivery or null == "shared-bgp") (c.cluster.pools or { });
+          blocks = lib.concatMap (p: p.blocks or [ ]) (builtins.attrValues sharedPools);
+          uncovered = builtins.filter (b: !lib.any (r: cidr.contains r b) routerPrefixes) blocks;
+        in
+        map (b: {
+          cluster = "${c.serviceName}/${c.instanceName}";
+          block = b;
+        }) uncovered
+      ) clusters;
     in
     {
       kube-cluster-unique-names = {
@@ -180,6 +225,24 @@ rec {
             p:
             "${p.fst.serviceName}/${p.fst.instanceName} (${builtins.toJSON p.fst.cluster.transport}) vs ${p.snd.serviceName}/${p.snd.instanceName} (${builtins.toJSON p.snd.cluster.transport})"
           ) transportInconsistent
+        }";
+      };
+
+      kube-cluster-unique-bgp-asns = {
+        assertion = duplicateAsns == { };
+        message = "kube-cluster fleet check: BGP ASN collision (D9 — pin bgp.ciliumASN/bgp.birdASN on all but one claimant): ${
+          lib.concatStringsSep "; " (
+            lib.mapAttrsToList (
+              asn: xs: "ASN ${asn} claimed by ${lib.concatStringsSep ", " (lib.unique (map (x: x.who) xs))}"
+            ) duplicateAsns
+          )
+        }";
+      };
+
+      kube-cluster-shared-bgp-router-prefixes = {
+        assertion = routerPrefixes == [ ] || sharedBgpOutside == [ ];
+        message = "kube-cluster fleet check: shared-bgp pool blocks outside all fleet-routing router-role prefixes (D8): ${
+          lib.concatMapStringsSep "; " (x: "${x.block} (${x.cluster})") sharedBgpOutside
         }";
       };
     };

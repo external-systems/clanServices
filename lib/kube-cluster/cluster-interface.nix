@@ -115,8 +115,10 @@
               type = lib.types.attrsOf lib.types.str;
               description = ''
                 matchLabels of the pool's serviceSelector — only Services
-                carrying these labels (and loadBalancerClass
-                io.cilium/lb-ipam) draw from this pool.
+                carrying these labels (and a Cilium-handled
+                loadBalancerClass: io.cilium/lb-ipam for non-BGP draws,
+                io.cilium/bgp-control-plane for shared-bgp draws) draw
+                from this pool.
               '';
             };
             delivery = lib.mkOption {
@@ -129,9 +131,13 @@
               description = ''
                 How traffic reaches pool addresses + failure semantics
                 (D8). node-fate-bound is per-machine scope and is rejected
-                for declared (cluster-global) pools. shared-bgp assertions
-                against router-role prefixes land with the router role in
-                phase 5 — currently shape-only.
+                for declared (cluster-global) pools. shared-bgp requires the
+                BGP plane (bgp.enable — locked together, eval-asserted) and
+                Services drawing from it must pin
+                loadBalancerClass: io.cilium/bgp-control-plane (Cilium
+                announces only that class or unset). shared-bgp blocks must
+                stay inside router-role prefixes when a fleet-routing router
+                exists in the same inventory (fleet-wide check, phase 5+).
               '';
             };
             candidates = lib.mkOption {
@@ -152,6 +158,158 @@
         serve only Services with loadBalancerClass: io.cilium/lb-ipam;
         classless Services go to Node IPAM (D41).
       '';
+    };
+
+    # BGP v2 control plane (D9). `enable` is locked to the presence of
+    # shared-bgp pools (invariant 6, eval-asserted): BGP exists only to
+    # deliver shared-bgp VIPs, and shared-bgp pools cannot work without it.
+    # With the default fabric (D10, fabric.enable = true) a shared-bgp pool
+    # always exists, so the default here is consistent.
+    bgp = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Render the BGP v2 resources (CiliumBGPClusterConfig per node,
+          CiliumBGPPeerConfig, CiliumBGPAdvertisement) and the per-node
+          BIRD fragment. Must equal "any shared-bgp pool exists" (including
+          the default fabric pool) — both directions are eval-asserted
+          (§6.12).
+        '';
+      };
+      advertisePodCIDRs = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          D13 opt-in: advertise the cluster's pod CIDRs (CiliumPodIPPool
+          advertisement) to BGP peers. Default off — hosts reach Services
+          via VIPs, never pods directly.
+        '';
+      };
+      advertiseClusterIPs = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          D13 opt-in: advertise Service ClusterIPs to BGP peers. Default
+          off.
+        '';
+      };
+      upstreamPeers = lib.mkOption {
+        type = lib.types.listOf (
+          lib.types.submodule {
+            options = {
+              address = lib.mkOption {
+                type = lib.types.str;
+                description = "Upstream BGP peer address (v4 or v6).";
+              };
+              asn = lib.mkOption {
+                type = lib.types.ints.between 1 4294967295;
+                description = "Upstream peer ASN.";
+              };
+            };
+          }
+        );
+        default = [ ];
+        description = ''
+          Upstream BGP peers the per-node BIRD dials out to (active,
+          family-split sessions; D9). With none configured, BIRD still runs
+          locally, terminating the Cilium sessions (the private fabric
+          works within the mesh; upstream reachability simply has no
+          carrier yet — D10).
+        '';
+      };
+      ciliumASN = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 4294967295);
+        default = null;
+        description = ''
+          The Cilium-side BGP ASN. null derives a deterministic private
+          32-bit ASN from the instance name (D9). Pin only to escape a
+          fleet-wide ASN collision (fleet-asserted).
+        '';
+      };
+      birdASN = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 4294967295);
+        default = null;
+        description = ''
+          The BIRD-side BGP ASN (the cluster's ASN as its upstream peers
+          see it). null derives like ciliumASN.
+        '';
+      };
+    };
+
+    # The private fleet fabric (D10), on by default: one private shared-bgp
+    # pool derived from the cluster's CIDR space + core VIPs on it.
+    fabric = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Render the private fleet fabric (D10): a cluster-global
+          shared-bgp pool "<instance>-fabric" (RFC1918 + ULA blocks derived
+          from the resolved cilium id, non-overlap with pod/service CIDRs
+          eval-asserted) plus the private CoreDNS VIP.
+        '';
+      };
+      ipv4Block = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Fabric pool IPv4 block. null derives 172.16.<ciliumId>.0/24.
+          The prefix must be /26 or shorter (at least 64 addresses: the
+          private CoreDNS VIP lives at offset 53).
+        '';
+      };
+      ipv6Block = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Fabric pool IPv6 block. null derives fd11:<ciliumId>::/64.
+          Prefix must be /120 or shorter (the private CoreDNS VIP lives at
+          offset 0x53).
+        '';
+      };
+      coredns = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Render the private-zone CoreDNS (D22 substrate): a second
+            CoreDNS Deployment + a type:LoadBalancer Service pinned to the
+            fabric VIP (offset 53 in the fabric blocks), serving the zone
+            <instance>.<domain>. cluster.local is NEVER served here (D21).
+          '';
+        };
+        wildcardAddress = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = ''
+            The day-2 proxy address the <instance>.<domain> wildcard A/AAAA
+            answer points at (D22: the zone's wildcard target is whatever
+            proxy the operator installs). null = the zone serves NXDOMAIN —
+            it exists and resolves negatively until day-2 sets a target.
+          '';
+        };
+        svcZone = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = ''
+            D22(a) opt-in: serve <instance>.svc.<domain> — suffix-rewritten
+            to svc.cluster.local with answer-name reversal, forwarded to the
+            cluster CoreDNS. Consumed by the fleet-routing admin role.
+          '';
+        };
+        podZone = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = ''
+            D22(b) opt-in: serve <instance>.pods.<domain> — suffix-rewritten
+            to pod.cluster.local (dash-form), forwarded to the cluster
+            CoreDNS (which has `pods insecure`). Meaningful only with
+            bgp.advertisePodCIDRs (D13). Consumed by the fleet-routing
+            admin role.
+          '';
+        };
+      };
     };
 
     meshGroup = lib.mkOption {

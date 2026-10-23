@@ -56,4 +56,9 @@ Phase 4 added hashed-default `cilium.id` resolution (pin your id before
 upgrading — see [Upgrades](../guides/upgrades.md)), topology labels
 (invariant 7), the `kube_cluster` dual-stack export, and the fleet-wide
 `clan.checks` (one cluster per node across rke2+k3s, id collisions,
-meshed-CIDR overlap).
+meshed-CIDR overlap). Phase 5 (campaign A) added the BGP v2
+control plane + per-node BIRD (D9/D19), the default private fleet fabric
+(D10) with the private-zone CoreDNS on its fabric VIP (D22 substrate), and
+the `rke2-bgp-ecmp` VM suite (BIRD foreign-router fixture, DNS through
+the VIP, ETP-Local withdrawal).
+

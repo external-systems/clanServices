@@ -22,8 +22,8 @@ D43.
 | D5 | REVOKED (r5–7) | HAProxy edge-proxy scrapped; unrelated to the retained per-node kubeapi HAProxy (§6.6) |
 | D6 | REVOKED | Three-layer Gateway ownership / zero-churn contract |
 | D7 | REVOKED | Default NS+EW Gateway pair and `web` listener profile |
-| D8 | REVISED (r13) | Pool model: 2 scopes × 4 delivery modes — pools now serve only `loadBalancerClass: io.cilium/lb-ipam`; classless Services go to Node IPAM (D41) |
-| D9 | active | BGP topology + foreign-router contract: Cilium dials out to per-node BIRD; BIRD exports only approved VIPs; upstream ECMPs across healthy nodes |
+| D8 | REVISED (r13) | Pool model: 2 scopes × 4 delivery modes — pools serve Cilium-handled classes only (`io.cilium/lb-ipam` non-BGP, `io.cilium/bgp-control-plane` for shared-bgp, phase 5); classless Services go to Node IPAM (D41) |
+| D9 | active | BGP topology + foreign-router contract: Cilium dials out to per-node BIRD over a loopback alias (169.254.179.1, phase 5); BIRD exports only approved VIPs; upstream ECMPs across healthy nodes; hashed private ASNs + hold 9/keepalive 3/retry 5 |
 | D10 | active | Private fleet routing fabric default-on; public `shared-bgp` opt-in with hard preconditions; one VIP per cluster |
 | D11 | active | Fleet-routing clanService for non-Kubernetes machines (roles per D33) |
 | D12 | active | ClusterMesh apiserver exposure stays node-bound; pattern generalized for the D30 mirror Services |
