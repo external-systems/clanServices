@@ -51,6 +51,6 @@ The engineering version — thin distro services over a shared library, the
 bootstrap bundle and its GitOps handoff, Node IPAM and the FRR/native
 fabric, and the artifact flake — is in
 [Architecture → Overview](architecture/overview.md). Every normative choice
-is recorded in the [decision record](decisions/index.md) (D1–D55), and
+is recorded in the [decision record](decisions/index.md) (D1–D57), and
 [SPEC.md](https://github.com/external-systems/clanServices/blob/main/SPEC.md)
 in the repo root is the agent-facing contract this site renders for humans.

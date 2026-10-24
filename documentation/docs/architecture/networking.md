@@ -4,7 +4,9 @@ The data plane is inventory-owned host networking (`netif`), an encrypted
 routed fabric (`routed-fabric`: per-adjacency WireGuard, FRR/Zebra routing,
 routed-hub MVP topology), and native-routed Cilium. BIRD and VXLAN are
 legacy, not the target. The round-14 full-mesh target is superseded by
-round 15's routed-hub design (D51–D55).
+round 15's routed-hub design (D51–D55); round 16 replaces the four-role
+model with two topology roles plus orthogonal `access`/`border` switches
+(D56) and adds the `clan.networkFacts` seam (D57).
 
 ## Host links: `netif`
 
@@ -32,10 +34,11 @@ Every fabric member has stable dual-stack `/32` and `/128` addresses on a
 fabric loopback/dummy interface. These are the node InternalIPs, FRR
 router ID, and API/HAProxy transport addresses.
 
-Round 15's MVP topology is **routed-hub** (D51): spokes declare adjacency
-to the fabric's hubs (one minimum, two for HA), hubs forward and readvertise
-between spokes, and spokes never transit. Full mesh is deferred. For every
-declared adjacency — hub↔spoke, hub↔hub, router↔upstream — `routed-fabric`
+The MVP topology is **routed-hub** (D51/D56): members declare adjacency
+to hub-role machines (one minimum, two for HA, no arbitrary maximum),
+hubs forward and readvertise between members, and members never provide
+spoke transit. Full mesh is deferred. For every declared adjacency —
+member↔hub, hub↔hub, border↔upstream — `routed-fabric`
 renders exactly one point-to-point WireGuard interface with one peer,
 deterministic transfer prefixes, and a deterministic instance/peer-derived
 name of at most 15 characters. There is no multi-peer interface and no
@@ -166,14 +169,14 @@ goals; use DNS failover for the latter.
 
 ## Route consumption and DNS
 
-Members join one of four canonical roles — there is no default role:
-`member` (the base) provides fabric transport and automatic native pod
-routes on Kubernetes nodes. `client` adds cluster VIP routes and the
-instance-zone DNS stub. `admin` adds explicit pod/ClusterIP consumption
-and the svc/pod zones. `router` adds authorized external/upstream transit
-— upstream peers, owned-prefix policy, forwarding, and optional proxy-NDP
-— and is not necessarily a hub; each spoke declares its hub list on the
-machine (`settings.hubs`), orthogonal to the roles (D52).
+Route/DNS consumption is the per-machine `access` switch, orthogonal to
+topology (D56) — `access = member` (the default) provides fabric transport
+and automatic native pod routes on Kubernetes nodes. `access = client` adds
+cluster VIP routes and the instance-zone DNS stub. `access = admin` adds
+explicit pod/ClusterIP consumption and the svc/pod zones. The optional
+per-machine `border` switch owns upstream transit — upstream peers,
+owned-prefix policy, forwarding, and optional NDP — and implies neither hub
+membership nor admin DNS; a hub need not be a border and vice versa.
 
 Ordinary clients do not receive pod or ClusterIP routes. `cluster.local`
 is never served to them. Route-only DNS uses global systemd-resolved

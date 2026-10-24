@@ -9,24 +9,26 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 - [k3s](services/k3s/README.md): k3s Kubernetes cluster
 - [rke2](services/rke2/README.md): RKE2 Kubernetes cluster
 - `netif` (planned): inventory-owned, multi-instance host links and static routes
-- `routed-fabric` (planned, round-15 target): per-adjacency WireGuard + FRR
-  flat-L3 fabric, routed-hub MVP; the legacy `services/fleet-routing/` tree
-  predates the round-15 design and is not its implementation
+- `routed-fabric` (planned, round-16 target): per-adjacency WireGuard + FRR
+  flat-L3 fabric, routed-hub MVP with member/hub topology, orthogonal
+  access and border settings, and dependency-free network facts; the legacy
+  `services/fleet-routing/` tree predates the round-15/16 design and is not
+  its implementation
 - [wireguard-mesh](services/wireguard-mesh/README.md): legacy host transport, pending migration/removal
 - [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
 [SPEC.md](SPEC.md) is the canonical architecture, status, and delivery record — a single dense
 contract for agents; `documentation/` (MkDocs site + slides) is the human record of the same spec
 (edit both together). Round 14 makes FRR + per-pair WireGuard + native multi-pool Cilium the
-data-plane target and puts static host networking in inventory through `netif`. Round 15
-(2026-10-24) refines that target: the fabric service is `routed-fabric` with a routed-hub MVP —
-four canonical roles (`member` base, `client`/`admin`/`router` specialized) with explicit hub
-topology orthogonal to the router role — multi-instance multi-link
-`netif`, fabric-derived mesh groups, and full-by-default ClusterMesh with selective peers
-(D51–D55; phases 5R1–5R3 remain planned, delivered as one complete overhaul session including
-the `external-systems/pkgs` native Cilium base re-inflation and the clanServices pin update).
-Round 13's scope
-remains: everything else in-cluster is a documented day-2 GitOps pattern, never clan-rendered.
+data-plane target and puts static host networking in inventory through `netif`. Round 15 adds
+routed-hub `routed-fabric`, multi-instance multi-link `netif`, fabric-derived mesh groups, and
+full-by-default ClusterMesh with selective peers. Round 16 (2026-10-24) refines the fabric into
+member/hub topology roles with orthogonal member/client/admin access and optional border
+configuration (D56), plus a read-only, non-secret `clan.networkFacts` interface for consumer-owned
+nix-topology diagram packages without a nix-topology dependency here (D57). Phases 5R1–5R4 remain
+planned, including the `external-systems/pkgs` native Cilium base re-inflation and clanServices pin
+update. Round 13's scope remains: everything else in-cluster is a documented day-2 GitOps pattern,
+never clan-rendered.
 
 ## Usage
 

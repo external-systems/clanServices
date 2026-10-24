@@ -19,25 +19,28 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
 go-httpbin is the standard airgapped HTTP workload. Minimal local
 artifacts are mandatory.
 
-## Round-15 suites
+## Round-15/16 suites
 
 - Existing single/join/HA per distro, with native datapath assertions.
 - **netif:** multi-instance and multi-link inventories, static and
   DHCP/RA addressing, on-link and policy routes, conflicting-ownership
   and duplicate-default-route eval negatives, MTU derivation, exports,
   and deploy-target behavior.
-- **Routed-fabric transport/FRR:** explicit routed hubs only (no iBGP,
+- **Routed-fabric transport/FRR:** explicit routed hubs only — hubs
+  declared by role, none inferred from spoke-list unions (no iBGP,
   no route reflectors, no full mesh); eBGP sessions and BFD on both
   sides; RIB versus kernel FIB with no reject routes and no installed IP
   default route unless an explicit policy table requires it; hub HA = 2
-  active-active multi-flow ECMP and single-hub withdrawal; two NAT
+  active-active multi-flow ECMP and single-hub withdrawal, with no
+  arbitrary hub maximum; two NAT
   sites with no direct link via reachable hubs; next-hop-self from
-  hubs; spoke non-transit negatives; NAT/outbound-only members; the
+  hubs; member non-transit negatives; NAT/outbound-only members; the
   external-transit 0.0.0.0/0 and ::/0 present ONLY in the WireGuard
-  crypto ACL, with Internet-SOURCED inbound traffic via router/hub to a
+  crypto ACL, with Internet-SOURCED inbound traffic via hub/border to a
   VIP and its source-policy return path (any installed/accepted default
-  route is a negative); route-filter negatives; reload/restart behavior;
-  MTU/PMTU.
+  route is a negative; NAT borders have no automatic conntrack sharing,
+  so existing-flow failover needs a separate state mechanism);
+  route-filter negatives; reload/restart behavior; MTU/PMTU.
 - **Data plane per distro:** native pod-to-pod without any tunnel or
   overlay, multi-pool remote routes, Node IPAM classless Services at
   fabric scope, ETP-Local candidates, node-bgp owner-only advertisement
@@ -55,12 +58,19 @@ artifacts are mandatory.
   (leaf isolation); cross-cluster pod routes and mirror-Service
   reachability for peering pairs; separate routed-fabric trust domains
   stay isolated (negative).
-- **Roles:** exactly four canonical roles — `member` (base),
-  `client`, `admin`, `router` (specializations); no default role, no
-  access setting. Isolation per role (client pod-route isolation, admin
-  svc/pod/ClusterIP + DNS access, router filtering), hub versus router
-  orthogonality, and the kamrui-h1 single-node k3s + admin dual-role
-  shape.
+- **Roles and switches:** exactly two topology roles — `member` and `hub`
+  (D56); plus the orthogonal per-machine `access` switch (`member` default,
+  `client`, `admin`) and the optional `border` switch — no `router` role,
+  no default-role model. Isolation per access level (client pod-route
+  isolation, admin svc/pod/ClusterIP + DNS access, border upstream
+  filtering with no automatic admin DNS), hub/border/access orthogonality
+  (a border that is not a hub, a hub that is not a border), and the
+  kamrui-h1 single-node k3s + hub topology + access=admin dual-shape.
+- **Network facts and diagrams (D57):** deep evaluation, JSON
+  serializability, versioned/secret-free/read-only schema, parity with
+  exports and functional renders, dynamic-state labeling, and one
+  consumer-owned nix-topology wrapper build producing SVGs without a
+  nix-topology dependency in clanServices.
 - PKI rotation, fake CCM, GitOps SSA no-op handoff, distroDefaults, RKE2
   CIS, and control-domain/read-only credential behavior.
 
@@ -69,10 +79,10 @@ Sealed-Secrets suites. Reserved: MCS-API and upstream-kubernetes suites.
 
 ## Status evidence
 
-Round 15 is the normative target; the routed-fabric MVP described above
+Round 15/16 is the normative target; the routed-fabric MVP described above
 is not yet implemented or VM-proven. The imported baseline recorded
 green wireguard-mesh and distro single/join/HA suites in the source
 fork; the later BIRD checkpoint `2995ac3` retained 5 green and 7 red
 suites. Both are legacy evidence only — they say nothing about
-round-15 routed hubs, selective ClusterMesh, or native multi-pool
-routing. No full-mesh suite exists or is required under round 15.
+round-15/16 routed hubs, selective ClusterMesh, or native multi-pool
+routing. No full-mesh suite exists or is required under round 15/16.

@@ -175,7 +175,11 @@ rke2+k3s, fabric-reference consistency) are computed from these exports as
 consumer clan with
 `clan.imports = [ <kube-cluster fleetChecksModule> ]` (this flake's own
 clan and the eval-test clans already do). No secrets ever appear in
-exports.
+exports. The same resolved facts — underlay, fabric, ClusterMesh, and
+control-domain graphs — are what each owning service publishes to the
+per-node `clan.networkFacts` interface (D57, planned), the neutral seam
+consumer-owned diagram tooling reads; see
+[Network diagrams](network-diagrams.md).
 
 ## Inventory example
 
@@ -188,8 +192,8 @@ inventory.instances = {
   fabric = {
     module.input = "clanServices";
     module.name = "routed-fabric";
-    # ... per-machine settings.hubs topology + member/client/admin/router roles
-    #     (see Routed fabric)
+    # ... per-machine settings.hubs topology + member/hub roles and
+    #     access/border switches (see Routed fabric)
   };
 
   cluster-a = {

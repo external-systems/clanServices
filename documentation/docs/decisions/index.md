@@ -1,7 +1,22 @@
-# Decision record (D1–D55)
+# Decision record (D1–D57)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history.
+
+**Round 16 (2026-10-24) — two topology roles + network facts.** Revised
+D33, D52; added D56, D57. Routed-fabric's four exclusive roles
+(`member`/`client`/`admin`/`router`) are replaced by **two topology roles**
+— `member` and `hub` — with a per-machine orthogonal `access` switch
+(`member` default, `client`, `admin`) and an optional orthogonal `border`
+capability for upstream transit; hub membership is directly declared by the
+`hub` role, not inferred from the union of spoke lists; every member needs
+≥1 reachable hub with HA = 2 and no arbitrary maximum. Separately, the
+flake will expose a dependency-free, versioned, JSON-serializable,
+non-secret, producer-owned **network-facts NixOS interface** at
+`clan.networkFacts` (exact schema planned, not implemented) as the neutral
+seam for consumer-owned nix-topology diagram wrappers. There is no
+implementation or VM evidence for either change yet; phases 5R1–5R4 remain
+planned.
 
 **Round 15 (2026-10-24) — routed-fabric, routed-hub MVP, selective
 ClusterMesh.** Revised D8, D9, D11, D13, D33, D41, D43, D44, D47, D50;
@@ -15,7 +30,8 @@ transport/egress correctness rules.
 Round 14's FRR + WireGuard + native-Cilium data plane stands; the change is
 the topology, shape, and strictness of that plane. There is no
 implementation or VM evidence for the round-15 shape; phases 5R1–5R3 remain
-planned.
+planned. The four-exclusive-role model of this round is superseded by D56
+(round 16), which keeps the same routed-hub data plane.
 
 **Round 14 (2026-10-24) — FRR + per-pair WireGuard + native Cilium.**
 Revised D8, D9, D11, D13, D19, D33, D41, D44; added D47–D50. The BIRD/VXLAN
@@ -60,7 +76,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D30 | active | Hub reaches spoke APIs through ClusterMesh mirror Services |
 | D31 | REVOKED | external-dns is day-2 |
 | D32 | REVOKED | OLM rejection is moot |
-| D33 | revised (r15) | Four canonical roles member/client/admin/router (member base, others specialized); dual-shape legal; one fabric membership per host |
+| D33 | revised (r16) | Two topology roles member/hub; per-machine access member/client/admin (default member); optional border; dual-shape legal; one fabric membership per host |
 | D34 | active | Last 3 Kubernetes minors, latest patch |
 | D35 | revised | Clan vars own bootstrap plane only |
 | D36 | superseded | Carried into D43 |
@@ -79,10 +95,86 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D49 | active (r14) | Native-routed multi-pool Cilium mandatory |
 | D50 | revised (r15) | Inventory owns core host networking through multi-instance multi-link `netif` |
 | D51 | active (r15) | Routed-hub-only MVP; declared adjacencies, eBGP/next-hop-self, two-hub active-active HA, transit and return-path correctness |
-| D52 | active (r15) | `routed-fabric` service: four canonical roles; hub topology orthogonal to router; fabric-scoped Node IPAM |
+| D52 | revised (r16) | `routed-fabric` service: two topology roles (member, hub); hub declared by role, not inferred; access and border orthogonal; fabric-scoped Node IPAM |
 | D53 | active (r15) | Multi-instance multi-link `netif`; multiple fabrics segment trust; one fabric membership per host |
 | D54 | active (r15) | ClusterMesh full by default in one fabric; explicit symmetric selective peers; mesh group derived from fabric |
 | D55 | active (r15) | nftables/no-iptables datapath hygiene; dual-AF local Cilium↔FRR session; official overlays are not underlays |
+| D56 | active (r16) | Two topology roles member/hub; orthogonal per-machine access (member default) and optional border; ≥1 reachable hub, HA = 2, no arbitrary max; no router role |
+| D57 | active (r16) | Versioned non-secret producer-owned `clan.networkFacts` NixOS interface; nix-topology stays consumer-owned; no clanServices dependency on it |
+
+## Round 16 decisions in detail
+
+### D56 — Two topology roles, orthogonal access and border
+
+Round 15's four exclusive roles (`member` base with `client`/`admin`/
+`router` specializations) are replaced by **two topology roles** — `member`
+and `hub` — plus two orthogonal, composable per-machine switches:
+
+- **`access = member | client | admin`** (default `member`) controls what a
+  machine may consume. `member` is fabric membership plus automatic native
+  pod routes on Kubernetes nodes; `client` adds cluster VIP routes and the
+  instance-zone DNS stub; `admin` adds pod/ClusterIP routes and the
+  svc/pod DNS zones.
+- **`border`** (optional) declares that the machine owns upstream transit:
+  upstream BGP peers, owned-prefix filtering, forwarding, optional NDP
+  (proxy-NDP), and authorized external/fabric transit. A border gets **no
+  automatic admin DNS**.
+
+Topology (`member`/`hub`), access (`member`/`client`/`admin`), and `border`
+are fully orthogonal: a border need not be a hub, and a hub need not be a
+border. Public endpoints do not imply either.
+
+Hubs are the `hub` role: each member names its hubs with
+`settings.hubs`, hub-hub links remain explicit, and hub membership is
+**directly declared by role** — not inferred solely from the union of spoke
+lists. Every member has at least one reachable hub; **HA = 2**; there is
+**no arbitrary maximum of two** — more than two hubs is a legal, explicit
+operator tradeoff. An all-hub all-to-all fabric is still the deferred full
+mesh, not a supported topology.
+
+Terms are kept distinct: a **fabric hub** forwards/readvertises fabric
+traffic; a **border** speaks to upstream/external networks; a **default
+gateway** is ordinary host routing (DHCP/RA is a separate concern, owned by
+`netif`); **Kubernetes Gateway API** is a day-2 in-cluster ingress concern
+that clan never renders (D1/D2). Routed ingress requires **source-policy
+return**; NAT borders have no automatic conntrack sharing, so
+existing-flow failover requires a separate state mechanism.
+
+### D57 — Producer-owned network facts (`clan.networkFacts`)
+
+ClanServices will expose a **dependency-free, versioned, JSON-serializable,
+non-secret, per-node network-facts NixOS interface** at
+`clan.networkFacts` — the exact option schema is **planned, not
+implemented**; option leaves carry defaults so deep evaluation never
+breaks. It is **producer-owned and actually read-only**: leaves use NixOS
+`readOnly = true`; the service owning each fact populates it from the same
+resolved configuration used for functional networking and exports;
+wrappers/consumers only read and never define or override values. This
+complements the exports system — there is no second source of truth.
+
+Coverage is the complete build-time-declared topology and policy: node
+identity; `netif` links/interfaces/networks/addresses/gateways/routes/
+policy routes/MTU/DNS/firewall trust; fabric member/hub/access/border,
+stable loopbacks, per-adjacency WireGuard links, transfer prefixes, MTU,
+public endpoints, AllowedIPs, ASNs, upstreams, FRR prefix policy, and
+NAT/source-return intent; and k8s cluster identity, node membership,
+distros, CIDRs, pools, Node-IPAM facts, private DNS, and API/mirror
+endpoints — as independent underlay/fabric/ClusterMesh/control-domain
+graph facts. No
+private keys, certificates, tokens, kubeconfigs, or other secrets ever
+appear. Dynamic DHCP/RA addresses, BGP-learned routes, live handshakes,
+reachability, and failures are **not build-time certainties**: the
+interface represents declared mode/intent and never invents values. The
+contract is 100% accurate for declared build-time configuration, not
+runtime state.
+
+ClanServices must **not** depend on `nix-topology`, import its modules, set
+its `topology.*` options, render icons/SVGs, or own diagram packages. A
+**consumer-owned wrapper** supplies the nix-topology input/overlay/flake
+module/NixOS module, translates `clan.networkFacts` to `topology.*`, and
+may expose `packages.<diagram>` or `topology.<system>.config.output`. See
+[Network diagrams](../architecture/network-diagrams.md). There is no
+implementation or VM evidence for D57 yet.
 
 ## Round 15 decisions in detail
 
@@ -108,6 +200,12 @@ clients are out of MVP: that requires client routing or an L2/VRRP-like
 mechanism. Upstream active-active requires upstream ECMP.
 
 ### D52 — routed-fabric and four canonical roles
+
+> **Superseded (round 16, D56).** The role model below — four exclusive
+> roles with `router` as the upstream-transit specialization — is replaced
+> by two topology roles (`member`, `hub`) plus orthogonal per-machine
+> `access` and optional `border`. The fabric-scoped Node IPAM and
+> provider-MAC/netif points stand.
 
 The flat-L3 service is renamed `routed-fabric` (the round-14
 `fleet-routing` code is legacy). It has **four canonical roles** and no

@@ -1,4 +1,4 @@
-# Routed-fabric MVP — implementation prompt (round 15)
+# Routed-fabric MVP — implementation prompt (round 15, role model revised round 16)
 
 This page is a **self-contained copy-paste prompt**. Paste the fenced block
 below, verbatim, into a fresh AI coding agent session whose working
@@ -7,13 +7,17 @@ session must complete the entire round-15 data-plane overhaul **across two
 repos** — the artifact flake `external-systems/pkgs` (native Cilium base
 re-inflation, committed there) and clanServices (implementation, tests,
 SPEC amendments, documentation) — with every eval and hermetic VM gate
-green. Commits are expected in both repos; clanServices should end as one
+green, implementing the round-16 role model (D56: two topology roles +
+orthogonal `access`/`border` switches). Commits are expected in both repos; clanServices should end as one
 coherent commit if practical, but that is not the goal and red/partial work
-is never committed. It assumes **no implementation exists**; round 15 lives
+is never committed. It assumes **no implementation exists**; rounds 15–16
+live
 in `SPEC.md` and must be read there first.
 
 ````text
-You are implementing the round-15 routed-fabric data-plane overhaul. You
+You are implementing the round-15 routed-fabric data-plane overhaul with
+the round-16 role model (D56: two topology roles + orthogonal access/
+border switches; D57 adds the planned clan.networkFacts seam). You
 work in TWO repos:
 - /home/netsa/external-systems/pkgs       (artifact flake — packaging only)
 - /home/netsa/external-systems/clanServices (working dir; branch main)
@@ -26,9 +30,9 @@ report blockers with evidence.
 0. Standing rules (a violation fails the run)
 ================================================================
 
-- READ FIRST, ASSUME NOTHING. Round-15 SPEC.md is the normative contract
+- READ FIRST, ASSUME NOTHING. Round-15/16 SPEC.md is the normative contract
   AND the status authority; implementation may not exist yet.
-  1. Read SPEC.md round 15 in full — decision record (D51–D55 and every
+  1. Read SPEC.md rounds 15–16 in full — decision record (D51–D57 and every
      revised entry), invariants, §6 subsystem contracts, §7 testing
      contract, §8 delivery plan.
   2. Read AGENTS.md (hard rules) and README.md in BOTH repos; the pkgs
@@ -50,7 +54,7 @@ report blockers with evidence.
   reality disproves a spec assumption, amend SPEC.md FIRST and
   documentation/ in the same change, rerun the static gates, then
   implement against the amended contract. This includes correcting
-  round-15 role wording if the spec still describes a default role/access
+  round-16 role wording if the spec still describes a four-role/default-role
   model — see the locked MVP below.
 - No IFD anywhere in clanServices eval. No day-2 scope expansion: no
   Gateway/Ingress/proxy, cert-manager, storage, or GitOps-controller
@@ -90,7 +94,7 @@ report blockers with evidence.
    The required single/join/HA suites must be green again at the end.
 
 ================================================================
-2. Locked MVP (from SPEC round 15 — do not redesign)
+2. Locked MVP (from SPEC rounds 15–16 — do not redesign)
 ================================================================
 
 - `netif`: multi-instance, multi-link host networking (links, addressing,
@@ -99,17 +103,25 @@ report blockers with evidence.
   Underlay MTU is explicit in netif; WireGuard and pod-path MTU derive
   from it rather than being repeated per fabric interface.
 - The legacy `fleet-routing` service is RENAMED to `routed-fabric`.
-  `routed-fabric` has EXACTLY FOUR canonical roles — `member` (the base
-  role), `client`, `admin`, `router` (each a specialization of member).
-  There is NO default role and NO per-machine access setting; every
-  machine takes exactly one of the four roles per instance.
+  `routed-fabric` has EXACTLY TWO topology roles — `member` and `hub` —
+  plus two ORTHOGONAL, composable per-machine switches (D56): `access =
+  member | client | admin` (default `member`) controlling route/DNS
+  consumption, and an optional `border` switch for upstream transit
+  (upstream peers, owned-prefix filtering, forwarding, optional NDP, NO
+  automatic admin DNS). There is NO `router` role, NO default-role model,
+  and NO per-machine role exclusivity beyond one topology role per machine
+  per instance. A border need not be a hub and a hub need not be a border;
+  public endpoints imply neither.
 - Fabric topology is routed-hub ONLY: explicit hubs, eBGP + BFD + Zebra.
   NO iBGP, NO route reflectors, NO full mesh. Every instance has >= 1
-  reachable hub; hub HA = 2 (two active hubs); hubs send next-hop-self;
+  reachable hub; hub HA = 2 (two active hubs) with NO arbitrary maximum —
+  more hubs is a legal explicit tradeoff; hubs send next-hop-self;
   spokes are non-transit (a spoke never forwards fabric traffic between
-  other members). Hub is a topology marker, ORTHOGONAL to the `router`
-  role (upstream-prefix ownership) — neither implies the other, and
-  Kubernetes manager nodes are NOT hubs by default.
+  other members). Hub membership is DIRECTLY DECLARED by the `hub` role,
+  not inferred from the union of spoke `settings.hubs` lists; spoke lists
+  select adjacency. Hub topology, `access`, and `border` are ORTHOGONAL —
+  none implies another, and Kubernetes manager nodes are NOT hubs by
+  default.
 - Multiple `routed-fabric` instances = multiple trust domains.
 - ClusterMesh: FULL PEERING BY DEFAULT within one fabric; explicit
   symmetric selective peers within that fabric. Unpeered clusters
@@ -215,14 +227,17 @@ service layers on top (fix once, not twice — AGENTS rule 4):
   `nix-unit.tests.netif` exists — register eval tests in the same change.
 - Rename `services/fleet-routing/` -> `services/routed-fabric/`
   (directory, `clan.modules` name, exports interface, flake-module keys,
-  docs pages). Exactly the four canonical roles member/client/admin/
-  router — member is the base; client/admin/router specialize it; NO
-  default role; NO access setting; one membership and exactly one role
-  per machine per instance. Amend SPEC D52/D33 wording first if it
-  still describes a default-role/access model.
+  docs pages). Exactly the two topology roles member/hub plus the
+  orthogonal per-machine `access` (member default) and `border` switches
+  (D56) — no `router` role, no default-role model, no access-role
+  exclusivity; one topology role and one membership per machine per
+  instance. Amend SPEC D52/D33 wording first if it
+  still describes a four-role/default-role model.
 - Fabric: explicit routed hubs only (eBGP + BFD + Zebra; no iBGP/RR/
   full mesh); >= 1 reachable hub per instance (eval error otherwise);
-  hub HA = 2; next-hop-self from hubs; spokes non-transit; NAT sites
+  hub HA = 2 with no arbitrary maximum; hubs declared by the `hub` role
+  (not inferred from spoke-list unions); next-hop-self from hubs; spokes
+  non-transit; NAT sites
   without a direct link work through reachable hubs. AllowedIPs =
   transit/source ACL rendered from the SAME route policy as the FRR
   filters (no cryptokey/routing drift); external-transit 0/0 and ::/0
@@ -263,8 +278,9 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
   and install no pod routes — leaf isolation). Separate routed-fabric
   instances = separate trust domains (negative test: no cross-domain
   routes).
-- Role-scoped DNS and route consumption per SPEC (client VIP-only,
-  admin +svc/pod zones + pod/ClusterIP routes, router upstream policy).
+- Role-scoped DNS and route consumption per SPEC (access=client VIP-only,
+  access=admin +svc/pod zones + pod/ClusterIP routes, border upstream
+  policy with no automatic admin DNS).
 - Failure suites: hub withdrawal, node-bgp withdrawal, shared-bgp
   single-path withdrawal.
 - Migration: once the routed-fabric replacement suites are green,
@@ -277,7 +293,26 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
   `checks.coverage` and eval stay coherent.
 
 ================================================================
-8. Mandatory test matrix (every row green; eval or VM as appropriate)
+8. Stage 5 — network facts and consumer-owned diagrams (D57)
+================================================================
+
+- Declare the versioned, JSON-serializable, non-secret
+  `clan.networkFacts` schema with `readOnly = true` leaves and safe
+  deep-eval defaults. Populate each fact from the SAME resolved config
+  that renders functional networking and exports: netif links/routes/
+  policy, fabric topology/access/border/adjacencies/AllowedIPs/FRR
+  policy, distro cluster/CIDR/pool/DNS/API facts, and independent
+  underlay/fabric/ClusterMesh/control-domain graphs.
+- Prove facts/export/render parity and secret exclusion. DHCP/RA,
+  learned routes, reachability, health, and failover remain declared
+  intent or unknown, never fabricated runtime certainty.
+- In a CONSUMER flake, build one nix-topology wrapper translating the
+  facts into `topology.*` and expose a buildable diagram package. Do not
+  add a nix-topology input, `topology.*` options, icons, renderer, or
+  diagram package to clanServices itself.
+
+================================================================
+9. Mandatory test matrix (every row green; eval or VM as appropriate)
 ================================================================
 
 1. netif: multi-NIC and multi-instance, SFP+-shaped interface names,
@@ -287,13 +322,15 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
 3. Two NAT sites with NO direct link: reachability via the hub(s).
 4. Two hubs active-active: multi-flow ECMP; single-hub withdrawal
    converges without blackholing.
-5. Router-not-hub: a router role is not a transit hub.
+5. Border-not-hub: a `border` machine is not a transit hub, and a hub is
+   not automatically a border.
 6. Stable host RIB/FIB: Zebra-installed routes, NO `r` (reject) routes,
    and NO IP default route unless an explicit policy table requires it.
 7. External-transit crypto ACL: Internet-SOURCED inbound traffic via
-   hub/router to a VIP with the source-policy return path; 0/0 and ::/0
+   hub/border to a VIP with the source-policy return path; 0/0 and ::/0
    exist ONLY in the WG AllowedIPs; any installed/accepted default
-   route is a negative.
+   route is a negative. NAT borders have no automatic conntrack sharing;
+   existing-flow failover requires a separate state mechanism.
 8. MTU/PMTU on the fabric and pod paths.
 9. Native dual-stack pod routes on both distros.
 10. Local Cilium dual-AF advertisements to `::1` FRR with correct next
@@ -301,22 +338,25 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
 11. Classless LoadBalancer Services get Node IPAM (fabric scope).
 12. `node-bgp` owner-only advertisement; `shared-bgp` ECMP and
     withdrawal.
-13. member/client/admin/router isolation (what each role can and cannot
-    reach); hub vs router orthogonality.
+13. member/client/admin access isolation (what each access level can and
+    cannot reach); hub/border/access orthogonality (a border that is not a
+    hub, a hub that is not a border, a border with no automatic admin DNS).
 14. k3s + rke2 full data plane suites.
 15. Selective ClusterMesh A-B-C: full peering is the default within one
     fabric; with the selective override, B peers with A and C while A
     and C share NO state and install NO pod routes for each other.
 16. Separate routed-fabric trust domain: cross-domain route/pod negative.
-17. kamrui-h1 shape: single-node k3s + admin dual-role, local Cilium
-    intact.
+17. kamrui-h1 shape: single-node k3s + hub topology + access=admin
+    dual-shape, local Cilium intact.
 18. No Cilium tunnel/iptables negatives (no VXLAN/Geneve, no
     Cilium-installed iptables rules, kube-proxy off).
 19. Firewall positive AND negative exposure assertions (nftables).
 20. Existing k3s/rke2 single/join/HA suites stay green.
+21. Network facts: deep eval, schema/no-secret/read-only/parity checks;
+    one consumer-owned nix-topology wrapper builds SVG output.
 
 ================================================================
-9. Final gates — all green IN THIS ORDER
+10. Final gates — all green IN THIS ORDER
 ================================================================
 
 pkgs (already committed in Stage 1 — verify, don't redo):

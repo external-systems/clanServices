@@ -32,22 +32,37 @@ One term per concept. Mirrors SPEC.md §10.
 - **netif** — inventory-owned, multi-instance/multi-link host attachments:
   physical/VLAN/bond/bridge links, addressing, routes, MTU, DNS, firewall
   trust, and endpoint/deploy-target exports.
-- **Fabric adjacency** — a declared hub↔spoke, hub↔hub, or router↔upstream
-  relationship; exactly one point-to-point WireGuard interface per
-  adjacency, carrying API traffic, native pods, BGP, and BFD.
-- **routed-fabric** — the flat-L3 service owning the fabric: four canonical
-  roles, explicit hub topology, FRR/BFD/Zebra, and fleet DNS
-  consumption (renamed from fleet-routing in round 15).
-- **Fabric role** — one of member/client/admin/router, joined per machine;
-  member is the base, the others specialized (client + VIP + instance DNS;
-  admin + pod/ClusterIP + svc/pod DNS; router + authorized
-  external/upstream transit).
-- **Routed hub** — a fabric member listed in the instance's explicit hub
-  topology (`settings.hubs`) that forwards and readvertises between spokes;
-  orthogonal to the router role. Minimum one, HA is two; spokes never
-  transit.
+- **Fabric adjacency** — a declared member↔hub, hub↔hub, or
+  border↔upstream relationship; exactly one point-to-point WireGuard
+  interface per adjacency, carrying API traffic, native pods, BGP, and BFD.
+- **routed-fabric** — the flat-L3 service owning the fabric: two topology
+  roles (member/hub), orthogonal per-machine `access`/`border` settings,
+  explicit hub topology, FRR/BFD/Zebra, and fleet DNS
+  consumption (renamed from fleet-routing in round 15; role model from
+  round 16, D56).
+- **Fabric role** — one of the two topology roles, `member` or `hub`,
+  joined per machine; hub forwards and readvertises between members with
+  explicit hub↔hub links.
+- **Fabric access** — the per-machine orthogonal setting `member` (default)
+  /`client`/`admin` controlling route/DNS consumption (D56): client adds
+  VIP routes + instance-zone DNS; admin adds pod/ClusterIP routes +
+  svc/pod DNS.
+- **Fabric border** — the optional per-machine orthogonal attrset (D56)
+  for upstream transit: upstream BGP peers, owned-prefix filtering,
+  forwarding, optional NDP, authorized external/fabric transit; no
+  automatic admin DNS; a border need not be a hub and vice versa.
+- **Routed hub** — a fabric machine in the `hub` role, directly declared,
+  that forwards and readvertises between members; named by each member's
+  `settings.hubs`. Minimum one reachable, HA is two, no arbitrary
+  maximum; members never provide spoke transit.
 - **AllowedIPs / crypto ACL** — WireGuard's outbound peer selection, which
   is also the inbound source ACL; must include authorized transit prefixes.
+- **Network facts** — the planned per-node `clan.networkFacts` NixOS
+  interface (D57): versioned, JSON-serializable, non-secret, producer-owned
+  build-time topology facts (underlay/fabric/ClusterMesh/control-domain
+  graphs) populated through `readOnly = true` options by the service
+  owning each fact; read by consumer-owned diagram wrappers and
+  complementary to exports. Exact schema planned, not implemented.
 - **Alternative overlays** — official mycelium/yggdrasil/wireguard meshes;
   overlays, never underlays; the standard `peer` export set is the seam.
 - **Pool scope** — per-machine with one owner, or cluster-global.

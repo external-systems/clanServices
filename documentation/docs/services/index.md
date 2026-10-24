@@ -6,14 +6,14 @@ library; host-network services own the inventory-facing data plane.
 
 | Service | Kind | Status |
 | --- | --- | --- |
-| [rke2](rke2.md) | cluster distro | bootstrap implemented; round-15 routed-fabric data plane planned |
-| [k3s](k3s.md) | cluster distro | bootstrap implemented; round-15 routed-fabric data plane planned |
+| [rke2](rke2.md) | cluster distro | bootstrap implemented; round-15/16 routed-fabric data plane and network facts planned |
+| [k3s](k3s.md) | cluster distro | bootstrap implemented; round-15/16 routed-fabric data plane and network facts planned |
 | [kubernetes](kubernetes.md) | cluster distro (upstream kubeadm) | fully spec'd, Reserved (D23) |
 | [netif](netif.md) | host links and static routes | planned (phase 5R1, multi-instance/multi-link) |
-| [routed-fabric](routed-fabric.md) | flat-L3 WG/FRR fabric, routed-hub MVP | round-15 target (phases 5R1–5R3); implementation pending |
+| [routed-fabric](routed-fabric.md) | flat-L3 WG/FRR fabric, routed-hub MVP | round-16 target (phases 5R1–5R4); implementation pending |
 | [wireguard-mesh](wireguard-mesh.md) | legacy host transport | implemented; superseded, pending migration/removal |
 
-The legacy code still at `services/fleet-routing/` predates the round-15
+The legacy code still at `services/fleet-routing/` predates the round-15/16
 design (full-mesh target, BIRD-era checkpoint) and is not the
 routed-fabric implementation. The rewrite lands under
 `services/routed-fabric/` in phase 5R1, and the obsolete `fleet-routing`

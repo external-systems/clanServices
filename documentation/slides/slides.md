@@ -58,8 +58,8 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 ## Why per-adjacency WireGuard + FRR?
 
 - WireGuard `AllowedIPs` is cryptokey routing and the inbound source ACL: duplicate peers on one interface cannot provide ECMP — and a hub's AllowedIPs must include the transit prefixes it readvertises
-- One peer per interface, one interface per declared adjacency (hub↔spoke, hub↔hub, router↔upstream); Linux ECMP works across interfaces — two hubs = active-active via BFD/ECMP
-- eBGP + BFD + Zebra, `next-hop-self` on hub readvertisement; no iBGP, no route reflectors; spokes never transit
+- One peer per interface, one interface per declared adjacency (member↔hub, hub↔hub, border↔upstream); Linux ECMP works across interfaces — two hubs = active-active via BFD/ECMP
+- eBGP + BFD + Zebra, `next-hop-self` on hub readvertisement; no iBGP, no route reflectors; members never provide spoke transit
 - Cilium native routing forwards remote pods through that FIB — no VXLAN, multi-pool retained
 - `node-bgp` has one owner; `shared-bgp` advertises from every healthy node
 
@@ -67,7 +67,7 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Detail map: every component by layer
 
-- **Hosts**: NixOS; `netif` (multi-instance); per-adjacency WireGuard; per-node FRR/BFD/Zebra; routed-fabric member/client/admin/router roles
+- **Hosts**: NixOS; `netif` (multi-instance); per-adjacency WireGuard; per-node FRR/BFD/Zebra; routed-fabric member/hub roles + orthogonal access/border switches (D56); `clan.networkFacts` network-facts seam (D57, planned)
 - **Distro**: k3s / rke2 (CIS default) / kubernetes (reserved); thin clanServices; `distroDefaults` restores stock components; servicelb off
 - **Networking**: native multi-pool Cilium, Node IPAM, five pool delivery modes, BGP v2, native ClusterMesh; no Gateway/Ingress/L7
 - **Day two**: GitOps-owned proxies, cert-manager, external-dns, Sealed Secrets, storage, KubeVirt, CCMs
@@ -78,7 +78,7 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Status and roadmap
 
-- **Done**: phases 0–4 bootstrap/base; round-14 contract; round-15 docs (D51–D55)
+- **Done**: phases 0–4 bootstrap/base; round-14 contract; round-15 docs (D51–D55); round-16 docs (D56–D57: two topology roles + access/border, network-facts seam)
 - **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence
 - **Next**: round-15 one-session complete overhaul — 5R1 multi-instance netif + routed-fabric (routed-hub MVP); 5R2 native Cilium and both distros; 5R3 full + selective ClusterMesh and failure acceptance; plus the pkgs native Cilium base re-inflation and clanServices pin update — all planned, no implementation or VM evidence yet
 - **Then**: control domain, PKI/GitOps-handoff suites, home migration and borg archival

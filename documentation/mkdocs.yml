@@ -41,10 +41,11 @@ nav:
       - Networking: architecture/networking.md
       - Multi-cluster: architecture/multi-cluster.md
       - Routed fabric: architecture/routed-fabric.md
+      - Network diagrams: architecture/network-diagrams.md
       - GitOps: architecture/gitops.md
       - Security: architecture/security.md
   - Decisions:
-      - Decision record D1–D55: decisions/index.md
+      - Decision record D1–D57: decisions/index.md
   - Services:
       - Overview: services/index.md
       - rke2: services/rke2.md

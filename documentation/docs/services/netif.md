@@ -49,7 +49,11 @@ is `netif` **bridge plumbing**, not a LoadBalancer pool concern.
 versioned `netif` view containing interface, subnets, MTU, gateway, and
 route facts. `routed-fabric` consumes the peer hosts as WireGuard endpoints
 and derives link MTUs from them. Consumers use `clanLib` export selectors,
-never raw scope keys.
+never raw scope keys. The same resolved link/interface/address/gateway/MTU/
+route configuration is what `netif` will publish to the per-node
+`clan.networkFacts` interface as underlay graph facts (D57, planned) —
+producer-owned, non-secret, and exposed through `readOnly = true` options;
+see [Network diagrams](../architecture/network-diagrams.md).
 
 ## Inventory example
 

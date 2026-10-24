@@ -7,8 +7,8 @@ is a review destination, not a dependency.
 ## Layout
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`; planned `netif`
-  and round-15 `routed-fabric`; legacy `fleet-routing` code predates the
-  round-15 design and is deleted outright once the `routed-fabric`
+  and round-16 `routed-fabric`; legacy `fleet-routing` code predates the
+  round-15/16 design and is deleted outright once the `routed-fabric`
   replacement suites are green — no archiving; legacy
   `wireguard-mesh` pending migration/removal).
   Auto-discovered via `flake-module.nix`; no central registration list.
@@ -22,21 +22,22 @@ is a review destination, not a dependency.
   authority (implemented vs planned), optimized for agents. Round 14
   (2026-10-24) makes FRR + per-pair host WireGuard + native-routed
   multi-pool Cilium the data-plane target and puts static host networking
-  in inventory through `netif` (D47–D50). Round 15 (2026-10-24) refines it:
-  the fabric service is `routed-fabric` — four canonical roles
-  (`member` base, `client`/`admin`/`router` specialized), explicit hub
-  topology orthogonal to the router role, routed-hub MVP (full mesh
-  deferred), multi-instance multi-link `netif`, fabric-derived mesh groups
-  with selective ClusterMesh peers, and transport/egress correctness rules
-  (D51–D55). The round-15 implementation is a one-session complete
+  in inventory through `netif` (D47–D50). Round 15 adds routed-hub
+  `routed-fabric`, multi-instance multi-link `netif`, selective
+  ClusterMesh, and transport/egress correctness rules (D51–D55). Round 16
+  (2026-10-24) replaces the four-role model with `member`/`hub` topology
+  roles plus orthogonal `access` and `border` settings (D56), and adds a
+  read-only, non-secret `clan.networkFacts` NixOS interface for
+  consumer-owned nix-topology wrappers; clanServices never depends on
+  nix-topology (D57). The implementation is a one-session complete
   overhaul — netif + routed-fabric + native Cilium/pools + full and
-  selective ClusterMesh, including the `external-systems/pkgs` native
-  Cilium base re-inflation and the clanServices pin update; obsolete code
-  is deleted outright once replacement suites are green. Round 13's
-  Bootstrap + Data-plane
-  scope remains: Envoy Gateway, cert-manager, Flux install, external-dns,
-  Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps patterns,
-  never clan-rendered (SPEC.md §3.3, D39–D45).
+  selective ClusterMesh + network facts, including the
+  `external-systems/pkgs` native Cilium base re-inflation and clanServices
+  pin update; obsolete code is deleted outright once replacement suites
+  are green. Round 13's Bootstrap + Data-plane scope remains: Envoy
+  Gateway, cert-manager, Flux install, external-dns, Sealed Secrets,
+  OpenEBS, KubeVirt, Multus are day-2 GitOps patterns, never clan-rendered
+  (SPEC.md §3.3, D39–D45).
 - `documentation/` — MkDocs site + reveal.js slides (human record, built
   via the `external-systems/presenting` flake). **Edit SPEC.md and
   `documentation/` together.** The old `services/rancher-cluster-spec.*`
@@ -60,17 +61,17 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D55) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D57) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
    FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
-   target `routed-fabric` (routed-hub MVP, four canonical roles with
-   explicit hub topology orthogonal to router, no iBGP/RR, AllowedIPs as
-   crypto ACL) and made `netif`
-   multi-instance/multi-link. Cilium stays networking-only
-   (D1) and multi-pool; Node IPAM is the classless-LB default (D41);
-   `node-bgp` is owner-only while `shared-bgp` uses ECMP (D8); servicelb
-   is permanently disabled (D42); the control domain is GitOps-neutral
-   (`controlDomain.role`, D43).
+   target `routed-fabric` (routed-hub MVP, no iBGP/RR, AllowedIPs as
+   crypto ACL) and made `netif` multi-instance/multi-link; round 16 uses
+   member/hub topology roles plus orthogonal access/border (D56) and the
+   dependency-free `clan.networkFacts` seam (D57). Cilium stays
+   networking-only (D1) and multi-pool; Node IPAM is the classless-LB
+   default (D41); `node-bgp` is owner-only while `shared-bgp` uses ECMP
+   (D8); servicelb is permanently disabled (D42); the control domain is
+   GitOps-neutral (`controlDomain.role`, D43).
 9. DO NOT RUN `nix flake check`, it boots VM tests and will OOM kill the machine!!! Run with `--no-build`.
 
 ## Verified upstream facts the spec depends on
