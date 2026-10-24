@@ -1,64 +1,87 @@
 # Networking
 
-The data plane is inventory-owned host networking, encrypted per-pair
-WireGuard, FRR/Zebra routing, and native-routed Cilium. BIRD and VXLAN are
-legacy, not the round-14 target.
+The data plane is inventory-owned host networking (`netif`), an encrypted
+routed fabric (`routed-fabric`: per-adjacency WireGuard, FRR/Zebra routing,
+routed-hub MVP topology), and native-routed Cilium. BIRD and VXLAN are
+legacy, not the target. The round-14 full-mesh target is superseded by
+round 15's routed-hub design (D51–D55).
 
 ## Host links: `netif`
 
-`netif` declares the core host network in `inventory.nix`: physical or
-logical interfaces, static or DHCP/RA addressing, prefixes, gateways,
-static and policy routes, MTU, DNS, firewall trust, and an optional clan
-deploy-target export. Supporting NixOS modules may handle Wi-Fi
-association or platform tuning, but they do not own static addresses or
-routes.
+`netif` declares the core host network in `inventory.nix`, multi-instance
+and multi-link (D53): one instance per segment — a site LAN, a public
+uplink, an SFP+ group — with segment defaults and per-machine/per-link
+overrides. Links may be physical, VLAN, bond, or bridge, with DHCP/RA or
+static addressing, prefixes, gateways (on-link and default), static and
+policy routes, MTU, DNS, and firewall trust. A host may join several
+instances (public + private NICs, multi-NIC routers); cross-instance checks
+enforce unique link ownership, a single host default route, and
+non-conflicting DNS. See [netif](../services/netif.md) for the contract and
+inventory example.
 
-`fleet-routing` consumes `peer` exports from `netif` or another underlay
-service. Home's older `hostSpec.networking` and `machines.json` static-IP
-path leaves during migration. Borg's `lan` service is the behavioral
-reference, not preserved implementation code.
+`routed-fabric` consumes `peer` endpoint exports from `netif` or another
+underlay service and owns all fabric policy routing. `netif` links never
+become a shared-L2 Kubernetes datapath. Home's older
+`hostSpec.networking` and `machines.json` static-IP path leaves during
+migration. Borg's `lan` service is the behavioral reference, not preserved
+implementation code.
 
-## Flat L3 transport: one WireGuard interface per pair
+## Flat L3 transport: one WireGuard interface per declared adjacency
 
 Every fabric member has stable dual-stack `/32` and `/128` addresses on a
 fabric loopback/dummy interface. These are the node InternalIPs, FRR
 router ID, and API/HAProxy transport addresses.
 
-For every remote member, `fleet-routing` renders exactly one
-point-to-point WireGuard interface. It has one peer, deterministic
-transfer prefixes, and a deterministic instance/peer-derived name of at
-most 15 characters. There is no multi-peer `wg-mesh` and no second set of
-auxiliary routed interfaces.
+Round 15's MVP topology is **routed-hub** (D51): spokes declare adjacency
+to the fabric's hubs (one minimum, two for HA), hubs forward and readvertise
+between spokes, and spokes never transit. Full mesh is deferred. For every
+declared adjacency — hub↔spoke, hub↔hub, router↔upstream — `routed-fabric`
+renders exactly one point-to-point WireGuard interface with one peer,
+deterministic transfer prefixes, and a deterministic instance/peer-derived
+name of at most 15 characters. There is no multi-peer interface and no
+second set of auxiliary routed interfaces.
 
-This shape is required by WireGuard's cryptokey routing: the destination
-selects a peer inside one interface, so duplicate `AllowedIPs` across two
+This shape is required by WireGuard's cryptokey routing: `AllowedIPs`
+selects the peer inside one interface, so duplicate entries across two
 peers on that interface cannot provide ECMP. The same prefixes on
 *different* one-peer interfaces are valid; Linux ECMP selects an interface
 per flow, then WireGuard finds the one peer.
 
-`AllowedIPs` and FRR route filters come from one resolved policy. Shared
-VIPs are allowed on each advertiser interface, node-owned BGP VIPs only on
-the owner interface, pod routes on Kubernetes/admin interfaces, and
-ClusterIPs only on admin interfaces. No default route or unapproved LAN
-prefix leaks into the fabric.
+`AllowedIPs` is both **outbound selection and the inbound source ACL**
+(D51), and it must include the transit prefixes a peer is authorized to
+carry through this machine — a hub's spoke-facing interfaces carry the
+other spokes' prefixes, or readvertised traffic dies in cryptokey routing
+even with BGP accepted. AllowedIPs and FRR route filters come from one
+resolved policy. Shared VIPs are allowed on each advertiser interface,
+node-owned BGP VIPs only on the owner interface, pod routes on
+Kubernetes/admin interfaces, and ClusterIPs only on admin interfaces. A
+default route never enters the fabric as an installed route; an
+external-transit link may list default entries purely as a crypto ACL, and
+Internet ingress requires source-policy return routing via the correct
+fabric egress.
 
-NAT or outbound-only members omit an endpoint and use a 25-second
-keepalive. Every pair must have at least one reachable endpoint. Native
-Cilium uses the WireGuard MTU directly; there is no VXLAN 50-byte budget.
+NAT or outbound-only spokes omit an endpoint and use a 25-second keepalive,
+dialing reachable hubs; two NAT sites both work through the hubs. Private
+endpoints are acceptable when actually reachable — every adjacency needs at
+least one reachable side, checked before peering is advertised. MTU derives
+from the underlay link export; native Cilium uses the WireGuard MTU
+directly; there is no VXLAN 50-byte budget.
 
 ## FRR and Zebra
 
 Every member runs one integrated `services.frr` configuration with
-`bgpd`, `bfdd`, and Zebra. `fleet-routing` renders it atomically from
+`bgpd`, `bfdd`, and Zebra. `routed-fabric` renders it atomically from
 inventory and exports. Distro services publish cluster facts and render
 Cilium resources; they do not contribute a second routing stack.
 
 Fabric FRR instances use unique private 32-bit node ASNs and eBGP, one
-session per address family over each per-pair link. Policy is mandatory:
-`bgp ebgp-requires-policy`, explicit address-family activation,
-prefix-lists/route-maps, and maximum-prefix limits. `maximum-paths` and
-`bgp bestpath as-path multipath-relax` preserve shared-VIP ECMP. BFD
-monitors every FRR-FRR path.
+session per address family over each adjacency, with `next-hop-self` on hub
+readvertisement. There is **no iBGP and no route reflector** (D51) — the
+hub topology replaces them. Policy is mandatory: `bgp ebgp-requires-policy`,
+explicit address-family activation, prefix-lists/route-maps, and
+maximum-prefix limits. `maximum-paths` and
+`bgp bestpath as-path multipath-relax` preserve shared-VIP and dual-hub
+ECMP. BFD monitors every FRR-FRR path.
 
 Cilium has no BFD in 1.20, so its local session uses 3-second keepalive,
 9-second hold, and 5-second connect retry. Cilium dials only local FRR at
@@ -85,28 +108,34 @@ masquerade+tproxy, Maglev, PMTU, and Node IPAM. VXLAN/Geneve and Cilium
 L7/Gateway/Ingress features are off. Multi-pool remains mandatory unless
 the operator explicitly selects `ipam.mode: kubernetes`.
 
-`auto-direct-node-routes` is false because the per-pair WireGuard fabric
-is routed L3, not shared L2. Cilium advertises local `CiliumPodIPPool`
-allocations to local FRR; FRR distributes them and Zebra installs remote
-routes. Native Cilium delegates non-local pod traffic to that FIB.
+`auto-direct-node-routes` is false because the per-adjacency WireGuard
+fabric is routed L3, not shared L2. Cilium advertises local
+`CiliumPodIPPool` allocations to local FRR; FRR distributes them and Zebra
+installs remote routes. Native Cilium delegates non-local pod traffic to
+that FIB.
 
 Dual-stack native-routing CIDRs cover every pod CIDR in the ClusterMesh
-trust domain. Cilium device configuration covers all per-pair interfaces.
+trust domain. Cilium device configuration covers all fabric interfaces.
 ClusterMesh requires native mode everywhere, non-overlapping pod CIDRs,
-reachable node InternalIPs, and working cross-cluster pod routes before
-readiness.
+node connectivity, and working cross-cluster pod routes before readiness.
 
 ## LoadBalancer arbitration
 
 - **Classless Services → Node IPAM.** `nodeIPAM.enabled=true` and
   `defaultLBServiceIPAM=nodeipam` provide the ServiceLB-style default.
+  Node IPAM's node-IP answers are **fabric-scoped**; they are how classless
+  Services reach fleet participants.
 - **Non-BGP pools → `io.cilium/lb-ipam`.**
 - **`node-bgp` and `shared-bgp` pools →
   `io.cilium/bgp-control-plane`.** Cilium 1.20 announces that class (or an
   unset class) through BGP.
 
-servicelb/klipper stays disabled. Cilium LB IPAM allocates addresses;
-Node IPAM, provider routing, a floating controller, or BGP delivers them.
+Public exposure uses **explicit pools** — there is no implicit Internet
+publication of fabric VIPs. `node-bgp` is selected only where BGP delivery
+actually exists (an owner node plus router advertisement); otherwise it is
+not an option. servicelb/klipper stays disabled. Cilium LB IPAM allocates
+addresses; Node IPAM, provider routing, a floating controller, or BGP
+delivers them.
 
 ## Pool scopes and five delivery modes
 
@@ -119,9 +148,10 @@ Node IPAM, provider routing, a floating controller, or BGP delivers them.
 | `external-class` | cluster-global | A cloud CCM handles delivery |
 
 Use `node-bgp` for node-owned public IPv4 extras and carve-outs of the
-node's routed IPv6 subnet. Per-node advertisements select only that
-owner's pool. ETP Local withdraws the VIP when no eligible local backend
-exists, so consumers must keep eligible backends on the owner.
+node's routed IPv6 subnet, where BGP delivery exists. Per-node
+advertisements select only that owner's pool. ETP Local withdraws the VIP
+when no eligible local backend exists, so consumers must keep eligible
+backends on the owner.
 
 Use `shared-bgp` for private fabric VIPs and upstream-router pools. Every
 healthy eligible node advertises the same `/32` or `/128`; FRR and the
@@ -129,18 +159,21 @@ upstream router retain all equal paths. One VIP is never advertised from
 two clusters.
 
 The default private `<instance>-fabric` pool is shared-bgp and carries
-CoreDNS, ClusterMesh, and mirror-Service VIPs. Public BGP pools require
-upstream-routed address space and a controlled router. Dynamic residential
-IPv4 BGP and heterogeneous multi-WAN inbound failover are not goals; use
-DNS failover for the latter.
+CoreDNS, ClusterMesh, and mirror-Service VIPs. Public BGP pools
+require upstream-routed address space and a controlled router. Dynamic
+residential IPv4 BGP and heterogeneous multi-WAN inbound failover are not
+goals; use DNS failover for the latter.
 
 ## Route consumption and DNS
 
-`member` provides flat-L3 transport and automatic native pod routes on
-Kubernetes nodes. `client` adds VIP routes and the instance-zone DNS stub.
-`admin` adds explicit pod/ClusterIP consumption and svc/pod zones.
-`router` adds upstream peers, owned-prefix policy, forwarding, and optional
-proxy-NDP.
+Members join one of four canonical roles — there is no default role:
+`member` (the base) provides fabric transport and automatic native pod
+routes on Kubernetes nodes. `client` adds cluster VIP routes and the
+instance-zone DNS stub. `admin` adds explicit pod/ClusterIP consumption
+and the svc/pod zones. `router` adds authorized external/upstream transit
+— upstream peers, owned-prefix policy, forwarding, and optional proxy-NDP
+— and is not necessarily a hub; each spoke declares its hub list on the
+machine (`settings.hubs`), orthogonal to the roles (D52).
 
 Ordinary clients do not receive pod or ClusterIP routes. `cluster.local`
 is never served to them. Route-only DNS uses global systemd-resolved
@@ -148,7 +181,16 @@ settings so packets follow the kernel's ECMP routes.
 
 ## Firewall posture
 
-The API listens on transport only. Public ports open only where a Service
-exposes them. WireGuard is restricted to configured underlays; BGP/BFD is
+The host firewall is **nftables** (D55): kube-proxy is replaced by Cilium
+(kube-proxy off), and Cilium runs with `installIptablesRules=false` as a
+target/probe — no iptables-based host rules from either layer. The API
+listens on transport only. Public ports open only where a Service exposes
+them. WireGuard is restricted to configured underlays; BGP/BFD is
 restricted to loopback and expected fabric/upstream peers. VM tests assert
 positive connectivity and negative exposure.
+
+The official `mycelium`, `yggdrasil`, and `wireguard` meshes are
+alternative **overlays**, not underlays (D55) — none can replace the
+routed, filtered, ACL'd fabric datapath. The useful seam for any
+alternative transport is the standard `peer` export set that `netif`
+already publishes.

@@ -1,28 +1,47 @@
 # Multi-cluster
 
-Clusters in the same mesh group form one Cilium ClusterMesh automatically —
-mixed distros included. Add an instance to the group and peering is rendered
-from exports; no CLI steps.
+Clusters in the same fabric form one Cilium ClusterMesh automatically —
+mixed distros included, and **full mesh by default**: add a cluster instance
+to the fabric and peering is rendered from exports; no CLI steps. Explicit
+**selective peers** (`mesh.peers`) narrow who peers with whom (D54).
+
+## Three graphs
+
+Round 15 keeps three graphs separate (D54):
+
+1. the **`netif` underlay graph** — physical/logical links, addresses, and
+   gateways;
+2. the **routed-fabric reachability graph** — adjacencies, eBGP sessions,
+   and which prefixes may transit where;
+3. the **ClusterMesh state graph** — which clusters actually peer.
+
+State is **non-transitive**: cluster A peering with B, and B with C, does
+not give A any C state or route policy. ClusterMesh peering also **bounds
+the automatic cross-cluster pod/Service route policy** the fabric renders —
+unpeered clusters get no automatic cross-cluster pod or Service routes.
+For hard trust isolation, use separate routed-fabric instances (separate
+trust domains), not peering tricks.
 
 ## Mesh groups and trust domains
 
-A mesh group is a set of mutually trusted cluster instances — the trust
-domain string (default `meta.domain`, per-cluster `meshGroup` override).
-The default mesh group is all cluster instances; opting a cluster out
-separates its trust domain. The trust domain also bounds control domains
-(D43): a hub and its spokes must share one group. But mesh ≠ control
-domain — standalone clusters can be full mesh members with no hub
+A mesh group is a set of mutually trusted cluster instances — and round 15
+**derives it from the fabric**: a cluster's `settings.network.fabric`
+reference supplies the mesh group (previously an explicit `meshGroup`
+string, default `meta.domain`). The trust domain also bounds control
+domains (D43): a hub and its spokes must share one fabric. But mesh ≠
+control domain — standalone clusters can be full mesh members with no hub
 relationship to anyone.
 
-**One mesh group = one `fleet-routing` instance** (round-14 mapping): a
-cluster joins by consuming that instance's `node_transport` exports.
-Cross-cluster traffic uses the shared per-pair WireGuard fabric and FRR
-routes. Same-group clusters consuming different transport instances — or
-mixing transport-provided and manual member addresses — fail evaluation.
+**One fabric = one mesh group** (D54): a cluster joins by referencing the
+routed-fabric instance in `settings.network.fabric`, and consumes that
+fabric's `node_transport` exports. Cross-cluster traffic uses the
+fabric's per-adjacency WireGuard and FRR routes. Clusters referencing
+different fabric instances never mesh; that is the trust-domain boundary.
 
 Every cluster uses native routing with non-overlapping pod CIDRs.
-Dual-stack native-routing CIDRs cover every pod CIDR in the group, and FRR
-must install cross-cluster pod routes before ClusterMesh is ready.
+Dual-stack native-routing CIDRs cover every pod CIDR of every peered
+cluster, and FRR must install cross-cluster pod routes before ClusterMesh
+is ready.
 
 Every eligible cluster runs clustermesh-apiserver and mesh certificates from
 first boot (a singleton's peer list is simply empty). Peering is rendered
@@ -36,9 +55,10 @@ Consumers are mesh members with direct routes, so the control plane takes
 the fewest dependencies.
 
 Mesh identity comes from a shared `rancher-clustermesh-ca-<group>` vars
-generator with per-cluster dependent cert generators. SANs include every
-exported address; a membership change reissues certificates before the new
-endpoint set is advertised. CA and cert material never appear in exports,
+generator (the group derived from the fabric) with per-cluster dependent
+cert generators. SANs include every exported address; a membership or
+peering change reissues certificates before the new endpoint set is
+advertised. CA and cert material never appear in exports,
 Helm values, or the Nix store. CA rotation is a separate two-phase bundle
 design — blind regeneration is unsupported.
 
@@ -134,22 +154,72 @@ machine (identical content on every member; SPEC.md §6.2). It carries:
   versioned again during 5R1);
 - cluster identity: `name` (= instance name), the resolved `ciliumId`, and
   the resolved dual-stack `network.{podCIDRv4,podCIDRv6,serviceCIDRv4,serviceCIDRv6,clusterDNS}`;
-- `meshGroup` — the trust-domain string (default `meta.domain`);
+- `network.fabric` — the consumed routed-fabric `{service, instance}`
+  reference; it derives the mesh group and replaces the old explicit
+  `meshGroup` string;
+- `mesh.peers` — the explicit selective-peering list, or null for
+  full-mesh-by-default; symmetry (A lists B iff B lists A) is eval-asserted;
 - `controlDomain.role` — `"standalone"` placeholder until phase 6 (D43);
-- `transport.{service,instance}` — the consumed `node_transport` source,
-  or nulls for a manual-address cluster (the all-or-none posture fact);
 - `members.<machine>` — per-member mesh endpoints: role, node v4/v6,
-  endpoint/interface/MTU/port from the consumed transport, and the
+  endpoint/interface/MTU/port from the consumed fabric transport, and the
   effective `topology.{region,zone}` labels;
 - `pools.<name>` — pool handoff facts (scope, delivery mode, owner, blocks,
   serviceSelector), Cilium-side ASN and advertisement facts for
-  fleet-routing; `fleet_routing` separately carries node ASN, per-pair
+  routed-fabric; the fabric separately carries node ASN, per-adjacency
   transport, and router-prefix facts.
 
-The fleet-wide assertions (duplicate cluster names/ids, same-mesh-group
-CIDR overlap, node-in-two-clusters across rke2+k3s, mesh-group transport
-consistency) are computed from these exports as `clan.checks` by the
-shared library's fleet-checks module — wire it into a consumer clan with
+The fleet-wide assertions (duplicate cluster names/ids, peering-symmetric
+`mesh.peers`, same-fabric CIDR overlap, node-in-two-clusters across
+rke2+k3s, fabric-reference consistency) are computed from these exports as
+`clan.checks` by the shared library's fleet-checks module — wire it into a
+consumer clan with
 `clan.imports = [ <kube-cluster fleetChecksModule> ]` (this flake's own
 clan and the eval-test clans already do). No secrets ever appear in
 exports.
+
+## Inventory example
+
+Every cluster references its fabric; selective peers are explicit and
+symmetric. This gives A↔B and B↔C **without** A↔C — peering state is
+non-transitive:
+
+```nix
+inventory.instances = {
+  fabric = {
+    module.input = "clanServices";
+    module.name = "routed-fabric";
+    # ... per-machine settings.hubs topology + member/client/admin/router roles
+    #     (see Routed fabric)
+  };
+
+  cluster-a = {
+    module.input = "clanServices";
+    module.name = "k3s";
+    roles.server.machines.hel-a-1 = { };
+    settings = {
+      network.fabric = { service = "routed-fabric"; instance = "fabric"; };
+      mesh.peers = [ "cluster-b" ];        # selective: no cluster-c peering
+    };
+  };
+  cluster-b = {
+    module.input = "clanServices";
+    module.name = "rke2";
+    settings = {
+      network.fabric = { service = "routed-fabric"; instance = "fabric"; };
+      mesh.peers = [ "cluster-a" "cluster-c" ];   # symmetry is eval-asserted
+    };
+  };
+  cluster-c = {
+    module.input = "clanServices";
+    module.name = "k3s";
+    settings = {
+      network.fabric = { service = "routed-fabric"; instance = "fabric"; };
+      mesh.peers = [ "cluster-b" ];        # symmetric with B; no A↔C state
+    };
+  };
+};
+```
+
+Omitting `mesh.peers` on every cluster in a fabric means full mesh. A
+cluster in a different routed-fabric instance is a different trust domain
+and never peers, whatever the lists say.

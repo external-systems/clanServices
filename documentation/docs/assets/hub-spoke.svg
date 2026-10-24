@@ -49,7 +49,7 @@
   <!-- clan hosts -->
   <rect x="40" y="410" width="300" height="70" rx="8" fill="#fdf3e3" stroke="#333" stroke-width="1.5"/>
   <text x="190" y="438" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">clan hosts</text>
-  <text x="190" y="460" text-anchor="middle" font-size="14" fill="#111">fleet-routing client / admin</text>
+  <text x="190" y="460" text-anchor="middle" font-size="14" fill="#111">routed-fabric client / admin</text>
 
   <!-- FRR/BGP fabric -->
   <line x1="190" y1="410" x2="190" y2="344" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>

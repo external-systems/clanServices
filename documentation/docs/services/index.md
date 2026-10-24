@@ -6,12 +6,19 @@ library; host-network services own the inventory-facing data plane.
 
 | Service | Kind | Status |
 | --- | --- | --- |
-| [rke2](rke2.md) | cluster distro | bootstrap implemented; round-14 native/FRR data plane planned |
-| [k3s](k3s.md) | cluster distro | bootstrap implemented; round-14 native/FRR data plane planned |
+| [rke2](rke2.md) | cluster distro | bootstrap implemented; round-15 routed-fabric data plane planned |
+| [k3s](k3s.md) | cluster distro | bootstrap implemented; round-15 routed-fabric data plane planned |
 | [kubernetes](kubernetes.md) | cluster distro (upstream kubeadm) | fully spec'd, Reserved (D23) |
-| [netif](netif.md) | host links and static routes | planned (phase 5R1) |
-| [fleet-routing](fleet-routing.md) | flat-L3 WG/FRR fabric | round-14 target (phases 5R1–5R3) |
+| [netif](netif.md) | host links and static routes | planned (phase 5R1, multi-instance/multi-link) |
+| [routed-fabric](routed-fabric.md) | flat-L3 WG/FRR fabric, routed-hub MVP | round-15 target (phases 5R1–5R3); implementation pending |
 | [wireguard-mesh](wireguard-mesh.md) | legacy host transport | implemented; superseded, pending migration/removal |
+
+The legacy code still at `services/fleet-routing/` predates the round-15
+design (full-mesh target, BIRD-era checkpoint) and is not the
+routed-fabric implementation. The rewrite lands under
+`services/routed-fabric/` in phase 5R1, and the obsolete `fleet-routing`
+and `wireguard-mesh` code is **deleted outright** once the replacement
+suites are green — no archiving, no commented-out remnants.
 
 ## How the cluster services share code
 
@@ -25,7 +32,8 @@ nothing else in-cluster: one kubenix-rendered bootstrap bundle applied once
 via server-side apply. The default is a uniform minimal base across distros;
 `distroDefaults` restores stock components through the distro itself.
 
-A machine belongs to at most one cluster instance and at most one
-fleet-routing instance. Global units, generators, and interfaces are
-instance-namespaced; one integrated FRR configuration owns routing on each
-host.
+A machine belongs to at most one cluster instance and **at most one**
+routed-fabric instance (D53); multiple routed-fabric instances segment
+trust domains, one membership per host. Global units, generators, and
+interfaces are instance-namespaced; one integrated FRR configuration owns
+routing on each host.

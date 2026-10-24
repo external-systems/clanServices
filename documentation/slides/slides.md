@@ -19,15 +19,15 @@ Note: Press `S` for the speaker view, `F` for fullscreen.
 ## What you get: the two contracts
 
 - **Bootstrap**: distro install/join (rke2, k3s, upstream kubeadm reserved); cluster PKI + rotation runbooks; per-node HAProxy kubeapi HA; one bootstrap bundle applied once
-- **Data plane**: native multi-pool Cilium, Node IPAM, five LB delivery modes, per-node FRR/BFD/Zebra, native ClusterMesh, one WireGuard interface per node pair, private CoreDNS zones
-- **Host network**: `netif` owns links/static routes; `fleet-routing` owns the flat-L3 fabric
+- **Data plane**: native multi-pool Cilium, Node IPAM, five LB delivery modes, per-node FRR/BFD/Zebra, native ClusterMesh with selective peers, one WireGuard interface per declared adjacency, private CoreDNS zones
+- **Host network**: `netif` owns links/static routes (multi-instance); `routed-fabric` owns the flat-L3 fabric, routed-hub MVP
 - Airgap-ready: every artifact local at boot; last 3 Kubernetes minors per distro pinned
 
 ---
 
 <img src="assets/arch-overview.svg" alt="Architecture overview" style="width: 100%; max-height: 82vh; background: #fff; border-radius: 8px;" />
 
-Note: One inventory in, three cluster kinds out, connected by native routing and encrypted per-pair transport. GitOps owns day two.
+Note: One inventory in, three cluster kinds out, connected by native routing and encrypted per-adjacency fabric transport. GitOps owns day two.
 
 ---
 
@@ -51,15 +51,15 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 - `controlDomain.role = standalone | hub | spoke` — a GitOps-neutral substrate
 - Clan renders mirror Services, `gitops-hub` identities, and per-spoke kubeconfig Secrets
 - Any GitOps tool consumes them; spokes run no controller
-- Admin machines reach authorized pod/Service routes through FRR and per-pair WireGuard
+- Admin machines reach authorized pod/Service routes through FRR and per-adjacency WireGuard
 
 ---
 
-## Why per-pair WireGuard + FRR?
+## Why per-adjacency WireGuard + FRR?
 
-- WireGuard `AllowedIPs` is cryptokey routing: duplicate peers on one interface cannot provide ECMP
-- One peer per interface makes each path explicit; Linux ECMP works across interfaces
-- FRR exchanges filtered routes; BFD detects path failure; Zebra installs the kernel FIB
+- WireGuard `AllowedIPs` is cryptokey routing and the inbound source ACL: duplicate peers on one interface cannot provide ECMP — and a hub's AllowedIPs must include the transit prefixes it readvertises
+- One peer per interface, one interface per declared adjacency (hub↔spoke, hub↔hub, router↔upstream); Linux ECMP works across interfaces — two hubs = active-active via BFD/ECMP
+- eBGP + BFD + Zebra, `next-hop-self` on hub readvertisement; no iBGP, no route reflectors; spokes never transit
 - Cilium native routing forwards remote pods through that FIB — no VXLAN, multi-pool retained
 - `node-bgp` has one owner; `shared-bgp` advertises from every healthy node
 
@@ -67,7 +67,7 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Detail map: every component by layer
 
-- **Hosts**: NixOS; `netif`; per-pair WireGuard; per-node FRR/BFD/Zebra; fleet-routing member/client/admin/router
+- **Hosts**: NixOS; `netif` (multi-instance); per-adjacency WireGuard; per-node FRR/BFD/Zebra; routed-fabric member/client/admin/router roles
 - **Distro**: k3s / rke2 (CIS default) / kubernetes (reserved); thin clanServices; `distroDefaults` restores stock components; servicelb off
 - **Networking**: native multi-pool Cilium, Node IPAM, five pool delivery modes, BGP v2, native ClusterMesh; no Gateway/Ingress/L7
 - **Day two**: GitOps-owned proxies, cert-manager, external-dns, Sealed Secrets, storage, KubeVirt, CCMs
@@ -78,9 +78,9 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Status and roadmap
 
-- **Done**: phases 0–4 bootstrap/base; round-14 contract and docs
+- **Done**: phases 0–4 bootstrap/base; round-14 contract; round-15 docs (D51–D55)
 - **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence
-- **Next**: 5R1 netif + per-pair FRR transport; 5R2 native Cilium and both distros; 5R3 ClusterMesh/fleet/failure acceptance
+- **Next**: round-15 one-session complete overhaul — 5R1 multi-instance netif + routed-fabric (routed-hub MVP); 5R2 native Cilium and both distros; 5R3 full + selective ClusterMesh and failure acceptance; plus the pkgs native Cilium base re-inflation and clanServices pin update — all planned, no implementation or VM evidence yet
 - **Then**: control domain, PKI/GitOps-handoff suites, home migration and borg archival
 - **Reserved**: upstream `kubernetes` distro, MCS-API, clan-operator
 

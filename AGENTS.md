@@ -6,8 +6,11 @@ is a review destination, not a dependency.
 
 ## Layout
 
-- `services/<name>/` — public clanServices (`rke2`, `k3s`, `fleet-routing`;
-  planned `netif`; legacy `wireguard-mesh` pending migration/removal).
+- `services/<name>/` — public clanServices (`rke2`, `k3s`; planned `netif`
+  and round-15 `routed-fabric`; legacy `fleet-routing` code predates the
+  round-15 design and is deleted outright once the `routed-fabric`
+  replacement suites are green — no archiving; legacy
+  `wireguard-mesh` pending migration/removal).
   Auto-discovered via `flake-module.nix`; no central registration list.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
@@ -19,7 +22,18 @@ is a review destination, not a dependency.
   authority (implemented vs planned), optimized for agents. Round 14
   (2026-10-24) makes FRR + per-pair host WireGuard + native-routed
   multi-pool Cilium the data-plane target and puts static host networking
-  in inventory through `netif` (D47–D50). Round 13's Bootstrap + Data-plane
+  in inventory through `netif` (D47–D50). Round 15 (2026-10-24) refines it:
+  the fabric service is `routed-fabric` — four canonical roles
+  (`member` base, `client`/`admin`/`router` specialized), explicit hub
+  topology orthogonal to the router role, routed-hub MVP (full mesh
+  deferred), multi-instance multi-link `netif`, fabric-derived mesh groups
+  with selective ClusterMesh peers, and transport/egress correctness rules
+  (D51–D55). The round-15 implementation is a one-session complete
+  overhaul — netif + routed-fabric + native Cilium/pools + full and
+  selective ClusterMesh, including the `external-systems/pkgs` native
+  Cilium base re-inflation and the clanServices pin update; obsolete code
+  is deleted outright once replacement suites are green. Round 13's
+  Bootstrap + Data-plane
   scope remains: Envoy Gateway, cert-manager, Flux install, external-dns,
   Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps patterns,
   never clan-rendered (SPEC.md §3.3, D39–D45).
@@ -46,9 +60,13 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D50) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D55) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
-   FRR/per-pair WireGuard/native routing. Cilium stays networking-only
+   FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
+   target `routed-fabric` (routed-hub MVP, four canonical roles with
+   explicit hub topology orthogonal to router, no iBGP/RR, AllowedIPs as
+   crypto ACL) and made `netif`
+   multi-instance/multi-link. Cilium stays networking-only
    (D1) and multi-pool; Node IPAM is the classless-LB default (D41);
    `node-bgp` is owner-only while `shared-bgp` uses ECMP (D8); servicelb
    is permanently disabled (D42); the control domain is GitOps-neutral

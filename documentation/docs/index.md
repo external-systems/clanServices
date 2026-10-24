@@ -19,9 +19,11 @@ never something clan renders.
 - **Data-plane contract — packets flow correctly.** Cilium-only networking
   (kube-proxy replacement, native routing, multi-pool pod IPAM), Node IPAM
   for classless LoadBalancer Services, LB-IPAM pools with BGP v2 and
-  per-node FRR/Zebra, a private fleet fabric on by default, native
-  ClusterMesh, one host WireGuard interface per node pair, private CoreDNS
-  zones, and routed fleet access for Kubernetes and ordinary machines.
+  per-node FRR/Zebra, a private routed fabric on by default
+  (`routed-fabric`, routed-hub MVP), native ClusterMesh with selective
+  peers, one host WireGuard interface per declared adjacency, private
+  CoreDNS zones, and routed fleet access for Kubernetes and ordinary
+  machines.
 
 ## Day 2 is yours
 
@@ -49,6 +51,6 @@ The engineering version — thin distro services over a shared library, the
 bootstrap bundle and its GitOps handoff, Node IPAM and the FRR/native
 fabric, and the artifact flake — is in
 [Architecture → Overview](architecture/overview.md). Every normative choice
-is recorded in the [decision record](decisions/index.md) (D1–D50), and
+is recorded in the [decision record](decisions/index.md) (D1–D55), and
 [SPEC.md](https://github.com/external-systems/clanServices/blob/main/SPEC.md)
 in the repo root is the agent-facing contract this site renders for humans.

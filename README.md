@@ -8,15 +8,24 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 
 - [k3s](services/k3s/README.md): k3s Kubernetes cluster
 - [rke2](services/rke2/README.md): RKE2 Kubernetes cluster
-- `netif` (planned): inventory-owned host links, static addressing, and routes
-- [fleet-routing](services/fleet-routing/README.md): per-pair WireGuard + FRR flat-L3 fabric (round-14 target)
+- `netif` (planned): inventory-owned, multi-instance host links and static routes
+- `routed-fabric` (planned, round-15 target): per-adjacency WireGuard + FRR
+  flat-L3 fabric, routed-hub MVP; the legacy `services/fleet-routing/` tree
+  predates the round-15 design and is not its implementation
 - [wireguard-mesh](services/wireguard-mesh/README.md): legacy host transport, pending migration/removal
 - [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
 [SPEC.md](SPEC.md) is the canonical architecture, status, and delivery record — a single dense
 contract for agents; `documentation/` (MkDocs site + slides) is the human record of the same spec
 (edit both together). Round 14 makes FRR + per-pair WireGuard + native multi-pool Cilium the
-data-plane target and puts static host networking in inventory through `netif`. Round 13's scope
+data-plane target and puts static host networking in inventory through `netif`. Round 15
+(2026-10-24) refines that target: the fabric service is `routed-fabric` with a routed-hub MVP —
+four canonical roles (`member` base, `client`/`admin`/`router` specialized) with explicit hub
+topology orthogonal to the router role — multi-instance multi-link
+`netif`, fabric-derived mesh groups, and full-by-default ClusterMesh with selective peers
+(D51–D55; phases 5R1–5R3 remain planned, delivered as one complete overhaul session including
+the `external-systems/pkgs` native Cilium base re-inflation and the clanServices pin update).
+Round 13's scope
 remains: everything else in-cluster is a documented day-2 GitOps pattern, never clan-rendered.
 
 ## Usage
@@ -54,4 +63,4 @@ nix fmt .
 nix flake check --no-build --show-trace
 ```
 
-Hermetic NixOS VM suites and the delivery roadmap are documented in SPEC.md. Artifact packaging has a separate planned home in `external-systems/pkgs`; the imported implementation has not completed that migration yet.
+Hermetic NixOS VM suites and the delivery roadmap are documented in SPEC.md. The pinned artifact flake is `external-systems/pkgs` — distro runtimes (last three Kubernetes minors each), the Cilium chart with its committed inflated base manifest, and the test fixtures — already consumed by this flake at its lock pin.

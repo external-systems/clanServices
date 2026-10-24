@@ -46,7 +46,12 @@ k3s join/HA but red k3s single/data-plane suites, so it is not a green
 current-tree claim. Phase 5's BIRD/VXLAN implementation at `2995ac3` is
 legacy and superseded.
 
-Round 14 phases 5R1–5R3 replace it with per-pair WireGuard, FRR/BFD/Zebra,
-native-routed multi-pool Cilium, node-bgp/shared-bgp pools, and native
-ClusterMesh. The canonical dual-role test shape remains kamrui-h1: a
-single-node k3s cluster holding the fleet-routing admin role (D33).
+Round 15 phases 5R1–5R3 deliver, as one complete overhaul session, the
+netif underlay and the routed-fabric data plane (per-adjacency WireGuard,
+FRR/BFD/Zebra, routed-hub MVP), native-routed multi-pool Cilium,
+node-bgp/shared-bgp pools, full-by-default ClusterMesh with selective
+peers, and the `external-systems/pkgs` native Cilium base re-inflation
+with the clanServices pin update — all planned, with no implementation or
+VM evidence yet. The canonical dual-shape remains kamrui-h1: a
+single-node k3s cluster holding the routed-fabric `admin` role (D33,
+revised by D52).

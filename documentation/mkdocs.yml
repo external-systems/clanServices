@@ -40,24 +40,25 @@ nav:
       - Overview: architecture/overview.md
       - Networking: architecture/networking.md
       - Multi-cluster: architecture/multi-cluster.md
-      - Fleet routing: architecture/fleet-routing.md
+      - Routed fabric: architecture/routed-fabric.md
       - GitOps: architecture/gitops.md
       - Security: architecture/security.md
   - Decisions:
-      - Decision record D1–D50: decisions/index.md
+      - Decision record D1–D55: decisions/index.md
   - Services:
       - Overview: services/index.md
       - rke2: services/rke2.md
       - k3s: services/k3s.md
       - kubernetes (upstream, reserved): services/kubernetes.md
       - netif: services/netif.md
-      - fleet-routing: services/fleet-routing.md
+      - routed-fabric: services/routed-fabric.md
       - wireguard-mesh (legacy): services/wireguard-mesh.md
   - Guides:
       - Day-2 GitOps: guides/day-2-gitops.md
       - Airgap operation: guides/airgap.md
       - Upgrades: guides/upgrades.md
       - Secrets: guides/secrets.md
+      - Routed-fabric MVP (implementation prompt): guides/routed-fabric-mvp-prompt.md
   - Reference:
       - Glossary: reference/glossary.md
       - Testing: reference/testing.md

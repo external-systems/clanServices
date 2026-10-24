@@ -55,5 +55,5 @@
   <line x1="450" y1="370" x2="450" y2="418" stroke="#333" stroke-width="1.5"/>
   <line x1="745" y1="370" x2="745" y2="418" stroke="#333" stroke-width="1.5"/>
   <rect x="60" y="420" width="810" height="50" rx="6" fill="#efe8f7" stroke="#333" stroke-width="1.5"/>
-  <text x="465" y="451" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Native ClusterMesh + private fleet fabric (FRR/BGP)</text>
+  <text x="465" y="451" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Native ClusterMesh + routed fabric (FRR/BGP)</text>
 </svg>

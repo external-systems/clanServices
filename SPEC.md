@@ -6,15 +6,36 @@ both the *target contract* and the *status authority*. Baseline: canonical
 import (`896acdf` in this repo); recorded green: wireguard-mesh + rke2/k3s
 single/join/HA VM suites in the source fork.
 
-Revised 2026-10-24: **round 14 — FRR, routed WireGuard, and native
-Cilium.** The data plane now uses one point-to-point host WireGuard
-interface per node pair, one FRR routing stack per host with Zebra-owned
-kernel routes, and Cilium native routing with multi-pool IPAM. BIRD,
-VXLAN, and the ordinary-mesh-plus-auxiliary-routed-interface model are
-superseded. New decisions D47–D50; revised: D8, D9, D11, D13, D19, D33,
-D41, D44. This round lands docs-only under A4; the BIRD implementation at
-checkpoint `2995ac3` is legacy and is not round-14 acceptance evidence.
-Its retained baseline is 5 green / 7 red VM suites.
+Revised 2026-10-24 (round 15, after `a2a1f0e`): **routed-hub MVP,
+routed-fabric, multi-instance netif, selective ClusterMesh,
+nftables-only.** The supported fabric topology is routed hub/spoke only:
+one WireGuard interface per declared adjacency, full mesh dropped from
+the supported and tested surface (D51); `fleet-routing` is renamed
+`routed-fabric` with four canonical roles (`member` base;
+`client`/`admin`/`router` specialized) and hub membership from explicit
+`hubs` declarations, orthogonal to the `router` role (D52); `netif`
+is multi-link and multi-instance with cross-instance assertions (D53);
+ClusterMesh defaults to full peering within one fabric with explicit
+symmetric selective peers (D54); AllowedIPs/MTU/source-return transport
+blockers, nftables-only firewall with kube-proxy off and
+`installIptablesRules=false`, fabric-scoped Node IPAM, netif bridge
+plumbing for KubeVirt attachment, and the dual-AF local Cilium↔FRR
+session are closed contractually (D51/D55). New decisions D51–D55;
+revised: D8, D9, D11, D13, D33, D41, D43, D44, D47, D50. Docs-only
+under A4 — no implementation or VM evidence is claimed; the retained
+baseline stays 5 green / 7 red VM suites.
+
+Round 14 (2026-10-24, retained): **FRR, routed WireGuard, and native
+Cilium.** The data plane moved to point-to-point host WireGuard, one FRR
+routing stack per host with Zebra-owned kernel routes, and Cilium native
+routing with multi-pool IPAM. BIRD, VXLAN, and the
+ordinary-mesh-plus-auxiliary-routed-interface model are superseded. New
+decisions D47–D50; revised: D8, D9, D11, D13, D19, D33, D41, D44. This
+round landed docs-only under A4; the BIRD implementation at checkpoint
+`2995ac3` is legacy and is not round-14 acceptance evidence. Its
+retained baseline is 5 green / 7 red VM suites. The per-remote-machine
+interface model and the `fleet-routing` name were revised again in round
+15 (D51/D52).
 
 Round 13 (2026-10-22, retained): **data-plane-only scope reduction.** The
 contract has exactly two verifiable promises — the Bootstrap contract and
@@ -25,8 +46,8 @@ GitOps patterns. Round history is retained in §4 with per-decision status.
 Round-8 amendments (2026-10-20, retained): **A1** artifact flake packages
 the last 3 k8s minors per distro (→ D34). **A2/A3** application-plane
 credentials are never clan vars (→ D35, narrowed further in round 13).
-**A4** spec locks land without code changes in the same commit — rounds 13
-and 14 land docs-only; code changes are scheduled in §8.
+**A4** spec locks land without code changes in the same commit — rounds
+13, 14, and 15 land docs-only; code changes are scheduled in §8.
 
 ## 1. Problem (condensed)
 
@@ -50,16 +71,24 @@ the anti-goal this revision removes.
 
 Thin public `rke2` + `k3s` clanServices (upstream `kubernetes`/kubeadm
 spec'd, Reserved) sit over a private shared library (`lib/kube-cluster/`,
-D45). `netif` owns inventory-declared physical/logical links and static
-routes; `fleet-routing` owns the flat-L3 fabric: one WireGuard interface
-per node pair, per-node FRR/bfdd, and Zebra-installed routes. Cilium = CNI
+D45). `netif` owns inventory-declared links — multi-link, multi-instance:
+physical, VLAN, bond, bridge; static/DHCP/RA addressing, gateways, MTU,
+DNS, underlay routes and underlay policy routing (D53) — plus
+deploy-target exports; `routed-fabric` owns the flat-L3 fabric: routed
+hub/spoke topology with one WireGuard interface per declared adjacency
+(hub↔spoke, optional hub↔hub), per-node FRR/bfdd, and Zebra-installed
+routes (D51). Cilium = CNI
 + KPR + **native routing** + multi-pool pod IPAM + Node IPAM for classless
 LoadBalancer Services + LB-IPAM pools + BGP v2 + ClusterMesh — networking
-only (D1). Local Cilium agents advertise pod pools and Service VIPs only
-to their node-local FRR; FRR exchanges filtered routes over the encrypted
-full mesh and programs the kernel. `fleet-routing` roles provide transport
-only (`member`), VIP access (`client`), pod/Service access (`admin`), and
-upstream routing (`router`). HAProxy on every node gives HA kubeapi access
+only (D1); kube-proxy is off and Cilium owns no iptables rules (D55).
+Local Cilium agents advertise pod pools and Service VIPs only to their
+node-local FRR over one dual-AF session; FRR exchanges filtered routes
+across the encrypted fabric — hubs forward and readvertise with
+next-hop-self, spokes never transit — and programs the kernel.
+`routed-fabric` roles provide fabric membership (`member`, the base
+role), VIP access (`client`), pod/Service access (`admin`), and upstream
+routing (`router`); hub membership comes from explicit `hubs`
+declarations and is orthogonal to the `router` role (D52). HAProxy on every node gives HA kubeapi access
 and the join URL. The entire day-1 in-cluster surface is ONE
 kubenix-rendered bootstrap bundle, applied once via server-side apply on
 the `clusterInit` node (D40) — no Rancher helm-controller, no host-resident
@@ -111,32 +140,43 @@ tested default.
 
 - Cilium only: one canonical upstream 1.20+ profile — KPR, **native
   routing**, multi-pool pod IPAM with derived non-clashing dual-stack
-  CIDRs, BPF masquerade+tproxy, Maglev, pmtu. `auto-direct-node-routes`
-  is false: FRR/Zebra owns remote pod-pool routes. `ipam.mode: kubernetes`
-  remains an explicit override. Admin helm-values overrides pass
-  post-merge invariant validation (§6.4).
+  CIDRs, BPF masquerade+tproxy, Maglev, pmtu, kube-proxy off,
+  `installIptablesRules=false` (nftables-only, D55).
+  `auto-direct-node-routes` is false: FRR/Zebra owns remote pod-pool
+  routes. `ipam.mode: kubernetes` remains an explicit override. Admin
+  helm-values overrides pass post-merge invariant validation (§6.4).
 - **Node IPAM on by default** (`nodeIPAM.enabled=true`,
   `defaultLBServiceIPAM=nodeipam`, D41): classless `type: LoadBalancer`
   Services get node IPs, ServiceLB-style; ETP-Local-aware candidate
   selection. Pool VIP draws use explicit Cilium-handled
   `loadBalancerClass`es: `io.cilium/lb-ipam` for non-BGP deliveries and
   `io.cilium/bgp-control-plane` for `node-bgp` and `shared-bgp`.
-- LB-IPAM pool model with five delivery modes (D8 revised), BGP v2 +
+- LB-IPAM pool model with five delivery modes (D8 revised round 15:
+  `node-bgp` only where BGP delivery actually exists), BGP v2 +
   per-node FRR/Zebra (D9/D19/D48), default private fleet fabric (D10),
   node-owned BGP pools and shared ECMP pools, plus floating pools via
   runtime controllers.
-- ClusterMesh automatic per mesh group, mixed-distro, native-routed in
-  every member (§6.5). Mesh-wide native-routing CIDRs cover every pod
-  CIDR; cross-cluster pod routes must exist before readiness.
-- Host WireGuard full mesh with exactly one point-to-point interface per
-  node pair (§6.3, D47). FRR-BFD monitors every fabric path. WireGuard
-  `AllowedIPs` and BGP filters derive from the same route policy.
+- ClusterMesh automatic per mesh group (default = fabric instance,
+  D54), mixed-distro, native-routed in every member (§6.5). Full
+  peering is the default; explicit symmetric selective peers are
+  supported and peering bounds automatic cross-cluster route policy.
+  Mesh-wide native-routing CIDRs cover every pod CIDR of every peered
+  cluster; cross-cluster pod routes must exist before readiness.
+- Routed-hub host WireGuard fabric: exactly one point-to-point interface
+  per declared hub↔spoke (and optional hub↔hub) adjacency, never one per
+  remote machine (§6.3, D51). eBGP per adjacency with unique node ASNs;
+  FRR-BFD monitors every fabric path; hubs readvertise with
+  next-hop-self, spokes never transit. WireGuard `AllowedIPs` —
+  outbound cryptokey selection AND inbound source ACL — and BGP filters
+  derive from the same route policy; external-transit adjacencies may
+  carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route.
 - CoreDNS private zones (D21/D22) + role-scoped pod/Service route
   consumption (D13): DNS into every cluster for authorized clan hosts.
-- **netif** for inventory-owned links/static routes (D50) and
-  **fleet-routing** (`member`/`client`/`admin`/`router`, D33) for the flat
-  L3 fabric. The legacy standalone `wireguard-mesh` service is retired
-  after migration.
+- **netif** (multi-link, multi-instance) for inventory-owned
+  links/routes (D50/D53) and **routed-fabric** (four canonical roles
+  `member`/`client`/`admin`/`router`; hub membership from explicit
+  `hubs`, orthogonal to `router`, D52) for the flat L3 fabric. The
+  legacy standalone `wireguard-mesh` service is retired after migration.
 - No Gateway, no Ingress, no proxy implementation in the contract. The
   data-plane proof uses native pod round trips, plain `type: LoadBalancer`
   Services, and firewall positive/negative assertions (§7).
@@ -153,12 +193,12 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D50)
+## 4. Decision record (D1–D55)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
 
-### Active decisions (rounds 1–12, with round-14 revisions)
+### Active decisions (rounds 1–12, with round-14/15 revisions)
 
 - **D1 Cilium is networking-only.** (REVISED round 13: reaffirmed, and now
   the ONLY in-cluster Cilium surface.) `gatewayAPI.enabled=false`,
@@ -166,40 +206,49 @@ unless noted) — revoked entries keep one-line reasons for history.
   HTTP/3 (cilium#28497), no Gateway mTLS (GEP-91), no DaemonSet mode, no
   multi-Gateway IP sharing (cilium#25567). Round-13 consequence: the
   Cilium dummy-Endpoints Node-IPAM limitation never applies here (D41).
-- **D8 Pool model: 2 scopes × 5 delivery modes.** (REVISED round 14.)
-  Pool = address inventory + `serviceSelector`. Scope: *per-machine* →
-  node-named pools with exactly one owner; *cluster-global* → generic
-  pools. Delivery: `node-fate-bound` (provider/static route, no BGP) |
-  `node-bgp` (only the owner advertises exact /32+/128 VIPs; for
-  node-owned IPv4 extras and routed IPv6-subnet carve-outs) | `floating`
-  (runtime controller moves one address; blackhole window) | `shared-bgp`
-  (every healthy eligible node advertises; upstream ECMP; ETP-Local
-  withdrawal) | `external-class` (cloud CCM). Non-BGP draws use
-  `io.cilium/lb-ipam`; both BGP modes use
+- **D8 Pool model: 2 scopes × 5 delivery modes.** (REVISED round 14;
+  narrowed round 15.) Pool = address inventory + `serviceSelector`.
+  Scope: *per-machine* → node-named pools with exactly one owner;
+  *cluster-global* → generic pools. Delivery: `node-fate-bound`
+  (provider/static route, no BGP) | `node-bgp` (only where BGP delivery
+  actually exists; only the owner advertises exact /32+/128 VIPs; for
+  node-owned IPv4 extras and routed IPv6-subnet carve-outs;
+  provider-static node-bound extras remain node-fate-bound) | `floating`
+  (runtime controller moves one address; blackhole window) |
+  `shared-bgp` (every healthy eligible node advertises; upstream ECMP;
+  ETP-Local withdrawal) | `external-class` (cloud CCM). Non-BGP draws
+  use `io.cilium/lb-ipam`; both BGP modes use
   `io.cilium/bgp-control-plane`. Assertions: non-overlap; scope⇒mode
   validity; `node-bgp` exactly one owner and never shared; `shared-bgp`
   only cluster-global; floating candidate coverage; BGP pool blocks ⊆
-  router-role prefixes when a router is declared. One VIP is never
-  advertised by two clusters.
-- **D9 BGP topology + foreign-router contract.** (REVISED round 14.)
-  Every fabric node runs FRR/bgpd+bfdd+Zebra with a deterministic unique
-  private 32-bit node ASN and stable mesh IPv4 router ID. Node FRRs form
-  an eBGP full mesh, one session per address family over each per-pair
-  WireGuard interface (D47). `bgp ebgp-requires-policy`, explicit AF
-  activation, prefix-lists/route-maps, maximum-prefix, `maximum-paths`,
-  `bgp bestpath as-path multipath-relax`, and fast convergence are
-  mandatory. BFD monitors every FRR-FRR path; Cilium uses hold 9 /
-  keepalive 3 / connect-retry 5 because Cilium 1.20 has no BFD.
-  Each cluster has a separate deterministic Cilium-side ASN. Cilium dials
-  only its node-local FRR at `::1` (no `localPort`); FRR is not passive,
-  sets `allow-reserved-ranges` and `bgp allow-martian-nexthop`, and
-  rewrites the loopback next hop to the node's stable transport address.
-  Zebra installs accepted remote routes. Cilium agents never peer with
-  each other. Foreign routers consume the published ASN/CIDR/pool facts,
-  accept only approved exact VIPs and opted-in prefixes, and peer through
-  the `router` role; cluster-side `bgp.upstreamPeers` duplication is
-  removed. Shared VIPs ECMP across advertisers; `node-bgp` VIPs have one
-  advertiser.
+  router-role prefixes when a router is declared. Classless Node-IPAM
+  Services are fabric-scoped and public exposure uses explicit pools
+  (D41/D55). One VIP is never advertised by two clusters.
+- **D9 BGP topology + foreign-router contract.** (REVISED round 14;
+  round 15.) Every fabric node runs FRR/bgpd+bfdd+Zebra with a
+  deterministic unique private 32-bit node ASN and a stable mesh IPv4
+  router ID. eBGP runs per declared fabric adjacency (D51) — one
+  session per address family over each adjacency's WireGuard interface —
+  with unique node ASNs, `next-hop-self` toward spokes, and no iBGP,
+  route reflectors, or route servers. `bgp ebgp-requires-policy`,
+  explicit AF activation, prefix-lists/route-maps, maximum-prefix,
+  `maximum-paths`, `bgp bestpath as-path multipath-relax`, and fast
+  convergence are mandatory. BFD monitors every fabric adjacency;
+  Cilium uses hold 9 / keepalive 3 / connect-retry 5 because Cilium
+  1.20 has no BFD. Each cluster has a separate deterministic
+  Cilium-side ASN. Cilium dials only its node-local FRR at `::1` in one
+  session carrying both address families (no `localPort`); FRR is not
+  passive, sets `allow-reserved-ranges` and `bgp allow-martian-nexthop`,
+  and rewrites the loopback next hop to the node's stable transport
+  address. Hubs forward and readvertise with next-hop-self so every
+  readvertised path has a directly resolvable next hop; spokes never
+  transit. Zebra installs accepted remote routes. Cilium agents never
+  peer with each other. Foreign routers consume the published
+  ASN/CIDR/pool facts, accept only approved exact VIPs and opted-in
+  prefixes, and peer through the `router` role (orthogonal to hub
+  membership, D52); cluster-side `bgp.upstreamPeers`
+  duplication is removed. Shared VIPs ECMP across advertisers;
+  `node-bgp` VIPs have one advertiser.
 - **D10 Private fleet routing fabric DEFAULT ON.** Per cluster by
   default: local Cilium↔FRR + BGP v2 resources and one private
   `shared-bgp` pool (ULA + RFC1918 from derived cluster CIDR space), with
@@ -213,29 +262,35 @@ unless noted) — revoked entries keep one-line reasons for history.
   `fd11:<ciliumId>::/64` (overridable; non-overlap and capacity asserted);
   private CoreDNS is offset 53/0x53, pinned and ETP Local. `bgp.enable` ⇔
   "any node-bgp or shared-bgp pool exists" is eval-locked (§6.12).
-- **D11 Fleet-routing is the flat-L3 fabric.** (REVISED round 14.) One
-  instance is one trust domain; it owns per-pair WireGuard, FRR, BFD,
-  Zebra route installation, role policy, and fleet DNS consumption for
-  Kubernetes and non-Kubernetes machines. The legacy `wireguard-mesh`
-  service and its ordinary-mesh-plus-auxiliary-routed-interface extension
-  are retired after migration. Roles per D33.
+- **D11 routed-fabric is the flat-L3 fabric.** (REVISED round 14:
+  fleet-routing; round 15: renamed + routed-hub.) The service (renamed
+  from `fleet-routing`, D52) is one trust domain per instance; it owns
+  per-adjacency WireGuard (hub↔spoke, optional hub↔hub), FRR, BFD,
+  Zebra route installation, role/topology policy, and fleet DNS
+  consumption for Kubernetes and non-Kubernetes machines. Routed
+  hub/spoke is the only supported MVP topology (D51); full mesh is
+  deferred. The legacy `wireguard-mesh` service and its
+  ordinary-mesh-plus-auxiliary-routed-interface extension are retired
+  after migration. Roles per D33.
 - **D12 ClusterMesh apiserver exposure stays node-bound** mesh addresses
   + selectorless-Service DNS fan-in. Generalized for the kube-apiserver
   mirror Services (D30).
-- **D13 Pod/ClusterIP consumption is role-scoped.** (REVISED round 14.)
-  Cilium always advertises local multi-pool allocations to node-local FRR
-  because native routing requires them. FRR distributes pod routes to all
-  Kubernetes members in the trust domain. Non-Kubernetes `client` hosts
-  receive VIPs only; `admin` explicitly consumes pod and ClusterIP routes
-  and their DNS zones. There is no default direct pod/ClusterIP access for
-  ordinary hosts.
+- **D13 Pod/ClusterIP consumption is role-scoped.** (REVISED round 14;
+  round 15: roles.) Cilium always advertises local multi-pool
+  allocations to node-local FRR because native routing requires them.
+  FRR distributes pod routes to all Kubernetes members in the trust
+  domain. Non-Kubernetes `client` hosts receive VIPs only; `admin`
+  explicitly consumes pod and ClusterIP routes and their DNS zones.
+  `router` carries NO automatic admin DNS or pod/ClusterIP consumption —
+  it is member + authorized transit/upstream policy (D52). There is no
+  default direct pod/ClusterIP access for ordinary hosts.
 - **D14 Raw L4 (games).** Plain `type: LoadBalancer` Services, never
   Gateways. Round-13 note: these are tenant/day-2 objects; the contract
   only guarantees the LB data plane they rely on (D41/D8).
 - **D16 One cluster per node.** Inventory-wide eval assertion.
-  Fleet-routing roles may coexist with cluster membership (D33).
+  routed-fabric membership may coexist with cluster membership (D33).
 - **D19 One integrated FRR configuration per host.** (REVISED round 14.)
-  `fleet-routing` atomically renders `services.frr.config` from inventory
+  `routed-fabric` atomically renders `services.frr.config` from inventory
   and exports; distro services publish facts and render Cilium resources,
   never a second routing stack or independent FRR text fragments. Zebra
   owns kernel installation. `bgpd` and `bfdd` are enabled from the first
@@ -301,18 +356,24 @@ unless noted) — revoked entries keep one-line reasons for history.
   directly as `server`; the cluster's API certificate SANs MUST include
   it (eval-asserted). NetworkPolicy restricts mirror-Service access to
   GitOps namespaces. Mesh connectivity is symmetric.
-- **D33 Fleet-routing roles: `member`, `client`, `admin`, `router`.**
-  (REVISED round 14.) `member` = per-pair mesh + FRR/BFD/Zebra and, on a
-  Kubernetes machine, automatic native pod-route exchange. `client` =
-  member + VIP routes + instance-zone DNS. `admin` = client + D13
-  pod/ClusterIP consumption + D22 svc/pod zones default-on (kamrui-h1).
-  `router` = member + upstream prefix ownership, filtered route exchange,
-  forwarding, and optional NDP. Every interface has one peer and a
-  deterministic instance/peer-derived collision-checked name ≤15
-  characters. One machine joins at most one fleet-routing instance and
-  holds one role there. **Node duality is legal** (D16): the same FRR
-  handles local Cilium and fabric peers; no self-interface or second BGP
-  stack. Canonical test shape: kamrui-h1 = single-node k3s + admin role.
+- **D33 routed-fabric roles: `member`, `client`, `admin`, `router`.**
+  (REVISED round 14; round 15.) Four canonical roles — no default role:
+  `member` is the base role = fabric membership (per-adjacency WG,
+  FRR/BFD/Zebra) and, on a Kubernetes machine, automatic native
+  pod-route exchange; `client` = member + VIP routes + instance-zone
+  DNS; `admin` = client + D13 pod/ClusterIP consumption + D22 svc/pod
+  zones default-on (kamrui-h1); `router` = member + upstream prefix
+  ownership, filtered route exchange, forwarding, optional NDP, and
+  authorized external/fabric transit — explicitly NOT automatic admin
+  DNS. Hub membership is topology from explicit `hubs` declarations
+  (D51), orthogonal to the roles: a router need not be a hub and a hub
+  need not be a router. Every interface has one peer and a deterministic
+  instance/adjacency-derived collision-checked name ≤15 characters. One
+  machine joins at most one `routed-fabric` instance (one trust domain)
+  and holds one role there. **Node duality is legal** (D16): the same
+  FRR handles local Cilium and fabric peers; no self-interface or second
+  BGP stack. Kubernetes managers are not hubs by default (D51).
+  Canonical test shape: kamrui-h1 = single-node k3s + admin role.
 - **D34 Version policy: last 3 minors, latest + support-window gate.**
   Artifact flake packages the last 3 k8s minors per distro, latest patch
   each; servers upgrade first, agents lag per version-skew policy.
@@ -411,11 +472,14 @@ unless noted) — revoked entries keep one-line reasons for history.
   documented day-2 variant. Upgrades post-handoff: pkgs bump → rebuild →
   republish → GitOps applies. Publish-freshness gate (published ≡ fresh
   render) lives in the artifact/CI checks, not eval.
-- **D41 Node IPAM default; pools keep the VIP plane.** Canonical profile
-  sets `nodeIPAM.enabled=true` + `defaultLBServiceIPAM=nodeipam`:
-  classless `type: LoadBalancer` Services receive node IPs (ExternalIP
-  preferred, else InternalIP), the k3s-ServiceLB experience on every
-  distro — including stock Traefik under `distroDefaults`. With
+- **D41 Node IPAM default; pools keep the VIP plane.** (REVISED round 15:
+  fabric-scoped.) Canonical profile sets `nodeIPAM.enabled=true` +
+  `defaultLBServiceIPAM=nodeipam`: classless `type: LoadBalancer` Services
+  receive node IPs (ExternalIP preferred, else InternalIP), the
+  k3s-ServiceLB experience on every distro — including stock Traefik
+  under `distroDefaults` — **fabric-scoped**: classless Services are a
+  fabric-internal exposure and never a public-exposure mechanism; public
+  exposure uses explicit pools (D8/D52). With
   `externalTrafficPolicy: Local` the advertised node set follows real
   EndpointSlices (pod placement); the documented Cilium dummy-Endpoints
   limitation affects only Cilium's own Gateway/Ingress implementations,
@@ -426,7 +490,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   (D8/D9/D10): `io.cilium/lb-ipam` for node-fate-bound/floating draws,
   `io.cilium/bgp-control-plane` for `node-bgp` and `shared-bgp` draws
   (the only class Cilium 1.20's BGP control plane announces, besides
-  unset). Multi-pool remains the
+  unset). KubeVirt Hetzner/provider-MAC attachment is netif host-bridge
+  plumbing, never a Cilium pool/BGP delivery; KubeVirt stays day-2
+  (D52). Multi-pool remains the
   default pod IPAM with
   derived non-clashing CIDRs; `ipam.mode: kubernetes` is an allowed
   explicit override (the old Node-IPAM ban referred to pod IPAM; both
@@ -450,10 +516,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   is simply never clan-rendered and only exists when the distro itself
   ships it under `distroDefaults`.
 - **D43 GitOps-neutral control domain.** (Supersedes D36/D37 naming and
-  D28's controller install.) `controlDomain.role = standalone | hub |
-  spoke` per cluster instance (default `standalone`), bounded by the mesh
-  trust domain exactly as before (hub+spokes same mesh group; ≤1 hub per
-  group; spoke ⇒ hub exists; eval-asserted). Clan renders ONLY the
+  D28's controller install; REVISED round 15: meshGroup default.)
+  `controlDomain.role = standalone | hub | spoke` per cluster instance
+  (default `standalone`), bounded by the mesh trust domain (meshGroup
+  defaults from the fabric instance — no repeated value; hub+spokes same
+  fabric instance; ≤1 hub per group; spoke ⇒ hub exists; eval-asserted). Clan renders ONLY the
   tool-agnostic substrate: mirror Services (D30), in-spoke
   ClusterRoleBinding `gitops-hub` binding group `gitops-hub` →
   `cluster-admin` (configurable role) plus optional per-tenant
@@ -471,18 +538,34 @@ unless noted) — revoked entries keep one-line reasons for history.
   runbook only; offline-minted SA JWTs; expiring bearer tokens + refresh
   CronJobs). Flux-specific hub tree conventions (tenants →
   infra-controllers → …) move to the day-2 docs as examples.
-- **D44 Test-surface reduction.** (REVISED round 14.) VM suites kept:
-  single/join/HA per distro; netif + per-pair transport/FRR/BFD;
-  native-routed ClusterMesh + mirror-Service reachability; **data-plane
-  suite** (pool allocation + nodeipam + ETP-Local + native pod routes +
-  node-bgp ownership + shared-bgp ECMP/withdrawal + firewall
-  positive/negative); fleet-routing (member/client/admin/router incl.
-  dual-role); PKI rotation; **GitOps-handoff
+- **D44 Test-surface reduction.** (REVISED round 14; suite list updated
+  round 15.) VM suites kept: single/join/HA per distro; netif
+  (multi-NIC, VLAN/bond/bridge, multi-instance on one host,
+  static/DHCP/RA, exports, cross-instance conflict negatives);
+  routed-fabric transport/FRR (hub + spokes, one WG interface per
+  declared adjacency, two NAT sites via hubs, BFD both sides,
+  RIB-to-FIB, next-hop-self, hub readvertise/spoke no-transit,
+  route-filter and default-route negatives, 0/0 crypto ACL without IP
+  default route, Internet source/return path, MTU floor + path-MTU);
+  data-plane suite per distro (pool allocation + nodeipam + ETP-Local +
+  native pod routes + node-bgp ownership + shared-bgp ECMP/withdrawal +
+  firewall positive/negative + no-iptables assertion + dual-AF local
+  Cilium↔FRR session); bgp-ecmp (two hubs active-active + single-hub
+  failover, upstream ECMP, router-not-hub, MikroTik-style FRR
+  foreign-router fixture); selective ClusterMesh (full-peering default +
+  explicit selective peers + selective-leaf isolation); native
+  ClusterMesh + mirror-Service reachability; fleet roles
+  (member/client/admin/router incl. router-not-hub and the
+  cluster-node dual-shape, client pod isolation, admin svc/pod/ClusterIP,
+  router filtering, router-without-admin-DNS);
+  PKI rotation; **GitOps-handoff
   proof** (bootstrap bundle applied, then re-applied SSA under a second
   field manager — strict no-op, dataplane green before/after; no Flux in
   VMs, Flux artifacts were cut from pkgs); rke2 CIS profile. Retired:
-  EG gateway matrix, QUIC/Caddy fixtures, flux control-domain suite,
-  external-dns, OpenEBS, KubeVirt, Multus, sealed-secrets suites.
+  full-mesh transport suite (superseded by routed hub/spoke, D51;
+  historical), EG gateway matrix, QUIC/Caddy fixtures, flux
+  control-domain suite, external-dns, OpenEBS, KubeVirt, Multus,
+  sealed-secrets suites.
   go-httpbin remains the one workload fixture.
 - **D45 Shared lib renamed `lib/kube-cluster/`.** Supersedes the D23
   rename gate (was: on kubernetes-distro landing). The lib serves all
@@ -508,18 +591,32 @@ unless noted) — revoked entries keep one-line reasons for history.
 
 ### Round 14 decisions (2026-10-24) — active
 
-- **D47 Per-pair routed WireGuard is the only fabric datapath.** Every
-  machine has a stable dual-stack `/32` + `/128` on a fabric
-  loopback/dummy interface and exactly one point-to-point WireGuard
-  interface per remote machine. Each interface has one peer and
-  deterministic transfer prefixes; identical prefixes across interfaces
-  are valid ECMP, while overlapping peers on one interface are forbidden.
-  One UDP session per pair removes the legacy shared-identity roaming
-  collision. AllowedIPs derive from the same policy as BGP filters. NAT
-  members dial reachable members with keepalive 25; a pair with no
-  reachable endpoint on either side is an eval error. Full mesh is the
-  supported small/medium-fleet topology; hidden hub-and-spoke/route
-  reflector variants are not part of the contract.
+- **D47 Per-adjacency routed WireGuard is the only fabric datapath.**
+  (REVISED round 15: per-remote-machine full mesh superseded; round-14
+  text retained below for history.) Every fabric machine has a stable
+  dual-stack `/32` + `/128` on a fabric loopback/dummy interface and
+  exactly one point-to-point WireGuard interface per **declared fabric
+  adjacency** (hub↔spoke; optional hub↔hub) — never one per remote
+  machine. Each interface has one peer and deterministic transfer
+  prefixes; identical prefixes across interfaces are valid ECMP, while
+  overlapping peers on one interface are forbidden. One UDP session per
+  adjacency removes the legacy shared-identity roaming collision.
+  AllowedIPs is both outbound cryptokey selection and the inbound source
+  ACL: it carries the remote stable host addresses plus every approved
+  transit source/destination prefix on that adjacency, and
+  external-transit adjacencies may include 0.0.0.0/0 and ::/0 as crypto
+  ACL without creating or accepting an IP default route (D51). NAT
+  members dial reachable members with keepalive 25; two NAT sites never
+  peer directly — they communicate through hubs; an adjacency with no
+  reachable endpoint on either side is an eval error. Per-link WG MTU
+  derives from the underlay MTU minus WireGuard overhead with a safe
+  floor, and VMs assert path MTU (D51). Endpoint reachability is per
+  declared adjacency; private endpoints are allowed when actually
+  reachable; netif peer exports provide automatic endpoint selection
+  with explicit overrides. Routed hub/spoke is the supported MVP
+  topology; full mesh is deferred. (Round-14 history: one interface per
+  remote machine in an encrypted full mesh, identical prefixes as ECMP,
+  hidden hub-and-spoke/route-reflector variants excluded.)
 - **D48 FRR + Zebra owns the routing control plane and kernel FIB.** FRR
   10.7+ uses one integrated config, eBGP per AF per WG link, BFD on every
   FRR path, strict bidirectional policy, and ECMP across interfaces.
@@ -530,33 +627,134 @@ unless noted) — revoked entries keep one-line reasons for history.
 - **D49 Native-routed multi-pool Cilium is mandatory.** `routing-mode:
   native`, no VXLAN/Geneve, `auto-direct-node-routes=false`, dual-stack
   mesh-wide native-routing CIDRs, and Cilium devices covering every
-  per-pair WG interface. FRR distributes remote `CiliumPodIPPool` routes;
+  fabric WG interface (one per declared adjacency, D51). FRR distributes
+  remote `CiliumPodIPPool` routes;
   ClusterMesh requires native mode, non-overlap, and working pod routes in
   every member. Multi-pool remains the default; `ipam.mode: kubernetes`
   remains an explicit override. Cilium stays networking-only and no L7
   feature is enabled.
-- **D50 Inventory owns the core host data plane.** `netif` declares
-  links, static/DHCP/RA addressing, gateways, routes, policy routing,
-  MTU, DNS, firewall trust, and deploy-target exports in `inventory.nix`.
-  `fleet-routing` consumes its peer facts. Supporting NixOS modules may
-  handle Wi-Fi association or platform quirks, but cannot own static core
-  addresses/routes. Home's `hostSpec.networking`/`machines.json` static-IP
-  ownership is removed during migration; borg's `lan` is a behavioral
-  reference, not code to preserve.
+- **D50 Inventory owns the core host data plane.** (REVISED round 15:
+  multi-link, multi-instance.) `netif` declares links, static/DHCP/RA
+  addressing, gateways, routes, MTU, DNS, firewall trust, underlay
+  policy routing, and deploy-target exports in `inventory.nix` —
+  multi-link and multi-instance, including multiple netif instances on
+  one host (D53). An instance is a site/segment with shared defaults
+  plus per-machine and per-link overrides; links may be physical, VLAN,
+  bond, or bridge. `netif` owns underlay policy routing; `routed-fabric`
+  owns fabric-specific policy routing (D53). `routed-fabric` consumes
+  its peer facts. Cross-instance assertions: unique link ownership (one
+  link, one instance), no default-route conflicts, no DNS conflicts,
+  instance-namespaced units (rule 5). Supporting NixOS modules may
+  handle Wi-Fi association or platform quirks, but cannot own static
+  core addresses/routes. Home's `hostSpec.networking`/`machines.json`
+  static-IP ownership is removed during migration; borg's `lan` is a
+  behavioral reference, not code to preserve.
+
+### Round 15 decisions (2026-10-24) — active
+
+- **D51 Routed-hub fabric is the only MVP transport topology.** Exactly
+  one WireGuard interface per **declared fabric adjacency** — hub↔spoke,
+  plus optionally declared hub↔hub — never one per remote machine;
+  full mesh is deferred beyond MVP and leaves the supported and tested
+  surface (round-14 per-pair full-mesh text retained historically in
+  D47). Every fabric node keeps its stable dual-stack `/32`+`/128`
+  loopback (D47) and runs FRR bgpd+bfdd+Zebra (D48). eBGP per adjacency
+  with deterministic unique private 32-bit node ASNs, one session per
+  address family per adjacency interface, BFD on every adjacency, and
+  `next-hop-self` on hub readvertisement so every distributed next hop
+  is directly resolvable. Hubs forward and readvertise; spokes never
+  transit. No iBGP, no route reflectors, no route servers. Every spoke
+  declares ≥1 reachable hub; the HA profile links every spoke to two
+  hubs (active-active below). Kubernetes managers are not hubs by
+  default. Active-active hub HA is pure fabric ECMP — every spoke links
+  both hubs, eBGP/BFD on both, FRR `maximum-paths` + multipath-relax;
+  no shared gateway VIP, no VRRP. Upstream active-active requires
+  upstream ECMP. Transparent active-active default gateway for ordinary
+  non-fabric LAN clients is OUTSIDE MVP: it needs client routing or an
+  L2/VRRP-like mechanism. AllowedIPs is both outbound cryptokey
+  selection and the inbound source ACL, so it carries every approved
+  transit source/destination prefix on the adjacency; external-transit
+  adjacencies may include 0.0.0.0/0 and ::/0 as crypto ACL WITHOUT
+  creating or accepting an IP default route. Internet ingress through a
+  router requires source-policy return routing through the correct
+  fabric egress — no asymmetric local-WAN reply. Fabric-originated
+  routes are stable /32+/128. NAT spokes keepalive 25; two NAT sites
+  never peer directly — they communicate through hubs. Per-link WG MTU
+  derives from the underlay MTU minus WireGuard overhead (80 bytes v4 /
+  96 v6) with a 1280 floor, and VMs assert path MTU. Endpoint
+  reachability is evaluated per declared adjacency; private endpoints
+  are allowed when actually reachable; netif peer exports provide
+  automatic endpoint selection with explicit per-adjacency overrides.
+- **D52 `routed-fabric` replaces `fleet-routing`; roles and hub topology
+  are orthogonal.** (Renames and extends D11/D33.) Four canonical roles
+  (D33): `member` is the base role; `client`/`admin`/`router` are
+  specialized privileges on top of member — `client` = member + VIP
+  routes + instance-zone DNS; `admin` = client + pod/ClusterIP routes +
+  svc/pod DNS zones (D13/D22); `router` = member + authorized
+  external/fabric transit and upstream policy — explicitly NOT automatic
+  admin DNS. Hub membership is topology derived from explicit `hubs`
+  declarations (D51), orthogonal to the roles: a router need not be a
+  hub and a hub need not be a router. Distinct from the control-domain
+  hub/spoke of D43 (GitOps control, §6.14 naming note). Pool/exposure
+  scope: Node IPAM classless Services are
+  fabric-scoped; public exposure uses explicit pools; `node-bgp` exists
+  only where BGP delivery actually exists and provider-static node-bound
+  extras remain node-fate-bound; Hetzner/provider-MAC KubeVirt
+  attachment is netif host-bridge plumbing, never a Cilium pool/BGP
+  delivery — KubeVirt remains day-2 (D8/D41 revised).
+- **D53 netif is multi-link and multi-instance.** An instance = one
+  site/segment with shared defaults plus per-machine and per-link
+  overrides; multiple netif instances may coexist on one host. Links:
+  physical, VLAN, bond, bridge; addressing static/DHCP/RA; gateways,
+  MTU, DNS, underlay routes, endpoint exports. Cross-instance
+  assertions: unique link ownership (one link, one instance), no
+  default-route conflicts, no DNS conflicts, instance-namespaced units
+  (rule 5). Ownership split: netif owns underlay policy routing;
+  `routed-fabric` owns fabric-specific policy routing. Multiple
+  `routed-fabric` instances are separate trust domains, and a machine
+  joins at most one (its meshGroup defaults from it, D43/D54).
+- **D54 ClusterMesh: full peering by default, selective peers
+  supported.** Within one fabric instance the default is full peering
+  among its clusters; explicit symmetric selective peers are supported —
+  a central cluster may peer A↔B and B↔C while A and C do not peer.
+  Peering state is non-transitive. Peering alone is not isolation:
+  selective peers also bound the automatic cross-cluster pod/Service
+  route policy rendered into fabric filters; a routed-only exception
+  between non-peered clusters must be deliberate and eval-visible.
+  Separate `routed-fabric` instances provide HARD trust-domain
+  separation (no mesh, no routes, no DNS across instances). Three
+  distinct graphs: the **underlay graph** (netif links), the **fabric
+  graph** (routed-fabric adjacencies), the **ClusterMesh graph**
+  (peering edges) — similar shapes, independent edges. `meshGroup`
+  defaults from the fabric instance; no repeated value required.
+- **D55 Host datapath hygiene: nftables-only firewall + dual-AF local
+  Cilium session.** (i) Host firewall is nftables-only; kube-proxy is
+  off; Cilium `installIptablesRules=false`, gated by a preliminary probe
+  and a VM assertion; iptables-nft userspace may exist but must not own
+  rules. Official mycelium/yggdrasil/wireguard overlays are NOT
+  dependencies or underlays — peer exports are the integration seam.
+  (ii) The local Cilium↔FRR `::1` session carries BOTH address
+  families; advertisement selectors and the `CiliumPodIPPool` type are
+  pinned; explicit `extended-nexthop` capability and v4-over-v6 /
+  v6-over-v4 next-hop behavior must be PROBED before the renderer locks
+  (5R2); the Cilium GR posture (timers, restart behavior, capability
+  fallback) is explicit enough for tests.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
 1. One declarative fleet: instance declaration ⇒ stable identity,
    non-overlapping defaults, integrated transport, automatic ClusterMesh
-   when the mesh group has peers.
+   when the mesh group has peers (full peering default; selective peers
+   explicit and symmetric, D54).
 2. Dual-stack inside, always (nodes/pods/Services); public exposure
    varies per node/Service (v4-only, v6-only, both, neither).
 3. Cilium is the only CNI base: one upstream 1.20+ profile, KPR, native
    routing, multi-pool; networking-only (D1/D49).
-4. L3 only: no L2-announce/VRRP/shared-L2. Tested transport = one host
-   WireGuard interface per node pair; every cluster dual-stack. `netif`
-   may configure VLAN parents/children as underlay links, never as a
-   shared cluster datapath.
+4. L3 only: no L2-announce/VRRP/shared-L2. Tested transport = routed
+   hub/spoke with one host WireGuard interface per declared adjacency
+   (D51; full mesh is not the supported MVP topology); every cluster
+   dual-stack. `netif` may configure VLAN parents/children, bonds, and
+   bridges as underlay links, never as a shared cluster datapath.
 5. ETP Local on every clan-rendered external-facing Service (mirror
    Services, ClusterMesh apiserver, private CoreDNS VIP); no silent
    Cluster fallback.
@@ -567,9 +765,10 @@ unless noted) — revoked entries keep one-line reasons for history.
    per-machine overrides, non-empty.
 8. Hermetic proof: pinned artifacts, eval rejection of invalid
    inventories, hermetic VM suites.
-9. One cluster per node (D16); one fleet-routing membership and one FRR
-   per host (D19/D33); exactly one classless-LB implementation per
-   cluster (Node IPAM; servicelb never — D42).
+9. One cluster per node (D16); one routed-fabric membership (at most one
+   instance/trust domain) and one FRR per host (D19/D33/D52); exactly
+   one classless-LB implementation per cluster (Node IPAM; servicelb
+   never — D42).
 10. `cluster.local` is pinned and never served to clients (D21); private
     domains resolve through clan-rendered CoreDNS zones (D22).
 11. Kubenix renders every clan manifest; two-layer pipeline, zero IFD in
@@ -577,8 +776,8 @@ unless noted) — revoked entries keep one-line reasons for history.
     (D40); Rancher helm-controller off by default (D42).
 12. Control domain without clan-installed GitOps: standalone/hub/spoke
     (D43); mirror Service + mirror SAN mandatory for spokes (D30);
-    hub+spokes share one mesh group; ≤1 hub per group; spoke ⇒ hub
-    exists (eval-asserted).
+    hub+spokes share one fabric instance (meshGroup defaults to it);
+    ≤1 hub per group; spoke ⇒ hub exists (eval-asserted).
 13. Clan vars = bootstrap plane only (D35 revised); no clan vars
     generators for application-plane secrets (lint).
 14. Artifact flake carries the last 3 k8s minors per distro (D34);
@@ -588,15 +787,32 @@ unless noted) — revoked entries keep one-line reasons for history.
 16. CNCF in-cluster posture for clan-rendered components (D24); rke2
     CIS-hardened by default (D25).
 17. Every static core link/address/route is inventory-owned through
-    `netif`; every fabric AllowedIP and BGP filter derives from one route
-    policy; no default route or unapproved prefix leaks (D47/D50).
+    `netif` (multi-instance; cross-instance conflicts eval-rejected,
+    D50/D53); every fabric AllowedIP and BGP filter derives from one
+    route policy; no default route or unapproved prefix leaks, and a 0/0
+    crypto ACL never creates or accepts an IP default route (D47/D51).
+18. Routed-hub transit rule: hubs forward and readvertise with
+    next-hop-self; spokes never transit; every spoke declares ≥1
+    reachable hub; HA profiles link every spoke to two hubs with
+    eBGP/BFD/ECMP and no shared gateway VIP/VRRP (D51).
+19. ClusterMesh peering is full within one fabric by default; selective
+    peers are explicit, symmetric, and non-transitive; peering bounds
+    automatic cross-cluster pod/Service route policy; separate
+    routed-fabric instances are hard trust-domain separation (D54).
+20. Host firewall is nftables-only; kube-proxy is off; Cilium
+    `installIptablesRules=false`; iptables-nft userspace may exist but
+    must not own rules; VMs assert no iptables-owned rules (D55).
+21. WireGuard MTU derives per link from the underlay minus WireGuard
+    overhead with a 1280 floor; VMs assert path MTU (D51).
 
 ## 6. Subsystem contracts (condensed)
 
 ### 6.1 Ownership boundaries
-Canonical repo = external-systems/clanServices. `netif` owns links and
-static host routes; `fleet-routing` owns the encrypted fabric and one
-integrated FRR configuration; thin distro services own
+Canonical repo = external-systems/clanServices. `netif` owns
+inventory-declared links (multi-link, multi-instance), underlay policy
+routing, and static host routes; `routed-fabric` owns the encrypted
+hub/spoke fabric, per-adjacency WireGuard, fabric-specific policy
+routing, and one integrated FRR configuration; thin distro services own
 bootstrap/TLS-dir/join semantics and Cilium resources; shared lib
 (`lib/kube-cluster/`) owns parity. Artifact flake = only packaging input
 (distro runtimes, Cilium chart + committed inflated base manifest, test
@@ -614,82 +830,136 @@ pin current ids/CIDRs before upgrading. One resolved dual-stack CIDR
 structure feeds distro, Cilium, DNS, pools, assertions, and exports.
 region/zone labels default to instance name and must be non-empty.
 `kube_cluster` publishes schema version, identity, pod/service CIDRs,
-clusterDNS, mesh group, control-domain role, transport source, per-member
-stable mesh endpoints/topology, pool handoff (scope, delivery, blocks,
-selectors, owner), Cilium-side ASN, advertisement facts, fabric CoreDNS,
-and API mirror facts. `fleet_routing` publishes per-node ASN,
-loopback/per-pair interface facts, and router-owned prefixes.
-`node_transport` publishes a versioned dual-stack transport view: stable
-addresses, loopback and per-pair datapath interfaces, MTU, port,
-nullable endpoint, native-routing posture, primary/external facts,
-delivery modes, and topology. No secrets in exports; every leaf has a
-default (clan CLI deep-eval).
-Inventory-wide assertions cover duplicate names/ids/CIDRs/ASNs/pair
+clusterDNS, mesh group (default = fabric instance), control-domain role,
+fabric source, per-member stable fabric endpoints/topology, pool
+handoff (scope, delivery, blocks, selectors, owner), Cilium-side ASN,
+advertisement facts, fabric CoreDNS, and API mirror facts.
+`routed_fabric` publishes per-node ASN, loopback/per-adjacency interface
+facts, hub membership, roles, and router-owned prefixes. `node_transport` publishes a versioned dual-stack transport
+view: stable addresses, loopback and per-adjacency datapath interfaces,
+MTU, port, nullable endpoint, native-routing posture, primary/external
+facts, delivery modes, and topology. No secrets in exports; every leaf
+has a default (clan CLI deep-eval).
+Inventory-wide assertions cover duplicate names/ids/CIDRs/ASNs/interface
 names/transfer prefixes, overlapping CIDRs, duplicate NodePorts, missing
-peers/labels/endpoints, impossible NAT pairs, multiple fabric memberships
-per machine, node-in-two-clusters, second routing stacks, native-routing
-CIDR containment, and control-domain⇔mesh-group consistency. Fleet checks
-read exports; per-instance/per-machine checks stay in the services.
+peers/labels/endpoints, adjacencies with no reachable endpoint on either
+side, spokes with no reachable hub, HA profiles without two reachable
+hubs, spoke-transit configurations, multiple fabric memberships per
+machine, node-in-two-clusters, second routing stacks, native-routing
+CIDR containment, control-domain⇔fabric-instance consistency, netif
+cross-instance conflicts (unique link ownership, default-route, DNS),
+non-namespaced netif units, WG MTU below the derived floor, and firewall
+posture violations (D51/D53/D55). Fleet checks read exports;
+per-instance/per-machine checks stay in the services.
 
 ### 6.3 Host networking and routed WireGuard transport
-`netif` is the inventory-facing link service: static or DHCP/RA
-addressing, prefixes, default/static routes, on-link gateways, policy
-routing, MTU, DNS, firewall trust, and optional deploy-target export. Its
-`peer`/`netif` exports feed endpoint selection. Static values may be
-interpolated from the consumer's `secrets`/`not-secret` input; exports
-still contain no private keys.
+`netif` is the inventory-facing link service: multi-link and
+multi-instance — an instance = one site/segment with shared defaults and
+per-machine/per-link overrides, and several netif instances may coexist
+on one host (D53). It covers physical links, VLANs, bonds, bridges,
+static/DHCP/RA addressing, prefixes, default/static routes, on-link
+gateways, MTU, DNS, firewall trust, underlay policy routing, and
+optional deploy-target export. Its `peer`/`netif` exports feed adjacency
+endpoint selection automatically, with explicit per-adjacency overrides.
+Static values may be interpolated from the consumer's `secrets`/
+`not-secret` input; exports still contain no private keys.
+Cross-instance assertions: a link is owned by exactly one instance,
+default-route and DNS conflicts between instances are eval errors, and
+every rendered unit is instance-namespaced (rule 5).
 
-`fleet-routing` is the only tested overlay transport. Every member gets
+`routed-fabric` is the only tested overlay transport. Every member gets
 stable dual-stack host addresses (existing hash defaults into
 192.168.0.0/16 + fd77::/16, explicit pins allowed) on a fabric
-loopback/dummy interface. For each remote member it renders exactly one
-point-to-point WG interface with deterministic ≤15-character name,
-instance/peer-derived transfer prefixes, one peer, and one UDP session.
-The canonical pair key is `<instance>:<sorted-machine-a>:<sorted-machine-b>`;
-its sha256 derives a /31 from 100.64.0.0/10 and a /127 from fd76::/16,
-with the sorted endpoints assigned in the same order. Explicit per-pair
-pins are the migration/collision escape. Pair/name/address collisions are
+loopback/dummy interface. For each **declared fabric adjacency** — every
+hub↔spoke the inventory declares, plus optional hub↔hub adjacencies —
+it renders exactly one point-to-point WG interface with deterministic
+≤15-character name, instance/adjacency-derived transfer prefixes, one
+peer, and one UDP session; it never renders one interface per remote
+machine (D51). Hubs are declared PER SPOKE MACHINE with
+`roles.<role>.machines.<name>.settings.hubs = [ ... ]`; the hub machines
+are exactly the union of those lists — there is NO instance-level
+`settings.hubs` (invalid clan shape). Hub↔hub adjacencies are declared
+by hub machines mutually listing each other. The canonical adjacency key is
+`<instance>:<sorted-endpoint-a>:<sorted-endpoint-b>`; its sha256 derives
+a /31 from 100.64.0.0/10 and a /127 from fd76::/16, with the sorted
+endpoints assigned in the same order. Explicit per-adjacency pins are
+the migration/collision escape. Adjacency/name/address collisions are
 eval errors. The node keypair is
 instance-scoped clan vars; public keys are public vars, private keys only
 deploy to their owner.
 
-AllowedIPs include the remote stable host addresses plus exactly the
-prefixes that peer is authorized to receive: shared VIPs on every
-advertiser interface, node-bgp VIPs only on the owner interface, pod
-routes to Kubernetes members and `admin`, ClusterIPs only to `admin`,
-and router-approved upstream prefixes. No default routes. The same
+AllowedIPs carry the remote stable host addresses plus exactly the
+prefixes that adjacency is authorized to transit — AllowedIPs is both
+outbound cryptokey selection and the inbound source ACL. External-transit
+adjacencies (`router` role, D52) may include 0.0.0.0/0 and ::/0 as
+crypto ACL without creating or accepting an IP default route. The same
 resolved policy renders FRR filters, preventing cryptokey/routing drift.
-A pair needs at least one reachable endpoint; NAT/outbound-only members
-omit endpoints and keepalive every 25 seconds. One mesh group = one
-`fleet-routing` instance; one machine has at most one membership/role.
+Internet ingress through a router requires source-policy return routing
+through the correct fabric egress — no asymmetric local-WAN reply.
+Fabric-originated routes are stable /32+/128, and next-hop-self on hub
+readvertisement keeps every next hop directly resolvable.
+An adjacency needs at least one reachable endpoint; NAT/outbound-only
+members omit endpoints and keepalive every 25 seconds; two NAT sites
+never peer directly — they communicate through hubs. Per-link WG MTU
+derives from the underlay MTU minus WireGuard overhead (80 bytes v4 /
+96 v6) with a 1280 floor; VMs assert path MTU. Endpoint reachability is
+evaluated per declared adjacency; private endpoints are allowed when
+actually reachable. One `routed-fabric` instance = one trust domain; one
+machine has at most one membership and one role.
 
 ```nix
 inventory.instances = {
-  home-net = {
+  home-net = {  # netif instance: role-wide site defaults + per-machine links
     module.input = "clanServices";
     module.name = "netif";
-    roles.default.machines.kamrui-h1.settings = {
-      interface = "wlp2s0";
-      dhcp.ipv4 = true;
+    roles.default.settings = {  # site-wide defaults (every machine/link)
       mtu = 1500;
+    };
+    roles.default.machines.kamrui-h1.settings = {
       targetHost = true;
+      links.wifi = {
+        interface = "wlp2s0";
+        dhcp.ipv4 = true;  # inherits the site mtu default
+      };
+    };
+  };
+  lab-net = {  # second netif instance on the SAME host: separate site/segment
+    module.input = "clanServices";
+    module.name = "netif";
+    roles.default.settings = {
+      mtu = 9000;  # segment-wide default
+    };
+    roles.default.machines.kamrui-h1.settings.links.lab = {
+      interface = "enp3s0";
+      static.ipv4 = [ "192.0.2.10/24" ];
+      gateway.ipv4 = "192.0.2.1";
     };
   };
   fleet = {
     module.input = "clanServices";
-    module.name = "fleet-routing";
+    module.name = "routed-fabric";  # four canonical roles
     roles = {
-      member.machines.helsinki-manager-1 = { };
-      admin.machines.kamrui-h1.settings.endpointSources = [
-        { service = "netif"; instance = "home-net"; }
-      ];
+      router.machines = {
+        # hubs are declared per SPOKE (below); edge-1/edge-2 are hubs
+        # because spokes list them in `hubs` — the union of those lists.
+        # The router role is independent of hub-ness.
+        edge-1 = { };
+        edge-2 = { };  # second hub = the HA profile
+      };
+      member.machines.helsinki-manager-1.settings.hubs = [ "edge-1" "edge-2" ];
+      admin.machines.kamrui-h1.settings = {
+        hubs = [ "edge-1" "edge-2" ];  # per-machine; NO instance-level hubs
+        endpointSources = [
+          { service = "netif"; instance = "home-net"; }
+        ];
+      };
     };
   };
   spoke = {
     module.input = "clanServices";
     module.name = "k3s";
-    roles.server.machines.kamrui-h1.settings.network.transport = {
-      service = "fleet-routing";
+    roles.server.machines.kamrui-h1.settings.network.fabric = {
+      service = "routed-fabric";
       instance = "fleet";
     };
   };
@@ -705,38 +975,58 @@ Same canonical upstream Cilium 1.20+ chart/images both distros; RKE2
 bundled Cilium disabled. Always: KPR, `routing-mode: native`, no
 VXLAN/Geneve, multi-pool pod IPAM (default; derived non-clashing
 dual-stack CIDRs), `auto-direct-node-routes: false`, BPF
-masquerade+tproxy, Maglev, pmtu, Node IPAM (D41). Dual-stack
+masquerade+tproxy, Maglev, pmtu, Node IPAM (D41), kube-proxy off,
+`installIptablesRules=false` (D55). Dual-stack
 native-routing CIDRs cover all pod CIDRs in the mesh trust domain
 (default `10.0.0.0/8` + `fd10::/16` for derived space; explicit overrides
 must contain every explicit pod CIDR). Cilium device configuration covers
-every per-pair WG interface. Cilium advertises local `CiliumPodIPPool`
+every fabric WG interface (one per declared adjacency, D51). Cilium
+advertises local `CiliumPodIPPool`
 allocations and authorized Service routes to local FRR; FRR/Zebra owns
 remote routes. Native ClusterMesh requires the same mode everywhere,
 non-overlap, node InternalIP connectivity, and working cross-cluster pod
 routes.
-Per-cluster variation lands in `cilium-config` and CRs through kubenix
-merging over the committed base manifest (D26). Admin helm-values
+Local Cilium↔FRR peering is ONE `::1` session carrying both address
+families; advertisement selectors and the `CiliumPodIPPool` type are
+pinned; explicit `extended-nexthop` capability and v4-over-v6 /
+v6-over-v4 next-hop behavior must be probed before the renderer locks,
+and the Cilium GR posture (timers, restart behavior, capability
+fallback) is explicit enough for tests (D55). Per-cluster variation lands
+in `cilium-config` and CRs through kubenix merging over the committed
+base manifest (D26). Admin helm-values
 overrides remain limited to layer-2-expressible keys and are post-merge
 validated against native-routing/no-tunnel/IPAM/dual-stack/device/CNI/
 artifact/ETP invariants. Multus follows D42. Lifecycle: bootstrap bundle
 apply → GitOps adoption (D40); publish-freshness gated in CI.
 
-### 6.5 ClusterMesh (automatic, mixed-distro)
-Mesh groups (default = all cluster instances under `meta.domain`;
-opt-out separates trust — and bounds control domains, D43). Every
-eligible cluster runs clustermesh-apiserver + mesh certs from first
-boot; singleton peer list empty. Peering rendered from exports into
-`clustermesh.config.clusters` — no CLI. Exposure: LoadBalancer (default,
-node-bound mesh addresses + ETP Local + ClientIP affinity, all servers
-as endpoints, anti-affinity) with collision-checked NodePort escape.
-DNS fan-in: selectorless local ClusterIP Service + eval-rendered
-EndpointSlice per remote cluster — the same pattern, generalized,
-carries the kube-apiserver mirror Services (D30; mandatory for spokes).
-Shared `rancher-clustermesh-ca-<group>` vars generator (share=true);
-per-cluster dependent cert generators; SANs include every exported
-address + fan-in name; endpoint set is a public validation input
-(membership change ⇒ reissue before advertise). CA/cert material never
-in exports/helm/store. Same datapath, same Cilium profile,
+### 6.5 ClusterMesh (full peering default, selective peers supported)
+Mesh groups default from the fabric instance: the clusters under one
+`routed-fabric` instance form one mesh group (no repeated value
+required; a different fabric instance — or explicit opt-out — separates
+trust and bounds control domains, D43). Separate `routed-fabric`
+instances are HARD trust-domain separation: no mesh, no routes, no DNS
+across them. Three distinct graphs: the **underlay graph** (netif
+links), the **fabric graph** (routed-fabric adjacencies), and the
+**ClusterMesh graph** (peering edges) — similar shapes, independent
+edges (D54). Every eligible cluster runs clustermesh-apiserver + mesh
+certs from first boot; singleton peer list empty. Default peering is
+FULL among the fabric instance's clusters; explicit symmetric selective
+peers are supported — a central cluster may peer A↔B and B↔C while A
+and C do not peer; peering state is non-transitive, and selective peers
+also bound the automatic cross-cluster pod/Service route policy rendered
+into fabric filters (a routed-only exception between non-peered
+clusters must be deliberate and eval-visible). Peering rendered from
+exports into `clustermesh.config.clusters` — no CLI. Exposure:
+LoadBalancer (default, node-bound mesh addresses + ETP Local + ClientIP
+affinity, all servers as endpoints, anti-affinity) with collision-checked
+NodePort escape. DNS fan-in: selectorless local ClusterIP Service +
+eval-rendered EndpointSlice per remote cluster — the same pattern,
+generalized, carries the kube-apiserver mirror Services (D30; mandatory
+for spokes). Shared `rancher-clustermesh-ca-<group>` vars generator
+(share=true); per-cluster dependent cert generators; SANs include every
+exported address + fan-in name; endpoint set is a public validation
+input (membership change ⇒ reissue before advertise). CA/cert material
+never in exports/helm/store. Same datapath, same Cilium profile,
 maxConnectedClusters uniform. Global Services opt-in per Service (mirror
 Services are clan-rendered globals, D30). MCS-API reserved. Rotation =
 separate two-phase CA-bundle design; blind regeneration unsupported.
@@ -753,7 +1043,8 @@ D5 edge-proxy.
 
 ### 6.7 Pools, LB, BGP, FRR
 Per D8/D9/D10/D19/D41. Node IPAM serves classless Services with node IPs
-(no pools/BGP). Non-BGP pools use `io.cilium/lb-ipam`; `node-bgp` and
+(no pools/BGP) — fabric-scoped; public exposure uses explicit pools
+(D41/D52). Non-BGP pools use `io.cilium/lb-ipam`; `node-bgp` and
 `shared-bgp` use `io.cilium/bgp-control-plane` or Cilium allocates without
 announcing. Pool updates may reassign IPs and are reviewed changes.
 
@@ -766,7 +1057,11 @@ announcing. Pool updates may reassign IPs and are reviewed changes.
 | `external-class` | cluster-global | Cloud CCM owns delivery |
 
 `node-bgp` is the contract for node-owned public IPv4 extras and
-carve-outs of a node's routed IPv6 subnet. Per-node BGP resources select
+carve-outs of a node's routed IPv6 subnet — only where BGP delivery
+actually exists; provider-static node-bound extras remain
+node-fate-bound (D8). Hetzner/provider-MAC KubeVirt attachment is netif
+host-bridge plumbing, NOT a Cilium pool or BGP delivery; KubeVirt stays
+day-2 (D52/D55). Per-node BGP resources select
 only that owner's pool. ETP Local withdraws when no eligible local
 backend exists; consumers that require the address must keep eligible
 backends on the owner. Other nodes must not re-advertise the route as if
@@ -778,9 +1073,10 @@ interfaces as ECMP members.
 Local Cilium advertisements terminate on node-local FRR. FRR accepts only
 owned node-bgp/shared-bgp VIPs, local multi-pool allocations, and
 authorized ClusterIPs, then exports according to the receiving member's
-role. Zebra installs remote routes on Kubernetes and fleet hosts alike;
+role (D33/D52) and the adjacency policy (D51). Zebra installs
+remote routes on Kubernetes and fleet hosts alike;
 Cilium's local endpoint routes remain more specific. FRR next-hop
-rewriting resolves each path through its per-pair interface. Foreign
+rewriting resolves each path through its per-adjacency interface. Foreign
 upstreams are configured only in `router` roles, with strict prefix and
 maximum-prefix policy and optional proxy-NDP for on-LAN prefixes.
 
@@ -832,44 +1128,70 @@ GitOps owns all lifecycle post-bootstrap; base upgrades preserve
 operator CRDs.
 
 ### 6.12 Assertions and firewall
-Eval rejects: multiple bootstraps; duplicate ids/CIDRs/ports/ASNs/pair
-names/transfer prefixes; missing dual-stack or topology facts; pool
-overlap; scope⇒mode violations; floating without candidates; `node-bgp`
-without exactly one owner or with non-local advertisers; BGP pools
-without `bgp.enable` or BGP without any `node-bgp`/`shared-bgp` pool;
-fabric blocks too small; BGP pools outside router-owned prefixes;
-node-in-two-clusters; multiple fleet memberships or routing stacks per
-host; impossible NAT pairs; default-route/AllowedIP leaks; missing native
-CIDR containment; VXLAN/Geneve or `auto-direct-node-routes` in the
-canonical profile; Cilium devices missing WG links; ETP Cluster on
-clan-rendered external Services; base-manifest drift; IFD smuggling;
-unsupported k8s minor without acknowledgment; application-secret vars;
-control-domain violations; spoke without mirror/SAN; servicelb; and
-distro-manifests-dir delivery. The read-only ClusterRole never contains
-`secrets` or write verbs (D38). Firewall: API on transport only; public
+Eval rejects: multiple bootstraps; duplicate ids/CIDRs/ports/ASNs/
+interface names/transfer prefixes; missing dual-stack or topology facts;
+pool overlap; scope⇒mode violations; floating without candidates;
+`node-bgp` without exactly one owner, with non-local advertisers, or
+where no BGP delivery exists; BGP pools without `bgp.enable` or BGP
+without any `node-bgp`/`shared-bgp` pool; fabric blocks too small; BGP
+pools outside router-owned prefixes; node-in-two-clusters; multiple
+fabric memberships or routing stacks per host; adjacencies with no
+reachable endpoint on either side; spokes with no reachable hub; HA
+profiles without two reachable hubs; spoke-transit configurations (a
+spoke readvertising fabric routes); default-route/AllowedIP leaks — a
+0.0.0.0/0 or ::/0 crypto ACL must not create or accept an IP default
+route; asymmetric Internet source/return paths; WG MTU below the derived
+floor; netif cross-instance conflicts (link ownership, default-route,
+DNS) and non-namespaced netif units; missing native CIDR containment;
+VXLAN/Geneve or `auto-direct-node-routes` in the canonical profile;
+Cilium devices missing WG links; ETP Cluster on clan-rendered external
+Services; base-manifest drift; IFD smuggling; unsupported k8s minor
+without acknowledgment; application-secret vars; control-domain
+violations; spoke without mirror/SAN; servicelb; distro-manifests-dir
+delivery; kube-proxy enabled or `installIptablesRules=true` in the
+canonical profile. The read-only ClusterRole never contains `secrets`
+or write verbs (D38). Firewall: nftables-only — iptables-nft userspace
+may exist but must not own rules (D55); API on transport only; public
 ports only where exposed; WireGuard only on configured underlays;
 BGP/BFD only on loopback and expected WG/upstream peers; mirror Services
-restricted to GitOps namespaces. VMs assert positive AND negative exposure.
+restricted to GitOps namespaces. VMs assert positive AND negative
+exposure and no iptables-owned rules.
 
-### 6.13 Fleet-routing service
-Per D11/D13/D19/D22/D33/D47/D48. `member`: stable loopback addressing,
-one WG interface per remote member, FRR/BFD/Zebra, and automatic pod
-routes when also a Kubernetes node. `client`: member + VIP routes +
-instance-zone DNS. `admin`: client + D13/D22 svc/pod zones + pod/Service
-route consumption. `router`: member + upstream peers, owned-prefix
-filtering, forwarding, and optional NDP; proxies on a router are separate
-operator modules. Node duality uses the same FRR, never a second stack.
+### 6.13 routed-fabric service
+Per D11/D13/D19/D22/D33/D47/D48/D51/D52/D53. Four canonical roles, no
+default role: `member` (base) = stable loopback addressing, one WG
+interface per declared hub adjacency, FRR/BFD/Zebra, and automatic pod
+routes when also a Kubernetes node; `client` = member + VIP routes +
+instance-zone DNS; `admin` = client + D13/D22 svc/pod zones + pod/
+Service route consumption; `router` = member + upstream peers,
+owned-prefix filtering, forwarding, optional NDP, and authorized
+external/fabric transit — NOT automatic admin DNS. Hub membership comes
+from explicit `hubs` declarations — every spoke links one or two hubs,
+two = the HA profile — and is orthogonal to the router role (a router
+need not be a hub and a hub need not be a router); Kubernetes managers
+are not hubs by default. Active-active hub HA is fabric ECMP — every
+spoke links both hubs with eBGP/BFD and FRR `maximum-paths` +
+multipath-relax; no shared gateway VIP, no VRRP. Upstream active-active
+requires upstream ECMP; transparent active-active default gateway for
+ordinary non-fabric LAN clients is outside MVP.
+Node duality uses the same FRR, never a second stack.
 Route-only DNS stubs use global systemd-resolved settings and the
 kernel's per-member ECMP routes.
 
 Acceptance: eval proves deterministic names/transfer prefixes,
-peer/AllowedIP/filter equivalence, self-exclusion, role and collision
-checks, and export defaults. Hermetic VMs prove real WG handshakes, FRR
-sessions and BFD on both sides, RIB-to-FIB installation, native pod
-round trips, client VIP ECMP/DNS, admin svc/pod/ClusterIP access to local
-and foreign clusters, client pod-route isolation, node-bgp owner-only and
-shared-bgp ECMP withdrawal, router filtering, NAT membership, and the
-kamrui-h1 dual-role shape with local Cilium behavior intact.
+adjacency/AllowedIP/filter equivalence, self-exclusion, role and
+topology checks, hub reachability (every spoke reaches ≥1 hub; HA = 2),
+and export defaults. Hermetic VMs prove real WG handshakes per
+adjacency, FRR sessions and BFD on both sides, RIB-to-FIB installation,
+hub readvertise with next-hop-self and spoke no-transit, two NAT sites
+communicating through hubs, Internet ingress source/return path, native
+pod round trips, client VIP ECMP/DNS, admin svc/pod/ClusterIP access to
+local and foreign clusters, client pod-route isolation, selective-leaf
+isolation, node-bgp owner-only and shared-bgp ECMP withdrawal, router
+filtering, router-not-hub (router without admin DNS), hub active-active
++ single-hub failover, NAT membership, MTU floor/path MTU, no
+iptables-owned rules, and the kamrui-h1 dual-shape with local Cilium
+behavior intact.
 
 ### 6.14 Control domain (D43)
 Per-cluster `controlDomain.role`: **standalone** (default) — shares no
@@ -882,7 +1204,11 @@ spoke-bound day-2 objects carry the tool's remote-kubeconfig mechanism
 (Flux `kubeConfig.secretRef`, Argo cluster secrets) — wired by the
 operator, documented in the day-2 guide. Standalone clusters may still
 join the mesh and consume/export mirror Services — mesh ≠ control
-domain. Singleton standalone = no hub config.
+domain. Singleton standalone = no hub config. **Naming note (round 15):**
+control-domain hub/spoke (this section, D43) is a GitOps-control
+concept; fabric hub/spoke (§6.3, D51) is a packet-transit concept. A
+cluster may be either, both, or neither; only explicit `routed-fabric`
+`hubs` membership makes a fabric transit hub.
 
 ## 7. Testing contract (D44)
 
@@ -900,37 +1226,54 @@ Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
 
 Suites (the whole contract surface — nothing else is VM-tested):
 - existing single/join/HA per distro (keep; native datapath asserted);
-- **netif**: static/DHCP/RA, on-link and policy routes, exports;
-- **fleet transport/FRR**: 3+ node dual-stack per-pair WG full mesh, real
-  handshakes, NAT/outbound-only member, no `(none)` AllowedIPs; FRR
-  sessions and BFD on both sides; RIB-vs-kernel FIB; per-pair next hops;
-  route-filter and default-route negatives; reload/restart behavior;
+- **netif**: static/DHCP/RA, VLAN/bond/bridge links, MULTI-NIC,
+  MULTIPLE netif instances on one host, on-link and policy routes,
+  exports, cross-instance conflict negatives (link ownership,
+  default-route, DNS);
+- **routed-fabric transport/FRR**: hub + 3+ spokes dual-stack, ONE WG
+  interface per declared adjacency (never per remote machine), real
+  handshakes, two NAT sites communicating through hubs,
+  NAT/outbound-only keepalive, no `(none)` AllowedIPs, 0.0.0.0/0 + ::/0
+  crypto ACL with no IP default route, Internet ingress source/return
+  path (no asymmetric local-WAN reply), FRR sessions and BFD on both
+  sides, RIB-vs-kernel FIB, next-hop-self with directly resolvable next
+  hops, hub readvertise / spoke no-transit, route-filter and
+  default-route negatives, MTU floor + path MTU, reload/restart
+  behavior;
 - artifact matrix (3-minor version pins eval, D34);
 - **data-plane suite per distro**: native pod-to-pod without VXLAN,
-  multi-pool remote routes, pool allocation, classless Node IPAM,
-  ETP-Local candidate restriction, node-bgp owner-only advertisement and
-  withdrawal, shared-bgp dual-stack ECMP and single-path withdrawal
-  (including Linux `ip -j` single-path shape), floating-pool blackhole
-  window, firewall positive/negative exposure;
-- **bgp-ecmp suite**: private fabric, MikroTik-style FRR foreign-router
-  fixture, upstream router pools and node-owned IPv6 pools;
+  multi-pool remote routes, pool allocation, classless Node IPAM
+  (fabric-scoped), ETP-Local candidate restriction, node-bgp owner-only
+  advertisement and withdrawal, shared-bgp dual-stack ECMP and
+  single-path withdrawal (including Linux `ip -j` single-path shape),
+  floating-pool blackhole window, firewall positive/negative exposure,
+  NO iptables-owned rules, dual-AF local Cilium↔FRR session;
+- **bgp-ecmp suite**: private fabric, TWO HUBS active-active ECMP +
+  single-hub failover, upstream ECMP, router-not-hub, MikroTik-style FRR
+  foreign-router fixture, upstream router pools and node-owned IPv6
+  pools;
+- **selective ClusterMesh suite**: full-peering default, explicit
+  selective peers (A↔B, B↔C) with A/C selective-leaf isolation, a
+  deliberate routed-only exception;
 - native ClusterMesh matrix (cross-cluster pod routes + kube-api mirror
   Service reachability, D30);
+- **fleet-roles suite** (D33/D52): member/client/admin/router, client
+  pod isolation, admin svc/pod/ClusterIP access and DNS, router
+  filtering, router WITHOUT hub (no automatic admin DNS), kamrui-h1
+  dual-shape;
 - PKI rotation (+ cert bootstrap runbook execution);
 - CCM knob suite (hermetic fake-CCM);
 - **GitOps-handoff suite** (D40/D44): strict no-op under a second SSA
   field manager, dataplane green before/after; no Flux in VMs;
 - `distroDefaults` suite (D42) and rke2 CIS profile suite (D25);
-- fleet-routing suite (member/client/admin/router, client pod isolation,
-  admin svc/pod/ClusterIP access and DNS, router filtering, kamrui-h1
-  dual-role);
 - control-domain suite (D43/D30/D38): hub + two spokes + standalone,
   mirror-SAN and read-only positive/negative, rotation, offline spoke.
 
-Retired suites (round 13): EG gateway matrix, QUIC/Caddy fixtures, flux
-control-domain suite, external-dns, OpenEBS, KubeVirt, Multus,
-sealed-secrets. Reserved: MCS-API, upstream-kubernetes distro suites
-(D23).
+Retired suites: full-mesh transport suite (round 15 — superseded by
+routed hub/spoke, D51; historical); round-13 retirements: EG gateway
+matrix, QUIC/Caddy fixtures, flux control-domain suite, external-dns,
+OpenEBS, KubeVirt, Multus, sealed-secrets. Reserved: MCS-API,
+upstream-kubernetes distro suites (D23).
 
 ## 8. Delivery plan (phases; each lands lib + both distros + docs + pins +
 tests together)
@@ -971,7 +1314,7 @@ tests together)
   default = instance name, per-machine overrides, empty = eval error,
   invariant 7) render into the distro node labels. The `kube_cluster`
   custom export interface (renamed from `rancher_cluster`, D45) publishes
-  schemaVersion/identity/CIDRs/meshGroup/transport source/member mesh
+  schemaVersion/identity/CIDRs/meshGroup/fabric source/member mesh
   endpoints incl. effective topology/pool handoff facts from both distro
   services; `node_transport` gained topology fields. Fleet-wide
   assertions (id collisions, duplicate names, same-group pod/service CIDR
@@ -986,28 +1329,51 @@ tests together)
   preserves those stable addresses while replacing the interface model.
 - **5R0 done (docs only)** — round-14 FRR/per-pair-WG/native-Cilium
   contract, inventory-owned netif family, node-bgp delivery, and delivery
-  re-plan. No implementation or VM claim.
+  re-plan. No implementation or VM claim. Round 15 supersedes its
+  per-remote-machine transport and fleet-routing naming (5R1–5R3 below).
 - **5 legacy checkpoint, not accepted** — `2995ac3` contains BIRD/VXLAN
   Phase 5 work; retained baseline 5 green / 7 red. It is superseded by
-  round 14 and is not a base for further BIRD debugging.
-- **5R1 planned** — implement `netif` and per-pair `fleet-routing` with
-  FRR/BFD/Zebra, versioned exports, eval tests, and hermetic transport/
-  FRR suites. Migrate consumers; retire `wireguard-mesh` after parity.
-- **5R2 planned** — re-inflate the pinned Cilium base in pkgs with the
-  native profile; implement local Cilium↔FRR pairing, multi-pool route
-  exchange, native CIDR/device/MTU invariants, and node-bgp/shared-bgp
-  delivery in shared lib + both distros; update the artifact pin.
-- **5R3 planned** — native ClusterMesh/multi-cluster, fleet roles/DNS/
-  router/dual-role, failure/withdrawal/firewall suites. Remove legacy
-  BIRD modules/options/tests only after replacement coverage is green.
-- **6** — automatic ClusterMesh (apiserver node-bound + fan-in) +
-  control domain: mirror Services (D30), `gitops-hub` identities +
-  secret-sync + read-only credential (D43/D38).
+  rounds 14–15 and is not a base for further BIRD debugging.
+- **5R1 planned** — implement `netif` (multi-link, multi-instance,
+  cross-instance assertions, endpoint exports) and `routed-fabric`
+  (rename from `fleet-routing`; four canonical roles member/client/
+  admin/router; explicit-`hubs` topology orthogonal to the router role;
+  per-adjacency WireGuard hub↔spoke + optional hub↔hub; eBGP/BFD/Zebra
+  with next-hop-self; AllowedIPs dual semantics incl. 0/0 crypto ACL;
+  source-policy return routing; underlay-derived MTU) with versioned
+  exports and eval tests; hermetic transport/FRR suites: hub + spokes,
+  two NAT sites via hubs, two hubs active-active + single-hub failover,
+  Internet source/return path, MTU/path-MTU. Migrate consumers.
+- **5R2 planned — both repos** — (1) in external-systems/pkgs:
+  re-inflate and COMMIT the pinned Cilium base manifest with the
+  native-routing defaults (routing-mode native, multi-pool, Node IPAM,
+  kube-proxy off, installIptablesRules=false) per D26 layer 1;
+  (2) update the clanServices artifact pin to the new pkgs revision;
+  (3) implement local Cilium↔FRR dual-AF `::1` session, multi-pool route
+  exchange, native CIDR/device/MTU invariants, no-iptables probe +
+  assertion, and node-bgp/shared-bgp delivery in shared lib + both
+  distros; (4) land the FULL ClusterMesh phase (§6.5: apiserver
+  node-bound exposure, DNS fan-in, mesh CA/certs vars, full-peering
+  default render) incl. the native ClusterMesh VM matrix. The 5R
+  implementation is ONE fresh-agent-session complete data-plane overhaul
+  spanning both repos — commits per repo are acceptable; it is NOT a
+  one-commit landing.
+- **5R3 planned** — selective ClusterMesh policy (explicit symmetric
+  peers, selective-leaf isolation, deliberate routed-only exceptions),
+  fleet roles/DNS (router-not-hub semantics), failure/withdrawal/
+  firewall suites, migration: DELETE the legacy BIRD/VXLAN/
+  wireguard-mesh/fleet-routing modules, options, and tests OUTRIGHT once
+  replacement coverage is green — no archiving, no comment-out
+  (historical design docs may remain); retire `wireguard-mesh` after
+  parity.
+- **6** — control domain: mirror Services (D30), `gitops-hub` identities
+  + secret-sync + read-only credential (D43/D38). (The ClusterMesh data
+  plane itself lands in the 5R session, 5R2.)
 - **7** — PKI ops + rotation runbooks/scripts, RKE2 CIS suite (D25),
   CCM knob + fake-CCM test, GitOps-handoff proof suite (D44),
   `distroDefaults` suite.
 - **8** — borg migration + upstream review: home consumes `netif` and
-  `fleet-routing`, removes `hostSpec.networking`/`machines.json` static-IP
+  `routed-fabric`, removes `hostSpec.networking`/`machines.json` static-IP
   ownership, and salvages borg facts/runbooks only before archival.
 - Reserved: upstream `kubernetes` distro implementation (D23; spec'd,
   hard requirement), MCS-API, clan-operator (per-agent read-only
@@ -1025,7 +1391,17 @@ CCM deployments (the `cloudController = external` knob is bootstrap
 config and stays); hcloud-ip-floater deployment (floating-pool contract
 stays; the controller is day-2 and upstream-unmaintained — fork
 reference only). Also: alternative CNIs / VXLAN/Geneve or other tunnel
-bases / BIRD / L2 announcements / VRRP / Keepalived; single-stack internals; Rancher
+bases / BIRD / L2 announcements / VRRP / Keepalived (hub HA is fabric
+ECMP, D51); full-mesh fabric topology and per-remote-machine WireGuard
+links (deferred beyond MVP, D51); iBGP / route reflectors / route
+servers (D51); shared gateway VIP / VRRP-style hub HA and transparent
+active-active default gateway for ordinary non-fabric LAN clients
+(outside MVP — needs client routing or an L2/VRRP-like mechanism, D51);
+official mycelium/yggdrasil/wireguard overlays as dependencies or
+underlays (peer exports are the integration seam, D55); mandatory
+all-to-all ClusterMesh as the only peering mode (full is the default,
+selective peers supported, D54); more than one routed-fabric membership
+per machine (D53); iptables-owned firewall rules (D55); single-stack internals; Rancher
 Manager; cross-inventory automatic mesh; implicit global Services;
 early/default-on MCS-API; bundled provider CCMs; replicated storage;
 Windows guests; direct-to-pod routing from edges; NAT64/app egress
@@ -1054,7 +1430,8 @@ clan vars ownership of application-plane secrets incl. sealing keys
   bootstrap bundle, control-domain substrate (§3.1).
 - **Data-plane contract** — the day-1 promise that packets flow
   correctly: native Cilium CNI, Node IPAM + pools, FRR/BGP/Zebra,
-  ClusterMesh, per-pair host WireGuard, CoreDNS zones, fleet-routing (§3.2).
+  ClusterMesh, per-adjacency host WireGuard, CoreDNS zones,
+  routed-fabric (§3.2).
 - **Day-2 GitOps** — everything in-cluster that is not the two
   contracts; installed and owned by operator GitOps repos, documented
   here as recipes only (§3.3).
@@ -1084,8 +1461,10 @@ clan vars ownership of application-plane secrets incl. sealing keys
   manages: a hub plus its spokes (D43). Bounded by a mesh trust domain.
 - **Control-domain role** — per-cluster `standalone` (shares nothing) |
   `hub` (holds spoke kubeconfigs) | `spoke` (hub-reconciled) (D43).
-- **Trust domain** — the ClusterMesh mesh group string (default
-  `meta.domain`); bounds ClusterMesh peering AND control domains (D43).
+- **Trust domain** — the `routed-fabric` instance and its ClusterMesh
+  mesh group (meshGroup defaults from the fabric instance); bounds
+  fabric membership, ClusterMesh peering + route policy, AND control
+  domains (D43/D53/D54).
 - **gitops-hub identity** — the per-spoke client certificate (CN
   `gitops-hub-<spoke>`, O `gitops-hub`) signed by the spoke's cluster
   CA, consumed by whatever GitOps tool the hub runs (D43).
@@ -1100,11 +1479,13 @@ clan vars ownership of application-plane secrets incl. sealing keys
   only (CAs, tokens, admin + read-only kubeconfigs, ClusterMesh
   material, HAProxy health-check material, gitops-hub identities); all
   application-plane secrets are GitOps-owned (D35).
-- **Integrated node transport** — per-pair routed L3 host WireGuard full
-  mesh carrying dual-stack node InternalIPs, API, native pod traffic,
-  FRR/BGP, and BFD.
+- **Integrated node transport** — per-adjacency routed L3 host
+  WireGuard fabric (hub↔spoke, optional hub↔hub; D51) carrying
+  dual-stack node InternalIPs, API, native pod traffic, FRR/BGP, and
+  BFD. (Round-14 "per-pair full mesh" phrasing is historical.)
 - **Mesh group** — mutually trusted cluster instances forming one
-  ClusterMesh; the trust domain string.
+  ClusterMesh; defaults from the fabric instance (no repeated value
+  required). (Round-14 default `meta.domain` is historical.)
 - **Pool scope** — per-machine (node-named, one owner) vs cluster-global
   (generic-named); who contributes a pool's addresses.
 - **Delivery mode** — node-fate-bound | node-bgp | floating | shared-bgp |
@@ -1126,9 +1507,25 @@ clan vars ownership of application-plane secrets incl. sealing keys
 - **Private fleet fabric** — default per-cluster private shared-bgp pool
   + FRR/BGP/Zebra + CoreDNS/mesh VIPs; lets clan hosts route into every
   cluster.
-- **Fleet-routing service** — clanService (member/client/admin/router)
-  providing flat-L3 transport, VIP access, admin pod/Service routes, and
-  upstream routing.
+- **routed-fabric service** — clanService providing the flat-L3
+  hub/spoke fabric: one WireGuard interface per declared adjacency,
+  FRR/BFD/Zebra, four canonical roles (member/client/admin/router),
+  and hub membership from explicit `hubs` declarations. Renamed from
+  `fleet-routing` in round 15 (D52); the old name is historical.
+- **Fabric adjacency** — a declared hub↔spoke or hub↔hub relationship
+  in a routed-fabric instance; owns exactly one WireGuard interface, one
+  eBGP session pair (one per AF), and one BFD monitor (D51).
+- **Hub / spoke** — fabric topology membership from explicit `hubs`
+  declarations: hubs forward and readvertise (next-hop-self); spokes
+  never transit; every spoke declares ≥1 reachable hub, HA profiles use
+  two (D51). Orthogonal to the control-domain hub/spoke (D43) and to
+  the `router` role (D52).
+- **Underlay / fabric / ClusterMesh graphs** — three distinct graphs:
+  netif links; routed-fabric adjacencies; ClusterMesh peering edges.
+  Similar shapes, independent edges (D54).
+- **netif instance** — one site/segment declaration of the netif
+  service with shared defaults and per-machine/link overrides; several
+  may coexist on one host (D53).
 - **Private-domain zones** — per-cluster DNS zones served by cluster
   CoreDNS on the private VIP: `<instance>.<domain>` (default) and opt-in
   `<instance>.svc.<domain>` and pod zone. `cluster.local` never appears
@@ -1176,9 +1573,18 @@ clan vars ownership of application-plane secrets incl. sealing keys
   `frr-reload.py --test`, Zebra RIB-to-kernel installation; Cilium local
   `::1` peering and next-hop rewrite (D9/D19/D48).
 - WireGuard cryptokey routing: one peer per interface; ECMP across
-  interfaces, never overlapping AllowedIPs across peers on one interface
-  (D47).
+  interfaces, never overlapping AllowedIPs across peers on one interface;
+  AllowedIPs is outbound cryptokey selection AND the inbound source ACL
+  — every approved transit prefix must appear, and 0/0 is a crypto ACL,
+  not a routing decision (D47/D51).
 - hcloud-ip-floater (costela): floating-IP mover reference; upstream
   effectively unmaintained (last non-dependabot commit 2023) —
   fork-don't-depend.
 - go-httpbin (mccutchen): standard airgapped HTTP VM-test workload.
+- Host firewall: nftables-only; iptables-nft userspace translation must
+  not own rules (D55).
+- Cilium BGP session: one local `::1` session carrying both AFs;
+  `extended-nexthop` capability and v4/v6 next-hop interworking are
+  probed before renderer lock (D55).
+- WireGuard MTU: underlay MTU minus WireGuard overhead (80 bytes v4 /
+  96 v6); 1280 floor; path-MTU asserted in VMs (D51).

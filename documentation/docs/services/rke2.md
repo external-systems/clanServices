@@ -52,8 +52,12 @@ rke2 join/HA but red rke2 single/data-plane suites, so it is not a green
 current-tree claim. Phase 5's BIRD/VXLAN implementation at `2995ac3` is
 legacy and superseded.
 
-Round 14 phases 5R1–5R3 replace it with per-pair WireGuard, FRR/BFD/Zebra,
-native-routed multi-pool Cilium, node-bgp/shared-bgp pools, and native
-ClusterMesh. CIS hardening, the bootstrap bundle, and distro-specific
-bootstrap behavior remain unchanged.
+Round 15 phases 5R1–5R3 deliver, as one complete overhaul session, the
+netif underlay and the routed-fabric data plane (per-adjacency WireGuard,
+FRR/BFD/Zebra, routed-hub MVP), native-routed multi-pool Cilium,
+node-bgp/shared-bgp pools, full-by-default ClusterMesh with selective
+peers, and the `external-systems/pkgs` native Cilium base re-inflation
+with the clanServices pin update — all planned, with no implementation or
+VM evidence yet. CIS hardening, the bootstrap
+bundle, and distro-specific bootstrap behavior remain unchanged.
 

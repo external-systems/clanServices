@@ -14,9 +14,11 @@ the Cilium chart. Clan never installs a GitOps controller.
 ## The layers
 
 **Machines and transport.** Machines are NixOS clan machines. `netif` owns
-inventory-declared links and static routes. `fleet-routing` provides the
-only tested overlay: dual-stack, encrypted flat L3 with one WireGuard
-interface per node pair and FRR/BFD/Zebra on every member.
+inventory-declared links and static routes, multi-instance and multi-link.
+`routed-fabric` provides the only tested overlay: dual-stack, encrypted
+flat L3 with one WireGuard interface per declared adjacency and
+FRR/BFD/Zebra on every member, in a routed-hub topology (full mesh
+deferred).
 
 **Distro runtime.** `rke2` and `k3s` are thin services: they own bootstrap,
 TLS directory, and join semantics. Everything shared — interfaces,
@@ -34,10 +36,12 @@ Gateway and Ingress controllers are permanently disabled. See
 [Networking](networking.md).
 
 **FRR + Zebra fabric.** Per-node FRR receives pod-pool and VIP routes from
-local Cilium, exchanges filtered routes over per-pair WireGuard, and uses
-Zebra to install kernel routes. BFD detects fabric failures. Node-owned BGP
-pools have one advertiser; shared pools ECMP across healthy nodes. See
-[Fleet routing](fleet-routing.md).
+local Cilium, exchanges filtered routes over per-adjacency WireGuard with
+`next-hop-self` on hub readvertisement, and uses Zebra to install kernel
+routes. BFD detects fabric failures. Hubs forward and readvertise; spokes
+never transit; there is no iBGP or route reflector. Node-owned BGP pools
+have one advertiser; shared pools ECMP across healthy nodes — and across
+the two HA hubs. See [Routed fabric](routed-fabric.md).
 
 **The bootstrap bundle (D40).** The entire day-1 in-cluster surface is ONE
 kubenix-rendered manifest set per cluster — Cilium, pools, ClusterMesh
