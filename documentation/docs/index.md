@@ -17,11 +17,11 @@ never something clan renders.
   default. Every cluster mints a read-only, no-secrets kubeconfig your AI
   agents can use.
 - **Data-plane contract — packets flow correctly.** Cilium-only networking
-  (kube-proxy replacement, VXLAN, multi-pool pod IPAM), Node IPAM for
-  classless LoadBalancer Services, LB-IPAM pools with BGP v2 and per-node
-  BIRD, a private fleet fabric on by default, automatic ClusterMesh, host
-  WireGuard full mesh as the tested transport, private CoreDNS zones, and
-  routed fleet access for non-Kubernetes machines.
+  (kube-proxy replacement, native routing, multi-pool pod IPAM), Node IPAM
+  for classless LoadBalancer Services, LB-IPAM pools with BGP v2 and
+  per-node FRR/Zebra, a private fleet fabric on by default, native
+  ClusterMesh, one host WireGuard interface per node pair, private CoreDNS
+  zones, and routed fleet access for Kubernetes and ordinary machines.
 
 ## Day 2 is yours
 
@@ -46,9 +46,9 @@ external-dns, Sealed Secrets, storage, CCMs. The recipes are in the
 ## For engineers
 
 The engineering version — thin distro services over a shared library, the
-bootstrap bundle and its GitOps handoff, Node IPAM and the BIRD/BGP fabric,
-and the artifact flake — is in
+bootstrap bundle and its GitOps handoff, Node IPAM and the FRR/native
+fabric, and the artifact flake — is in
 [Architecture → Overview](architecture/overview.md). Every normative choice
-is recorded in the [decision record](decisions/index.md) (D1–D45), and
+is recorded in the [decision record](decisions/index.md) (D1–D50), and
 [SPEC.md](https://github.com/external-systems/clanServices/blob/main/SPEC.md)
 in the repo root is the agent-facing contract this site renders for humans.

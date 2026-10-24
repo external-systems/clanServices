@@ -28,9 +28,10 @@ semantics are distro-specific here.
 
 ## What is shared
 
-Transport, the Cilium base with Node IPAM, pools/BGP/BIRD, ClusterMesh, the
-bootstrap bundle and its GitOps handoff, the control-domain substrate,
-secrets planes, assertions — all from the shared library. See
+Transport, the native-routed Cilium base with Node IPAM, pools/BGP/FRR,
+ClusterMesh, the bootstrap bundle and its GitOps handoff, the
+control-domain substrate, secrets planes, assertions — all from the shared
+library. See
 [Architecture](../architecture/overview.md).
 
 The entire day-1 in-cluster surface is delivered as one kubenix-rendered
@@ -39,19 +40,13 @@ machine (D40) — nothing is written to the k3s manifests dir.
 
 ## Status
 
-Implemented. Single-node, join, and HA VM suites are green (recorded at the
-imported baseline `896acdf` in the source fork). Phase 3 (SPEC.md §8)
-replaced all helm-controller/manifests-dir delivery with the kubenix
-bootstrap bundle + SSA oneshot (D40) and added the hermetic
-`k3s-data-plane` VM suite (pool allocation, Node IPAM classless Service,
-ETP-Local candidate restriction, firewall positive/negative). The canonical
-fleet-routing test shape — kamrui-h1 — is a single-node k3s cluster holding
-the admin role (D33). Phase 4 added hashed-default `cilium.id` resolution
-(pin your id before upgrading — see [Upgrades](../guides/upgrades.md)),
-topology labels (invariant 7), the `kube_cluster` dual-stack export, and
-the fleet-wide `clan.checks` (one cluster per node across rke2+k3s, id
-collisions, meshed-CIDR overlap). Phase 5 (campaign A) added the BGP v2
-control plane + per-node BIRD (D9/D19), the default private fleet fabric
-(D10) with the private-zone CoreDNS on its fabric VIP (D22 substrate), and
-the `k3s-bgp-ecmp` VM suite (BIRD foreign-router fixture, DNS through the
-VIP, ETP-Local withdrawal).
+Bootstrap phases 1–4 are implemented. The imported baseline recorded green
+single/join/HA suites; the later legacy BIRD checkpoint retained green
+k3s join/HA but red k3s single/data-plane suites, so it is not a green
+current-tree claim. Phase 5's BIRD/VXLAN implementation at `2995ac3` is
+legacy and superseded.
+
+Round 14 phases 5R1–5R3 replace it with per-pair WireGuard, FRR/BFD/Zebra,
+native-routed multi-pool Cilium, node-bgp/shared-bgp pools, and native
+ClusterMesh. The canonical dual-role test shape remains kamrui-h1: a
+single-node k3s cluster holding the fleet-routing admin role (D33).

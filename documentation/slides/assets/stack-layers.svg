@@ -20,7 +20,7 @@
 
   <rect x="40" y="408" width="570" height="72" rx="6" fill="#f4f6fb" stroke="#333" stroke-width="1.5"/>
   <text x="325" y="438" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">NixOS hosts + integrated transport</text>
-  <text x="325" y="462" text-anchor="middle" font-size="14" fill="#111">host WireGuard (default) / cilium-wireguard / unencrypted; per-node BIRD</text>
+  <text x="325" y="462" text-anchor="middle" font-size="14" fill="#111">netif + per-pair host WireGuard; per-node FRR/BFD/Zebra</text>
 
   <!-- secrets side bar: application plane aligned with Flux/GitOps,
        bootstrap plane aligned with distro/hosts -->

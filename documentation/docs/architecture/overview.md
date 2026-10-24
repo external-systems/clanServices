@@ -13,10 +13,10 @@ the Cilium chart. Clan never installs a GitOps controller.
 
 ## The layers
 
-**Machines and transport.** Machines are NixOS clan machines. Host WireGuard
-full mesh is the only tested node transport — dual-stack, all-or-none per
-mesh trust domain. `cilium-wireguard` and `unencrypted` survive only as
-untested Cilium helm-values overrides.
+**Machines and transport.** Machines are NixOS clan machines. `netif` owns
+inventory-declared links and static routes. `fleet-routing` provides the
+only tested overlay: dual-stack, encrypted flat L3 with one WireGuard
+interface per node pair and FRR/BFD/Zebra on every member.
 
 **Distro runtime.** `rke2` and `k3s` are thin services: they own bootstrap,
 TLS directory, and join semantics. Everything shared — interfaces,
@@ -28,16 +28,16 @@ the distro's own machinery. servicelb stays off in both modes — Node IPAM
 replaces it.
 
 **Cilium, networking-only (D1).** Cilium is the CNI, kube-proxy replacement,
-VXLAN tunnel, multi-pool pod IPAM, Node IPAM for classless LoadBalancer
+native-routed multi-pool pod IPAM, Node IPAM for classless LoadBalancer
 Services, LB-IPAM pools, BGP v2 speaker, and ClusterMesh control plane. Its
 Gateway and Ingress controllers are permanently disabled. See
 [Networking](networking.md).
 
-**BIRD + BGP fabric.** Per-node BIRD receives VIP routes from Cilium agents
-and exports exactly those to your upstream router — ECMP across healthy
-nodes. A private fleet fabric is on by default (D10); the fleet-routing
-clanService extends VIP/pod/Service reachability to non-Kubernetes NixOS
-machines. See [Fleet routing](fleet-routing.md).
+**FRR + Zebra fabric.** Per-node FRR receives pod-pool and VIP routes from
+local Cilium, exchanges filtered routes over per-pair WireGuard, and uses
+Zebra to install kernel routes. BFD detects fabric failures. Node-owned BGP
+pools have one advertiser; shared pools ECMP across healthy nodes. See
+[Fleet routing](fleet-routing.md).
 
 **The bootstrap bundle (D40).** The entire day-1 in-cluster surface is ONE
 kubenix-rendered manifest set per cluster — Cilium, pools, ClusterMesh

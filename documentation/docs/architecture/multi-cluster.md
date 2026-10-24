@@ -14,12 +14,15 @@ separates its trust domain. The trust domain also bounds control domains
 domain — standalone clusters can be full mesh members with no hub
 relationship to anyone.
 
-**One mesh group = one `wireguard-mesh` instance** (phase-4 mapping): a
-cluster joins a group by consuming that instance's `node_transport`
-exports, so cross-cluster WireGuard peering between group members happens
-inside the shared mesh instance (exports + public vars keys). Same-group
-clusters consuming different transport instances — or mixing
-transport-provided and manual member addresses — fail evaluation.
+**One mesh group = one `fleet-routing` instance** (round-14 mapping): a
+cluster joins by consuming that instance's `node_transport` exports.
+Cross-cluster traffic uses the shared per-pair WireGuard fabric and FRR
+routes. Same-group clusters consuming different transport instances — or
+mixing transport-provided and manual member addresses — fail evaluation.
+
+Every cluster uses native routing with non-overlapping pod CIDRs.
+Dual-stack native-routing CIDRs cover every pod CIDR in the group, and FRR
+must install cross-cluster pod routes before ClusterMesh is ready.
 
 Every eligible cluster runs clustermesh-apiserver and mesh certificates from
 first boot (a singleton's peer list is simply empty). Peering is rendered
@@ -127,7 +130,8 @@ reserved (disabled initially).
 Both distro services publish a `kube_cluster` export per cluster member
 machine (identical content on every member; SPEC.md §6.2). It carries:
 
-- `schemaVersion` (currently `1`);
+- `schemaVersion` (`2` in the legacy implementation; the round-14 schema is
+  versioned again during 5R1);
 - cluster identity: `name` (= instance name), the resolved `ciliumId`, and
   the resolved dual-stack `network.{podCIDRv4,podCIDRv6,serviceCIDRv4,serviceCIDRv6,clusterDNS}`;
 - `meshGroup` — the trust-domain string (default `meta.domain`);
@@ -137,9 +141,10 @@ machine (identical content on every member; SPEC.md §6.2). It carries:
 - `members.<machine>` — per-member mesh endpoints: role, node v4/v6,
   endpoint/interface/MTU/port from the consumed transport, and the
   effective `topology.{region,zone}` labels;
-- `pools.<name>` — pool handoff facts (scope, delivery mode, blocks,
-  serviceSelector) from the pools resolution; the phase-5 fleet-routing
-  service consumes these.
+- `pools.<name>` — pool handoff facts (scope, delivery mode, owner, blocks,
+  serviceSelector), Cilium-side ASN and advertisement facts for
+  fleet-routing; `fleet_routing` separately carries node ASN, per-pair
+  transport, and router-prefix facts.
 
 The fleet-wide assertions (duplicate cluster names/ids, same-mesh-group
 CIDR overlap, node-in-two-clusters across rke2+k3s, mesh-group transport

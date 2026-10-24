@@ -1,37 +1,16 @@
-# wireguard-mesh
+# wireguard-mesh (legacy)
 
-`wireguard-mesh` creates a host-level, dual-stack WireGuard full mesh over
-systemd-networkd. It has no Kubernetes dependency — it provides private node
-transport for ordinary NixOS machines as well as rke2, k3s, or other
-clanServices.
+`wireguard-mesh` is the implemented phase-4 transport: a dual-stack
+WireGuard full mesh on one multi-peer interface per member. Its VM suite
+proves basic pairwise host connectivity.
 
-One inventory instance is one independent mesh. Each member gets one `/32`
-IPv4 and one `/128` IPv6 on its WireGuard interface — deterministic from the
-mesh instance + machine name by default (a stable hash into 192.168.0.0/16 +
-fd77::/16), overridable per machine — and the default peer `AllowedIPs`
-contain only those host addresses; no pod, service, or LAN prefix is routed
-implicitly. Per-machine keys come from clan vars
-(`clan vars generate <machine>`); private keys deploy only to their own
-machine.
+Round 14 supersedes this interface model. `fleet-routing` now owns stable
+loopback addressing, one point-to-point WireGuard interface per node pair,
+FRR/BFD/Zebra, and native-routed cluster traffic. The old model cannot
+represent shared-VIP ECMP because overlapping `AllowedIPs` across peers on
+one interface select only one cryptokey.
 
-Endpoint discovery is decoupled: the `peer` role consumes `peer.hosts`
-exports from an underlay service (for example clan-core's `internet`
-service) via `endpointSources`, or an explicit `endpoint`. NAT or
-outbound-only members may leave endpoints empty and dial reachable members;
-a 25-second keepalive maintains the path.
-
-The service publishes `node_transport` exports (addresses, interface, port,
-MTU, endpoint) — exactly what a cluster service needs to derive node IPs
-and its tunnel MTU budget without depending on WireGuard internals. This is
-the host WireGuard full mesh that the cluster services use as their only
-tested node transport (SPEC.md §6.3).
-
-For options, exports, and firewall details see the service's own
-`services/wireguard-mesh/README.md` in the repo.
-
-## Status
-
-Implemented. The nix-unit suite covers rendering, exports, endpoint
-selection, and validation; the hermetic VM suite proves dual-stack
-connectivity between every pair of three ordinary machines through real
-WireGuard handshakes.
+The service remains temporarily while consumers migrate in phase 5R1. It
+is not the target transport and will be removed after per-pair
+fleet-routing reaches parity. New inventory should follow the round-14
+contract, not add the retired auxiliary routed-interface pattern.

@@ -1,89 +1,102 @@
 # Fleet routing
 
-The fleet-routing clanService gives non-Kubernetes NixOS machines routed
-access to the fleet — cluster VIPs, and optionally pod and Service CIDRs —
-through the same BIRD/BGP fabric the clusters use. `/etc/hosts` entries are
-the zero-BGP fallback (D11).
+`fleet-routing` is the flat-L3 trust-domain clanService for Kubernetes and
+ordinary NixOS machines. It owns per-pair WireGuard, FRR/BFD, Zebra route
+installation, role-based route policy, and fleet DNS consumption. BIRD and
+the old ordinary-mesh-plus-auxiliary-interface design are superseded.
 
-## Roles (D33)
+## Roles
 
-- **`client`** — mesh join, BIRD peering, VIP route install, and a DNS stub
-  for the private zone `<instance>.<meta.domain>`. This is the base profile
-  for a machine that needs to reach cluster services.
-- **`admin`** — everything `client` does, plus consumption of pod and
-  Service CIDR advertisements (D13) and the svc/pod DNS zones default-on
-  (D22). This is the developer/admin machine profile.
-- **`router`** — upstream prefix ownership, filtered VIP acceptance, and
-  NDP. The router role can define pools for its downstream cluster(s) and
-  advertise service VIPs and pod IPs upstream. This is the role a gateway
-  machine (or a documented foreign router) plays.
+- **`member`** — stable dual-stack loopback addresses, one WireGuard
+  interface per remote member, FRR/BFD/Zebra. A Kubernetes member also
+  exchanges the pod routes required by native routing.
+- **`client`** — member plus cluster VIP routes and the
+  `<instance>.<meta.domain>` DNS stub. This is the ordinary service-access
+  profile; it receives no pod or ClusterIP routes.
+- **`admin`** — client plus explicit pod/ClusterIP route consumption and
+  the svc/pod DNS zones. This is the developer/admin profile.
+- **`router`** — member plus upstream BGP peers, owned-prefix filtering,
+  forwarding, and optional proxy-NDP. Edge proxies on a router are separate
+  operator NixOS modules, not part of fleet-routing.
 
-!!! note
-    Edge proxies on a router machine — for example Traefik with the
-    Kubernetes provider — are your own nixosModules, not fleet-routing's
-    concern. Fleet-routing owns routes and DNS, never a data-plane proxy.
+A machine joins at most one fleet-routing instance and holds one role in
+it. One mesh group maps to one instance. A machine may simultaneously be a
+Kubernetes node and hold a fleet role; local Cilium and the fabric share
+the same FRR instance.
 
-## Routed WireGuard datapath
+## Per-pair routed WireGuard
 
-The existing single-interface host mesh remains node transport and the BGP
-control path. Routed VIP, pod, and Service traffic uses one additional
-point-to-point WireGuard interface per **remote** cluster member on each
-client/admin/router host. This is necessary because WireGuard's
-destination-based `AllowedIPs` lookup cannot represent two ECMP peers for
-the same VIP on one interface.
+Every machine has stable `/32` and `/128` transport addresses on a fabric
+loopback/dummy interface. Every remote machine gets exactly one
+point-to-point WireGuard interface with one peer and deterministic
+transfer addresses. Names are unique, instance/peer-derived, and at most
+15 characters.
 
-Each routed interface has exactly one cluster-member peer and reuses the
-mesh identity, mesh addresses, endpoint facts, and deployed private-key
-path. Its listen port is ephemeral. Every remote member must publish a
-reachable endpoint; a missing endpoint is an evaluation error. `AllowedIPs`
-contain the member's mesh host addresses, the shared pool prefixes it may
-advertise, and applicable admin-consumed pod/Service prefixes. The mesh host
-addresses are required because WireGuard roams a shared peer identity to the
-most recently used UDP source port: routed traffic must not make the remote
-send BGP replies to a socket that rejects their mesh source address. Static
-route metrics still keep ordinary mesh traffic on the ordinary mesh link.
-BIRD's per-member recursive next hops resolve through the matching routed
-interface, so equal-cost VIP routes retain distinct datapaths.
-Route-only DNS stubs use global systemd-resolved settings and the kernel's
-per-member ECMP routes, not the ordinary mesh link's DNS settings.
-Interface names are deterministic, fleet-instance-namespaced,
-collision-checked, and no longer than the kernel's 15-character limit.
-Dual-role hosts exclude themselves; local Cilium behavior stays unchanged,
-and cluster members need no routed interfaces of their own.
+One session per pair avoids the legacy endpoint-roaming problem caused by
+running an ordinary mesh and extra routed sockets with the same identity.
+It also gives each ECMP member a separate cryptokey table. Shared VIPs can
+therefore resolve through several interfaces, while node-bgp VIPs resolve
+only through their owner.
 
-## Node duality
+`AllowedIPs` are derived from the same policy as FRR prefix filters:
+remote stable host addresses, shared VIPs, owner-only node VIPs, and
+role-appropriate pod/Service prefixes. No default route is permitted.
+Missing reachable endpoints on both sides of a pair fail evaluation.
+NAT/outbound-only members dial reachable members with persistent
+keepalive.
 
-A machine may be a cluster node (of exactly one cluster — D16) **and** hold
-fleet-routing roles. On a cluster member, the fleet-routing BIRD fragments
-merge into the machine's existing BIRD (D19); its own cluster's pod and
-Service CIDRs are local routes anyway, and the admin role teaches it the
-*other* clusters' CIDRs. Fleet-wide PodCIDR non-overlap — asserted wherever
-clusters mesh — is what makes cross-cluster pod routing coherent.
+## FRR and route ownership
 
-The canonical test shape is exactly that: **kamrui-h1** is a single-node k3s
-cluster *and* an admin-role machine. One box, both hats, VM-proven.
+Each node has a deterministic unique private ASN and runs eBGP to every
+other node, separately for IPv4 and IPv6. BFD monitors each path. Strict
+inbound/outbound filters and maximum-prefix limits are mandatory.
+`maximum-paths` and multipath-relax retain shared-VIP ECMP.
 
-## Private-domain zones (D21, D22)
+A cluster's Cilium agents peer only with local FRR over `::1`. FRR
+rewrites the loopback next hop to the node's stable transport address and
+redistributes only approved routes. Zebra installs remote pod and Service
+routes into the kernel. Cilium agents never peer with one another.
 
-`cluster.local` is pinned, never changed, and **never served to clients** —
-the ecosystem hardcodes it, and the blast radius of changing it is high with
-zero benefit (D21). Client-facing naming uses private-domain zones served by
-cluster CoreDNS on the private VIP:
+Cluster-side `bgp.upstreamPeers` is gone. External peers belong to the
+`router` role in inventory; cluster and fabric exports provide the facts
+needed to render both sides without duplicating addresses.
 
-- **Instance zone** `<instance>.<meta.domain>` (default for clients): a
-  wildcard pointing at whatever day-2 proxy you install (previously the
-  private Gateway VIP — D22 revised in round 13). The zone and its VIP exist
-  regardless; the proxy behind them is GitOps-owned.
-- **Service zone** `<instance>.svc.<meta.domain>` (opt-in; default-on for
-  `admin`): CoreDNS rewrites to `<name>.<ns>.svc.cluster.local` with
-  answer-name reversal, resolving to Service IPs. Private-pool LB VIPs work
-  out of the box (the fabric already routes them); ClusterIPs additionally
-  require the D13 service advertisement.
-- **Pod zone** (opt-in; default-on for `admin`): CoreDNS `pods insecure`
-  plus dash-form rewrites, with pod advertisement (D13).
+## Native Kubernetes and node duality
 
-Pod and ClusterIP advertisement to machines is opt-in and default-off (D13)
-— machines reach Services through VIPs, never pods directly — except that
-the `admin` role turns these opt-ins on per machine. The caveats are real:
-ephemeral IPs, `world` policy identity, trust extension, and no readiness
-signal.
+Cilium uses native routing and multi-pool IPAM. It always advertises local
+pod-pool allocations to local FRR. Kubernetes members automatically consume
+remote pod routes; this is not the non-Kubernetes admin opt-in.
+
+The canonical dual-role shape is **kamrui-h1**: a single-node k3s spoke and
+an admin-role fleet member. Its local pods remain local Cilium endpoints;
+routes to foreign clusters and authorized Service addresses come from FRR.
+ClusterMesh additionally requires native routing in every cluster,
+non-overlapping pod CIDRs, and mesh-wide native-routing CIDRs.
+
+## Private-domain zones
+
+`cluster.local` is pinned and never served to fleet clients.
+
+- The instance zone `<instance>.<meta.domain>` is the client default. Its
+  wildcard target is the operator's day-2 proxy.
+- The service zone `<instance>.svc.<meta.domain>` rewrites to
+  `<name>.<ns>.svc.cluster.local` with answer-name reversal. ClusterIPs
+  require admin route consumption; private-pool LB VIPs already have
+  routes.
+- The pod zone uses CoreDNS `pods insecure` and dash-form rewrites, and is
+  default-on for admin.
+
+Route-only DNS stubs use global systemd-resolved settings so queries
+follow the kernel's per-member ECMP routes.
+
+## Acceptance
+
+Evaluation proves deterministic names and transfer prefixes, one peer per
+interface, AllowedIP/filter equivalence, role policy, self-exclusion, NAT
+viability, and collision detection.
+
+Hermetic VMs prove real handshakes, FRR sessions and BFD on both sides,
+RIB-to-FIB installation, native pod round trips, shared-VIP dual-stack
+ECMP and withdrawal, node-bgp owner-only advertisement, client VIP-only
+isolation, admin pod/Service/DNS access, router filtering, and the
+kamrui-h1 dual-role shape.

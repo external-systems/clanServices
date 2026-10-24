@@ -1,41 +1,43 @@
 # Upstream references
 
-The upstream facts the spec depends on (SPEC.md §11). When upstream changes,
-check these first.
+The upstream facts behind the spec. Re-check these when versions move.
 
-- **Cilium 1.20** — LB IPAM, Node IPAM
-  (docs.cilium.io/en/latest/network/node-ipam/ — the ETP-Local EndpointSlice
-  caveat affects only Cilium's own Gateway/Ingress, D41), BGP v2,
-  ClusterMesh (global Services with
-  `service.cilium.io/global|shared|affinity`, EndpointSlice sync). Known
-  Gateway gaps behind D1: no HTTP/3 (cilium#28497), no multi-Gateway IP
-  sharing (cilium#25567), no mTLS (GEP-91). No BFD. Configuration via the
-  rendered `cilium-config` ConfigMap (the D26 layer-2 seam). Official
-  install is Helm, cosign-signed digest-pinnable OCI charts; the chart ships
-  no `crds/` dir — the operator manages CRDs at runtime, which is why
-  manifest rendering loses nothing (D40).
-- **Cilium bootstrap/handoff evidence (D40)** — Flux prune garbage-collects
-  only the Kustomization's own `.status.inventory` (fluxcd.io Kustomization
-  docs); SSA vs client-side-apply field-manager friction and the
-  `--server-side` bootstrap avoidance (same docs + Flux FAQ); Argo CD
-  adoption via tracking annotation/label (Argo resource-tracking docs); Flux
-  maintainer on CNI takeover (fluxcd/flux2#3070); cilium-cli helm mode +
-  value auto-detection + cert-mode skew (cilium-cli README, cilium-cli#300,
-  and a documented crash-loop migration report).
-- **Kubenix** (hall/kubenix) — helm inflation at update time is IFD at eval,
-  which is why it lives in pkgs; patching chart output by re-declaring
-  rendered objects in the typed resource tree is the D26 layer-2 mechanism;
-  `includeCRDs = false` default loses nothing for Cilium.
-- **Kubernetes RBAC** — the built-in aggregated `view` ClusterRole excludes
-  Secrets by design (the basis of D38).
-- **Kubernetes CCM** — the `--cloud-provider=external` uninitialized-taint
-  flow; no Cilium-specific caveat (the agent tolerates `Exists`) (§6.11).
-- **RKE2 hardening** — `profile: cis` (v1.29+), PSA restricted, host sysctl
-  and etcd-user prerequisites (D25).
-- **Kubernetes version skew** — kubelets may lag the apiserver up to three
-  minors (motivates D34).
-- **BIRD 2** — the vendored named-fragment rendering pattern (D19).
-- **hcloud-ip-floater** (costela) — floating-IP mover reference; upstream
-  effectively unmaintained (last non-dependabot commit 2023) —
-  fork-don't-depend.
-- **go-httpbin** (mccutchen) — the standard airgapped HTTP VM-test workload.
+- **Cilium 1.20:** [native routing](https://docs.cilium.io/en/v1.20/network/concepts/routing/)
+  delegates non-local pod traffic to the kernel; off-L2 nodes need a
+  routing daemon. Multi-pool uses `CiliumPodIPPool` advertisements. BGP v2
+  advertises pod pools and Service VIPs but is not the packet datapath.
+  ClusterMesh requires the same datapath, non-overlapping pod CIDRs, node
+  connectivity, and native-routing CIDRs covering all meshed pods.
+- **Cilium LB features:** LB IPAM allocates; Node IPAM, provider routing,
+  floating controllers, or BGP delivers. BGP announces only unset or
+  `io.cilium/bgp-control-plane` classes. Node IPAM's ETP-Local dummy-
+  Endpoints caveat affects only Cilium Gateway/Ingress, which are disabled.
+- **Cilium lifecycle:** the chart ships no `crds/` directory; the operator
+  manages CRDs. Helm is the canonical install path. The `cilium` CLI's
+  environment auto-detection is not the bootstrap mechanism.
+- **FRR 10.7:** integrated `/etc/frr/frr.conf`, eBGP, explicit AF
+  activation, prefix-lists/route-maps, maximum-prefix, `maximum-paths`,
+  multipath-relax, BFD, and Zebra RIB-to-kernel installation. See the
+  [FRR 10.7 documentation](https://docs.frrouting.org/en/frr-10.7/).
+- **FRR with Cilium:** `allow-reserved-ranges` and martian-next-hop
+  handling are needed for loopback peering; rewrite Cilium's `::1` next hop
+  to the stable node address. Cilium has no BFD, so local sessions use
+  short timers while FRR-FRR paths use BFD.
+- **NixOS FRR module:** one `services.frr.config`; no automatic firewall
+  openings; config-only reloads preserve sessions, but enabling a daemon
+  requires a restart. Preview with `frr-reload.py --test`.
+- **WireGuard:** `AllowedIPs` is cryptokey routing, not a substitute for IP
+  routing. One peer per interface; ECMP works across interfaces, not across
+  overlapping peers on one interface.
+- **GitOps handoff:** Flux prune touches only its own inventory; SSA
+  bootstrap avoids client-side/server-side ownership friction. Argo uses
+  resource tracking. HelmRelease adoption without Helm release storage is
+  impossible.
+- **Kubenix:** chart inflation at update time; typed-tree patching in
+  clanServices without IFD.
+- **Kubernetes:** aggregated `view` excludes Secrets; external CCM uses the
+  uninitialized-taint flow; kubelet may lag apiserver by three minors.
+- **RKE2:** `profile: cis`, PSA restricted, and host prerequisites.
+- **hcloud-ip-floater:** reference for floating-IP movers; upstream is
+  effectively unmaintained, so fork rather than depend.
+- **go-httpbin:** the standard airgapped HTTP VM workload.

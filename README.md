@@ -8,14 +8,16 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 
 - [k3s](services/k3s/README.md): k3s Kubernetes cluster
 - [rke2](services/rke2/README.md): RKE2 Kubernetes cluster
-- [wireguard-mesh](services/wireguard-mesh/README.md): dual-stack host-level WireGuard full mesh
+- `netif` (planned): inventory-owned host links, static addressing, and routes
+- [fleet-routing](services/fleet-routing/README.md): per-pair WireGuard + FRR flat-L3 fabric (round-14 target)
+- [wireguard-mesh](services/wireguard-mesh/README.md): legacy host transport, pending migration/removal
 - [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
 [SPEC.md](SPEC.md) is the canonical architecture, status, and delivery record — a single dense
 contract for agents; `documentation/` (MkDocs site + slides) is the human record of the same spec
-(edit both together). Round 13 narrowed the contract to the bootstrap + data-plane promises;
-everything else in-cluster (Envoy Gateway, cert-manager, Sealed Secrets, Flux, external-dns,
-storage, CCMs) is a documented day-2 GitOps pattern, never clan-rendered.
+(edit both together). Round 14 makes FRR + per-pair WireGuard + native multi-pool Cilium the
+data-plane target and puts static host networking in inventory through `netif`. Round 13's scope
+remains: everything else in-cluster is a documented day-2 GitOps pattern, never clan-rendered.
 
 ## Usage
 

@@ -6,7 +6,8 @@ is a review destination, not a dependency.
 
 ## Layout
 
-- `services/<name>/` — public clanServices (`rke2`, `k3s`, `wireguard-mesh`).
+- `services/<name>/` — public clanServices (`rke2`, `k3s`, `fleet-routing`;
+  planned `netif`; legacy `wireguard-mesh` pending migration/removal).
   Auto-discovered via `flake-module.nix`; no central registration list.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
@@ -15,11 +16,13 @@ is a review destination, not a dependency.
 - `tests/` — eval-test wiring; every `clan.modules` entry must have a
   nix-unit test (enforced by `checks.coverage`).
 - `SPEC.md` (repo root) — the normative decision contract AND the status
-  authority (implemented vs planned), optimized for agents. Round 13
-  (2026-10-22) narrowed the contract to the Bootstrap + Data-plane
-  contracts; Envoy Gateway, cert-manager, Flux install, external-dns,
-  Sealed Secrets, OpenEBS, KubeVirt, Multus are REVOKED day-2 GitOps
-  patterns, never clan-rendered (SPEC.md §3.3, D39–D45).
+  authority (implemented vs planned), optimized for agents. Round 14
+  (2026-10-24) makes FRR + per-pair host WireGuard + native-routed
+  multi-pool Cilium the data-plane target and puts static host networking
+  in inventory through `netif` (D47–D50). Round 13's Bootstrap + Data-plane
+  scope remains: Envoy Gateway, cert-manager, Flux install, external-dns,
+  Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps patterns,
+  never clan-rendered (SPEC.md §3.3, D39–D45).
 - `documentation/` — MkDocs site + reveal.js slides (human record, built
   via the `external-systems/presenting` flake). **Edit SPEC.md and
   `documentation/` together.** The old `services/rancher-cluster-spec.*`
@@ -43,23 +46,32 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D45) first — round 13 revoked the Gateway/Envoy
-   layer, cert-manager base, clan-installed Flux, external-dns, Sealed
-   Secrets, OpenEBS, KubeVirt, and Multus suites (day-2 GitOps patterns
-   now); Cilium stays networking-only (D1); Node IPAM is the default
-   classless-LB mechanism (D41); servicelb is permanently disabled (D42);
-   the control domain is GitOps-neutral (`controlDomain.role`, D43).
+   decision record (D1–D50) first — round 13 revoked the Gateway/Envoy
+   layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
+   FRR/per-pair WireGuard/native routing. Cilium stays networking-only
+   (D1) and multi-pool; Node IPAM is the classless-LB default (D41);
+   `node-bgp` is owner-only while `shared-bgp` uses ECMP (D8); servicelb
+   is permanently disabled (D42); the control domain is GitOps-neutral
+   (`controlDomain.role`, D43).
 9. DO NOT RUN `nix flake check`, it boots VM tests and will OOM kill the machine!!! Run with `--no-build`.
 
 ## Verified upstream facts the spec depends on
 
-- Cilium 1.20: no Gateway HTTP/3, no Gateway mTLS, no multi-Gateway IP
-  sharing, no BFD. LB IPAM allocates; delivery is separate (BGP v2 /
-  floating / provider). Node IPAM (`nodeIPAM.enabled`) advertises node IPs
+- Cilium 1.20: native routing delegates non-local pod traffic to the
+  kernel FIB; off-L2 nodes therefore need FRR-distributed pod-pool routes.
+  Multi-pool uses `CiliumPodIPPool` advertisements. ClusterMesh requires
+  the same datapath, non-overlapping pod CIDRs, node connectivity, and
+  native-routing CIDRs covering all meshed pods. Cilium has no BFD.
+  LB IPAM allocates; delivery is separate. Node IPAM advertises node IPs
   for classless LoadBalancer Services; its ETP-Local EndpointSlice caveat
   affects only Cilium's own Gateway/Ingress (dummy Endpoints), which stay
-  disabled (D1/D41). The Cilium chart ships no `crds/` dir — the operator
-  manages CRDs at runtime.
+  disabled (D1/D41). The chart ships no `crds/` dir.
+- FRR 10.7: one integrated `services.frr.config`; Zebra installs routes;
+  eBGP ECMP needs `maximum-paths` and often multipath-relax; Cilium's
+  loopback next hop needs reserved-range/martian handling and rewrite;
+  FRR-FRR paths can use BFD. WireGuard ECMP requires one peer per
+  interface and multiple interfaces, never overlapping peers on one
+  interface. Config reload does not start newly enabled daemons.
 - GitOps handoff (D40): Flux prune garbage-collects only the
   Kustomization's own `.status.inventory`; bootstrap with
   `kubectl apply --server-side` avoids CSA→SSA field-ownership friction;

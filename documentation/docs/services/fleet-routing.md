@@ -1,41 +1,45 @@
 # fleet-routing
 
-The fleet-routing clanService gives non-Kubernetes NixOS machines routed
-access to the fleet: cluster VIPs for everyone, pod and Service CIDRs for
-admins, upstream prefix ownership for routers (D11, D33).
+`fleet-routing` is the flat-L3 clanService for Kubernetes and ordinary
+NixOS machines. It replaces the legacy `wireguard-mesh` transport and the
+BIRD-based phase-5 design with per-pair WireGuard and one FRR routing
+stack per host.
 
 ## Roles
 
-- **`client`** — mesh join, BIRD peering, VIP route install, and a DNS stub
-  for the private zone `<instance>.<meta.domain>` (D22). The base profile
-  for reaching cluster services.
-- **`admin`** — client plus pod/Service advertisement consumption (D13) and
-  the svc/pod DNS zones default-on (D22). The developer/admin profile.
-- **`router`** — upstream prefix ownership, filtered VIP acceptance, NDP, and
-  pool definitions for its downstream cluster(s). Foreign routers
-  (MikroTik-style) follow a published runbook (D9). Edge proxies on a router
-  machine are your own nixosModules, not fleet-routing's concern.
+- **`member`** — encrypted dual-stack flat-L3 membership, FRR/BFD/Zebra,
+  and automatic native pod routes on Kubernetes nodes.
+- **`client`** — member plus cluster VIP routes and the instance-zone DNS
+  stub.
+- **`admin`** — client plus explicit pod/ClusterIP routes and svc/pod DNS
+  zones; kamrui-h1 is the canonical dual-role example.
+- **`router`** — member plus upstream peers, owned-prefix filtering,
+  forwarding, and optional proxy-NDP.
 
-The existing host mesh carries node transport and BGP. For routed traffic,
-every fleet host creates one WireGuard interface per remote cluster member,
-reusing the mesh identity and addresses with an ephemeral listen port. One
-peer per interface preserves shared-VIP ECMP, which destination-based
-`AllowedIPs` cannot provide on a single WireGuard interface. Each peer also
-allows its mesh host addresses so endpoint roaming between the mesh and
-routed UDP sockets cannot drop BGP replies. Member-eligible VIP/admin
-prefixes and BIRD next hops map to the same routed interface. Route-only
-DNS stubs use global systemd-resolved settings and the kernel's per-member
-ECMP routes, not the ordinary mesh link's DNS settings. Names are
-deterministic, instance-namespaced, collision-checked, and at most 15
-characters; dual-role hosts exclude themselves and clusters keep their
-existing mesh interface.
+## Data plane
 
-Node duality is legal: a machine may be a cluster node (one cluster — D16)
-and hold fleet-routing roles at the same time. On a cluster member the
-service's BIRD fragments merge into the existing machine BIRD (D19).
+Every machine has stable loopback `/32` and `/128` addresses. Every remote
+machine gets exactly one point-to-point WireGuard interface with one peer.
+This preserves cryptokey correctness and kernel ECMP across interfaces.
+`AllowedIPs` and FRR route filters derive from one route policy.
+
+FRR exchanges eBGP routes per address family, uses BFD on every fabric
+path, and installs accepted routes through Zebra. Cilium peers only with
+local FRR over `::1`; FRR rewrites its next hop before redistribution.
+Cilium native routing then forwards remote pod traffic through the kernel
+FIB.
+
+Node-owned `node-bgp` pools advertise only from their owner. `shared-bgp`
+pools advertise from every healthy eligible node and use ECMP. Ordinary
+clients receive VIPs only; admin explicitly receives pod and ClusterIP
+routes. External BGP peers are declared by the `router` role, not duplicated
+in cluster settings.
+
+See [Fleet routing architecture](../architecture/fleet-routing.md) and
+[Networking](../architecture/networking.md) for the full contract.
 
 ## Status
 
-Planned (delivery phase 5, together with the BGP/BIRD fabric). The
-architecture and acceptance criteria are in
-[Fleet routing](../architecture/fleet-routing.md) and SPEC.md §6.13.
+Round-14 target, planned for phases 5R1–5R3. The BIRD implementation at
+checkpoint `2995ac3` is legacy and is not accepted as this service's FRR /
+native-routing implementation.
