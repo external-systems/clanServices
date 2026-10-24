@@ -16,6 +16,20 @@ admins, upstream prefix ownership for routers (D11, D33).
   (MikroTik-style) follow a published runbook (D9). Edge proxies on a router
   machine are your own nixosModules, not fleet-routing's concern.
 
+The existing host mesh carries node transport and BGP. For routed traffic,
+every fleet host creates one WireGuard interface per remote cluster member,
+reusing the mesh identity and addresses with an ephemeral listen port. One
+peer per interface preserves shared-VIP ECMP, which destination-based
+`AllowedIPs` cannot provide on a single WireGuard interface. Each peer also
+allows its mesh host addresses so endpoint roaming between the mesh and
+routed UDP sockets cannot drop BGP replies. Member-eligible VIP/admin
+prefixes and BIRD next hops map to the same routed interface. Route-only
+DNS stubs use global systemd-resolved settings and the kernel's per-member
+ECMP routes, not the ordinary mesh link's DNS settings. Names are
+deterministic, instance-namespaced, collision-checked, and at most 15
+characters; dual-role hosts exclude themselves and clusters keep their
+existing mesh interface.
+
 Node duality is legal: a machine may be a cluster node (one cluster — D16)
 and hold fleet-routing roles at the same time. On a cluster member the
 service's BIRD fragments merge into the existing machine BIRD (D19).

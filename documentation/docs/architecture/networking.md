@@ -22,6 +22,19 @@ prefixes only in `AllowedIPs`, and every remote node InternalIP must be
 reachable before ClusterMesh is considered ready. The tunnel MTU budget is
 transport MTU minus 50.
 
+Fleet-routing hosts add a separate routed datapath without changing this
+node-transport mesh. WireGuard chooses an outgoing peer from the packet's
+original destination, so one shared VIP cannot map to multiple peers on a
+single interface without discarding ECMP. Each fleet host therefore creates
+one point-to-point WireGuard interface per remote cluster member, with one
+member peer per interface. These interfaces reuse the mesh identity,
+addresses, endpoints, and deployed private-key path, use ephemeral listen
+ports, and exclude the local machine. Their `AllowedIPs` are limited to the
+member's eligible VIP and admin-consumed prefixes; BIRD resolves each
+member's next hop through its corresponding interface. Names are
+instance-namespaced, deterministic, collision-checked, and at most 15
+characters. The cluster side keeps only its existing mesh interface.
+
 Every node carries topology labels (invariant 7):
 `topology.kubernetes.io/region` and `topology.kubernetes.io/zone` default
 to the cluster's instance name, overridable per machine

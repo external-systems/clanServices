@@ -149,7 +149,7 @@ let
   findObj = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
   ciliumConfigData = (findObj "ConfigMap" "cilium-config").data;
   agentEnv =
-    (lib.findFirst (c: c.name == "cilium") null
+    (lib.findFirst (c: c.name == "cilium-agent") null
       (findObj "DaemonSet" "cilium").spec.template.spec.containers
     ).env;
   envValue = name: (lib.findFirst (e: e.name == name) { value = null; } agentEnv).value;
@@ -353,6 +353,33 @@ in
       agentNoBundle = true;
       agentNoUnit = true;
       nonInitServerNoUnit = true;
+    };
+  };
+
+  # The digest-alias oneshot (D26/D40 airgap): the bundle references images
+  # digest-pinned; preloaded tarballs only register repo:tag, so every node
+  # tags each pinned image under its name@digest alias for offline CRI
+  # resolution.
+  test_imageDigestAliasWiring = {
+    expr =
+      let
+        unit = alphaTransport.systemd.services.kube-cluster-k3s-image-digest-aliases or null;
+        aliases =
+          if unit == null then [ { alias = ""; } ] else unit.serviceConfig.ExecStart.passthru.aliases;
+      in
+      {
+        serverHasUnit = unit != null;
+        agentHasUnit = gammaTransport.systemd.services ? kube-cluster-k3s-image-digest-aliases;
+        # 4 Cilium images + 1 clan CoreDNS, every alias in name@digest form
+        aliasesPinnedDigests =
+          builtins.length aliases == 5 && lib.all (a: lib.hasInfix "@sha256:" a.alias) aliases;
+        afterRuntime = unit == null || unit.after == [ "k3s.service" ];
+      };
+    expected = {
+      serverHasUnit = true;
+      agentHasUnit = true;
+      aliasesPinnedDigests = true;
+      afterRuntime = true;
     };
   };
 
@@ -866,6 +893,8 @@ in
         coreDNS = {
           ipv4 = "172.16.1.53";
           ipv6 = "fd11:1:0:0:0:0:0:53";
+          svcZone = "";
+          podZone = "";
           zone = "k3s.clan";
         };
       };

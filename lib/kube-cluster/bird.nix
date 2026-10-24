@@ -60,6 +60,12 @@
         # named-fragment pattern). Contributors: ${lib.concatStringsSep ", " keys}.
         router id ${routerId};
 
+        # One device protocol per host (BIRD rejects duplicates) — owned by
+        # the assembler, never by fragments.
+        protocol device {
+          scan time 10;
+        }
+
       ''
       + lib.concatMapStringsSep "\n" renderFragment keys;
 }

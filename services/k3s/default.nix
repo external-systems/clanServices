@@ -140,8 +140,15 @@ let
           settings
           domain
           ;
+        igpInterface =
+          let
+            facts = allTransportFacts.${machine.name};
+          in
+          if facts != null then facts.interface else "eth0";
+        igpGateway = (memberAddr machine.name).ipv4;
         ciliumId = resolvedCiliumId;
         inherit (resolvedCidrs) clusterDNS;
+        cidrFacts = resolvedCidrs;
         members = poolMembers;
       };
 
@@ -382,6 +389,14 @@ let
           ++ ciliumImages
           ++ coreDNSImages;
 
+          # The pinned repo/tag/digest triples behind the preloaded
+          # tarballs — the bundle references images digest-pinned
+          # (repo:tag@digest), which containerd only resolves via a
+          # name@digest alias (mkImageDigestAliases).
+          pinnedImageTriples = map (img: { inherit (img) repo tag digest; }) ciliumVersions.images ++ [
+            { inherit (corednsVersions) repo tag digest; }
+          ];
+
           effectiveImages =
             if settings.packages.images != [ ] then settings.packages.images else defaultImages;
 
@@ -487,7 +502,11 @@ let
           // settings.configOverrides;
 
           cleanConfig = lib.filterAttrs (_: v: v != null) (
-            if isServer then baseServerConfig else baseAgentConfig
+            {
+              resolv-conf =
+                if config.services.resolved.enable then "/run/systemd/resolve/resolv.conf" else "/etc/resolv.conf";
+            }
+            // (if isServer then baseServerConfig else baseAgentConfig)
           );
           configPath = pkgs.writeText "k3s-config.yaml" (builtins.toJSON cleanConfig);
         in
@@ -534,6 +553,20 @@ let
                     settings
                     ;
                   transportFacts = if transportEnabled then allTransportFacts else null;
+                  # Cross-role parity (the export is per-member; fleet
+                  # consumers read one scope — all roles must agree on the
+                  # cluster-level knobs). Sourced from MACHINE-level
+                  # settings (roles.<r>.settings is deprecated read-side in
+                  # clan-core) — per-machine overrides are covered too.
+                  roleSettings = lib.flatten (
+                    lib.mapAttrsToList (
+                      roleName: r:
+                      lib.mapAttrsToList (machineName: m: {
+                        name = "${roleName}/${machineName}";
+                        inherit (m) settings;
+                      }) (r.machines or { })
+                    ) roles
+                  );
                 })
                 ++ (kube.assertions.mkPoolAssertions {
                   inherit instanceName settings;
@@ -726,6 +759,19 @@ let
                 serverUnit = "k3s.service";
                 kubeconfigPath = "/etc/rancher/k3s/k3s.yaml";
                 bundle = bundle.path;
+              }
+            ))
+
+            # Offline resolution of the bundle's digest-pinned image
+            # references (D26/D40 airgap): tag each preloaded image with
+            # its name@digest alias on every node. Only when the default
+            # preload set is in effect (x86_64; an admin packages.images
+            # override owns its own digest resolution).
+            (lib.mkIf (pkgs.stdenv.hostPlatform.isx86_64 && settings.packages.images == [ ]) (
+              kube.mkImageDigestAliases {
+                inherit pkgs instanceName;
+                runtimeUnit = "k3s.service";
+                images = pinnedImageTriples;
               }
             ))
 

@@ -48,7 +48,7 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `render.mkBundle` | The kubenix bootstrap bundle (D26 layer 2 / D40): imports the artifact flake's committed Cilium manifest via the pure-Nix YAML-subset parser (`yaml.nix`, zero IFD), merges per-cluster variation into the typed resource tree (`cilium-config` ConfigMap data, KPR env, pod IP pool, LB pools, `coredns-custom`), validates post-merge invariants (`validateBundle`), and emits one multi-doc YAML + object list + config hash. |
 | `render.mkLBService` | External-facing Service helper: ETP Local + `loadBalancerClass: io.cilium/lb-ipam` + manifest labels (invariants 5/6). |
 | `render.mkHaproxyConfig` | Per-node haproxy kube-apiserver LB config, with an optional rke2 supervisor LB. |
-| `render.mkManifestLabels` | §6.11 labels for all rendered resources (managed-by, cluster, component; config-hash is added per object by mkBundle). |
+| `render.mkManifestLabels` | §6.11 labels for all rendered resources (managed-by, cluster, component; mkBundle adds a per-object `clan.lol/config-hash` label — first 32 hex chars of the full sha256, since Kubernetes label values cap at 63 bytes; the full hash stays on the bundle's `configHash` output). |
 | `render.resolvePools` | D8 pool resolution: auto per-machine node pools (join /32+/128 + `poolBlocks`) plus declared cluster-global pools and `extraPools` (the fabric pool). |
 | `resolveDataPlane` | Phase-5 seam (D9/D10/D19/D22): ASNs, fabric pool, shared-bgp sets, the mkBundle `bgp`/`privateCoreDNS` params, the per-cluster BIRD fragment text, and the export facts — one resolution shared by bundle, assertions, and export. |
 | `bgp.hashBgpAsns` / `bgp.resolveBgpAsns` | Deterministic private 32-bit ASN pairs per cluster (sha256 of salted instance name → RFC 6996 range; pins override). |
@@ -59,6 +59,7 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (incl. against pod/service CIDRs), scope⇒mode, floating coverage, node-name collisions, bgp.enable⇔shared-bgp coupling, fabric block size (§6.12). |
 | `mkFleetChecks` / `fleetChecksModule` | Fleet-wide assertions (§6.2) computed from the `kube_cluster` exports as `clan.checks`: duplicate names/ids, same-group CIDR overlap, node-in-two-clusters (D16, cross-service), mesh-group transport consistency. Wire into a clan with `clan.imports = [ kube.fleetChecksModule ]`. |
 | `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40). |
+| `mkImageDigestAliases` | Per-node oneshot tagging each preloaded pinned image under its `name@digest` alias — the bundle references images digest-pinned, and containerd's CRI resolves digested references only via that canonical alias (offline airgap would otherwise ImagePullBackOff). |
 | `vars.mkTokenGenerators` | Join token generators (`rancher-server-token-<instance>` / `rancher-agent-token-<instance>`). |
 | `vars.mkPkiGenerator` | `rancher-pki-<instance>` — the pre-generated cluster CA tree. |
 | `vars.mkHaproxyGenerator` | `rancher-haproxy-<instance>` — LB healthcheck client cert + stats password hash. |

@@ -241,6 +241,16 @@ in
                 default = null;
                 description = "Upstream peer ASN.";
               };
+              receivePodCIDRs = lib.mkOption {
+                type = t.bool;
+                default = false;
+                description = "Peer receives pod CIDR routes (D13; requires the cluster's advertisePodCIDRs opt-in).";
+              };
+              receiveClusterIPs = lib.mkOption {
+                type = t.bool;
+                default = false;
+                description = "Peer receives ClusterIP routes (D13; requires the cluster's advertiseClusterIPs opt-in).";
+              };
             };
           }
         );
@@ -298,6 +308,16 @@ in
           type = t.str;
           default = "";
           description = "The private DNS zone served on the VIP (<instance>.<domain>); empty when the private CoreDNS is off.";
+        };
+        svcZone = lib.mkOption {
+          type = t.str;
+          default = "";
+          description = "The D22(a) service zone (<instance>.svc.<domain>) when the cluster opted in; empty otherwise.";
+        };
+        podZone = lib.mkOption {
+          type = t.str;
+          default = "";
+          description = "The D22(b) pod zone (<instance>.pods.<domain>) when the cluster opted in; empty otherwise.";
         };
       };
     };

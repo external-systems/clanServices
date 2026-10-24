@@ -49,7 +49,7 @@ let
   };
   assertFns = import ./assertions.nix { inherit lib hashCiliumId; };
   bundle = import ./bundle.nix { inherit lib; };
-  bootstrap = import ./bootstrap.nix { };
+  bootstrap = import ./bootstrap.nix { inherit lib; };
   haproxy = import ./haproxy.nix { inherit lib; };
   nixos = import ./nixos.nix { inherit lib; };
   vars = import ./vars.nix { inherit lib; };
@@ -120,6 +120,11 @@ let
       domain,
       clusterDNS,
       members,
+      igpInterface,
+      igpGateway,
+      # resolvedCidrs (podCIDRv4/podCIDRv6/serviceCIDRv4/serviceCIDRv6) —
+      # feeds the D13 opt-in acceptance filters on the node BIRD.
+      cidrFacts,
     }:
     let
       asns = bgp.resolveBgpAsns { inherit instanceName settings; };
@@ -157,9 +162,33 @@ let
       birdFragment =
         if bgpActive then
           bgp.mkBirdFragment {
-            inherit instanceName asns;
+            inherit
+              instanceName
+              asns
+              igpInterface
+              igpGateway
+              ;
             blocks = sharedBgpBlocks;
             inherit (settings.bgp) upstreamPeers;
+            # D13: the node BIRD accepts pod CIDRs / ClusterIPs from Cilium
+            # only when the cluster opted in; per-peer export is further
+            # gated by bgp.upstreamPeers[].receivePodCIDRs/receiveClusterIPs.
+            acceptPods =
+              if settings.bgp.advertisePodCIDRs then
+                {
+                  v4 = cidrFacts.podCIDRv4;
+                  v6 = cidrFacts.podCIDRv6;
+                }
+              else
+                null;
+            acceptClusterIPs =
+              if settings.bgp.advertiseClusterIPs then
+                {
+                  v4 = cidrFacts.serviceCIDRv4;
+                  v6 = cidrFacts.serviceCIDRv6;
+                }
+              else
+                null;
           }
         else
           null;
@@ -171,6 +200,7 @@ let
             vip4 = vips.ipv4;
             vip6 = vips.ipv6;
             fabricPoolName = fabricPool.name;
+            memberCount = builtins.length members;
             inherit (settings.fabric.coredns) wildcardAddress svcZone podZone;
           }
         else
@@ -192,6 +222,10 @@ let
             ipv4 = if privateDnsOn then vips.ipv4 else null;
             ipv6 = if privateDnsOn then vips.ipv6 else null;
             zone = if privateDnsOn then "${instanceName}.${domain}" else "";
+            svcZone =
+              if privateDnsOn && settings.fabric.coredns.svcZone then "${instanceName}.svc.${domain}" else "";
+            podZone =
+              if privateDnsOn && settings.fabric.coredns.podZone then "${instanceName}.pods.${domain}" else "";
           };
         };
       };
@@ -238,8 +272,9 @@ rec {
     inherit (assertFns) mkClusterAssertions mkPoolAssertions;
   };
 
-  # Bootstrap-apply oneshot fragment (D40).
-  inherit (bootstrap) mkBootstrapApply;
+  # Bootstrap-apply oneshot fragment (D40) + the image digest-alias
+  # oneshot (offline digest-pinned references, D26/D40 airgap).
+  inherit (bootstrap) mkBootstrapApply mkImageDigestAliases;
 
   # Vars generators (bare generator attrsets — the distro service merges
   # them into clan.core.vars.generators, gated by role as documented in

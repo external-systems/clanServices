@@ -92,9 +92,17 @@ let
       # The same phase-5 resolution seam the distro services use (D9/D10).
       dp = kube.resolveDataPlane {
         inherit settings instanceName members;
+        igpInterface = "wg-mesh";
+        igpGateway = "192.168.77.1";
         ciliumId = 1;
         domain = "example.org";
         clusterDNS = "10.2.0.10";
+        cidrFacts = {
+          podCIDRv4 = "10.1.0.0/16";
+          podCIDRv6 = "fd10:1::/56";
+          serviceCIDRv4 = "10.2.0.0/16";
+          serviceCIDRv6 = "fd10:2::/112";
+        };
       };
     in
     kube.render.mkBundle {
@@ -199,6 +207,32 @@ let
         network = {
           ipv4 = "10.0.0.1";
           ipv6 = "fd00::1";
+        };
+      };
+    }
+  ];
+
+  # Two-member role list (server + agent) for the parity tests.
+  parityMembers = [
+    {
+      machineName = "alpha";
+      role = "server";
+      settings = {
+        clusterInit = true;
+        network = {
+          ipv4 = "10.0.0.1";
+          ipv6 = "fd00::1";
+        };
+      };
+    }
+    {
+      machineName = "beta";
+      role = "agent";
+      settings = {
+        clusterInit = false;
+        network = {
+          ipv4 = "10.0.0.2";
+          ipv6 = "fd00::2";
         };
       };
     }
@@ -485,6 +519,13 @@ in
     expected = true;
   };
 
+  # The singleton ClusterMesh Deployment mounts this ConfigMap even though
+  # the chart omits it while clustermesh.config is disabled.
+  test_bundleSingletonClusterMeshUsers = {
+    expr = (findObj "ConfigMap" "clustermesh-remote-users").data."users.yaml";
+    expected = "users:\n";
+  };
+
   # Post-merge invariant validation (§6.4): gatewayAPI.enabled=true throws.
   test_bundleInvariantGatewayApiThrows = {
     expr = violatingThrew;
@@ -515,12 +556,13 @@ in
     };
   };
 
-  # Per-cluster identity + KPR endpoint land in the bundle.
+  # Per-cluster identity + KPR endpoint land in the bundle. The agent
+  # container is named "cilium-agent" in the committed base manifest.
   test_bundleClusterIdentityAndKpr = {
     expr =
       let
         ds = findObj "DaemonSet" "cilium";
-        agentContainer = lib.findFirst (c: c.name == "cilium") null ds.spec.template.spec.containers;
+        agentContainer = lib.findFirst (c: c.name == "cilium-agent") null ds.spec.template.spec.containers;
         envHost =
           (lib.findFirst (e: e.name == "KUBERNETES_SERVICE_HOST") { value = null; } agentContainer.env).value;
         envPort =
@@ -629,6 +671,7 @@ in
         # (rewrites fold into the clan Corefile)
         legacyAbsent = legacyCm == null;
         replicas = deploy.spec.replicas;
+        dnsPolicy = deploy.spec.template.spec.dnsPolicy;
       };
     expected = {
       deployPresent = true;
@@ -640,6 +683,7 @@ in
       imageDigestPinned = true;
       legacyAbsent = true;
       replicas = 2;
+      dnsPolicy = "Default";
     };
   };
 
@@ -685,6 +729,79 @@ in
       && l ? "clan.lol/config-hash"
     ) bundleObjects;
     expected = true;
+  };
+
+  # Kubernetes label VALUES cap at 63 bytes — a full sha256 hex (64 chars)
+  # is rejected by the apiserver ("must be no more than 63 bytes"). The
+  # config-hash label carries a 32-hex-char prefix; the bundle's configHash
+  # output stays full-length. Every label value on every object must fit.
+  test_bundleLabelValuesFitKubernetes = {
+    expr = {
+      tooLong = lib.concatMap (
+        o:
+        map (kv: "${o.kind}/${o.metadata.name}:${kv.name}") (
+          lib.filter (kv: builtins.stringLength kv.value > 63) (lib.attrsToList (o.metadata.labels or { }))
+        )
+      ) bundleObjects;
+      hashLabel = (builtins.head bundleObjects).metadata.labels."clan.lol/config-hash";
+    };
+    expected = {
+      tooLong = [ ];
+      hashLabel = builtins.substring 0 32 bundle.configHash;
+    };
+  };
+
+  # Every container in every pod template carries a non-empty image: a
+  # named-container patch keyed on the wrong name silently APPENDS an
+  # imageless phantom container that the apiserver rejects
+  # (spec.template.spec.containers[i].image is Required). The cilium-agent
+  # container must exist exactly once and carry the KPR endpoint env — and
+  # so must the API-talking init containers (config runs cilium-dbg
+  # build-config against the API; clean-cilium-state runs the cleanup
+  # client), exactly as the chart renders them when k8sServiceHost is set.
+  test_bundleContainersHaveImages = {
+    expr =
+      let
+        imageless = lib.concatMap (
+          o:
+          let
+            t = o.spec.template.spec or null;
+          in
+          if t == null then
+            [ ]
+          else
+            map (c: "${o.kind}/${o.metadata.name}:${c.name or "?"}") (
+              lib.filter (c: (c.image or "") == "") ((t.containers or [ ]) ++ (t.initContainers or [ ]))
+            )
+        ) bundleObjects;
+        ds = findObj "DaemonSet" "cilium";
+        agentContainers = lib.filter (c: c.name == "cilium-agent") ds.spec.template.spec.containers;
+        agentEnv = map (e: e.name) (builtins.head agentContainers).env;
+        initEnvs = map (c: map (e: e.name) c.env) (
+          lib.filter (
+            c:
+            lib.elem c.name [
+              "config"
+              "clean-cilium-state"
+            ]
+          ) ds.spec.template.spec.initContainers
+        );
+      in
+      {
+        inherit imageless;
+        agentContainerCount = builtins.length agentContainers;
+        agentHasKprEnv = lib.all (e: lib.elem e agentEnv) [
+          "KUBERNETES_SERVICE_HOST"
+          "KUBERNETES_SERVICE_PORT"
+        ];
+        initKprEnvCount = builtins.length (lib.filter (lib.elem "KUBERNETES_SERVICE_HOST") initEnvs);
+      };
+    expected = {
+      imageless = [ ];
+      agentContainerCount = 1;
+      agentHasKprEnv = true;
+      initKprEnvCount = 2;
+    };
   };
 
   # Every container image reference in the bundle is digest-pinned: the
@@ -1441,6 +1558,63 @@ in
     expected = false;
   };
 
+  # --- cross-role parity (per-machine cluster-level settings) ---------------
+
+  test_parityUniformAccepted = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      transportFacts = null;
+      roleMembers = parityMembers;
+      roleSettings = [
+        {
+          name = "server/alpha";
+          settings = baseSettings;
+        }
+        {
+          name = "agent/beta";
+          settings = baseSettings;
+        }
+      ];
+    }) "identical across all machines";
+    expected = false;
+  };
+
+  # Per-machine overrides are covered: a drifted machine is named
+  # "<role>/<machine>" in the message.
+  test_parityMachineDriftRejected = {
+    expr =
+      let
+        assertions = kube.assertions.mkClusterAssertions {
+          inherit instanceName;
+          settings = baseSettings;
+          transportFacts = null;
+          roleMembers = parityMembers;
+          roleSettings = [
+            {
+              name = "server/alpha";
+              settings = baseSettings;
+            }
+            {
+              name = "agent/beta";
+              settings = evalSettings { cilium.id = 2; };
+            }
+          ];
+        };
+        driftAssertion = lib.findFirst (
+          item: !item.assertion && lib.hasInfix "identical across all machines" item.message
+        ) null assertions;
+      in
+      {
+        fires = driftAssertion != null;
+        namesMember = driftAssertion != null && lib.hasInfix "agent/beta" driftAssertion.message;
+      };
+    expected = {
+      fires = true;
+      namesMember = true;
+    };
+  };
+
   # --- fleet checks (§6.2, D16/D33) ----------------------------------------
 
   test_fleetChecksCleanTreePasses = {
@@ -2050,6 +2224,8 @@ in
         asns = kube.bgp.hashBgpAsns "my-cluster";
         text = kube.bgp.mkBirdFragment {
           instanceName = "my-cluster";
+          igpInterface = "wg-mesh";
+          igpGateway = "192.168.77.1";
           inherit asns;
           blocks = [
             "172.16.9.0/24"
@@ -2079,8 +2255,8 @@ in
         limit4 = lib.hasInfix "import limit 272 action block;" text; # 256 + 16
         noKernel = !(lib.hasInfix "protocol kernel" text);
         upstreamV4 = lib.hasInfix "protocol bgp my_cluster_upstream_1 {\n  local port 4179 as ${toString asns.bird};\n  neighbor 192.0.2.1 as 65001;" text;
-        upstreamV4Channel = lib.hasInfix "ipv4 {\n    import none;\n    export filter my_cluster_cilium_in4;\n    next hop self;\n  };" text;
-        upstreamV6Channel = lib.hasInfix "ipv6 {\n    import none;\n    export filter my_cluster_cilium_in6;\n    next hop self;\n  };" text;
+        upstreamV4Channel = lib.hasInfix "ipv4 {\n    import none;\n    export filter my_cluster_upstream_1_out4;\n    next hop self;\n  };" text;
+        upstreamV6Channel = lib.hasInfix "ipv6 {\n    import none;\n    export filter my_cluster_upstream_2_out6;\n    next hop self;\n  };" text;
         symbolsSanitized = !(lib.hasInfix "my-cluster_cilium" text);
       };
     expected = {

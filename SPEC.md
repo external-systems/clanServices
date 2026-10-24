@@ -180,7 +180,7 @@ unless noted) — revoked entries keep one-line reasons for history.
   hears the same route from every healthy node → ECMP. Cilium agents
   never peer with each other. Deterministic 2 private 32-bit ASNs per
   cluster + per-node router id. Timers: hold 9 / keepalive 3 /
-  connect-retry 5. Foreign-router contract (published): ASNs, timers,
+  connect-retry 5 (no BFD in Cilium 1.20). Foreign-router contract (published): ASNs, timers,
   accept only pool blocks as /32+/128 with max-prefix + prefix filters,
   ECMP path count ≥ node count, proxy-NDP if on-LAN. BIRD rendered via
   the vendored named-fragment pattern (D19). **Phase-5 implementation
@@ -204,7 +204,16 @@ unless noted) — revoked entries keep one-line reasons for history.
   upstream protocols' socket lives on :4179 and is firewall-dropped
   inbound, keeping :179 loopback-only. (e) BIRD imports ONLY the
   shared-bgp pool blocks as exact /32+/128 (prefix filters) + per-family
-  `import limit` (block capacity, capped 4096).
+  `import limit` (block capacity, capped 4096). (f) A fleet-routing host
+  using host WireGuard carries recursive VIP next hops over D33's
+  per-member routed interfaces. WireGuard selects a peer from the original
+  packet destination, so assigning one shared VIP to multiple peers on a
+  single interface collapses ECMP; the ordinary mesh interface remains
+  node/BGP transport, not the shared-VIP ECMP datapath. Each routed peer
+  also allows that member's mesh host addresses: the reused WireGuard
+  identity roams to the latest UDP source port, so rejecting mesh-source
+  packets on the routed socket would withdraw BGP after routed traffic.
+  Static route metrics keep ordinary node traffic on the mesh interface.
 - **D10 Private fleet routing fabric DEFAULT ON.** Per cluster by
   default: per-node BIRD + BGP v2 resources, one private `shared-bgp`
   pool (ULA + RFC1918 from derived cluster CIDR space), core VIPs on it
@@ -224,7 +233,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   `io.cilium/bgp-control-plane` class, ETP Local). `bgp.enable` ⇔
   "any shared-bgp pool exists" is eval-locked (§6.12).
 - **D11 Fleet-routing clanService (working name `cluster-client`).**
-  Non-Kubernetes clan hosts → cluster VIPs. Roles per D33.
+  Non-Kubernetes clan hosts → cluster VIPs over per-remote-cluster-member
+  routed WireGuard interfaces. The existing single-interface host mesh
+  remains node transport and the BGP control path. Roles per D33.
 - **D12 ClusterMesh apiserver exposure stays node-bound** mesh addresses
   + selectorless-Service DNS fan-in. Generalized for the kube-apiserver
   mirror Services (D30).
@@ -301,12 +312,18 @@ unless noted) — revoked entries keep one-line reasons for history.
   it (eval-asserted). NetworkPolicy restricts mirror-Service access to
   GitOps namespaces. Mesh connectivity is symmetric.
 - **D33 Fleet-routing roles: `client`, `admin`, `router`.** `client` =
-  mesh join, BIRD peering, VIP routes, gateway-zone DNS stub. `admin` =
-  client + D13 consumption + D22 svc/pod zones default-on (e.g.
-  kamrui-h1). `router` = upstream prefix ownership, filtered VIP
-  acceptance, NDP. **Node duality is legal** (D16 coexistence; BIRD
-  fragments merge per D19). Canonical test shape: kamrui-h1 =
-  single-node k3s + admin role.
+  mesh join, BIRD peering, per-remote-member routed WireGuard interfaces,
+  VIP routes, gateway-zone DNS stub. `admin` = client + D13 consumption +
+  D22 svc/pod zones default-on (e.g. kamrui-h1), with applicable pod and
+  Service prefixes on those member interfaces. `router` = the same routed
+  member datapath + upstream prefix ownership, filtered VIP acceptance,
+  NDP. Routed interfaces reuse mesh identity/address/endpoint/private-key
+  facts, use ephemeral listen ports, and have deterministic,
+  instance-namespaced, collision-checked names ≤15 characters. **Node
+  duality is legal** (D16 coexistence; BIRD fragments merge per D19):
+  exclude the local member from routed interfaces and preserve local
+  Cilium behavior. Canonical test shape: kamrui-h1 = single-node k3s +
+  admin role.
 - **D34 Version policy: last 3 minors, latest + support-window gate.**
   Artifact flake packages the last 3 k8s minors per distro, latest patch
   each; servers upgrade first, agents lag per version-skew policy.
@@ -614,7 +631,26 @@ nor rendered. The mesh group string (default `meta.domain`, per-cluster
 `meshGroup` override) names the trust domain for ClusterMesh and control
 domains (D43); every remote node InternalIP reachable before ClusterMesh
 ready. MTU: transport MTU −50 = tunnel budget (plumbed into the Cilium
-profile as `MTU = transportFacts.mtu - 50`).
+profile as `MTU = transportFacts.mtu - 50`). This single-interface mesh
+remains the node/BGP transport. Fleet-routing hosts additionally render
+one point-to-point WireGuard routed interface per **remote** cluster
+member per fleet instance: one member peer per interface, reusing the
+existing mesh identity, mesh addresses, endpoint facts, and deployed
+private-key path, with an ephemeral listen port. Every remote member needs
+a reachable node_transport endpoint for this additional session; a missing
+endpoint is an eval error, never a silently unreachable routed interface.
+This is required because
+WireGuard selects peers by original destination; duplicate shared-VIP
+AllowedIPs on one interface cannot provide ECMP. Each routed peer's
+AllowedIPs are restricted to that member's eligible shared-pool prefixes
+plus applicable admin pod/Service prefixes, and BIRD resolves the same
+member's recursive next hop through that interface. Names are deterministic,
+instance-namespaced, collision-tested across instances, and ≤15 characters;
+no fixed extra listeners or duplicate global units are allowed. Dual-role
+hosts exclude themselves, local Cilium behavior is unchanged, and cluster
+members keep only their existing mesh interface. Inputs remain public
+inventory/export facts plus the existing deployed key path — no new secret
+material or store-path private keys.
 `transport.mode = cilium-wireguard | unencrypted` survive only
 as untested Cilium helm-values overrides — no contract, no VM coverage.
 Distro HTTP-proxy setting = documented escape only.
@@ -687,7 +723,11 @@ with provider-assigned MACs on Hetzner bare metal) — the pool/BGP
 contract is day-1; the consumers are day-2. BIRD-on-hosts
 (client/admin/router) installs routes into the kernel; cluster nodes do
 not broadly install (no kernel protocol in the cluster BIRD fragment at
-all) — except `admin` role consumption of D13 advertisements (D33).
+all) — except `admin` role consumption of D13 advertisements (D33). On
+WireGuard fleet hosts, the fleet BIRD's dedicated IGP tables resolve each
+member's recursive next hop through that member's D33 routed interface;
+the ordinary mesh keeps only its node/BGP routes, and equal-cost VIP paths
+retain distinct interfaces and peer AllowedIPs.
 Phase-5 rendering: the cluster BIRD fragment (`kube-cluster-<instance>`
 key in `clan.bird.fragments`, router id = node IPv4, build-time
 `bird -p` via the nixpkgs `services.bird` checkConfig hook — D19's
@@ -775,12 +815,20 @@ upstream prefix ownership, filtered VIP acceptance, NDP — the router
 role can define pools for its downstream cluster(s) and advertise
 service VIPs + pod IPs upstream; edge proxies on a router machine (e.g.
 Traefik with the Kubernetes provider) are the operator's nixosModules,
-NOT fleet-routing's concern. Node duality legal (D33). Acceptance:
-client reaches cluster VIPs (routes + DNS stub) on a non-cluster host;
-admin resolves svc/pod zones and routes OTHER clusters' CIDRs; router
-accepts only owned prefixes; cross-inventory prefix assertions;
-MikroTik-style foreign-router runbook; dual-role cluster-member suite
-(kamrui-h1 shape).
+NOT fleet-routing's concern. Node duality legal (D33). Every role renders
+D33's per-remote-member routed WireGuard interfaces with role-appropriate
+AllowedIPs and matching BIRD IGP next hops; no self-interface is rendered.
+Each routed peer accepts its member's mesh host addresses as well as the
+routed prefixes, preventing shared-identity endpoint roaming from breaking
+BGP. Route-only DNS stubs use global systemd-resolved settings and the kernel's
+per-member ECMP routes, never the ordinary mesh link's DNS settings.
+Acceptance: eval proves deterministic ≤15-character names, peer/AllowedIPs
+and route mapping, self-exclusion, and collision safety across multiple
+fleet instances; the hermetic VM proves client VIP ECMP and DNS round trips
+on a non-cluster host, admin svc/pod zones and OTHER clusters' CIDRs,
+router owned-prefix filtering, the MikroTik-style foreign-router runbook,
+and the dual-role cluster-member suite (kamrui-h1 shape) without changing
+the ordinary single-interface host mesh or local Cilium behavior.
 
 ### 6.14 Control domain (D43)
 Per-cluster `controlDomain.role`: **standalone** (default) — shares no

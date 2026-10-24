@@ -23,6 +23,34 @@ the zero-BGP fallback (D11).
     Kubernetes provider — are your own nixosModules, not fleet-routing's
     concern. Fleet-routing owns routes and DNS, never a data-plane proxy.
 
+## Routed WireGuard datapath
+
+The existing single-interface host mesh remains node transport and the BGP
+control path. Routed VIP, pod, and Service traffic uses one additional
+point-to-point WireGuard interface per **remote** cluster member on each
+client/admin/router host. This is necessary because WireGuard's
+destination-based `AllowedIPs` lookup cannot represent two ECMP peers for
+the same VIP on one interface.
+
+Each routed interface has exactly one cluster-member peer and reuses the
+mesh identity, mesh addresses, endpoint facts, and deployed private-key
+path. Its listen port is ephemeral. Every remote member must publish a
+reachable endpoint; a missing endpoint is an evaluation error. `AllowedIPs`
+contain the member's mesh host addresses, the shared pool prefixes it may
+advertise, and applicable admin-consumed pod/Service prefixes. The mesh host
+addresses are required because WireGuard roams a shared peer identity to the
+most recently used UDP source port: routed traffic must not make the remote
+send BGP replies to a socket that rejects their mesh source address. Static
+route metrics still keep ordinary mesh traffic on the ordinary mesh link.
+BIRD's per-member recursive next hops resolve through the matching routed
+interface, so equal-cost VIP routes retain distinct datapaths.
+Route-only DNS stubs use global systemd-resolved settings and the kernel's
+per-member ECMP routes, not the ordinary mesh link's DNS settings.
+Interface names are deterministic, fleet-instance-namespaced,
+collision-checked, and no longer than the kernel's 15-character limit.
+Dual-role hosts exclude themselves; local Cilium behavior stays unchanged,
+and cluster members need no routed interfaces of their own.
+
 ## Node duality
 
 A machine may be a cluster node (of exactly one cluster — D16) **and** hold

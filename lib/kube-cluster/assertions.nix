@@ -15,6 +15,10 @@ in
       roleMembers,
       settings,
       transportFacts ? null,
+      # [ { name, settings } ] — the fully merged per-machine settings of
+      # every cluster member, name = "<role>/<machine>" (for the parity
+      # check across all machines of all roles).
+      roleSettings ? [ ],
     }:
     let
       serverMembers = lib.filter (m: m.role == "server") roleMembers;
@@ -60,6 +64,34 @@ in
       emptyTopology = lib.filter (
         m: (memberTopology m).region or null == "" || (memberTopology m).zone or null == ""
       ) roleMembers;
+
+      # Cross-role parity: the cluster-level option groups must be
+      # identical on every machine of every role, otherwise the bundle,
+      # the per-member exports, and the assertions disagree silently.
+      clusterLevelOf =
+        rs:
+        lib.getAttrs [
+          "cilium"
+          "pools"
+          "bgp"
+          "fabric"
+          "meshGroup"
+          "domain"
+          "distroDefaults"
+          "coredns"
+          "bootstrap"
+        ] rs
+        // {
+          transport = rs.network.transport or null;
+        };
+      roleDrift =
+        if builtins.length roleSettings < 2 then
+          [ ]
+        else
+          let
+            first = clusterLevelOf (builtins.head roleSettings).settings;
+          in
+          lib.filter (r: clusterLevelOf r.settings != first) (lib.drop 1 roleSettings);
     in
     [
       {
@@ -120,6 +152,16 @@ in
         message = "kube-cluster/${instanceName}: topology.region/zone must be non-empty when set (null defaults to the instance name, invariant 7): ${
           lib.concatMapStringsSep ", " (m: m.machineName) emptyTopology
         }";
+      }
+      {
+        # Cluster-level settings are one logical cluster configuration:
+        # they must be identical on every machine of every role
+        # (server/agent), otherwise the bundle, the per-member exports,
+        # and the assertions disagree silently.
+        assertion = roleDrift == [ ];
+        message = "kube-cluster/${instanceName}: cluster-level settings must be identical across all machines — drifted member(s): ${
+          lib.concatStringsSep ", " (map (r: r.name) roleDrift)
+        } (set cilium/pools/bgp/fabric/meshGroup/domain/distroDefaults/coredns/bootstrap/network.transport uniformly on every machine of every role)";
       }
     ];
 
@@ -227,6 +269,18 @@ in
         # BGP. The two knobs are locked together.
         assertion = settings.bgp.enable == (sharedBgpPoolNames != [ ]);
         message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but shared-bgp pools = [${lib.concatStringsSep ", " sharedBgpPoolNames}] (§6.12: BGP only for shared-bgp pools; shared-bgp pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false)";
+      }
+      {
+        # D13: a peer flagged receivePodCIDRs/receiveClusterIPs while the
+        # cluster doesn't advertise them is a no-op lie — reject at eval.
+        assertion =
+          lib.all (
+            p: !(p.receivePodCIDRs or false) || settings.bgp.advertisePodCIDRs
+          ) settings.bgp.upstreamPeers
+          && lib.all (
+            p: !(p.receiveClusterIPs or false) || settings.bgp.advertiseClusterIPs
+          ) settings.bgp.upstreamPeers;
+        message = "kube-cluster/${instanceName}: bgp.upstreamPeers entries with receivePodCIDRs/receiveClusterIPs require the matching cluster opt-in (bgp.advertisePodCIDRs/advertiseClusterIPs, D13)";
       }
       {
         assertion = fabricV4Ok && fabricV6Ok;

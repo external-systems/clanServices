@@ -23,9 +23,9 @@ D43.
 | D6 | REVOKED | Three-layer Gateway ownership / zero-churn contract |
 | D7 | REVOKED | Default NS+EW Gateway pair and `web` listener profile |
 | D8 | REVISED (r13) | Pool model: 2 scopes × 4 delivery modes — pools serve Cilium-handled classes only (`io.cilium/lb-ipam` non-BGP, `io.cilium/bgp-control-plane` for shared-bgp, phase 5); classless Services go to Node IPAM (D41) |
-| D9 | active | BGP topology + foreign-router contract: Cilium dials out to per-node BIRD over a loopback alias (169.254.179.1, phase 5); BIRD exports only approved VIPs; upstream ECMPs across healthy nodes; hashed private ASNs + hold 9/keepalive 3/retry 5 |
+| D9 | active | BGP topology + foreign-router contract: Cilium dials out to per-node BIRD over a loopback alias (169.254.179.1, phase 5); upstream ECMPs across healthy nodes; WireGuard fleet hosts preserve ECMP with per-member routed interfaces |
 | D10 | active | Private fleet routing fabric default-on; public `shared-bgp` opt-in with hard preconditions; one VIP per cluster |
-| D11 | active | Fleet-routing clanService for non-Kubernetes machines (roles per D33) |
+| D11 | active | Fleet-routing clanService for non-Kubernetes machines (roles per D33); per-remote-member routed WireGuard interfaces carry VIP traffic while the host mesh remains node/BGP transport |
 | D12 | active | ClusterMesh apiserver exposure stays node-bound; pattern generalized for the D30 mirror Services |
 | D13 | active | Pod/ClusterIP advertisement to machines: opt-in, default off; `admin` role excepted |
 | D14 | active | Raw L4 (games) = plain LoadBalancer Services, never Gateways — tenant/day-2 objects over the guaranteed LB data plane |
@@ -47,7 +47,7 @@ D43.
 | D30 | active | Hub → spoke API via ClusterMesh mirror Services; mandatory for spokes; mirror DNS name is the kubeconfig `server` (SAN-asserted) |
 | D31 | REVOKED | external-dns as optional Flux component — wholly day-2; no clan-rendered objects remain to annotate |
 | D32 | REVOKED | OLM rejection record — moot under day-2 scope; the reasoning stands if ever re-proposed |
-| D33 | active | Fleet-routing roles: client / admin / router; node duality legal; kamrui-h1 (single-node k3s + admin) is the canonical shape |
+| D33 | active | Fleet-routing roles: client / admin / router; per-member routed WireGuard interfaces preserve ECMP; dual-role self-interfaces excluded; kamrui-h1 is the canonical shape |
 | D34 | active | Version policy: last 3 minors per distro, latest patch, support-window eval warning |
 | D35 | REVISED (r13) | Secrets planes: clan vars = bootstrap plane only — Sealed-Secrets sealing keys LEAVE the vars plane; Sealed Secrets is wholly day-2, keys included |
 | D36 | superseded by D43 | Flux control-domain modes — renamed and de-Fluxed in round 13 |

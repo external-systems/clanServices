@@ -206,6 +206,23 @@
                 type = lib.types.ints.between 1 4294967295;
                 description = "Upstream peer ASN.";
               };
+              receivePodCIDRs = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+                description = ''
+                  Also export the cluster's pod CIDRs to this peer (D13 —
+                  only meaningful with bgp.advertisePodCIDRs; a fleet
+                  admin-role peer pattern, never for real routers).
+                '';
+              };
+              receiveClusterIPs = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+                description = ''
+                  Also export Service ClusterIPs to this peer (D13 — only
+                  meaningful with bgp.advertiseClusterIPs).
+                '';
+              };
             };
           }
         );

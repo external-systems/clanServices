@@ -84,21 +84,35 @@ let
     blocks: len:
     "[ ${lib.concatMapStringsSep ", " (b: "${b}{${toString len},${toString len}}") blocks} ]";
 
+  # Filter with exact-VIP acceptance of `blocks`, plus optional pod-CIDR
+  # (allocated /24 resp. /64) and ClusterIP acceptance branches (D13).
   importFilter =
-    name: blocks': len:
-    if blocks' == [ ] then
-      ''
-        filter ${name} {
-          reject;
-        }
-      ''
-    else
-      ''
-        filter ${name} {
-          if net ~ ${exactSet blocks' len} then accept;
-          else reject;
-        }
-      '';
+    {
+      name,
+      blocks,
+      len,
+      podCidr ? null,
+      svcCidr ? null,
+    }:
+    let
+      vipLine = if blocks == [ ] then null else "  if net ~ ${exactSet blocks len} then accept;";
+      podLine =
+        if podCidr == null then
+          null
+        else
+          "  if net ~ [ ${podCidr}{${if len == 32 then "24,24" else "64,64"}} ] then accept;";
+      svcLine = if svcCidr == null then null else "  if net ~ ${exactSet [ svcCidr ] len} then accept;";
+      lines = lib.filter (l: l != null) [
+        vipLine
+        podLine
+        svcLine
+      ];
+    in
+    ''
+      filter ${name} {
+      ${if lines == [ ] then "  reject;" else lib.concatStringsSep "\n" (lines ++ [ "  else reject;" ])}
+      }
+    '';
 in
 rec {
   # D9: two deterministic private 32-bit ASNs per cluster. Derivation:
@@ -136,6 +150,13 @@ rec {
   # forwarded, never routed, never advertised (BIRD imports only the
   # shared-bgp pool VIPs).
   bgpLinkV4 = "169.254.179.1";
+
+  # A single private 32-bit ASN hashed from a salted name (same scheme as
+  # hashBgpAsns) — used by fleet-routing for the host's fleet-facing ASN.
+  hashAsn = salt: name: asnBase + lib.mod (hash32 "${salt}:${name}") asnSpan;
+
+  # BIRD-safe symbol form of a name (no '-' or '.').
+  inherit birdSym;
 
   # Fabric pool blocks (D10): RFC1918 + ULA derived from the resolved
   # cilium id (overridable). 172.16.<id>.0/24 sits inside 172.16.0.0/12 for
@@ -325,14 +346,23 @@ rec {
 
   # The cluster-node BIRD fragment (D9/D19): the text one cluster
   # contributes to the host's single BIRD via the vendored fragment
-  # renderer. `blocks` = the cluster's shared-bgp pool blocks (the ONLY
-  # prefixes BIRD may ever import from Cilium or export upstream).
+  # renderer. `blocks` = the cluster's shared-bgp pool blocks. acceptPods
+  # / acceptClusterIPs: null or { v4, v6 } CIDRs — when set (the cluster's
+  # bgp.advertisePodCIDRs/advertiseClusterIPs), the Cilium session import
+  # filter also accepts pod CIDRs (allocated /24 + /64) resp. ClusterIPs
+  # (exact /32 + /128). Upstream peers re-export VIPs only, unless the
+  # peer sets receivePodCIDRs/receiveClusterIPs (fleet admin-role peers,
+  # D33) AND the cluster opted in.
   mkBirdFragment =
     {
       instanceName,
       asns,
       blocks,
+      igpInterface,
+      igpGateway,
       upstreamPeers ? [ ],
+      acceptPods ? null,
+      acceptClusterIPs ? null,
     }:
     let
       ns = birdSym instanceName;
@@ -341,49 +371,98 @@ rec {
       upstreams4 = builtins.filter (p: !(lib.hasInfix ":" p.address)) upstreamPeers;
       upstreams6 = builtins.filter (p: lib.hasInfix ":" p.address) upstreamPeers;
 
+      pods4 = if acceptPods != null then acceptPods.v4 else null;
+      pods6 = if acceptPods != null then acceptPods.v6 else null;
+      svc4 = if acceptClusterIPs != null then acceptClusterIPs.v4 else null;
+      svc6 = if acceptClusterIPs != null then acceptClusterIPs.v6 else null;
+
+      # Per-peer export filter: VIPs always; pod/ClusterIPs only when the
+      # peer opted in AND the cluster advertises them (D13 default off).
+      mkOutFilter =
+        i: len: peer:
+        importFilter {
+          name = "${ns}_upstream_${toString i}_out${if len == 32 then "4" else "6"}";
+          blocks = if len == 32 then fam.v4 else fam.v6;
+          inherit len;
+          podCidr = if (peer.receivePodCIDRs or false) then (if len == 32 then pods4 else pods6) else null;
+          svcCidr = if (peer.receiveClusterIPs or false) then (if len == 32 then svc4 else svc6) else null;
+        };
+
+      upstreamFilters = lib.concatStringsSep "\n" (
+        (lib.imap1 (i: p: mkOutFilter i 32 p) upstreams4)
+        ++ (lib.imap1 (i: p: mkOutFilter (i + builtins.length upstreams4) 128 p) upstreams6)
+      );
+
       mkUpstream = i: peer: channel: ''
         protocol bgp ${ns}_upstream_${toString i} {
           local port 4179 as ${toString asns.bird};
           neighbor ${peer.address} as ${toString peer.asn};
+          # /32 mesh hosts are reachable through routes, not interface subnets.
+          multihop 1;
           hold time 9;
           keepalive time 3;
           connect retry time 5;
           ${channel} {
             import none;
-            export filter ${ns}_cilium_in${if channel == "ipv4" then "4" else "6"};
+            export filter ${ns}_upstream_${toString i}_out${if channel == "ipv4" then "4" else "6"};
             next hop self;
           };
         }
       '';
+
+      limExtra =
+        (if acceptPods != null then 1024 else 0) + (if acceptClusterIPs != null then 4096 else 0);
     in
     ''
       # kube-cluster/${instanceName} (D9): Cilium GoBGP dials out to this
       # node-local BIRD over the loopback BGP link (${bgpLinkV4}, an alias on
       # lo); BIRD re-exports approved VIPs to configured upstreams only and
       # installs nothing into the kernel.
-      protocol device {
-        scan time 10;
+      ${importFilter {
+        name = "${ns}_cilium_in4";
+        blocks = fam.v4;
+        len = 32;
+        podCidr = pods4;
+        svcCidr = svc4;
+      }}
+      ${importFilter {
+        name = "${ns}_cilium_in6";
+        blocks = fam.v6;
+        len = 128;
+        podCidr = pods6;
+        svcCidr = svc6;
+      }}
+      ${upstreamFilters}
+      # Dedicated BIRD-only IGP: recursive resolution must not treat the
+      # loopback NEXT_HOP as local, and must not alter the kernel's route.
+      ipv4 table ${ns}_cilium_igp_table;
+      protocol static ${ns}_cilium_igp {
+        ipv4 { table ${ns}_cilium_igp_table; };
+        route ${bgpLinkV4}/32 via ${igpGateway} dev "${igpInterface}" onlink;
       }
-
-      ${importFilter "${ns}_cilium_in4" fam.v4 32}
-      ${importFilter "${ns}_cilium_in6" fam.v6 128}
       protocol bgp ${ns}_cilium {
         local ${bgpLinkV4} port 179 as ${toString asns.bird};
         neighbor ${bgpLinkV4} as ${toString asns.cilium};
         passive on;
         strict bind on;
         free bind on;
+        # BIRD's direct-neighbor gate rejects its own SCOPE_HOST (0) address.
+        multihop 1;
         hold time 9;
         keepalive time 3;
         connect retry time 5;
         ipv4 {
+          igp table ${ns}_cilium_igp_table;
           import filter ${ns}_cilium_in4;
-          import limit ${toString (importLimit fam.v4 cap4)} action block;
+          import limit ${toString ((importLimit fam.v4 cap4) + limExtra)} action block;
           export none;
         };
         ipv6 {
+          igp table ${ns}_cilium_igp_table;
+          # Cilium uses the IPv4 session endpoint as NEXT_HOP on both AFIs.
+          extended next hop;
           import filter ${ns}_cilium_in6;
-          import limit ${toString (importLimit fam.v6 cap6)} action block;
+          import limit ${toString ((importLimit fam.v6 cap6) + limExtra)} action block;
           export none;
         };
       }

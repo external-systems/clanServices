@@ -260,6 +260,56 @@ let
     };
   };
 
+  # Cluster-level settings, identical on every role (cross-role parity is
+  # eval-asserted).
+  clusterSettings = {
+    network.transport = {
+      service = "wireguard-mesh";
+      instance = "mesh";
+    };
+    # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports and the fabric
+    # pool blocks (172.16.1.0/24 + fd11:1::/64) stable.
+    cilium.id = 1;
+    # Test-only (documented): the upstream-facing interface must be a
+    # Cilium device for VIP ingress from the router VM.
+    cilium.helmValues.devices = "wg-mesh eth1";
+    # D9: the node BIRD dials the foreign router (both families).
+    bgp.upstreamPeers = [
+      {
+        address = "192.168.1.3";
+        asn = 65001;
+      }
+      {
+        address = "2001:db8:1::3";
+        asn = 65001;
+      }
+    ];
+    # Declared cluster-global pool (D8). external-class: no delivery
+    # machinery needed for an allocation proof.
+    pools.dataplane = {
+      blocks = [
+        "192.0.2.240/28"
+        "fd20:db8::/120"
+      ];
+      serviceSelector."clan.lol/pool" = "dataplane";
+      delivery = "external-class";
+    };
+    # Floating pool (D8): runtime-controller delivery; the VM documents
+    # the no-controller blackhole window.
+    pools.floaty = {
+      blocks = [
+        "192.0.2.96/28"
+        "fd20:db8:1::/120"
+      ];
+      serviceSelector."clan.lol/pool" = "floaty";
+      delivery = "floating";
+      candidates = [
+        "alpha"
+        "beta"
+      ];
+    };
+  };
+
   probesJson = builtins.toJSON [
     httpbinDaemonSet
     poolService
@@ -326,75 +376,15 @@ in
           module.name = "k3s";
           module.input = "self";
 
+          # Cluster-level settings are role-uniform (eval-asserted): one
+          # shared attrset for server and agent.
           roles.server = {
-            settings = {
-              network.transport = {
-                service = "wireguard-mesh";
-                instance = "mesh";
-              };
-              # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports and
-              # the fabric pool blocks (172.16.1.0/24 + fd11:1::/64) stable.
-              cilium.id = 1;
-              # Test-only (documented): the upstream-facing interface must
-              # be a Cilium device for VIP ingress from the router VM.
-              cilium.helmValues.devices = "wg-mesh eth1";
-              # D9: the node BIRD dials the foreign router (both families).
-              bgp.upstreamPeers = [
-                {
-                  address = "192.168.1.3";
-                  asn = 65001;
-                }
-                {
-                  address = "2001:db8:1::3";
-                  asn = 65001;
-                }
-              ];
-              # Declared cluster-global pool (D8). external-class: no
-              # delivery machinery needed for an allocation proof.
-              pools.dataplane = {
-                blocks = [
-                  "192.0.2.240/28"
-                  "fd20:db8::/120"
-                ];
-                serviceSelector."clan.lol/pool" = "dataplane";
-                delivery = "external-class";
-              };
-              # Floating pool (D8): runtime-controller delivery; the VM
-              # documents the no-controller blackhole window.
-              pools.floaty = {
-                blocks = [
-                  "192.0.2.96/28"
-                  "fd20:db8:1::/120"
-                ];
-                serviceSelector."clan.lol/pool" = "floaty";
-                delivery = "floating";
-                candidates = [
-                  "alpha"
-                  "beta"
-                ];
-              };
-            };
+            settings = clusterSettings;
             machines.alpha.settings.clusterInit = true;
           };
 
           roles.agent = {
-            settings = {
-              network.transport = {
-                service = "wireguard-mesh";
-                instance = "mesh";
-              };
-              cilium.id = 1;
-              bgp.upstreamPeers = [
-                {
-                  address = "192.168.1.3";
-                  asn = 65001;
-                }
-                {
-                  address = "2001:db8:1::3";
-                  asn = 65001;
-                }
-              ];
-            };
+            settings = clusterSettings;
             machines.beta = { };
           };
         };

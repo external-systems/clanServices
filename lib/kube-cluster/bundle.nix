@@ -150,7 +150,19 @@ rec {
     in
     {
       "core"."v1".ConfigMap."cilium-config".data = cmData;
-      "apps"."v1".DaemonSet."cilium".spec.template.spec.containers.cilium.env = kprEnv;
+      # The base manifest names the agent container "cilium-agent" — a
+      # wrong key here would APPEND an imageless phantom container (the
+      # apiserver rejects it: spec.template.spec.containers[0].image is
+      # Required). validateBundle checks the merged result.
+      "apps"."v1".DaemonSet."cilium".spec.template.spec.containers.cilium-agent.env = kprEnv;
+      # The API-talking init containers need the endpoint too (the chart
+      # gives it to both when k8sServiceHost is set; the artifact manifest
+      # is rendered without it so the per-cluster endpoint lands here):
+      # "config" (cilium-dbg build-config resolves the ConfigMap and
+      # CiliumNodeConfigs via the API) and "clean-cilium-state" (agent
+      # cleanup runs with a k8s client).
+      "apps"."v1".DaemonSet."cilium".spec.template.spec.initContainers.config.env = kprEnv;
+      "apps"."v1".DaemonSet."cilium".spec.template.spec.initContainers.clean-cilium-state.env = kprEnv;
       "apps"."v1".Deployment."cilium-operator".spec.template.spec.containers.cilium-operator.env = kprEnv;
       "apps"."v1".Deployment."cilium-operator".spec.replicas = lib.mkForce profile.operator.replicas;
     };
@@ -280,6 +292,41 @@ rec {
         else
           (lib.findFirst (c: c.name == "cilium-operator") null operator.spec.template.spec.containers).env;
 
+      agent = lib.findFirst (o: o.kind == "DaemonSet" && o.metadata.name == "cilium") null objects;
+      agentContainer =
+        if agent == null then
+          throw "kube-cluster/${instanceName}: bundle lost the cilium DaemonSet"
+        else
+          lib.findFirst (c: c.name == "cilium-agent") null agent.spec.template.spec.containers;
+      # The API-talking init containers (build-config resolves the ConfigMap
+      # via the API; clean-cilium-state runs the agent's cleanup client).
+      agentInitEnvs = map (c: map (e: e.name) c.env) (
+        lib.filter (
+          c:
+          lib.elem c.name [
+            "config"
+            "clean-cilium-state"
+          ]
+        ) (agent.spec.template.spec.initContainers or [ ])
+      );
+
+      # Every container in every pod template must carry a non-empty image.
+      # A named-container patch that misses its target key silently APPENDS
+      # an imageless phantom container, and the apiserver rejects the whole
+      # workload (spec.template.spec.containers[i].image is Required).
+      imageless = lib.concatMap (
+        o:
+        let
+          t = o.spec.template.spec or null;
+        in
+        if t == null then
+          [ ]
+        else
+          map (c: "${o.kind}/${o.metadata.name}:${c.name or "?"}") (
+            lib.filter (c: (c.image or "") == "") ((t.containers or [ ]) ++ (t.initContainers or [ ]))
+          )
+      ) objects;
+
       # Images in the rendered bundle must be exactly the committed base
       # manifest's digest-pinned set (artifact invariant — overrides must
       # never retag/repoint images).
@@ -336,6 +383,21 @@ rec {
         {
           ok = (lib.findFirst (e: e.name == "KUBERNETES_SERVICE_HOST") null operatorEnv) != null;
           msg = "cilium-operator lost its KPR endpoint env (KUBERNETES_SERVICE_HOST)";
+        }
+        {
+          ok =
+            agentContainer != null
+            && (lib.findFirst (e: e.name == "KUBERNETES_SERVICE_HOST") null agentContainer.env) != null;
+          msg = "cilium DaemonSet lost its cilium-agent container or its KPR endpoint env (KUBERNETES_SERVICE_HOST)";
+        }
+        {
+          ok =
+            builtins.length agentInitEnvs == 2 && lib.all (lib.elem "KUBERNETES_SERVICE_HOST") agentInitEnvs;
+          msg = "cilium DaemonSet API-talking init containers (config, clean-cilium-state) lost their KPR endpoint env (KUBERNETES_SERVICE_HOST)";
+        }
+        {
+          ok = imageless == [ ];
+          msg = "every pod-template container must carry a non-empty image (imageless: ${lib.concatStringsSep ", " imageless})";
         }
       ];
       bad = lib.filter (c: !c.ok) checks;
@@ -539,6 +601,7 @@ rec {
             spec = {
               priorityClassName = "system-cluster-critical";
               serviceAccountName = "coredns";
+              dnsPolicy = "Default";
               tolerations = [
                 {
                   key = "CriticalAddonsOnly";
@@ -680,6 +743,7 @@ rec {
       svcZone, # bool — D22(a)
       podZone, # bool — D22(b)
       clusterDNS, # forward target for the svc/pod zones
+      memberCount,
     }:
     let
       zone = "${instanceName}.${domain}";
@@ -769,17 +833,30 @@ rec {
                 }
               ];
               nodeSelector."kubernetes.io/os" = "linux";
-              # Spread across nodes: with ETP Local, the VIP is advertised
-              # exactly by the nodes hosting a replica (D9 withdrawal).
-              affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution = [
-                {
-                  weight = 100;
-                  podAffinityTerm = {
-                    labelSelector.matchLabels."k8s-app" = "coredns-private";
-                    topologyKey = "kubernetes.io/hostname";
+              # ETP Local advertises only from replica hosts. Require a
+              # two-node spread where possible; preserve single-node scheduling.
+              affinity.podAntiAffinity =
+                if memberCount > 1 then
+                  {
+                    requiredDuringSchedulingIgnoredDuringExecution = [
+                      {
+                        labelSelector.matchLabels."k8s-app" = "coredns-private";
+                        topologyKey = "kubernetes.io/hostname";
+                      }
+                    ];
+                  }
+                else
+                  {
+                    preferredDuringSchedulingIgnoredDuringExecution = [
+                      {
+                        weight = 100;
+                        podAffinityTerm = {
+                          labelSelector.matchLabels."k8s-app" = "coredns-private";
+                          topologyKey = "kubernetes.io/hostname";
+                        };
+                      }
+                    ];
                   };
-                }
-              ];
               containers.coredns = {
                 inherit image;
                 imagePullPolicy = "IfNotPresent";
@@ -883,9 +960,11 @@ rec {
     };
 
   # The bundle itself. Returns:
-  #   objects    — final object list (labels + config-hash applied)
+  #   objects    — final object list (labels + config-hash applied; the
+  #                clan.lol/config-hash LABEL carries only the first 32 hex
+  #                chars — Kubernetes label values cap at 63 bytes)
   #   json       — builtins.toJSON objects (pure; for determinism tests)
-  #   configHash — sha256 over json
+  #   configHash — full sha256 over json
   #   path       — derivation with the multi-doc YAML (for environment.etc)
   mkBundle =
     {
@@ -990,6 +1069,17 @@ rec {
               ++ [
                 (profilePatches { inherit profile k8sServiceHost k8sServicePort; })
                 {
+                  # The chart omits this object when clustermesh.config is
+                  # disabled, but its singleton Deployment still mounts it.
+                  # Start with no remote users; the ClusterMesh phase merges
+                  # the exported peers into this same object.
+                  "core"."v1".ConfigMap."clustermesh-remote-users" = {
+                    metadata = {
+                      namespace = "kube-system";
+                      labels = manifestLabels;
+                    };
+                    data."users.yaml" = "users:\n";
+                  };
                   ciliumPodIPPools.default = mkPodIPPoolResource {
                     clusterCidr = podIPCidr;
                     inherit manifestLabels;
@@ -1069,6 +1159,11 @@ rec {
         let
           json = builtins.toJSON objects;
           configHash = builtins.hashString "sha256" json;
+          # Kubernetes label values cap at 63 bytes — a full sha256 hex (64
+          # chars) is rejected by the apiserver. A 128-bit prefix is plenty
+          # for drift detection; the bundle's `configHash` output stays
+          # full-length.
+          configHashLabel = builtins.substring 0 32 configHash;
         in
         {
           inherit json configHash;
@@ -1078,7 +1173,7 @@ rec {
             // {
               metadata = o.metadata // {
                 labels = (o.metadata.labels or { }) // {
-                  "clan.lol/config-hash" = configHash;
+                  "clan.lol/config-hash" = configHashLabel;
                 };
               };
             }

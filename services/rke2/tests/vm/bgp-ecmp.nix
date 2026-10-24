@@ -28,6 +28,35 @@ let
   # test_hashBgpAsnsPinnedValues).
   clusterBgpAsn = (kube.bgp.hashBgpAsns instanceName).bird;
 
+  # Cluster-level settings, identical on every role (cross-role parity is
+  # eval-asserted).
+  clusterSettings = {
+    network.transport = {
+      service = "wireguard-mesh";
+      instance = "mesh";
+    };
+    # Pinned id (§6.2): keeps CIDRs and the fabric pool blocks
+    # (172.16.1.0/24 + fd11:1::/64) stable.
+    cilium.id = 1;
+    # Test-only (documented): the upstream-facing interface must be a
+    # Cilium device for VIP ingress from the router VM.
+    cilium.helmValues.devices = "wg-mesh eth1";
+    bgp.upstreamPeers = [
+      {
+        address = "192.168.1.4";
+        asn = 65001;
+      }
+      {
+        address = "2001:db8:1::4";
+        asn = 65001;
+      }
+    ];
+    # D22: the wildcard target stand-in (a day-2 proxy would own this
+    # address); svc zone opt-in proven live.
+    fabric.coredns.wildcardAddress = "172.16.1.200";
+    fabric.coredns.svcZone = true;
+  };
+
   # Foreign-router fixture (D9 contract): accept ONLY the cluster's
   # shared-bgp pool blocks (the fabric pool here) as exact /32+/128, with
   # max-prefix limits; kernel export merges per-node paths into ECMP
@@ -143,33 +172,9 @@ in
           module.input = "self";
 
           # NO declared pools: the private fabric (D10) is the default.
+          # Cluster-level settings are role-uniform (eval-asserted).
           roles.server = {
-            settings = {
-              network.transport = {
-                service = "wireguard-mesh";
-                instance = "mesh";
-              };
-              # Pinned id (§6.2): keeps CIDRs and the fabric pool blocks
-              # (172.16.1.0/24 + fd11:1::/64) stable.
-              cilium.id = 1;
-              # Test-only (documented): the upstream-facing interface must
-              # be a Cilium device for VIP ingress from the router VM.
-              cilium.helmValues.devices = "wg-mesh eth1";
-              bgp.upstreamPeers = [
-                {
-                  address = "192.168.1.4";
-                  asn = 65001;
-                }
-                {
-                  address = "2001:db8:1::4";
-                  asn = 65001;
-                }
-              ];
-              # D22: the wildcard target stand-in (a day-2 proxy would own
-              # this address); svc zone opt-in proven live.
-              fabric.coredns.wildcardAddress = "172.16.1.200";
-              fabric.coredns.svcZone = true;
-            };
+            settings = clusterSettings;
             machines = {
               alpha.settings.clusterInit = true;
               beta = { };
@@ -177,23 +182,7 @@ in
           };
 
           roles.agent = {
-            settings = {
-              network.transport = {
-                service = "wireguard-mesh";
-                instance = "mesh";
-              };
-              cilium.id = 1;
-              bgp.upstreamPeers = [
-                {
-                  address = "192.168.1.4";
-                  asn = 65001;
-                }
-                {
-                  address = "2001:db8:1::4";
-                  asn = 65001;
-                }
-              ];
-            };
+            settings = clusterSettings;
             machines.gamma = { };
           };
         };
