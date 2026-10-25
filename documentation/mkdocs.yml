@@ -60,6 +60,7 @@ nav:
       - Upgrades: guides/upgrades.md
       - Secrets: guides/secrets.md
       - Routed-fabric MVP (implementation prompt): guides/routed-fabric-mvp-prompt.md
+      - Stage-0 probe lessons: guides/stage0-probe-lessons.md
   - Reference:
       - Glossary: reference/glossary.md
       - Testing: reference/testing.md

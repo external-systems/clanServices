@@ -83,7 +83,7 @@ report blockers with evidence.
      must pass before you touch anything)
    - clanServices: `nix fmt .` ;
      `nix build .#checks.x86_64-linux.treefmt` ;
-     `nix flake check --no-build --show-trace` (zero warnings) ;
+     `nix flake check --no-build --show-trace` (zero warnings, but harmless warning are fine) ;
      `nix build .#checks.x86_64-linux.nix-unit -L` (record the count)
 4. Existing clanServices VM suites at baseline (each built individually,
    one at a time, `nix build --no-link .#checks.x86_64-linux.<suite>`):
@@ -132,7 +132,7 @@ report blockers with evidence.
   official overlays (no VXLAN/Geneve); local `::1` FRR peering in BOTH
   address families; Node IPAM at fabric scope; `node-bgp` and
   `shared-bgp` deliveries; kube-proxy off and Cilium
-  `installIptablesRules=false` with nftables.
+  `install-iptables-rules=false` with nftables.
 - WireGuard `AllowedIPs` are the transit/source ACL. An external-transit
   0.0.0.0/0 and ::/0 is allowed ONLY as the WireGuard crypto ACL; it must
   NEVER appear as an installed, accepted, or leaked IP default route —
@@ -149,8 +149,10 @@ short-lived scratch nixosTest, or `nix build` of a scratch config —
 never committed) for:
 
 1. FRR config validation: integrated-config syntax, `frr-reload.py
-   --test` preview semantics, and the fact that enabling a daemon needs
-   a one-time frr restart (reload alone does not start new daemons).
+   --test` preview semantics (including exit status versus non-empty delta),
+   and daemon-set reload behavior. FRR 10.7.1 starts newly enabled daemons
+   during NixOS reload without restarting bgpd; do not reintroduce the older
+   restart requirement.
 2. Dual-AF Cilium -> local FRR at `::1`: BGP session in both families,
    Cilium's loopback next hop accepted and rewritten to the stable
    transport address, and Zebra installing the routes into the kernel
@@ -180,8 +182,9 @@ the native base lands FIRST, in pkgs, committed there:
    manifests/cilium/<chartVersion>.yaml at update time): switch
    routingMode to "native"; remove the tunnel/VXLAN settings entirely;
    keep ipv4/ipv6NativeRoutingCIDR active; add autoDirectNodeRoutes =
-   false and installIptablesRules = false (kube-proxy stays replaced;
-   multi-pool IPAM, dual-stack, BPF masquerade+tproxy, maglev, pmtu,
+   false and extraConfig."install-iptables-rules" = false (the chart has
+   no installIptablesRules value; kube-proxy stays replaced; multi-pool
+   IPAM, dual-stack, BPF masquerade+tproxy, maglev, pmtu,
    clustermesh-apiserver, Gateway/Ingress off all stay).
 2. `git add` the values edit, then re-inflate with the repo's own
    updater: `nix run .#update-manifests` (re-renders every committed
@@ -194,7 +197,7 @@ the native base lands FIRST, in pkgs, committed there:
    cilium-airgap-completeness check will tell you.
 3. pkgs gates: `nix fmt .` ; `nix flake check --show-trace` (lint +
    k8s-version parity + manifest-cilium-freshness [committed ≡ fresh
-   render, byte-identical] + cilium-airgap-completeness). Zero warnings.
+   render, byte-identical] + cilium-airgap-completeness). Zero warnings, unless harmless.
 4. Commit pkgs (message records the native-profile re-inflation). Record
    the commit SHA. Do NOT push on your own initiative: remote pushes were
    not pre-authorized. STOP and ASK THE USER to authorize pushing pkgs;
@@ -260,7 +263,7 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
 - Native routing, multi-pool pod IPAM, no tunnel/overlay,
   `auto-direct-node-routes=false` on BOTH k3s and rke2; Cilium devices
   cover every fabric interface; nftables with Cilium
-  `installIptablesRules=false`; kube-proxy off.
+  `install-iptables-rules=false`; kube-proxy off.
 - Local Cilium -> FRR at `::1` in both address families; next-hop
   rewrite to the stable transport address; FRR/Zebra distributes remote
   pod-pool routes.
@@ -368,7 +371,7 @@ clanServices:
 2. `nix fmt .`; restage anything it rewrote.
 3. `nix build .#checks.x86_64-linux.treefmt`.
 4. `nix flake check --no-build --show-trace` — read the output; zero
-   eval warnings (including zero NEW deprecation warnings).
+   eval warnings (including zero NEW deprecation warnings, harmless warnings are fine).
 5. `nix build .#checks.x86_64-linux.nix-unit -L` — record the count.
 6. Every VM suite, one at a time, sandboxed, log teed to
    .baton-pass/vm-logs/<suite>.log:

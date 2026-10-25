@@ -98,10 +98,12 @@ WireGuard interface. BGP distributes reachability; the kernel and Cilium
 forward the packets.
 
 NixOS reload behavior matters: configuration-only changes reload through
-`frr-reload.py`, while enabling a new daemon requires a one-time
-`systemctl restart frr`. Preview with
-`frr-reload.py --test --confdir /etc/frr /etc/frr/frr.conf`. The NixOS
-module does not open BGP or BFD firewall ports automatically.
+`frr-reload.py`. On FRR 10.7.1, reload also starts newly enabled daemons
+without restarting bgpd (probe-verified); a full `systemctl restart frr` is
+not required for daemon-set changes. Preview with
+`frr-reload.py --test --confdir /etc/frr /etc/frr/frr.conf`; a non-empty
+add/delete delta still exits zero, so convergence checks inspect the output.
+The NixOS module does not open BGP or BFD firewall ports automatically.
 
 ## Native-routed Cilium
 
@@ -185,7 +187,7 @@ settings so packets follow the kernel's ECMP routes.
 ## Firewall posture
 
 The host firewall is **nftables** (D55): kube-proxy is replaced by Cilium
-(kube-proxy off), and Cilium runs with `installIptablesRules=false` as a
+(kube-proxy off), and Cilium runs with `install-iptables-rules=false` as a
 target/probe — no iptables-based host rules from either layer. The API
 listens on transport only. Public ports open only where a Service exposes
 them. WireGuard is restricted to configured underlays; BGP/BFD is

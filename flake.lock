@@ -402,17 +402,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1792748165,
-        "narHash": "sha256-YsNYzTzZj3MSE7bb96YzAjDRlc+XEL2Jey6Q5W/sN7Q=",
+        "lastModified": 1792895226,
+        "narHash": "sha256-+8pQe130iLqOioNY6q88LDcJ2947cicZLIVf5Q7OrQM=",
         "owner": "external-systems",
         "repo": "pkgs",
-        "rev": "feb7946fa83769f839ab5f835d3c84bd93b43fa5",
+        "rev": "41b9486bcef705130d980b96a193733ce93b13f3",
         "type": "github"
       },
       "original": {
         "owner": "external-systems",
         "repo": "pkgs",
-        "rev": "feb7946fa83769f839ab5f835d3c84bd93b43fa5",
+        "rev": "41b9486bcef705130d980b96a193733ce93b13f3",
         "type": "github"
       }
     },

@@ -90,7 +90,8 @@ is a review destination, not a dependency.
   loopback next hop needs reserved-range/martian handling and rewrite;
   FRR-FRR paths can use BFD. WireGuard ECMP requires one peer per
   interface and multiple interfaces, never overlapping peers on one
-  interface. Config reload does not start newly enabled daemons.
+  interface. FRR 10.7.1 reload starts newly enabled daemons without
+  restarting bgpd (probe-verified 2026-10-24).
 - GitOps handoff (D40): Flux prune garbage-collects only the
   Kustomization's own `.status.inventory`; bootstrap with
   `kubectl apply --server-side` avoids CSA→SSA field-ownership friction;

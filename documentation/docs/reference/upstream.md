@@ -39,8 +39,9 @@ The upstream facts behind the spec. Re-check these when versions move.
   to the stable node address. Cilium has no BFD, so local sessions use
   short timers while FRR-FRR paths use BFD.
 - **NixOS FRR module:** one `services.frr.config`; no automatic firewall
-  openings; config-only reloads preserve sessions, but enabling a daemon
-  requires a restart. Preview with `frr-reload.py --test`.
+  openings. FRR 10.7.1 reload starts newly enabled daemons while preserving
+  bgpd (probe-verified). Preview with `frr-reload.py --test`; inspect its
+  add/delete delta because a non-empty delta still exits zero.
 - **WireGuard:** `AllowedIPs` is cryptokey routing, not a substitute for IP
   routing — and it is simultaneously an **inbound source ACL**: after a
   handshake, a peer may only send packets whose source IP lies in that

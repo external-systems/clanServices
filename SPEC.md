@@ -34,7 +34,7 @@ and tested surface (D51); `fleet-routing` was renamed `routed-fabric`;
 assertions (D53); ClusterMesh defaulted to full peering within one fabric
 with explicit symmetric selective peers (D54); AllowedIPs/MTU/source-return
 transport blockers, nftables-only firewall with kube-proxy off and
-`installIptablesRules=false`, fabric-scoped Node IPAM, netif bridge
+`install-iptables-rules=false`, fabric-scoped Node IPAM, netif bridge
 plumbing for KubeVirt attachment, and the dual-AF local Cilium↔FRR
 session were closed contractually (D51/D55). New decisions D51–D55;
 revised: D8, D9, D11, D13, D33, D41, D43, D44, D47, D50. Round 16
@@ -159,7 +159,7 @@ buildable diagrams without becoming a clanServices dependency (D57).
 - Cilium only: one canonical upstream 1.20+ profile — KPR, **native
   routing**, multi-pool pod IPAM with derived non-clashing dual-stack
   CIDRs, BPF masquerade+tproxy, Maglev, pmtu, kube-proxy off,
-  `installIptablesRules=false` (nftables-only, D55).
+  `install-iptables-rules=false` (nftables-only, D55).
   `auto-direct-node-routes` is false: FRR/Zebra owns remote pod-pool
   routes. `ipam.mode: kubernetes` remains an explicit override. Admin
   helm-values overrides pass post-merge invariant validation (§6.4).
@@ -313,11 +313,12 @@ unless noted) — revoked entries keep one-line reasons for history.
   and exports; distro services publish facts and render Cilium resources,
   never a second routing stack or independent FRR text fragments. Zebra
   owns kernel installation. `bgpd` and `bfdd` are enabled from the first
-  implementation so daemon-set changes are not hidden by NixOS reload
-  semantics. Configuration previews use `frr-reload.py --test`; config-only
-  changes reload, while daemon-set changes require a documented `frr`
-  restart. The legacy `clan.bird.fragments` renderer is removed after
-  migration.
+  implementation. Configuration previews use `frr-reload.py --test`; a
+  non-empty add/delete delta still exits zero, so convergence checks inspect
+  the delta rather than only the exit status. The 2026-10-24 FRR 10.7.1
+  probe proved that NixOS reload starts newly enabled daemons while bgpd
+  keeps its PID; a full `frr` restart is not required for daemon-set changes.
+  The legacy `clan.bird.fragments` renderer is removed after migration.
 - **D21 The internal cluster domain is pinned to `cluster.local`.**
   Never changed, eval-asserted. Aliasing via CoreDNS rewrites (D22).
 - **D22 Private-domain routing contract.** Default: client machines
@@ -756,9 +757,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   defaults from the fabric instance; no repeated value required.
 - **D55 Host datapath hygiene: nftables-only firewall + dual-AF local
   Cilium session.** (i) Host firewall is nftables-only; kube-proxy is
-  off; Cilium `installIptablesRules=false`, gated by a preliminary probe
-  and a VM assertion; iptables-nft userspace may exist but must not own
-  rules. Official mycelium/yggdrasil/wireguard overlays are NOT
+  off; Cilium `install-iptables-rules=false`, gated by a preliminary probe
+  and a VM assertion. Cilium 1.20.3 exposes no `installIptablesRules` Helm
+  value; the artifact profile sets the supported
+  `extraConfig."install-iptables-rules" = false` key, and layer 2 preserves
+  it. iptables-nft userspace may exist but must not own rules. Official mycelium/yggdrasil/wireguard overlays are NOT
   dependencies or underlays — peer exports are the integration seam.
   (ii) The local Cilium↔FRR `::1` session carries BOTH address
   families; advertisement selectors and the `CiliumPodIPPool` type are
@@ -876,7 +879,7 @@ unless noted) — revoked entries keep one-line reasons for history.
     automatic cross-cluster pod/Service route policy; separate
     routed-fabric instances are hard trust-domain separation (D54).
 20. Host firewall is nftables-only; kube-proxy is off; Cilium
-    `installIptablesRules=false`; iptables-nft userspace may exist but
+    `install-iptables-rules=false`; iptables-nft userspace may exist but
     must not own rules; VMs assert no iptables-owned rules (D55).
 21. WireGuard MTU derives per link from the underlay minus WireGuard
     overhead with a 1280 floor; VMs assert path MTU (D51).
@@ -1068,7 +1071,7 @@ bundled Cilium disabled. Always: KPR, `routing-mode: native`, no
 VXLAN/Geneve, multi-pool pod IPAM (default; derived non-clashing
 dual-stack CIDRs), `auto-direct-node-routes: false`, BPF
 masquerade+tproxy, Maglev, pmtu, Node IPAM (D41), kube-proxy off,
-`installIptablesRules=false` (D55). Dual-stack
+`install-iptables-rules=false` (D55). Dual-stack
 native-routing CIDRs cover all pod CIDRs in the mesh trust domain
 (default `10.0.0.0/8` + `fd10::/16` for derived space; explicit overrides
 must contain every explicit pod CIDR). Cilium device configuration covers
@@ -1241,7 +1244,7 @@ Cilium devices missing WG links; ETP Cluster on clan-rendered external
 Services; base-manifest drift; IFD smuggling; unsupported k8s minor
 without acknowledgment; application-secret vars; control-domain
 violations; spoke without mirror/SAN; servicelb; distro-manifests-dir
-delivery; kube-proxy enabled or `installIptablesRules=true` in the
+delivery; kube-proxy enabled or `install-iptables-rules=true` in the
 canonical profile. The read-only ClusterRole never contains `secrets`
 or write verbs (D38). Firewall: nftables-only — iptables-nft userspace
 may exist but must not own rules (D55); API on transport only; public
@@ -1481,7 +1484,7 @@ tests together)
 - **5R2 planned — both repos** — (1) in external-systems/pkgs:
   re-inflate and COMMIT the pinned Cilium base manifest with the
   native-routing defaults (routing-mode native, multi-pool, Node IPAM,
-  kube-proxy off, installIptablesRules=false) per D26 layer 1;
+  kube-proxy off, install-iptables-rules=false) per D26 layer 1;
   (2) update the clanServices artifact pin to the new pkgs revision;
   (3) implement local Cilium↔FRR dual-AF `::1` session, multi-pool route
   exchange, native CIDR/device/MTU invariants, no-iptables probe +

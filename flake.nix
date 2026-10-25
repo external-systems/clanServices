@@ -32,7 +32,7 @@
     # base manifest (manifests/cilium/<version>.yaml, D26 layer 1), and the
     # digest-pinned Cilium airgap image tarballs for hermetic VM tests.
     pkgs = {
-      url = "github:external-systems/pkgs/feb7946fa83769f839ab5f835d3c84bd93b43fa5";
+      url = "github:external-systems/pkgs/41b9486bcef705130d980b96a193733ce93b13f3";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         flake-parts.follows = "flake-parts";

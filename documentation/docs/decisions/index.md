@@ -248,7 +248,7 @@ boundary. The underlay, fabric, and ClusterMesh graphs are distinct.
 ### D55 — Datapath hygiene and local Cilium peering
 
 Hosts run an nftables firewall with kube-proxy off and Cilium
-`installIptablesRules=false`, verified by a preliminary probe and VM
+`install-iptables-rules=false`, verified by a preliminary probe and VM
 assertions. The official `mycelium`/`yggdrasil`/`wireguard` meshes are
 alternative overlays, not underlays; standard `peer` exports are the
 integration seam.

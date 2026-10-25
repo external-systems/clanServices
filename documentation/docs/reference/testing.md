@@ -46,7 +46,7 @@ artifacts are mandatory.
   fabric scope, ETP-Local candidates, node-bgp owner-only advertisement
   and withdrawal, shared-bgp dual-stack ECMP and single-path
   withdrawal, floating-pool blackhole window, Cilium
-  `installIptablesRules=false` with nftables, and firewall
+  `install-iptables-rules=false` with nftables, and firewall
   positive/negative exposure. Single-path checks handle Linux `ip -j`
   output instead of assuming a `nexthops` array.
 - **BGP/foreign router:** private fabric, MikroTik-style FRR fixture,
