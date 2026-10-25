@@ -28,10 +28,16 @@ each machine declares one or more logical links under
 - optional `peer` endpoint exports for fabric consumers.
 
 Cross-instance checks keep the host coherent (D53): an interface/link is
-owned by exactly one instance, exactly one instance may provide the host
-default route, and DNS declarations must not conflict. `routed-fabric`
+owned by exactly one instance, exactly one link per address family may
+provide the host default route (DHCP lease defaults count), and DNS
+nameserver sets that overlap while differing between instances are
+rejected (identical or disjoint sets are allowed). `routed-fabric`
 owns fabric policy routing — `netif` never renders fabric rules — and
-`netif` links never become a shared-L2 Kubernetes datapath.
+`netif` links never become a shared-L2 Kubernetes datapath. Within one
+instance, a VLAN child names its parent link, and bonds/bridges name
+physical member links; a physical link consumed as a member carries no
+addressing of its own. Every rendered unit is instance-namespaced
+(`40-netif-<instance>-<link>`).
 
 Static core addresses and routes live in `inventory.nix`. A public fleet
 repo may obtain sensitive public-topology values from its
@@ -46,14 +52,18 @@ is `netif` **bridge plumbing**, not a LoadBalancer pool concern.
 ## Exports and consumers
 
 `netif` publishes standard `peer` facts for endpoint discovery and a
-versioned `netif` view containing interface, subnets, MTU, gateway, and
-route facts. `routed-fabric` consumes the peer hosts as WireGuard endpoints
-and derives link MTUs from them. Consumers use `clanLib` export selectors,
-never raw scope keys. The same resolved link/interface/address/gateway/MTU/
-route configuration is what `netif` will publish to the per-node
-`clan.networkFacts` interface as underlay graph facts (D57, planned) —
-producer-owned, non-secret, and exposed through `readOnly = true` options;
-see [Network diagrams](../architecture/network-diagrams.md).
+versioned (`schemaVersion`) `netif` view with per-link kind, interface,
+addressing, MTU, gateway, DNS, route, and endpoint facts, plus the
+machine's resolved endpoint and the effective underlay MTU.
+`routed-fabric` consumes the peer hosts as WireGuard endpoints
+(the machine endpoint first, then each `endpoint = true` link's static
+addresses) and derives link MTUs from the export. Consumers use
+`clanLib` export selectors, never raw scope keys. The same resolved
+link/interface/address/gateway/MTU/route configuration is what `netif`
+will publish to the per-node `clan.networkFacts` interface as underlay
+graph facts (D57, planned) — producer-owned, non-secret, and exposed
+through `readOnly = true` options; see
+[Network diagrams](../architecture/network-diagrams.md).
 
 ## Inventory example
 
