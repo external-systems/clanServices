@@ -27,9 +27,10 @@ comes from the private library.
   the bootstrap bundle — Service pinned to the derived clusterDNS IP,
   `coredns.rewrites` folded into its Corefile. Under
   `distroDefaults.enable = true` the stock `rke2-coredns` deploys and the
-  bundle skips its own CoreDNS (mode-exclusive); note the stock chart does
-  not import `coredns-custom`, so the day-2 private-zone rewrites (D22
-  amended) on rke2 want the minimal base (or day-2 chart config).
+  bundle skips its own CoreDNS (mode-exclusive); the stock rke2 chart does
+  not import `coredns-custom`, so on the minimal base day-2 custom DNS
+  config uses the clan CoreDNS's built-in import seam (D46 amended), and
+  under distroDefaults it wants day-2 chart config.
 - **PKI sync is non-destructive** (SPEC.md §6.10).
 
 ## What is shared

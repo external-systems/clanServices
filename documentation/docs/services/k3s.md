@@ -24,7 +24,9 @@ semantics are distro-specific here.
   `coredns.rewrites` folded in; under `distroDefaults` the stock distro
   CoreDNS serves cluster.local instead (mode-exclusive) and rewrites keep
   the distro's `coredns-custom` import path (k3s's stock Corefile imports
-  `/etc/coredns/custom/*.override`).
+  `/etc/coredns/custom/*.override`). The clan CoreDNS carries the same
+  `coredns-custom` import convention (D46 amended): day-2 custom config
+  drops in via a GitOps-managed `coredns-custom` ConfigMap.
 
 ## What is shared
 

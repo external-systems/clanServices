@@ -92,6 +92,13 @@ All three are ordinary GitOps-managed installs:
 - **cert-manager** — install from your repo; issue whatever in-cluster
   certificates you need. Clan renders no certificates beyond the bootstrap
   plane.
+- **Custom CoreDNS config** — drop a `coredns-custom` ConfigMap in
+  `kube-system` (the k3s convention): `*.override` keys import into the
+  main `:53` server block, `*.server` keys add whole server blocks, and
+  any other keys (zone files) mount read-only under `/etc/coredns/custom`.
+  The clan-rendered CoreDNS imports it (D46 amended); clan never renders
+  the ConfigMap. This customizes IN-CLUSTER DNS; member-facing naming is
+  still the external-dns path below (D22 deferred).
 - **external-dns** — deploy per cluster against authoritative providers
   only (GoDaddy, Cloudflare, RFC2136). Provider credentials are Secrets in
   your GitOps repo (sealed), never clan vars. Member-facing private naming

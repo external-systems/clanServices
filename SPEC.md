@@ -199,9 +199,12 @@ buildable diagrams without becoming a clanServices dependency (D57).
   outbound cryptokey selection AND inbound source ACL — and BGP filters
   derive from the same route policy; external-transit adjacencies may
   carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route.
-- Access-scoped pod/Service route consumption (D13): `access = "client"`
-  machines receive VIP routes; `access = "admin"` machines additionally
-  receive pod/ClusterIP routes. Member-facing DNS is NOT part of the MVP
+- Access-scoped route consumption (D13): Kubernetes machines always
+  install remote pod-pool blocks and advertised-VIP routes (native-
+  routing requirement, D49); non-Kubernetes `access = "client"` machines
+  receive fabric-pool LoadBalancer-VIP routes only; `access = "admin"`
+  machines additionally receive pod-pool and ClusterIP routes.
+  Member-facing DNS is NOT part of the MVP
   data plane: no CoreDNS zones are served to fabric members; admin
   machines reach pod/Service IPs by address and resolve cluster names
   day-2 via Kubernetes-side automation such as external-dns (D22 amended
@@ -222,7 +225,9 @@ bundle (adopt the identical published set; Kustomization+prune or Argo
 tracking — first reconcile is a no-op by construction, D40), Envoy
 Gateway (incl. the Node IPAM + ETP Local + `loadBalancerClass` recipe),
 cert-manager, external-dns (member-facing cluster DNS lands here per the
-D22 amendment), Sealed Secrets (incl. sealing-key custody),
+D22 amendment), custom in-cluster DNS via the GitOps-managed
+`coredns-custom` ConfigMap (imported by the clan CoreDNS, D46 amended),
+Sealed Secrets (incl. sealing-key custody),
 OpenEBS, KubeVirt, Multus, provider CCMs, hcloud-ip-floater-style
 floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
@@ -312,17 +317,32 @@ unless noted) — revoked entries keep one-line reasons for history.
   + selectorless-Service DNS fan-in. Generalized for the kube-apiserver
   mirror Services (D30).
 - **D13 Pod/ClusterIP consumption is access-scoped.** (REVISED round 14;
-  round 15: roles; round 16: `access` setting.) Cilium always advertises
-  local multi-pool allocations to node-local FRR because native routing
-  requires them. FRR distributes pod routes to all Kubernetes members in
-  the trust domain. Non-Kubernetes `access = "client"` hosts receive VIPs
-  only; `access = "admin"` explicitly consumes pod and ClusterIP routes.
-  No access level receives cluster DNS in the MVP — member name resolution
-  is day-2, delivered by Kubernetes-side automation such as external-dns
-  (D22 amended 2026-10-25). `border` carries NO automatic admin DNS or
-  pod/ClusterIP consumption; access remains an independent least-
-  privilege choice (D56). There is no default direct pod/ClusterIP access
-  for ordinary hosts.
+  round 15: roles; round 16: `access` setting; 2026-10-25: client/admin
+  semantics sharpened.) Cilium always advertises local multi-pool
+  allocations to node-local FRR because native routing requires them.
+  FRR distributes pod routes to all Kubernetes members in the trust
+  domain, and every Kubernetes machine installs remote pod-pool blocks
+  and advertised-VIP routes REGARDLESS of `access` — native routing
+  delegates non-local pod traffic to the kernel FIB (D49), so this is a
+  transport requirement, not a consumption choice; ClusterIP routes are
+  never installed on Kubernetes nodes (kube-proxy replacement handles
+  ClusterIP in eBPF locally). For non-Kubernetes hosts, `access =
+  "client"` receives routes to shared-bgp fabric-pool VIPs only — exact
+  /32+/128 advertisements for `type: LoadBalancer` Services that drew
+  from an explicit pool (pool `serviceSelector` or explicit address
+  projection) — never pod blocks, never ClusterIP CIDRs. `access =
+  "admin"` consumes every explicitly advertised prefix: pod-pool
+  allocation blocks (per-node allocations of every advertised
+  `CiliumPodIPPool`), authorized ClusterIP CIDRs, and the pool VIPs.
+  Pod-advertisement granularity is the pool's per-node allocation
+  block; per-pod selection is not a Cilium BGP feature — bounding pod
+  reachability is done by pool design or a deliberate FRR route-policy
+  exception (D54). No access level receives cluster DNS in the MVP —
+  member name resolution is day-2, delivered by Kubernetes-side
+  automation such as external-dns (D22 amended 2026-10-25). `border`
+  carries NO automatic admin DNS or pod/ClusterIP consumption; access
+  remains an independent least-privilege choice (D56). There is no
+  default direct pod/ClusterIP access for ordinary hosts.
 - **D14 Raw L4 (games).** Plain `type: LoadBalancer` Services, never
   Gateways. Round-13 note: these are tenant/day-2 objects; the contract
   only guarantees the LB data plane they rely on (D41/D8).
@@ -408,9 +428,12 @@ unless noted) — revoked entries keep one-line reasons for history.
   FRR/BFD/Zebra) and, on a Kubernetes machine, automatic native pod-route
   exchange; `hub` adds authorized forwarding and readvertisement between
   adjacencies. Per-machine `access = "member" | "client" | "admin"`
-  defaults to `member`: `client` adds VIP routes only;
-  `admin` adds D13 pod/ClusterIP route consumption (kamrui-h1); the D22
-  zones are day-2, not MVP. Optional `border` adds upstream prefix
+  defaults to `member`: `client` adds fabric-pool LoadBalancer-VIP routes
+  only (D13: Services that drew from an explicit private pool — never
+  pods or ClusterIPs); `admin` adds D13 pod/ClusterIP route consumption
+  (kamrui-h1); Kubernetes nodes install pod/VIP routes regardless of
+  access (native-routing requirement, D49); the D22 zones are day-2, not
+  MVP. Optional `border` adds upstream prefix
   ownership, filtered route exchange, forwarding, optional NDP, and
   authorized external/fabric transit — explicitly NOT automatic admin
   DNS. Topology, access, and border are orthogonal. Members declare their
@@ -641,6 +664,19 @@ unless noted) — revoked entries keep one-line reasons for history.
   uniform minimal base = distro runtime + Cilium + clan CoreDNS. The clan
   CoreDNS serves `cluster.local` in-cluster only; member-facing private
   zones (D22) are day-2, never in the bootstrap bundle.
+  **Custom-config seam (2026-10-25 amendment, k3s convention):** the
+  clan-rendered Corefile MUST support the k3s `coredns-custom` import
+  convention so day-2 GitOps can extend DNS without clan: the main
+  `:53` server block ends with `import /etc/coredns/custom/*.override`;
+  additional server blocks are imported via `import /etc/coredns/custom/
+  *.server` at Corefile top level; the Deployment mounts ConfigMap
+  `coredns-custom` (`kube-system`) read-only at `/etc/coredns/custom`
+  as an OPTIONAL volume — pods must boot cleanly with the ConfigMap
+  absent. Clan NEVER renders `coredns-custom` itself; it is a
+  GitOps-owned day-2 object, exactly as with k3s. Under
+  `distroDefaults`, k3s's stock CoreDNS already follows this
+  convention; rke2's stock chart does not import `coredns-custom`,
+  which is another reason the minimal base renders the clan CoreDNS.
 
 ### Round 14 decisions (2026-10-24) — active
 
@@ -1287,8 +1323,11 @@ default role: `member` = stable loopback addressing, one WG interface
 per declared hub adjacency, FRR/BFD/Zebra, automatic pod routes when
 also a Kubernetes node, and no spoke transit; `hub` adds forwarding and
 readvertisement. Per-machine `access` defaults to `member`; `client`
-adds VIP routes only; `admin` adds D13 pod/Service route consumption;
-member-facing DNS zones are NOT rendered in the MVP (D22 day-2).
+adds fabric-pool LoadBalancer-VIP routes only (never pods or ClusterIPs);
+`admin` adds D13 pod/ClusterIP route consumption; Kubernetes nodes
+install remote pod-pool blocks and advertised VIPs regardless of
+`access` (native-routing requirement, D49). Member-facing DNS zones are
+NOT rendered in the MVP (D22 day-2).
 Optional `border` adds upstream peers, owned-prefix filtering,
 forwarding, optional NDP, and authorized external/fabric transit — NOT
 automatic admin DNS. Members explicitly
@@ -1701,8 +1740,10 @@ such as external-dns).
   (D51/D56). Orthogonal to control-domain hub/spoke (D43), access, and
   border.
 - **Fabric access** — per-machine `member | client | admin` route
-  consumption (member DNS is day-2, D22 amended); independent of
-  member/hub topology and border (D56).
+  consumption (member DNS is day-2, D22 amended): `client` = fabric-pool
+  LoadBalancer-VIP routes only; `admin` = + pod-pool and ClusterIP
+  routes; Kubernetes nodes install pod/VIP routes regardless (D49).
+  Independent of member/hub topology and border (D56).
 - **Border** — optional per-machine external/upstream transit
   configuration, not a topology role, default gateway, NAT device, DHCP
   server, or Kubernetes Gateway API implementation (D56).

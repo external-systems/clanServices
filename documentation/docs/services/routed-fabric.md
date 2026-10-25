@@ -20,9 +20,12 @@ D51–D55; role model revised round 16, D56).
 Two **orthogonal, composable per-machine switches** layer on top:
 
 - **`access = member | client | admin`** (default `member`) — controls
-  route consumption. `client` adds cluster VIP routes; `admin` adds
-  pod/ClusterIP routes; kamrui-h1 remains the canonical dual-shape
-  example. Member-facing DNS is day-2 (external-dns), not an MVP render.
+  route consumption. `client` adds fabric-pool LoadBalancer-VIP routes
+  only (explicit private pools; never pods or ClusterIPs); `admin` adds
+  pod/ClusterIP routes; Kubernetes nodes install pod/VIP routes
+  regardless of access (D49). kamrui-h1 remains the canonical
+  dual-shape example. Member-facing DNS is day-2 (external-dns), not an
+  MVP render.
 - **`border`** (optional) — the machine owns upstream transit: upstream
   peers, owned-prefix filtering, forwarding, optional NDP. A border is
   **not automatically a hub**, gets **no automatic admin DNS**, and a hub
@@ -58,8 +61,9 @@ native routing forwards remote pod traffic through the kernel FIB.
 
 Node-owned `node-bgp` pools advertise only from their owner (and only when
 BGP delivery actually exists). `shared-bgp` pools advertise from every
-healthy eligible node and use ECMP. Ordinary clients receive VIPs only;
-admin access explicitly receives pod and ClusterIP routes. External BGP
+healthy eligible node and use ECMP. Ordinary clients receive
+fabric-pool LoadBalancer VIPs only; admin access explicitly receives pod
+and ClusterIP routes. External BGP
 peers and owned prefixes are declared in a machine's optional `border`
 attrset, not duplicated in cluster settings.
 

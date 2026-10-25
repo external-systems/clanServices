@@ -98,7 +98,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D43 | revised (r15) | GitOps-neutral standalone/hub/spoke control domains |
 | D44 | revised (r14, r15) | VM surface covers native/FRR behavior and the two contracts only |
 | D45 | active | Shared lib is `lib/kube-cluster/` |
-| D46 | active | Uniform clan-rendered CoreDNS |
+| D46 | revised (2026-10-25) | Uniform clan-rendered CoreDNS with the k3s `coredns-custom` import seam (custom ConfigMap is GitOps day-2) |
 | D47 | revised (r15) | One one-peer WireGuard interface per declared adjacency (routed-hub MVP); AllowedIPs derive from route policy |
 | D48 | active (r14) | FRR + Zebra owns routing and kernel FIB |
 | D49 | active (r14) | Native-routed multi-pool Cilium mandatory |
@@ -121,8 +121,10 @@ and `hub` — plus two orthogonal, composable per-machine switches:
 
 - **`access = member | client | admin`** (default `member`) controls what a
   machine may consume. `member` is fabric membership plus automatic native
-  pod routes on Kubernetes nodes; `client` adds cluster VIP routes;
-  `admin` adds pod/ClusterIP routes. Member DNS is day-2 (D22 amended
+  pod routes on Kubernetes nodes; `client` adds fabric-pool
+  LoadBalancer-VIP routes only (never pods or ClusterIPs); `admin` adds
+  pod/ClusterIP routes; Kubernetes nodes install pod/VIP routes
+  regardless of access (D49). Member DNS is day-2 (D22 amended
   2026-10-25), not an MVP render.
 - **`border`** (optional) declares that the machine owns upstream transit:
   upstream BGP peers, owned-prefix filtering, forwarding, optional NDP

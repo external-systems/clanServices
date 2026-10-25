@@ -44,10 +44,11 @@ One term per concept. Mirrors SPEC.md §10.
 - **Fabric role** — one of the two topology roles, `member` or `hub`,
   joined per machine; hub forwards and readvertises between members with
   explicit hub↔hub links.
-- **Fabric access** — the per-machine orthogonal setting `member` (default)
-  /`client`/`admin` controlling route consumption (D56): client adds VIP
-  routes; admin adds pod/ClusterIP routes. Member DNS is day-2 (D22
-  amended).
+- **Fabric access** — the per-machine orthogonal setting `member`
+  (default)/`client`/`admin` controlling route consumption (D56):
+  client adds fabric-pool LoadBalancer-VIP routes only; admin adds
+  pod/ClusterIP routes; Kubernetes nodes install pod/VIP routes
+  regardless (D49). Member DNS is day-2 (D22 amended).
 - **Fabric border** — the optional per-machine orthogonal attrset (D56)
   for upstream transit: upstream BGP peers, owned-prefix filtering,
   forwarding, optional NDP, authorized external/fabric transit; no

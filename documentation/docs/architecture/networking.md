@@ -174,8 +174,8 @@ goals; use DNS failover for the latter.
 Route consumption is the per-machine `access` switch, orthogonal to
 topology (D56) — `access = member` (the default) provides fabric transport
 and automatic native pod routes on Kubernetes nodes. `access = client` adds
-cluster VIP routes only. `access = admin` adds explicit pod/ClusterIP route
-consumption. The optional per-machine `border` switch owns upstream
+fabric-pool LoadBalancer-VIP routes only. `access = admin` adds explicit
+pod/ClusterIP route consumption. The optional per-machine `border` switch owns upstream
 transit — upstream peers, owned-prefix policy, forwarding, and optional
 NDP — and implies neither hub membership nor admin DNS; a hub need not be
 a border and vice versa.

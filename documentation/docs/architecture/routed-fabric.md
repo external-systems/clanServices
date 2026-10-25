@@ -26,11 +26,14 @@ switch, `access` (D56; default `member`):
 
 - **`access = member`** (default) — fabric membership plus automatic
   native pod routes on Kubernetes nodes.
-- **`access = client`** — member plus cluster VIP routes. No pod or
-  ClusterIP routes.
+- **`access = client`** — member plus routes to fabric-pool
+  LoadBalancer VIPs only: exact /32+/128 advertisements for Services of
+  type LoadBalancer that drew from an explicit private BGP pool. No pod
+  or ClusterIP routes, ever.
 - **`access = admin`** — client plus explicit pod/ClusterIP route
-  consumption. The developer/admin profile; DNS for those IPs is day-2
-  (external-dns), not a fabric render.
+  consumption: every advertised pod-pool allocation block and authorized
+  ClusterIP CIDR. The developer/admin profile; DNS for those IPs is
+  day-2 (external-dns), not a fabric render.
 
 Whether a machine speaks to the **outside** is a second orthogonal,
 optional per-machine switch, `border` (D56): upstream BGP peers,
@@ -153,11 +156,17 @@ L2/VRRP-like mechanism, and neither is rendered by routed-fabric (D51).
 
 The per-machine `access` switch governs consumption (D56): `member`
 (default) provides fabric transport and automatic native pod routes on
-Kubernetes nodes. `client` adds VIP routes only. `admin` adds explicit
-pod/ClusterIP route consumption. Ordinary clients never receive pod or
-ClusterIP routes, and `cluster.local` is never served to them. `border`
-changes what a machine may originate and transit — never what it
-automatically gets to consume.
+Kubernetes nodes. `client` adds fabric-pool LoadBalancer-VIP routes only —
+exact /32+/128 advertisements for Services that drew from an explicit
+private pool; never pod blocks, never ClusterIP CIDRs. `admin` adds
+explicit pod/ClusterIP route consumption: every advertised pod-pool
+allocation block plus authorized ClusterIP CIDRs. Kubernetes nodes always
+install remote pod-pool blocks and advertised VIPs regardless of `access`
+— Cilium native routing delegates non-local pod traffic to the kernel FIB
+(D49); ClusterIPs stay eBPF-local to each node and are never routed there.
+Ordinary clients never receive pod or ClusterIP routes, and `cluster.local`
+is never served to them. `border` changes what a machine may originate
+and transit — never what it automatically gets to consume.
 
 Member-facing DNS is NOT part of the MVP (D22 amended 2026-10-25): the
 fabric and the bootstrap bundle render no cluster DNS zones for members.
