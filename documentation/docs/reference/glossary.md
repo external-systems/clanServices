@@ -5,7 +5,8 @@ One term per concept. Mirrors SPEC.md §10.
 - **Bootstrap contract** — distro install/join, PKI, HAProxy kubeapi HA,
   bootstrap bundle, and control-domain substrate.
 - **Data-plane contract** — native Cilium, Node IPAM + pools, FRR/BGP/Zebra,
-  ClusterMesh, per-adjacency WireGuard, CoreDNS zones, and routed-fabric.
+  ClusterMesh, per-adjacency WireGuard, in-cluster CoreDNS (cluster.local),
+  and routed-fabric.
 - **Day-2 GitOps** — everything in-cluster outside those contracts.
 - **Bootstrap bundle** — one kubenix manifest set applied once by SSA on
   the clusterInit node.
@@ -37,16 +38,16 @@ One term per concept. Mirrors SPEC.md §10.
   interface per adjacency, carrying API traffic, native pods, BGP, and BFD.
 - **routed-fabric** — the flat-L3 service owning the fabric: two topology
   roles (member/hub), orthogonal per-machine `access`/`border` settings,
-  explicit hub topology, FRR/BFD/Zebra, and fleet DNS
+  explicit hub topology, FRR/BFD/Zebra, and fleet route
   consumption (renamed from fleet-routing in round 15; role model from
   round 16, D56).
 - **Fabric role** — one of the two topology roles, `member` or `hub`,
   joined per machine; hub forwards and readvertises between members with
   explicit hub↔hub links.
 - **Fabric access** — the per-machine orthogonal setting `member` (default)
-  /`client`/`admin` controlling route/DNS consumption (D56): client adds
-  VIP routes + instance-zone DNS; admin adds pod/ClusterIP routes +
-  svc/pod DNS.
+  /`client`/`admin` controlling route consumption (D56): client adds VIP
+  routes; admin adds pod/ClusterIP routes. Member DNS is day-2 (D22
+  amended).
 - **Fabric border** — the optional per-machine orthogonal attrset (D56)
   for upstream transit: upstream BGP peers, owned-prefix filtering,
   forwarding, optional NDP, authorized external/fabric transit; no
@@ -81,8 +82,9 @@ One term per concept. Mirrors SPEC.md §10.
   it, the documented blackhole window remains.
 - **Private fleet fabric** — default private shared-bgp pool, FRR/BGP/Zebra,
   and CoreDNS/mesh VIPs.
-- **Private-domain zones** — instance, service, and pod zones on private
-  CoreDNS; `cluster.local` never appears on clients.
+- **Private-domain zones** — day-2 member-facing DNS (NOT in the MVP):
+  instance, service, and pod zones published by Kubernetes-side automation
+  such as external-dns; `cluster.local` never appears on clients.
 - **Selective ClusterMesh** — explicit symmetric `mesh.peers` within one
   fabric; non-transitive; full mesh is the default when peers are omitted.
 - **Airgap-ready** — every artifact pinned and local at boot.

@@ -4,7 +4,8 @@
 ordinary NixOS machines (round 15, D51; the round-14 `fleet-routing` name and
 full-mesh topology are superseded; round 16, D56, replaces the four-role
 model). It owns per-adjacency WireGuard,
-FRR/BFD/Zebra routing, access/border route policy, and fleet DNS consumption.
+FRR/BFD/Zebra routing, access/border route policy, and fleet route
+consumption (member-facing DNS is day-2, D22 amended 2026-10-25).
 The BIRD/VXLAN design and the legacy `wireguard-mesh` are superseded; the
 existing `services/fleet-routing/` code is legacy and is not the
 round-15/16 implementation.
@@ -25,10 +26,11 @@ switch, `access` (D56; default `member`):
 
 - **`access = member`** (default) — fabric membership plus automatic
   native pod routes on Kubernetes nodes.
-- **`access = client`** — member plus cluster VIP routes and the
-  `<instance>.<meta.domain>` DNS stub. No pod or ClusterIP routes.
+- **`access = client`** — member plus cluster VIP routes. No pod or
+  ClusterIP routes.
 - **`access = admin`** — client plus explicit pod/ClusterIP route
-  consumption and the svc/pod DNS zones. The developer/admin profile.
+  consumption. The developer/admin profile; DNS for those IPs is day-2
+  (external-dns), not a fabric render.
 
 Whether a machine speaks to the **outside** is a second orthogonal,
 optional per-machine switch, `border` (D56): upstream BGP peers,
@@ -147,22 +149,28 @@ Transparent active-active default gateway for ordinary non-fabric LAN
 clients is **out of MVP**: it requires either client-side routing or an
 L2/VRRP-like mechanism, and neither is rendered by routed-fabric (D51).
 
-## Route consumption and DNS
+## Route consumption (member DNS is day-2)
 
 The per-machine `access` switch governs consumption (D56): `member`
 (default) provides fabric transport and automatic native pod routes on
-Kubernetes nodes. `client` adds VIP routes and the instance-zone DNS stub.
-`admin` adds explicit pod/ClusterIP consumption and the svc/pod zones.
-Ordinary clients never receive pod or ClusterIP routes, and `cluster.local`
-is never served to them. Route-only DNS uses global systemd-resolved
-settings so queries follow the kernel's ECMP routes. `border` changes what
-a machine may originate and transit — never what it automatically gets to
-consume or resolve.
+Kubernetes nodes. `client` adds VIP routes only. `admin` adds explicit
+pod/ClusterIP route consumption. Ordinary clients never receive pod or
+ClusterIP routes, and `cluster.local` is never served to them. `border`
+changes what a machine may originate and transit — never what it
+automatically gets to consume.
 
-The private-domain zones are unchanged from round 14: the instance zone
-`<instance>.<meta.domain>` (wildcard target is the operator's day-2 proxy),
-the service zone `<instance>.svc.<meta.domain>` with answer-name reversal,
-and the pod zone (`pods insecure`, dash-form rewrites, admin default-on).
+Member-facing DNS is NOT part of the MVP (D22 amended 2026-10-25): the
+fabric and the bootstrap bundle render no cluster DNS zones for members.
+Admin machines reach pod and Service IPs over their routes and resolve
+cluster names day-2 through Kubernetes-side automation such as
+external-dns. In-cluster DNS is unchanged — the clan CoreDNS serves
+`cluster.local` inside every cluster (D46).
+
+The private-domain zones remain the day-2 target contract: the instance
+zone `<instance>.<meta.domain>` (wildcard target is the operator's day-2
+proxy), the service zone `<instance>.svc.<meta.domain>` with answer-name
+reversal, and the pod zone (`pods insecure`, dash-form rewrites, admin
+default-on).
 
 ## Relationship to netif and alternatives
 
@@ -236,8 +244,9 @@ detection.
 Hermetic VMs must prove real handshakes, FRR sessions and BFD on both
 sides, RIB-to-FIB installation, hub readvertisement, native pod round
 trips, shared-VIP dual-stack ECMP and withdrawal across two hubs, node-bgp
-owner-only advertisement, client VIP-only isolation, admin
-pod/Service/DNS access, border upstream filtering, hub/border/access
+owner-only advertisement, client VIP-only isolation, admin pod/Service
+route access, no member-facing cluster DNS in the MVP, border upstream
+filtering, hub/border/access
 orthogonality (a border that is not a hub, a hub that is not a border), and
 the kamrui-h1
 dual-shape. All of this is **planned for phases 5R1–5R3** — there is

@@ -169,20 +169,22 @@ require upstream-routed address space and a controlled router. Dynamic
 residential IPv4 BGP and heterogeneous multi-WAN inbound failover are not
 goals; use DNS failover for the latter.
 
-## Route consumption and DNS
+## Route consumption (member DNS is day-2)
 
-Route/DNS consumption is the per-machine `access` switch, orthogonal to
+Route consumption is the per-machine `access` switch, orthogonal to
 topology (D56) — `access = member` (the default) provides fabric transport
 and automatic native pod routes on Kubernetes nodes. `access = client` adds
-cluster VIP routes and the instance-zone DNS stub. `access = admin` adds
-explicit pod/ClusterIP consumption and the svc/pod zones. The optional
-per-machine `border` switch owns upstream transit — upstream peers,
-owned-prefix policy, forwarding, and optional NDP — and implies neither hub
-membership nor admin DNS; a hub need not be a border and vice versa.
+cluster VIP routes only. `access = admin` adds explicit pod/ClusterIP route
+consumption. The optional per-machine `border` switch owns upstream
+transit — upstream peers, owned-prefix policy, forwarding, and optional
+NDP — and implies neither hub membership nor admin DNS; a hub need not be
+a border and vice versa.
 
-Ordinary clients do not receive pod or ClusterIP routes. `cluster.local`
-is never served to them. Route-only DNS uses global systemd-resolved
-settings so packets follow the kernel's ECMP routes.
+Ordinary clients do not receive pod or ClusterIP routes, and
+`cluster.local` is never served to them. No cluster DNS is served to
+fabric members in the MVP (D22 amended 2026-10-25): members get routes
+only and resolve cluster names day-2 via Kubernetes-side automation such
+as external-dns.
 
 ## Firewall posture
 

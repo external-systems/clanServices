@@ -18,6 +18,15 @@ seam for consumer-owned nix-topology diagram wrappers. There is no
 implementation or VM evidence for either change yet; phases 5R1–5R4 remain
 planned.
 
+**Amended 2026-10-25 — member DNS deferred to day-2.** `access` governs
+routes only (`client`: VIP routes; `admin`: + pod/ClusterIP routes); the
+MVP renders no CoreDNS zones for fabric members — admin machines reach pod
+and Service IPs by address and resolve their names day-2 via
+Kubernetes-side automation such as external-dns. In-cluster
+`cluster.local` DNS (D46) is unchanged. D13/D22/D33 wording revised;
+SPEC.md §3.1–§3.3, §5, §6.8, §6.13, §7, §9, §10 updated in the same
+change.
+
 **Round 15 (2026-10-24) — routed-fabric, routed-hub MVP, selective
 ClusterMesh.** Revised D8, D9, D11, D13, D33, D41, D43, D44, D47, D50;
 added D51–D55. The fabric
@@ -65,7 +74,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D19 | revised (r14) | One atomically rendered integrated FRR config per host; no BIRD fragments |
 | D20 | REVOKED | Fleet east-west mTLS path |
 | D21 | active | `cluster.local` pinned and never served to clients |
-| D22 | revised | Private CoreDNS zones; wildcard target is day-2 proxy |
+| D22 | revised (r16, 2026-10-25) | Private member DNS zones deferred to day-2 (external-dns); MVP serves routes only |
 | D23 | active | Upstream kubeadm distro Reserved |
 | D24 | active | CNCF in-cluster posture; host FRR/WireGuard/HAProxy exempt |
 | D25 | active | RKE2 CIS hardening default |
@@ -112,9 +121,9 @@ and `hub` — plus two orthogonal, composable per-machine switches:
 
 - **`access = member | client | admin`** (default `member`) controls what a
   machine may consume. `member` is fabric membership plus automatic native
-  pod routes on Kubernetes nodes; `client` adds cluster VIP routes and the
-  instance-zone DNS stub; `admin` adds pod/ClusterIP routes and the
-  svc/pod DNS zones.
+  pod routes on Kubernetes nodes; `client` adds cluster VIP routes;
+  `admin` adds pod/ClusterIP routes. Member DNS is day-2 (D22 amended
+  2026-10-25), not an MVP render.
 - **`border`** (optional) declares that the machine owns upstream transit:
   upstream BGP peers, owned-prefix filtering, forwarding, optional NDP
   (proxy-NDP), and authorized external/fabric transit. A border gets **no
@@ -210,7 +219,8 @@ mechanism. Upstream active-active requires upstream ECMP.
 The flat-L3 service is renamed `routed-fabric` (the round-14
 `fleet-routing` code is legacy). It has **four canonical roles** and no
 default role: `member` (fabric transport + automatic Kubernetes pod
-routes), `client` (+ VIP routes and instance-zone DNS), `admin` (+
+routes), `client` (+ VIP routes and instance-zone DNS, day-2 per the
+2026-10-25 amendment), `admin` (+
 pod/ClusterIP routes and svc/pod DNS), `router` (+ authorized
 external/upstream transit). `member` is the base; the others are
 specialized. Each spoke declares its hub list on the machine

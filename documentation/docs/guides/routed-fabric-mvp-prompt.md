@@ -105,8 +105,9 @@ report blockers with evidence.
 - The legacy `fleet-routing` service is RENAMED to `routed-fabric`.
   `routed-fabric` has EXACTLY TWO topology roles — `member` and `hub` —
   plus two ORTHOGONAL, composable per-machine switches (D56): `access =
-  member | client | admin` (default `member`) controlling route/DNS
-  consumption, and an optional `border` switch for upstream transit
+  member | client | admin` (default `member`) controlling route
+  consumption (member-facing DNS is day-2, NOT the MVP), and an optional
+  `border` switch for upstream transit
   (upstream peers, owned-prefix filtering, forwarding, optional NDP, NO
   automatic admin DNS). There is NO `router` role, NO default-role model,
   and NO per-machine role exclusivity beyond one topology role per machine
@@ -272,7 +273,7 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
 - Per-distro data-plane VM suites (k3s + rke2) must pass.
 
 ================================================================
-7. Stage 4 — selective mesh, DNS, roles, failure, migration
+7. Stage 4 — selective mesh, roles, failure, migration
 ================================================================
 
 - ClusterMesh: full peering by default within one fabric; explicit
@@ -281,9 +282,11 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
   and install no pod routes — leaf isolation). Separate routed-fabric
   instances = separate trust domains (negative test: no cross-domain
   routes).
-- Role-scoped DNS and route consumption per SPEC (access=client VIP-only,
-  access=admin +svc/pod zones + pod/ClusterIP routes, border upstream
-  policy with no automatic admin DNS).
+- Role-scoped ROUTE consumption per SPEC (access=client VIP-only,
+  access=admin +pod/ClusterIP routes, border upstream policy with no
+  automatic admin DNS). Member-facing DNS is day-2 (external-dns), NOT
+  the MVP: render and assert NO member DNS service; make no DNS
+  assertions for fabric members.
 - Failure suites: hub withdrawal, node-bgp withdrawal, shared-bgp
   single-path withdrawal.
 - Migration: once the routed-fabric replacement suites are green,

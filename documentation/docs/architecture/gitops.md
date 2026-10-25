@@ -9,8 +9,8 @@ the [Day-2 GitOps guide](../guides/day-2-gitops.md).
 ## The bootstrap bundle (D40)
 
 The whole day-1 in-cluster surface is ONE kubenix-rendered manifest set per
-cluster — Cilium, pools, ClusterMesh config, CoreDNS zones, mirror Services,
-RBAC. A systemd oneshot on the `clusterInit` machine applies it once at
+cluster — Cilium, pools, ClusterMesh config, clan CoreDNS (cluster-local),
+mirror Services, RBAC. A systemd oneshot on the `clusterInit` machine applies it once at
 first boot: wait for apiserver health, then
 `kubectl apply --server-side --field-manager=clan-bootstrap`.
 

@@ -2,7 +2,8 @@
 
 `routed-fabric` is the flat-L3 clanService for Kubernetes and ordinary
 NixOS machines: per-adjacency WireGuard, one FRR routing stack per host,
-access/border-based route policy, and fleet DNS consumption. It replaces the legacy
+access/border-based route policy, and fleet route consumption (member DNS
+is day-2, D22 amended). It replaces the legacy
 `wireguard-mesh` transport and the BIRD-based phase-5 design (round 15,
 D51–D55; role model revised round 16, D56).
 
@@ -19,9 +20,9 @@ D51–D55; role model revised round 16, D56).
 Two **orthogonal, composable per-machine switches** layer on top:
 
 - **`access = member | client | admin`** (default `member`) — controls
-  route/DNS consumption. `client` adds cluster VIP routes and the
-  instance-zone DNS stub; `admin` adds pod/ClusterIP routes and the
-  svc/pod DNS zones; kamrui-h1 remains the canonical dual-shape example.
+  route consumption. `client` adds cluster VIP routes; `admin` adds
+  pod/ClusterIP routes; kamrui-h1 remains the canonical dual-shape
+  example. Member-facing DNS is day-2 (external-dns), not an MVP render.
 - **`border`** (optional) — the machine owns upstream transit: upstream
   peers, owned-prefix filtering, forwarding, optional NDP. A border is
   **not automatically a hub**, gets **no automatic admin DNS**, and a hub

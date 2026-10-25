@@ -45,7 +45,7 @@ the two HA hubs. See [Routed fabric](routed-fabric.md).
 
 **The bootstrap bundle (D40).** The entire day-1 in-cluster surface is ONE
 kubenix-rendered manifest set per cluster — Cilium, pools, ClusterMesh
-config, CoreDNS zones, mirror Services, RBAC — applied once by a oneshot on
+config, clan CoreDNS (cluster-local), mirror Services, RBAC — applied once by a oneshot on
 the `clusterInit` machine via
 `kubectl apply --server-side --field-manager=clan-bootstrap`. Nothing is
 written to the distro's watched manifests dir. Day 2, your GitOps adopts the

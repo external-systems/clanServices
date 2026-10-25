@@ -21,9 +21,9 @@ never something clan renders.
   for classless LoadBalancer Services, LB-IPAM pools with BGP v2 and
   per-node FRR/Zebra, a private routed fabric on by default
   (`routed-fabric`, routed-hub MVP), native ClusterMesh with selective
-  peers, one host WireGuard interface per declared adjacency, private
-  CoreDNS zones, and routed fleet access for Kubernetes and ordinary
-  machines.
+  peers, one host WireGuard interface per declared adjacency, in-cluster
+  CoreDNS (cluster.local), and routed fleet access for Kubernetes and
+  ordinary machines.
 
 ## Day 2 is yours
 

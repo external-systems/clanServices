@@ -28,8 +28,8 @@ comes from the private library.
   `coredns.rewrites` folded into its Corefile. Under
   `distroDefaults.enable = true` the stock `rke2-coredns` deploys and the
   bundle skips its own CoreDNS (mode-exclusive); note the stock chart does
-  not import `coredns-custom`, so private-zone rewrites on rke2 want the
-  minimal base (or day-2 chart config).
+  not import `coredns-custom`, so the day-2 private-zone rewrites (D22
+  amended) on rke2 want the minimal base (or day-2 chart config).
 - **PKI sync is non-destructive** (SPEC.md §6.10).
 
 ## What is shared

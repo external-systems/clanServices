@@ -9,7 +9,7 @@ single/join/HA VM suites in the source fork.
 Revised 2026-10-24 (round 16, after `1291c21`): **composable fabric
 roles and dependency-free network diagrams.** `routed-fabric` now has two
 mutually exclusive topology roles, `member` and `hub`; per-machine
-`access = member | client | admin` controls route/DNS consumption, and
+`access = member | client | admin` controls route consumption, and
 optional `border` configuration owns external/upstream transit. These
 three axes are orthogonal: borders need not be hubs, hubs need not be
 borders, and access no longer consumes a topology role (D56). Fabric
@@ -24,6 +24,17 @@ dynamic runtime state is labeled, never invented. New decisions D56–D57;
 revised: D8, D9, D11, D13, D33, D44, D51, D52. Docs-only under A4 — no
 implementation or VM evidence is claimed; the retained baseline stays
 5 green / 7 red VM suites.
+
+Amended 2026-10-25 (round 16, member DNS deferral): **no member-facing
+cluster DNS in the MVP.** `access` governs ROUTES only — `client` adds
+VIP routes, `admin` adds pod/ClusterIP routes; the fabric and the
+bootstrap bundle render NO CoreDNS zones for members (no instance-zone,
+svc, or pod zones, to any access level). Admin machines still reach
+pod/Service IPs over those routes and resolve their names day-2 through
+Kubernetes-side automation such as external-dns. In-cluster DNS is
+unchanged: the clan-rendered CoreDNS still serves `cluster.local` inside
+every cluster (D46). Revised: D13, D22, D33; §3.1–§3.3, §5 invariant
+10, §6.8, §6.13, §7, §8, §9, §10.
 
 Round 15 (2026-10-24, retained): **routed-hub MVP, routed-fabric,
 multi-instance netif, selective ClusterMesh, nftables-only.** The
@@ -102,9 +113,9 @@ across the encrypted fabric — hubs forward and readvertise with
 next-hop-self, members never provide spoke transit — and programs the kernel.
 `routed-fabric` has two topology roles: non-transit `member` and
 forwarding/readvertising `hub`. Per-machine `access` selects member, VIP,
-or admin route/DNS consumption; optional `border` configuration selects
-external/upstream transit. Topology, access, and border are orthogonal
-(D56). HAProxy on every node gives HA kubeapi access and the join URL. The entire day-1 in-cluster surface is ONE
+or admin route consumption (member DNS is day-2, D22 amended); optional
+`border` configuration selects external/upstream transit. Topology, access,
+and border are orthogonal (D56). HAProxy on every node gives HA kubeapi access and the join URL. The entire day-1 in-cluster surface is ONE
 kubenix-rendered bootstrap bundle, applied once via server-side apply on
 the `clusterInit` node (D40) — no Rancher helm-controller, no host-resident
 manifest dirs. Clusters run standalone, or as hub/spoke control domains
@@ -134,8 +145,8 @@ buildable diagrams without becoming a clanServices dependency (D57).
   endpoints rendered from exports; join URL and agent kubeconfigs point at
   it (§6.6).
 - The bootstrap bundle: one kubenix-rendered manifest set per cluster
-  (Cilium, clan CoreDNS (D46), pools, ClusterMesh config, CoreDNS private
-  zones, mirror Services, RBAC), applied once by a oneshot on the
+  (Cilium, clan CoreDNS (D46), pools, ClusterMesh config,
+  mirror Services, RBAC), applied once by a oneshot on the
   `clusterInit` node via
   `kubectl apply --server-side --field-manager=clan-bootstrap`; nothing
   written to the distro's watched manifests dir; `bootstrap.apply = false`
@@ -188,8 +199,13 @@ buildable diagrams without becoming a clanServices dependency (D57).
   outbound cryptokey selection AND inbound source ACL — and BGP filters
   derive from the same route policy; external-transit adjacencies may
   carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route.
-- CoreDNS private zones (D21/D22) + access-scoped pod/Service route
-  consumption (D13): DNS into every cluster for authorized clan hosts.
+- Access-scoped pod/Service route consumption (D13): `access = "client"`
+  machines receive VIP routes; `access = "admin"` machines additionally
+  receive pod/ClusterIP routes. Member-facing DNS is NOT part of the MVP
+  data plane: no CoreDNS zones are served to fabric members; admin
+  machines reach pod/Service IPs by address and resolve cluster names
+  day-2 via Kubernetes-side automation such as external-dns (D22 amended
+  2026-10-25).
 - **netif** (multi-link, multi-instance) for inventory-owned
   links/routes (D50/D53) and **routed-fabric** (`member`/`hub` topology
   roles plus orthogonal `access` and `border`, D56) for the flat L3
@@ -205,7 +221,8 @@ GitOps-controller install (Flux or Argo) and takeover of the Cilium
 bundle (adopt the identical published set; Kustomization+prune or Argo
 tracking — first reconcile is a no-op by construction, D40), Envoy
 Gateway (incl. the Node IPAM + ETP Local + `loadBalancerClass` recipe),
-cert-manager, external-dns, Sealed Secrets (incl. sealing-key custody),
+cert-manager, external-dns (member-facing cluster DNS lands here per the
+D22 amendment), Sealed Secrets (incl. sealing-key custody),
 OpenEBS, KubeVirt, Multus, provider CCMs, hcloud-ip-floater-style
 floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
@@ -285,8 +302,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   roles.) The service (renamed from `fleet-routing`, D52) is one trust
   domain per instance; it owns per-adjacency WireGuard (member↔hub,
   optional hub↔hub), FRR, BFD, Zebra route installation, topology/access/
-  border policy, and fleet DNS consumption for Kubernetes and
-  non-Kubernetes machines. Routed hub/spoke is the only supported MVP
+  border policy, and fleet route consumption for Kubernetes and
+  non-Kubernetes machines (member DNS is day-2, D22 amended). Routed
+  hub/spoke is the only supported MVP
   topology (D51); full mesh is deferred. The legacy `wireguard-mesh`
   service and its ordinary-mesh-plus-auxiliary-routed-interface extension
   are retired after migration. Roles per D33/D56.
@@ -298,8 +316,10 @@ unless noted) — revoked entries keep one-line reasons for history.
   local multi-pool allocations to node-local FRR because native routing
   requires them. FRR distributes pod routes to all Kubernetes members in
   the trust domain. Non-Kubernetes `access = "client"` hosts receive VIPs
-  only; `access = "admin"` explicitly consumes pod and ClusterIP routes
-  and their DNS zones. `border` carries NO automatic admin DNS or
+  only; `access = "admin"` explicitly consumes pod and ClusterIP routes.
+  No access level receives cluster DNS in the MVP — member name resolution
+  is day-2, delivered by Kubernetes-side automation such as external-dns
+  (D22 amended 2026-10-25). `border` carries NO automatic admin DNS or
   pod/ClusterIP consumption; access remains an independent least-
   privilege choice (D56). There is no default direct pod/ClusterIP access
   for ordinary hosts.
@@ -321,16 +341,21 @@ unless noted) — revoked entries keep one-line reasons for history.
   The legacy `clan.bird.fragments` renderer is removed after migration.
 - **D21 The internal cluster domain is pinned to `cluster.local`.**
   Never changed, eval-asserted. Aliasing via CoreDNS rewrites (D22).
-- **D22 Private-domain routing contract.** Default: client machines
-  resolve ONLY the zone `<instance>.<meta.domain>` — a clan-rendered
-  CoreDNS zone on the cluster's private CoreDNS VIP. Round-13 revision:
-  the zone's wildcard target is whatever day-2 proxy the operator
-  installs (previously the private Gateway VIP); the zone and VIP exist
-  regardless. Per-client opt-ins (default-on for `access = "admin"`, D33):
-  (a) service zone `<instance>.svc.<meta.domain>` → rewrites to
+- **D22 Private-domain routing contract.** (REVISED 2026-10-25: all
+  member-facing DNS is deferred to day-2 — the MVP data plane serves NO
+  cluster DNS to fabric members; members receive routes only, D13.)
+  Day-2 target contract: client machines resolve ONLY the zone
+  `<instance>.<meta.domain>`; the zone's wildcard target is whatever day-2
+  proxy the operator installs; the zone and the private CoreDNS VIP exist
+  regardless of the serving mechanism (clan CoreDNS zone or external-dns
+  publication). Per-client opt-ins (default-on for `access = "admin"`,
+  D33): (a) service zone `<instance>.svc.<meta.domain>` → rewrites to
   `<name>.<ns>.svc.cluster.local` with answer-name reversal;
   (b) pod zone (`pods insecure` + dash-form rewrites + D13 pod
-  advertisement). `cluster.local` is NEVER served to clients.
+  advertisement). `cluster.local` is NEVER served to clients. MVP: admin
+  machines reach pod/Service IPs via D13 routes and resolve their names
+  via day-2 automation (e.g. external-dns); nothing in the fabric or the
+  bootstrap bundle renders member DNS zones.
 - **D23 Upstream `kubernetes` distro = first-class target, Reserved.**
   kubeadm-based; same shared-lib interfaces, invariants, and rendering
   pipeline. Spec'd fully; implementation Reserved after rke2/k3s
@@ -383,9 +408,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   FRR/BFD/Zebra) and, on a Kubernetes machine, automatic native pod-route
   exchange; `hub` adds authorized forwarding and readvertisement between
   adjacencies. Per-machine `access = "member" | "client" | "admin"`
-  defaults to `member`: `client` adds VIP routes + instance-zone DNS;
-  `admin` adds D13 pod/ClusterIP consumption + D22 svc/pod zones
-  default-on (kamrui-h1). Optional `border` adds upstream prefix
+  defaults to `member`: `client` adds VIP routes only;
+  `admin` adds D13 pod/ClusterIP route consumption (kamrui-h1); the D22
+  zones are day-2, not MVP. Optional `border` adds upstream prefix
   ownership, filtered route exchange, forwarding, optional NDP, and
   authorized external/fabric transit — explicitly NOT automatic admin
   DNS. Topology, access, and border are orthogonal. Members declare their
@@ -613,7 +638,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   distros and anticipates D23. NOT bundled, ever: etcd (the distro's
   datastore, not an addon), metrics-server (kubectl top/HPA only,
   non-CNCF, day-2), local-storage/snapshot controllers (day-2). The
-  uniform minimal base = distro runtime + Cilium + clan CoreDNS.
+  uniform minimal base = distro runtime + Cilium + clan CoreDNS. The clan
+  CoreDNS serves `cluster.local` in-cluster only; member-facing private
+  zones (D22) are day-2, never in the bootstrap bundle.
 
 ### Round 14 decisions (2026-10-24) — active
 
@@ -847,8 +874,9 @@ unless noted) — revoked entries keep one-line reasons for history.
    instance/trust domain) and one FRR per host (D19/D33/D52); exactly
    one classless-LB implementation per cluster (Node IPAM; servicelb
    never — D42).
-10. `cluster.local` is pinned and never served to clients (D21); private
-    domains resolve through clan-rendered CoreDNS zones (D22).
+10. `cluster.local` is pinned and never served to clients (D21);
+    member-facing private DNS is deferred to day-2 — the MVP serves no
+    cluster DNS to fabric members (D22 amended 2026-10-25).
 11. Kubenix renders every clan manifest; two-layer pipeline, zero IFD in
     clanServices eval (D26); delivery = one bootstrap bundle, SSA, once
     (D40); Rancher helm-controller off by default (D42).
@@ -1186,8 +1214,8 @@ node-fate-bound/floating pools — and `io.cilium/bgp-control-plane` when
 the pool is `node-bgp` or `shared-bgp` (Cilium 1.20 only announces that class) — one
 proxy
 implementation per IP:port, QUIC-passthrough on its own VIP. The
-contract guarantees the substrate (pools, BGP, firewall, DNS zones);
-the proxy is GitOps-owned.
+contract guarantees the substrate (pools, BGP, firewall); the proxy
+is GitOps-owned.
 
 ### 6.9 Secrets / PKI / airgap
 One plane (D35 revised). Clan vars: cluster CAs, join tokens, admin +
@@ -1259,10 +1287,11 @@ default role: `member` = stable loopback addressing, one WG interface
 per declared hub adjacency, FRR/BFD/Zebra, automatic pod routes when
 also a Kubernetes node, and no spoke transit; `hub` adds forwarding and
 readvertisement. Per-machine `access` defaults to `member`; `client`
-adds VIP routes + instance-zone DNS; `admin` adds D13/D22 svc/pod zones
-+ pod/Service route consumption. Optional `border` adds upstream peers,
-owned-prefix filtering, forwarding, optional NDP, and authorized
-external/fabric transit — NOT automatic admin DNS. Members explicitly
+adds VIP routes only; `admin` adds D13 pod/Service route consumption;
+member-facing DNS zones are NOT rendered in the MVP (D22 day-2).
+Optional `border` adds upstream peers, owned-prefix filtering,
+forwarding, optional NDP, and authorized external/fabric transit — NOT
+automatic admin DNS. Members explicitly
 name one or more hub-role machines, two = the HA profile; hubs are
 directly declared and may independently have any access or border
 configuration. Kubernetes managers are not hubs by default. Active-active
@@ -1270,8 +1299,9 @@ hub HA is fabric ECMP — every member links both hubs with eBGP/BFD and
 FRR `maximum-paths` + multipath-relax; no shared gateway VIP, no VRRP.
 Upstream active-active requires upstream ECMP; transparent active-active
 default gateway for ordinary non-fabric LAN clients is outside MVP.
-Node duality uses the same FRR, never a second stack. Route-only DNS
-stubs use global systemd-resolved settings and the kernel's ECMP routes.
+Node duality uses the same FRR, never a second stack. Members get
+routes only — their name resolution is a day-2 concern (external-dns-
+style automation), never a fabric render.
 
 Acceptance: eval proves deterministic names/transfer prefixes,
 adjacency/AllowedIP/filter equivalence, self-exclusion, topology/access/
@@ -1280,9 +1310,11 @@ hub-role machine; HA = 2), and export/facts defaults. Hermetic VMs prove
 real WG handshakes per adjacency, FRR sessions and BFD on both sides,
 RIB-to-FIB installation, hub readvertise with next-hop-self and member
 no-transit, two NAT sites communicating through hubs, Internet ingress
-source/return path, native pod round trips, client VIP ECMP/DNS, admin
-svc/pod/ClusterIP access to local and foreign clusters, client pod-route
-isolation, selective-leaf isolation, node-bgp owner-only and shared-bgp
+source/return path, native pod round trips, client VIP ECMP, admin
+svc/pod/ClusterIP route access to local and foreign clusters, no
+member-facing cluster DNS in the MVP (day-2 external-dns concern),
+client pod-route isolation, selective-leaf isolation, node-bgp
+owner-only and shared-bgp
 ECMP withdrawal, border filtering, border-not-hub without automatic
 admin DNS, composable admin-border, hub active-active + single-hub
 failover, NAT membership, MTU floor/path MTU, no iptables-owned rules,
@@ -1390,9 +1422,10 @@ Suites (the whole contract surface — nothing else is VM-tested):
 - native ClusterMesh matrix (cross-cluster pod routes + kube-api mirror
   Service reachability, D30);
 - **fabric-topology suite** (D33/D56): member/hub, member/client/admin
-  access independent of topology, border filtering, border WITHOUT hub
-  and without automatic admin DNS, composable admin-border, kamrui-h1
-  dual-shape;
+  access independent of topology (route-level only), border filtering,
+  border WITHOUT hub and without automatic admin DNS, composable
+  admin-border, kamrui-h1 dual-shape; member-facing DNS is not asserted
+  (day-2, D22 amended);
 - **network-facts suite** (D57): deep eval, JSON serializability,
   secret-free and versioned schema, facts/export/functional-render parity,
   dynamic-state labeling, and one consumer-owned nix-topology wrapper
@@ -1497,8 +1530,9 @@ tests together)
   one-commit landing.
 - **5R3 planned** — selective ClusterMesh policy (explicit symmetric
   peers, selective-leaf isolation, deliberate routed-only exceptions),
-  topology/access/border DNS and filtering (border-not-hub and composable
-  admin-border), failure/withdrawal/firewall suites, migration: DELETE
+  topology/access/border route consumption and filtering (border-not-hub
+  and composable admin-border; member DNS stays day-2),
+  failure/withdrawal/firewall suites, migration: DELETE
   the legacy BIRD/VXLAN/wireguard-mesh/fleet-routing modules, options,
   and tests OUTRIGHT once replacement coverage is green — no archiving,
   no comment-out (historical design docs may remain); retire
@@ -1566,7 +1600,9 @@ blanket 100-year leaves; blind live CA regeneration; fully declarative
 node/etcd/cluster deletion; in-place rke2↔k3s↔kubernetes conversion;
 locked-HEAD distro constructors (D34); OLM v1 (D32 reasoning retained);
 clan vars ownership of application-plane secrets incl. sealing keys
-(D35); external-dns for inter-cluster DNS (D22 covers private naming).
+(D35); member-facing cluster DNS as a clan-rendered/fabric service
+(D22 deferred — day-2 delivers member DNS via Kubernetes-side automation
+such as external-dns).
 
 ## 10. Glossary
 
@@ -1575,8 +1611,8 @@ clan vars ownership of application-plane secrets incl. sealing keys
   bootstrap bundle, control-domain substrate (§3.1).
 - **Data-plane contract** — the day-1 promise that packets flow
   correctly: native Cilium CNI, Node IPAM + pools, FRR/BGP/Zebra,
-  ClusterMesh, per-adjacency host WireGuard, CoreDNS zones,
-  routed-fabric (§3.2).
+  ClusterMesh, per-adjacency host WireGuard, in-cluster CoreDNS
+  (cluster.local), routed-fabric (§3.2).
 - **Day-2 GitOps** — everything in-cluster that is not the two
   contracts; installed and owned by operator GitOps repos, documented
   here as recipes only (§3.3).
@@ -1664,8 +1700,9 @@ clan vars ownership of application-plane secrets incl. sealing keys
   transit and declare ≥1 reachable hub-role machine, HA profiles use two
   (D51/D56). Orthogonal to control-domain hub/spoke (D43), access, and
   border.
-- **Fabric access** — per-machine `member | client | admin` route/DNS
-  consumption; independent of member/hub topology and border (D56).
+- **Fabric access** — per-machine `member | client | admin` route
+  consumption (member DNS is day-2, D22 amended); independent of
+  member/hub topology and border (D56).
 - **Border** — optional per-machine external/upstream transit
   configuration, not a topology role, default gateway, NAT device, DHCP
   server, or Kubernetes Gateway API implementation (D56).
@@ -1683,10 +1720,11 @@ clan vars ownership of application-plane secrets incl. sealing keys
 - **netif instance** — one site/segment declaration of the netif
   service with shared defaults and per-machine/link overrides; several
   may coexist on one host (D53).
-- **Private-domain zones** — per-cluster DNS zones served by cluster
-  CoreDNS on the private VIP: `<instance>.<domain>` (default) and opt-in
-  `<instance>.svc.<domain>` and pod zone. `cluster.local` never appears
-  on clients.
+- **Private-domain zones** — day-2 member-facing DNS zones (D22
+  amended; NOT served in the MVP): `<instance>.<domain>` (default) and
+  opt-in `<instance>.svc.<domain>` and pod zone, published by
+  Kubernetes-side automation such as external-dns. `cluster.local` never
+  appears on clients.
 - **Managed base** — labeled clan-rendered APIs/resources installed once
   via the bootstrap bundle; tenant resources GitOps-owned.
 - **Airgap-ready** — all artifacts pinned and local at boot.

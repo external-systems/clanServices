@@ -62,10 +62,12 @@ artifacts are mandatory.
   (D56); plus the orthogonal per-machine `access` switch (`member` default,
   `client`, `admin`) and the optional `border` switch — no `router` role,
   no default-role model. Isolation per access level (client pod-route
-  isolation, admin svc/pod/ClusterIP + DNS access, border upstream
+  isolation, admin svc/pod/ClusterIP route access, border upstream
   filtering with no automatic admin DNS), hub/border/access orthogonality
-  (a border that is not a hub, a hub that is not a border), and the
-  kamrui-h1 single-node k3s + hub topology + access=admin dual-shape.
+  (a border that is not a hub, a hub that is not a border), the
+  kamrui-h1 single-node k3s + hub topology + access=admin dual-shape,
+  and NO member-facing DNS assertions — member DNS is day-2 (D22 amended
+  2026-10-25).
 - **Network facts and diagrams (D57):** deep evaluation, JSON
   serializability, versioned/secret-free/read-only schema, parity with
   exports and functional renders, dynamic-state labeling, and one

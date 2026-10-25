@@ -81,7 +81,9 @@ GitOps repo with the pinned chart of your choice, then:
   QUIC-passthrough listener its own VIP.
 
 The wildcard target of the `<instance>.<meta.domain>` private zone (D22) is
-whatever proxy you install here; the zone and its VIP exist regardless.
+whatever proxy you install here. The zone, its VIP, and member DNS itself
+are day-2 (D22 amended 2026-10-25): the MVP serves members routes only, and
+from day 2 you publish member names with external-dns (below).
 
 ## cert-manager, external-dns, Sealed Secrets
 
@@ -92,9 +94,10 @@ All three are ordinary GitOps-managed installs:
   plane.
 - **external-dns** — deploy per cluster against authoritative providers
   only (GoDaddy, Cloudflare, RFC2136). Provider credentials are Secrets in
-  your GitOps repo (sealed), never clan vars. Do not use external-dns for
-  inter-cluster DNS — ClusterMesh plus the D22 private zones cover private
-  naming.
+  your GitOps repo (sealed), never clan vars. Member-facing private naming
+  (D22, deferred from the MVP) is delivered here: external-dns publishes
+  the instance/svc/pod names your fabric members resolve; ClusterMesh
+  covers in-mesh service reachability between clusters.
 - **Sealed Secrets** — install the controller from your repo and own the
   **sealing-key custody yourself** (D35 revised): back up the keypair
   history in your own secret store, retain old keys so existing
