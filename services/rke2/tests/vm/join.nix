@@ -59,7 +59,7 @@
 
           roles.server = {
             settings = {
-              network.transport = {
+              network.fabric = {
                 service = "wireguard-mesh";
                 instance = "mesh";
               };
@@ -71,7 +71,7 @@
 
           roles.agent = {
             settings = {
-              network.transport = {
+              network.fabric = {
                 service = "wireguard-mesh";
                 instance = "mesh";
               };

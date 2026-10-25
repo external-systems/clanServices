@@ -107,7 +107,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D52 | revised (r16) | `routed-fabric` service: two topology roles (member, hub); hub declared by role, not inferred; access and border orthogonal; fabric-scoped Node IPAM |
 | D53 | active (r15) | Multi-instance multi-link `netif`; multiple fabrics segment trust; one fabric membership per host |
 | D54 | active (r15) | ClusterMesh full by default in one fabric; explicit symmetric selective peers; mesh group derived from fabric |
-| D55 | active (r15) | nftables/no-iptables datapath hygiene; dual-AF local Cilium↔FRR session; official overlays are not underlays |
+| D55 | revised (2026-10-25) | nftables host with Cilium KPR rules via iptables-nft; no legacy iptables or kube-proxy rules; dual-AF local Cilium↔FRR session |
 | D56 | active (r16) | Two topology roles member/hub; orthogonal per-machine access (member default) and optional border; ≥1 reachable hub, HA = 2, no arbitrary max; no router role |
 | D57 | active (r16) | Versioned non-secret producer-owned `clan.networkFacts` NixOS interface; nix-topology stays consumer-owned; no clanServices dependency on it |
 
@@ -259,11 +259,11 @@ boundary. The underlay, fabric, and ClusterMesh graphs are distinct.
 
 ### D55 — Datapath hygiene and local Cilium peering
 
-Hosts run an nftables firewall with kube-proxy off and Cilium
-`install-iptables-rules=false`, verified by a preliminary probe and VM
-assertions. The official `mycelium`/`yggdrasil`/`wireguard` meshes are
-alternative overlays, not underlays; standard `peer` exports are the
-integration seam.
+Hosts run an nftables firewall with kube-proxy off. Cilium 1.20.3 requires
+`install-iptables-rules=true` for KPR/BPF masquerade; its required rules use
+the `iptables-nft` backend, with no legacy iptables or kube-proxy rules.
+The official `mycelium`/`yggdrasil`/`wireguard` meshes are alternative
+overlays, not underlays; standard `peer` exports are the integration seam.
 
 One local Cilium↔FRR `::1` session carries both address families.
 Advertisement selectors and `CiliumPodIPPool` are pinned; extended-next-hop

@@ -24,14 +24,14 @@ let
 
   instanceName = "k3s";
 
-  # The cluster's BIRD-side ASN (D9 derivation — pinned by
-  # test_hashBgpAsnsPinnedValues).
+  # The cluster's host-side ASN (D9 derivation — the legacy
+  # `.bird` alias is pinned by test_hashBgpAsnsPinnedValues).
   clusterBgpAsn = (kube.bgp.hashBgpAsns instanceName).bird;
 
   # Cluster-level settings, identical on every role (cross-role parity is
   # eval-asserted).
   clusterSettings = {
-    network.transport = {
+    network.fabric = {
       service = "wireguard-mesh";
       instance = "mesh";
     };
@@ -41,16 +41,6 @@ let
     # Test-only (documented): the upstream-facing interface must be a
     # Cilium device for VIP ingress from the router VM.
     cilium.helmValues.devices = "wg-mesh eth1";
-    bgp.upstreamPeers = [
-      {
-        address = "192.168.1.4";
-        asn = 65001;
-      }
-      {
-        address = "2001:db8:1::4";
-        asn = 65001;
-      }
-    ];
     # D22: the wildcard target stand-in (a day-2 proxy would own this
     # address); svc zone opt-in proven live.
     fabric.coredns.wildcardAddress = "172.16.1.200";

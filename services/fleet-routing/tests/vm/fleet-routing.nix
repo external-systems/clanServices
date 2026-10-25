@@ -22,41 +22,13 @@
 { self, inputs }:
 { lib, ... }:
 let
-  kube = import ../../../../lib/kube-cluster { inherit lib; };
-
-  instanceName = "k3s";
-
-  # The fleet-routing instance's ASN (deterministic hash — the cluster's
-  # bgp.upstreamPeers entries must carry it; read from the
-  # fleet_routing.asn export in real life).
-  fleetAsn = kube.bgp.hashAsn "fleet-routing-bird" "fleet";
-
-  fleetPeer = addr4: addr6: extra: [
-    (
-      {
-        address = addr4;
-        asn = fleetAsn;
-      }
-      // extra
-    )
-    (
-      {
-        address = addr6;
-        asn = fleetAsn;
-      }
-      // extra
-    )
-  ];
-
-  fleetUpstreamPeers =
-    fleetPeer "192.168.77.10" "fd00:77::10" { }
-    ++ fleetPeer "192.168.77.11" "fd00:77::11" { receivePodCIDRs = true; }
-    ++ fleetPeer "192.168.77.12" "fd00:77::12" { };
-
   # Cluster-level settings, identical on every machine (cross-role parity
   # is eval-asserted per machine).
   clusterSettings = {
-    network.transport = {
+    # The legacy fleet-routing VM inventory exercises the node_transport
+    # compatibility view of the fabric reference (routed-fabric itself
+    # lands on its own branch).
+    network.fabric = {
       service = "wireguard-mesh";
       instance = "mesh";
     };
@@ -71,9 +43,10 @@ let
       podZone = true;
     };
     bgp = {
-      # D13 opt-in: pod CIDRs are advertised (consumed by admin only).
-      advertisePodCIDRs = true;
-      upstreamPeers = fleetUpstreamPeers;
+      # Pod-pool advertisements are unconditional in the new contract
+      # (D49 native routing); ClusterIPs stay opted in here so the admin
+      # role's svc consumption remains VM-proven.
+      advertiseClusterIPs = true;
     };
   };
 
@@ -177,17 +150,19 @@ in
         fleet = {
           module.name = "fleet-routing";
           module.input = "self";
-          roles.client.machines.client.settings = fleetRoleSettings;
-          # admin VM plus the dual-role cluster member (D33).
-          roles.admin.machines = {
-            admin.settings = fleetRoleSettings;
-            beta.settings = fleetRoleSettings;
-          };
-          roles.router.machines.router.settings = fleetRoleSettings // {
-            prefixes = [
-              "172.16.0.0/12"
-              "fd11::/16"
-            ];
+          roles = {
+            client.machines.client.settings = fleetRoleSettings;
+            # admin VM plus the dual-role cluster member (D33).
+            admin.machines = {
+              admin.settings = fleetRoleSettings;
+              beta.settings = fleetRoleSettings;
+            };
+            router.machines.router.settings = fleetRoleSettings // {
+              prefixes = [
+                "172.16.0.0/12"
+                "fd11::/16"
+              ];
+            };
           };
         };
       };

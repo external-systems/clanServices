@@ -69,31 +69,6 @@ let
     };
   };
 
-  fleetPeer = addr4: addr6: extra: [
-    (
-      {
-        address = addr4;
-        asn = fleetAsn;
-      }
-      // extra
-    )
-    (
-      {
-        address = addr6;
-        asn = fleetAsn;
-      }
-      // extra
-    )
-  ];
-
-  fleetUpstreamPeers =
-    fleetPeer "192.168.77.10" "fd00:77::10" { }
-    ++ fleetPeer "192.168.77.11" "fd00:77::11" {
-      receivePodCIDRs = true;
-      receiveClusterIPs = true;
-    }
-    ++ fleetPeer "192.168.77.12" "fd00:77::12" { };
-
   fleetRoleSettings = {
     mesh = {
       service = "wireguard-mesh";
@@ -110,7 +85,10 @@ let
   # Cluster-level k3s settings — identical on every machine (cross-role
   # parity is eval-asserted per machine).
   clusterSettings = {
-    network.transport = {
+    # The legacy fleet-routing tests exercise the node_transport
+    # compatibility view of the fabric reference (routed-fabric itself is
+    # a separate in-progress branch).
+    network.fabric = {
       service = "wireguard-mesh";
       instance = "mesh";
     };
@@ -121,9 +99,9 @@ let
       podZone = true;
     };
     bgp = {
-      advertisePodCIDRs = true;
+      # advertiseClusterIPs stays a D13 opt-in; pod-pool advertisements
+      # are unconditional in the new contract (D49).
       advertiseClusterIPs = true;
-      upstreamPeers = fleetUpstreamPeers;
     };
   };
 
@@ -149,13 +127,15 @@ let
       fleet = {
         module.name = "fleet-routing";
         module.input = "self";
-        roles.client.machines.client.settings = fleetRoleSettings;
-        roles.admin.machines.admin.settings = fleetRoleSettings;
-        roles.router.machines.router.settings = fleetRoleSettings // {
-          prefixes = [
-            "172.16.0.0/12"
-            "fd11::/16"
-          ];
+        roles = {
+          client.machines.client.settings = fleetRoleSettings;
+          admin.machines.admin.settings = fleetRoleSettings;
+          router.machines.router.settings = fleetRoleSettings // {
+            prefixes = [
+              "172.16.0.0/12"
+              "fd11::/16"
+            ];
+          };
         };
       };
     };
@@ -298,7 +278,7 @@ in
       listensOnOwnMesh = lib.hasInfix "local 192.168.77.10 port 179 as ${toString fleetAsn};" clientFragment;
       passiveStrict = lib.hasInfix "passive on;\n  strict bind on;" clientFragment;
       timers = lib.hasInfix "hold time 9;\n  keepalive time 3;\n  connect retry time 5;" clientFragment;
-      peerAsn = lib.hasInfix "neighbor 192.168.77.1 as ${toString (kube.bgp.hashBgpAsns "k3s").bird};" clientFragment;
+      peerAsn = lib.hasInfix "neighbor 192.168.77.1 as ${toString (kube.bgp.hashBgpAsns "k3s").host};" clientFragment;
       # D13 stays off for client even though the cluster opted in
       noPods = !(lib.hasInfix "10.1.0.0/16" clientFragment);
       gatewayIPv6 = lib.hasInfix "fr_fleet_k3s_k3s_alpha6\" then { onlink = false; accept; }" clientFragment;
@@ -356,7 +336,7 @@ in
             allowedIPs = peer.AllowedIPs;
             mainAllowedIPs = mainPeer.AllowedIPs;
             addresses = network.address;
-            routes = network.routes;
+            inherit (network) routes;
             matchName = network.matchConfig.Name;
             route4 = lib.hasInfix "route 192.168.77.${if member == "alpha" then "1" else "2"}/32 via 192.168.77.${if member == "alpha" then "1" else "2"} dev \"${name}\" onlink;" clientFragment;
             route6 = lib.hasInfix "route fd00:77::${if member == "alpha" then "1" else "2"}/128 via fd00:77::${if member == "alpha" then "1" else "2"} dev \"${name}\" onlink;" clientFragment;
@@ -546,7 +526,7 @@ in
   test_fleetCheckPassesWithRouter = {
     expr =
       (kube.mkFleetChecks clanLib evaled.config.exports)
-      .kube-cluster-shared-bgp-router-prefixes.assertion;
+      .kube-cluster-shared-bgp-border-prefixes.assertion;
     expected = true;
   };
 
@@ -561,17 +541,19 @@ in
   test_dualRoleMerges = {
     expr = {
       evals = builtins.deepSeq dualRoleEvaled.config.checks true;
-      bothFragments =
-        betaDual.clan.bird.fragments ? kube-cluster-k3s
-        && betaDual.clan.bird.fragments ? fleet-routing-fleet;
+      # D19 revised: the distro services render NO cluster BIRD fragment —
+      # only the legacy fleet-routing fragment remains (until 5R3 deletes
+      # this service outright).
+      clusterFragmentAbsent = !(betaDual.clan.bird.fragments ? kube-cluster-k3s);
+      fleetFragmentPresent = betaDual.clan.bird.fragments ? fleet-routing-fleet;
       oneBird = betaDual.services.bird.enable;
       # both services set the router id to the same mesh IPv4 — merges.
       routerId = betaDual.clan.bird.routerId;
-      # assembled config carries both fragments and ONE device protocol
+      # assembled config carries the fleet fragment and ONE device protocol
       assembledDeviceCount = countInfix "protocol device" betaDual.services.bird.config;
-      assembledBoth =
-        lib.hasInfix "# ---- fragment kube-cluster-k3s ----" betaDual.services.bird.config
-        && lib.hasInfix "# ---- fragment fleet-routing-fleet ----" betaDual.services.bird.config;
+      assembledFleetOnly =
+        lib.hasInfix "# ---- fragment fleet-routing-fleet ----" betaDual.services.bird.config
+        && !(lib.hasInfix "# ---- fragment kube-cluster-k3s ----" betaDual.services.bird.config);
       routedKeys = builtins.attrNames (
         lib.filterAttrs (
           name: _: lib.hasPrefix "40-fleet-routing-fleet-" name
@@ -592,11 +574,12 @@ in
     };
     expected = {
       evals = true;
-      bothFragments = true;
+      clusterFragmentAbsent = true;
+      fleetFragmentPresent = true;
       oneBird = true;
       routerId = "192.168.77.2";
       assembledDeviceCount = 1;
-      assembledBoth = true;
+      assembledFleetOnly = true;
       routedKeys = [
         (routedNetdev "fleet" (routedInterfaceName "fleet" "k3s" "k3s" "alpha"))
       ];

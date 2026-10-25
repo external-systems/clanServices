@@ -44,7 +44,7 @@ interface owned by more than one instance, more than one default route
 per address family (DHCP lease defaults count), and DNS nameserver sets
 that overlap while differing between instances (identical or disjoint
 sets are allowed). Every rendered unit is instance-namespaced
-(`40-netif-<instance>-<link>`).
+(`10-netif-<instance>-<link>`).
 
 ## Exports
 

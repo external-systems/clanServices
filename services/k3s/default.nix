@@ -7,23 +7,59 @@
 let
   kube = import ../../lib/kube-cluster { inherit lib; };
 
-  transportFactsFor =
+  # Resolve the per-machine export from the configured fabric instance.
+  # routed_fabric is the authoritative view (stable host addresses +
+  # per-adjacency interfaces/MTU); node_transport of the same instance is
+  # a compatibility view. Returns the whole export scope value, or null.
+  fabricExportFor =
     {
       exports,
-      transport,
+      fabric,
       machineName,
     }:
     let
       matches = lib.attrValues (
         clanLib.selectExports (
           scope:
-          scope.serviceName == transport.service
-          && scope.instanceName == transport.instance
+          scope.serviceName == fabric.service
+          && scope.instanceName == fabric.instance
           && scope.machineName == machineName
         ) exports
       );
     in
-    if matches == [ ] then null else (builtins.head matches).node_transport;
+    if matches == [ ] then null else builtins.head matches;
+
+  # Reduce a machine's fabric export to the kube-cluster consumption shape:
+  # addresses + endpoint/port + EVERY adjacency interface + the smallest
+  # adjacency MTU (D49/D51). Manual-address clusters return null.
+  memberFabric =
+    exportValue:
+    if exportValue == null then
+      null
+    else
+      let
+        rf = exportValue.routed_fabric or null;
+        nt = exportValue.node_transport or null;
+        view = if rf != null then rf else nt;
+        adjacencies = if rf != null then lib.attrValues (rf.adjacencies or { }) else [ ];
+        adjacencyIfaces = lib.filter (x: x != "") (map (a: a.interface or a.name or "") adjacencies);
+        adjacencyMtus = lib.filter (x: x > 0) (map (a: a.mtu or 0) adjacencies);
+        compatIface = view.interface or null;
+        interfaces =
+          if adjacencyIfaces != [ ] then
+            adjacencyIfaces
+          else
+            lib.optionals (compatIface != null) [ compatIface ];
+        mtu = if adjacencyMtus != [ ] then lib.foldl' lib.min 65535 adjacencyMtus else view.mtu or null;
+      in
+      {
+        inherit interfaces mtu;
+        ipv4 = view.ipv4 or null;
+        ipv6 = view.ipv6 or null;
+        endpoint = view.endpoint or null;
+        port = view.port or null;
+        asn = view.asn or null;
+      };
 
   # Artifact-flake Cilium facts (chart version -> committed manifest path;
   # image set -> airgap tarball packages). Pure: committed source files.
@@ -83,24 +119,27 @@ let
       members = map (m: m.machineName) roleMembers;
       serverMembers = lib.filter (m: m.role == "server") roleMembers;
 
-      transportEnabled = settings.network.transport != null;
-      allTransportFacts = lib.genAttrs members (
+      fabricEnabled = settings.network.fabric != null;
+      allFabricExports = lib.genAttrs members (
         name:
-        if transportEnabled then
-          transportFactsFor {
+        if fabricEnabled then
+          fabricExportFor {
             inherit exports;
-            transport = settings.network.transport;
+            fabric = settings.network.fabric;
             machineName = name;
           }
         else
           null
       );
 
+      # Per-machine resolved fabric facts (null = manual-address member).
+      allFabricFacts = lib.mapAttrs (_: memberFabric) allFabricExports;
+
       memberAddr =
         name:
-        if allTransportFacts.${name} != null then
+        if allFabricFacts.${name} != null then
           {
-            inherit (allTransportFacts.${name}) ipv4 ipv6;
+            inherit (allFabricFacts.${name}) ipv4 ipv6;
           }
         else
           {
@@ -129,27 +168,33 @@ let
       };
 
       domain = if settings.domain != null then settings.domain else meta.domain;
-      meshGroup = if settings.meshGroup != null then settings.meshGroup else domain;
+      # D54: the mesh group defaults from the fabric instance; explicit
+      # meshGroup wins; manual clusters fall back to the domain.
+      meshGroup =
+        if settings.meshGroup != null then
+          settings.meshGroup
+        else if fabricEnabled then
+          settings.network.fabric.instance
+        else
+          domain;
 
-      # --- Phase-5 data plane (D9/D10/D19/D22): BGP v2 resources, the
-      # fabric pool, the BIRD fragment, and the private CoreDNS — one
+      # --- Data plane (D9/D10/D19/D49/D55): the Cilium-side BGP v2
+      # resources, the fabric pool, and the private CoreDNS — one
       # resolution seam shared by the bundle, assertions, and the export.
+      # The host FRR is owned by routed-fabric (D19); the distro service
+      # renders NO routing stack.
       dp = kube.resolveDataPlane {
         inherit
           instanceName
           settings
           domain
           ;
-        igpInterface =
-          let
-            facts = allTransportFacts.${machine.name};
-          in
-          if facts != null then facts.interface else "eth0";
-        igpGateway = (memberAddr machine.name).ipv4;
         ciliumId = resolvedCiliumId;
         inherit (resolvedCidrs) clusterDNS;
-        cidrFacts = resolvedCidrs;
         members = poolMembers;
+        hostAsns = lib.filterAttrs (_: asn: asn != null) (
+          lib.mapAttrs (_: facts: if facts == null then null else facts.asn) allFabricFacts
+        );
       };
 
       resolvedPools = kube.render.resolvePools {
@@ -172,7 +217,7 @@ let
           m:
           let
             addr = memberAddr m.machineName;
-            facts = allTransportFacts.${m.machineName};
+            facts = allFabricFacts.${m.machineName};
           in
           {
             name = m.machineName;
@@ -182,10 +227,11 @@ let
               topology = topologyOf m;
             }
             // lib.optionalAttrs (facts != null) {
+              interface = if facts.interfaces != [ ] then builtins.head facts.interfaces else null;
               inherit (facts)
-                endpoint
-                interface
+                interfaces
                 mtu
+                endpoint
                 port
                 ;
             };
@@ -197,6 +243,7 @@ let
         name: p:
         {
           inherit (p) blocks serviceSelector;
+          owner = p.owner or null;
         }
         // (
           if dp.effectivePools ? ${name} then
@@ -215,7 +262,7 @@ let
     {
       exports = mkExports {
         kube_cluster = {
-          schemaVersion = 2;
+          schemaVersion = 3;
           name = instanceName;
           ciliumId = resolvedCiliumId;
           network = {
@@ -226,24 +273,33 @@ let
               serviceCIDRv6
               clusterDNS
               ;
+            fabric =
+              if fabricEnabled then
+                {
+                  inherit (settings.network.fabric) service instance;
+                }
+              else
+                {
+                  service = null;
+                  instance = null;
+                };
           };
           inherit meshGroup;
+          # D54: null = full peering within the fabric instance.
+          mesh.peers = settings.meshPeers;
           # D43 placeholder: the real controlDomain option lands in
           # phase 6; the export field is structured now.
           controlDomain.role = "standalone";
-          transport =
-            if transportEnabled then
-              {
-                inherit (settings.network.transport) service instance;
-              }
-            else
-              {
-                service = null;
-                instance = null;
-              };
           members = memberExportFacts;
           pools = poolExportFacts;
-          inherit (dp.exportFacts) bgp fabric;
+          bgp = dp.exportFacts.bgp // {
+            hostAsn =
+              if allFabricFacts.${machine.name} != null && allFabricFacts.${machine.name}.asn != null then
+                allFabricFacts.${machine.name}.asn
+              else
+                dp.exportFacts.bgp.hostAsn;
+          };
+          inherit (dp.exportFacts) fabric;
         };
       };
 
@@ -262,9 +318,12 @@ let
           nodeIPv4 = ownAddr.ipv4;
           nodeIPv6 = ownAddr.ipv6;
 
-          ownTransport = allTransportFacts.${machine.name};
-          transportInterface = if ownTransport != null then ownTransport.interface else null;
-          transportMtu = if ownTransport != null then ownTransport.mtu else null;
+          ownFabric = allFabricFacts.${machine.name};
+          # Every fabric adjacency interface of this machine (D49/D51) and
+          # the smallest adjacency MTU; manual clusters fall back to the
+          # single underlay guess eth0/1500 (the old behavior).
+          fabricInterfaces = if ownFabric != null then ownFabric.interfaces else [ ];
+          fabricMtu = if ownFabric != null then ownFabric.mtu else null;
 
           haproxyBackends = map (
             m:
@@ -302,8 +361,8 @@ let
           ciliumProfile = kube.render.mkCiliumValues {
             inherit settings instanceName;
             transportFacts = {
-              interface = if transportInterface != null then transportInterface else "eth0";
-              mtu = if transportMtu != null then transportMtu else 1500;
+              interfaces = if fabricInterfaces != [ ] then fabricInterfaces else [ "eth0" ];
+              mtu = if fabricMtu != null then fabricMtu else 1500;
             };
             k8sServiceHost = kubeapiAddr;
             k8sServicePort = haproxyKubeapiPort;
@@ -511,9 +570,10 @@ let
           configPath = pkgs.writeText "k3s-config.yaml" (builtins.toJSON cleanConfig);
         in
         {
-          # The vendored BIRD fragment module (D19): path-imported (NixOS
-          # dedups), merges with other contributors into ONE bird daemon.
-          imports = [ kube.birdModule ];
+          # D19: the ONE host routing stack (FRR) is owned by
+          # routed-fabric — the distro service renders no BIRD and no
+          # second FRR stack; it publishes the kube_cluster facts
+          # routed-fabric consumes.
 
           # Internal eval seam for tests (rendered distro config.yaml and
           # the bundle's object JSON; bundleJson only on the clusterInit
@@ -552,7 +612,7 @@ let
                     roleMembers
                     settings
                     ;
-                  transportFacts = if transportEnabled then allTransportFacts else null;
+                  transportFacts = if fabricEnabled then allFabricFacts else null;
                   # Cross-role parity (the export is per-member; fleet
                   # consumers read one scope — all roles must agree on the
                   # cluster-level knobs). Sourced from MACHINE-level
@@ -655,17 +715,21 @@ let
                 firewall = {
                   checkReversePath = "loose";
                   extraReversePathFilterRules = lib.concatStringsSep "\n" (
-                    lib.optional (transportInterface != null) ''iifname "${transportInterface}" accept''
+                    map (iface: ''iifname "${iface}" accept'') fabricInterfaces
                     ++ [ "meta mark and 0x0f00 == 0x0200 accept" ]
                   );
                   trustedInterfaces = [
                     "cilium_host"
                     "cilium_net"
                   ]
-                  ++ lib.optional (transportInterface != null) transportInterface;
+                  ++ fabricInterfaces;
                   extraInputRules =
                     let
-                      interfaceGuard = if transportInterface != null then ''iifname "${transportInterface}" '' else "";
+                      interfaceGuard =
+                        if fabricInterfaces != [ ] then
+                          "iifname { ${lib.concatStringsSep ", " (map (i: ''"${i}"'') fabricInterfaces)} } "
+                        else
+                          "";
                     in
                     ''
                       iifname { "cilium*", "lxc*" } accept
@@ -774,36 +838,6 @@ let
                 images = pinnedImageTriples;
               }
             ))
-
-            # The per-node BIRD (D9/D19): loopback BGP link alias, the
-            # cluster's fragment in the host's single bird daemon, and the
-            # firewall drop for BIRD's unavoidable wildcard listen socket
-            # on the upstream-session port (4179 — :179 itself stays bound
-            # to the loopback alias only).
-            (lib.mkIf dp.bgpActive {
-              systemd.services."kube-cluster-${instanceName}-bgp-link" = {
-                description = "Assign the node-local loopback BGP link address (D9)";
-                wantedBy = [ "multi-user.target" ];
-                before = [ "bird.service" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                };
-                script = ''
-                  ${pkgs.iproute2}/bin/ip addr replace ${kube.bgp.bgpLinkV4}/32 dev lo
-                '';
-              };
-              systemd.services.bird.after = [ "kube-cluster-${instanceName}-bgp-link.service" ];
-
-              clan.bird = {
-                routerId = nodeIPv4;
-                fragments."kube-cluster-${instanceName}".config = dp.birdFragment;
-              };
-
-              networking.firewall.extraInputRules = ''
-                tcp dport 4179 drop
-              '';
-            })
           ];
         };
     };
@@ -816,7 +850,12 @@ in
     categories = [ "System" ];
     readme = builtins.readFile ./README.md;
     exports = {
-      inputs = [ "node_transport" ];
+      # The fabric reference resolves the routed_fabric export
+      # (authoritative) with node_transport as the compatibility view.
+      inputs = [
+        "routed_fabric"
+        "node_transport"
+      ];
       out = [ "kube_cluster" ];
     };
   };

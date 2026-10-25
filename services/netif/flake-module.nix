@@ -18,5 +18,9 @@ rec {
         ;
       inherit (clan) exportInterfaces;
     };
+    clan.nixosTests.netif = {
+      imports = [ ./tests/vm/default.nix ];
+      inherit clan;
+    };
   };
 }

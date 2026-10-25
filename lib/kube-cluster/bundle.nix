@@ -56,7 +56,8 @@ let
   # Normalize a parsed document for the typed tree: kubenix's generated
   # list-with-merge-key coercion requires Service ports to carry a
   # protocol; the k8s API defaults it to TCP, so filling it is a no-op
-  # against the apiserver.
+  # against the apiserver. ConfigMap data values must be strings — layer 2
+  # stringifies boolean and integer values from the base manifest.
   normalizeDoc =
     obj:
     let
@@ -65,6 +66,13 @@ let
     if stripped.kind or null == "Service" && stripped.spec ? ports then
       lib.recursiveUpdate stripped {
         spec.ports = map (p: { protocol = "TCP"; } // p) stripped.spec.ports;
+      }
+    else if stripped.kind or null == "ConfigMap" && stripped.data or null != null then
+      stripped
+      // {
+        data = lib.mapAttrs (
+          _: v: if builtins.isBool v || builtins.isInt v then toString v else v
+        ) stripped.data;
       }
     else
       stripped;
@@ -118,10 +126,13 @@ rec {
         "cluster-id" = toString profile.cluster.id;
         "kube-proxy-replacement" = boolStr profile.kubeProxyReplacement;
         "routing-mode" = profile.routingMode;
-        "tunnel-protocol" = profile.tunnelProtocol;
+        "auto-direct-node-routes" = boolStr profile.autoDirectNodeRoutes;
+        # D55: Cilium's required KPR rules use the host's nft backend.
+        "install-iptables-rules" = boolStr profile.extraConfig."install-iptables-rules";
         "ipv4-native-routing-cidr" = profile.ipv4NativeRoutingCIDR;
         "ipv6-native-routing-cidr" = profile.ipv6NativeRoutingCIDR;
         "devices" = profile.devices;
+        "direct-routing-device" = profile.nodePort.directRoutingDevice;
         "mtu" = toString profile.MTU;
         "ipam" = profile.ipam.mode;
         # D41: Node IPAM is the default classless LoadBalancer mechanism.
@@ -183,7 +194,11 @@ rec {
     [ "k8sServiceHost" ]
     [ "k8sServicePort" ]
     [ "routingMode" ]
-    [ "tunnelProtocol" ]
+    [ "autoDirectNodeRoutes" ]
+    [
+      "extraConfig"
+      "install-iptables-rules"
+    ]
     [ "ipv4NativeRoutingCIDR" ]
     [ "ipv6NativeRoutingCIDR" ]
     [ "devices" ]
@@ -339,8 +354,16 @@ rec {
           msg = "kube-proxy-replacement must stay enabled (KPR)";
         }
         {
-          ok = cmData."routing-mode" == "tunnel" && cmData."tunnel-protocol" == "vxlan";
-          msg = "routingMode=tunnel + tunnelProtocol=vxlan are invariant (§5.4)";
+          ok = cmData."routing-mode" == "native";
+          msg = "routing-mode=native is invariant (D49; the base chart's inert tunnel-protocol template key is not the datapath signal)";
+        }
+        {
+          ok = cmData."auto-direct-node-routes" == "false" && profile.autoDirectNodeRoutes == false;
+          msg = "auto-direct-node-routes=false is invariant (FRR/Zebra owns remote pod-pool routes, §6.4)";
+        }
+        {
+          ok = cmData."install-iptables-rules" == "true";
+          msg = "install-iptables-rules=true is required by Cilium KPR/BPF masquerade (iptables-nft host, D55)";
         }
         {
           ok = cmData."enable-ipv4" == "true" && cmData."enable-ipv6" == "true";
@@ -366,12 +389,10 @@ rec {
           msg = "Node IPAM stays enabled and the default classless LB IPAM (D41)";
         }
         {
-          # D9/§6.12: the control-plane flag tracks the presence of BGP
-          # resources exactly (BGP only for shared-bgp pools).
-          ok =
-            (lib.any (o: o.kind == "CiliumBGPClusterConfig") objects)
-            == (cmData."enable-bgp-control-plane" == "true");
-          msg = "enable-bgp-control-plane must match the presence of BGP resources (BGP only for shared-bgp pools, §6.12)";
+          # D41: the BGP class is the explicit-pool LB-IPAM class even when
+          # D9 renders no BGP resources.
+          ok = cmData."enable-bgp-control-plane" == "true";
+          msg = "enable-bgp-control-plane=true is required to register the explicit-pool LB-IPAM class (D41)";
         }
         {
           # Every base-manifest image reference must survive unchanged
@@ -450,12 +471,8 @@ rec {
     };
 
   # Helper for every clan-rendered external-facing Service (invariants
-  # 5/6): ETP Local + a Cilium-handled LB class pinned. The class defaults
-  # to io.cilium/lb-ipam (pool draw only); Services whose VIPs are
-  # BGP-advertised (shared-bgp delivery) MUST pass loadBalancerClass =
-  # "io.cilium/bgp-control-plane" — Cilium 1.20 announces ingress IPs only
-  # for that class or unset, while LB-IPAM allocation works for both
-  # (verified against the v1.20 BGP/LB-IPAM docs).
+  # 5/6): ETP Local. Explicit pools use the BGP class for LB-IPAM
+  # allocation; advertisement remains selector-driven.
   mkLBService =
     {
       name,
@@ -463,12 +480,14 @@ rec {
       manifestLabels,
       labels ? { },
       annotations ? { },
-      loadBalancerClass ? "io.cilium/lb-ipam",
+      loadBalancerClass ? "io.cilium/bgp-control-plane",
       ports,
       selector ? null,
       extraSpec ? { },
     }:
     {
+      apiVersion = "v1";
+      kind = "Service";
       metadata = {
         inherit name namespace;
         labels = manifestLabels // labels;
@@ -477,9 +496,9 @@ rec {
       spec = {
         type = "LoadBalancer";
         externalTrafficPolicy = "Local";
-        inherit loadBalancerClass;
         inherit ports;
       }
+      // lib.optionalAttrs (loadBalancerClass != null) { inherit loadBalancerClass; }
       // lib.optionalAttrs (selector != null) { inherit selector; }
       // extraSpec;
     };
@@ -986,9 +1005,9 @@ rec {
       # artifact flake's pkgs/coredns/versions.nix
       coreDNSImage,
       manifestLabels,
-      # null or { asns, members, sharedBgpPoolNames, advertisePodCIDRs,
-      # advertiseClusterIPs } — the D9 BGP v2 resource set. Rendered iff
-      # shared-bgp pools exist (§6.12).
+      # null or { asns, members, sharedBgpPoolNames, nodeBgpPoolNames,
+      # advertiseClusterIPs } — the D9 revised BGP v2 resource set.
+      # Rendered iff node-bgp/shared-bgp pools exist (§6.12).
       bgp ? null,
       # null or { domain, vip4, vip6, fabricPoolName, wildcardAddress,
       # svcZone, podZone, clusterDNS } — the D22 private-zone CoreDNS.

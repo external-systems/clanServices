@@ -51,8 +51,8 @@
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          The node's IPv4 address. Required when network.transport is
-          null (no transport service provides one).
+          The node's IPv4 address. Required when network.fabric is
+          null (no fabric service provides one).
         '';
       };
       ipv6 = lib.mkOption {

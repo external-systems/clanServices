@@ -359,7 +359,7 @@ let
         if settings.mesh.service != null then
           ownTransportFor {
             inherit exports machineName;
-            mesh = settings.mesh;
+            inherit (settings) mesh;
           }
         else
           null;
@@ -379,14 +379,17 @@ let
           );
           vipBlocks = lib.concatMap (p: p.blocks) (builtins.attrValues sharedPools);
           admin = roleKind == "admin";
-          wantPods = admin && facts != null && facts.bgp.advertisePodCIDRs;
+          # kube_cluster schema v3: pod-pool advertisements are unconditional
+          # (D49) — the legacy opt-in leaf is gone, so default to true.
+          wantPods = admin && facts != null && (facts.bgp.advertisePodCIDRs or true);
           wantSvc = admin && facts != null && facts.bgp.advertiseClusterIPs;
         in
         {
           inherit (c) service instance;
           inherit facts;
           ns = birdSym "${c.service}-${c.instance}";
-          birdAsn = if facts != null then facts.bgp.birdAsn else null;
+          # kube_cluster schema v3 renamed the host-side leaf birdAsn → hostAsn.
+          birdAsn = if facts != null then (facts.bgp.birdAsn or facts.bgp.hostAsn or null) else null;
           members = lib.filter (m: m.ipv4 != null && m.ipv6 != null) (
             lib.mapAttrsToList (name: m: {
               inherit name;
@@ -681,7 +684,7 @@ let
         };
 
         nixosModule =
-          { config, pkgs, ... }:
+          { config, ... }:
           let
             generatorName = "wireguard-mesh-${settings.mesh.instance}";
             privateKeyFile = config.clan.core.vars.generators.${generatorName}.files.privatekey.path;
@@ -925,7 +928,9 @@ in
         };
     };
 
-  roles.client = mkRole "client" commonRoleOptions;
-  roles.admin = mkRole "admin" adminRoleOptions;
-  roles.router = mkRole "router" routerRoleOptions;
+  roles = {
+    client = mkRole "client" commonRoleOptions;
+    admin = mkRole "admin" adminRoleOptions;
+    router = mkRole "router" routerRoleOptions;
+  };
 }

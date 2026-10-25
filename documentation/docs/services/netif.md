@@ -37,7 +37,7 @@ owns fabric policy routing — `netif` never renders fabric rules — and
 instance, a VLAN child names its parent link, and bonds/bridges name
 physical member links; a physical link consumed as a member carries no
 addressing of its own. Every rendered unit is instance-namespaced
-(`40-netif-<instance>-<link>`).
+(`10-netif-<instance>-<link>`).
 
 Static core addresses and routes live in `inventory.nix`. A public fleet
 repo may obtain sensitive public-topology values from its
@@ -109,6 +109,11 @@ inventory.instances = {
   };
 };
 ```
+
+A second instance may add static routes without adding another default
+route. For example, when `home-net` supplies the default through DHCP, a
+`lab-net` link uses `routes = [ { destination = "192.0.2.0/24"; gateway =
+"192.0.2.1"; } ];` rather than `gateway.ipv4`.
 
 ## Status
 

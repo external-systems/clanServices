@@ -98,18 +98,21 @@ let
     )
     // lib.mapAttrs (_: p: { inherit (p) blocks serviceSelector; }) (settings.pools // extraPools);
 
-  # The phase-5 data plane in one resolution seam (D9/D10/D19/D22):
-  # shared by both distro services and the eval tests so the bundle, the
-  # BIRD fragment, the assertions, and the export all see the same facts.
+  # The data plane in one resolution seam (D9/D10/D19/D49/D55): shared by
+  # both distro services and the eval tests so the bundle, the assertions,
+  # and the export all see the same facts. The host routing stack is owned
+  # by routed-fabric (D19) — this seam renders ONLY the Cilium-side BGP v2
+  # resources and publishes the facts routed-fabric consumes.
   #
   # members: [ { machineName, ... } ] (the cluster's member machines with
   # known addresses). Returns:
-  #   asns              — { cilium, bird } (deterministic private 32-bit)
+  #   asns              — { cilium, host } (deterministic private 32-bit;
+  #                       the fabric's real node ASN supersedes host at the
+  #                       consumer, D9 revised)
   #   fabricPool        — null or the fabric pool attrset (D10)
   #   effectivePools    — settings.pools + the fabric pool
-  #   sharedBgpPoolNames / sharedBgpBlocks / bgpActive
+  #   sharedBgpPoolNames / nodeBgpPoolNames / bgpActive / bgpPoolBlocks
   #   bgpBundle         — mkBundle's bgp param (null when bgp inactive)
-  #   birdFragment      — the cluster's BIRD fragment text (null likewise)
   #   privateCoreDNS    — mkBundle's privateCoreDNS param (null when off)
   #   exportFacts       — the kube_cluster export's bgp/fabric subtrees
   resolveDataPlane =
@@ -120,11 +123,7 @@ let
       domain,
       clusterDNS,
       members,
-      igpInterface,
-      igpGateway,
-      # resolvedCidrs (podCIDRv4/podCIDRv6/serviceCIDRv4/serviceCIDRv6) —
-      # feeds the D13 opt-in acceptance filters on the node BIRD.
-      cidrFacts,
+      hostAsns ? { },
     }:
     let
       asns = bgp.resolveBgpAsns { inherit instanceName settings; };
@@ -132,9 +131,12 @@ let
       effectivePools =
         settings.pools // lib.optionalAttrs (fabricPool != null) { ${fabricPool.name} = fabricPool; };
       sharedBgpPools = lib.filterAttrs (_: p: p.delivery == "shared-bgp") effectivePools;
+      nodeBgpPools = lib.filterAttrs (_: p: p.delivery == "node-bgp") effectivePools;
       sharedBgpPoolNames = builtins.attrNames sharedBgpPools;
-      bgpActive = sharedBgpPoolNames != [ ];
-      sharedBgpBlocks = lib.concatMap (p: p.blocks) (builtins.attrValues sharedBgpPools);
+      nodeBgpPoolNames = builtins.attrNames nodeBgpPools;
+      nodeBgpPoolOwners = lib.mapAttrs (_: pool: pool.owner) nodeBgpPools;
+      bgpActive = sharedBgpPoolNames != [ ] || nodeBgpPoolNames != [ ];
+      bgpPoolBlocks = lib.concatMap (p: p.blocks) (builtins.attrValues (sharedBgpPools // nodeBgpPools));
       fabricBlocks' = bgp.fabricBlocks { inherit ciliumId settings; };
       vips = bgp.fabricCoreDNSVips { inherit ciliumId settings; };
       privateDnsOn = settings.fabric.enable && settings.fabric.coredns.enable;
@@ -145,50 +147,22 @@ let
         fabricPool
         effectivePools
         sharedBgpPoolNames
+        nodeBgpPoolNames
         bgpActive
-        sharedBgpBlocks
+        bgpPoolBlocks
         ;
 
       bgpBundle =
         if bgpActive then
           {
-            inherit asns sharedBgpPoolNames;
-            members = map (m: m.machineName) members;
-            inherit (settings.bgp) advertisePodCIDRs advertiseClusterIPs;
-          }
-        else
-          null;
-
-      birdFragment =
-        if bgpActive then
-          bgp.mkBirdFragment {
             inherit
-              instanceName
               asns
-              igpInterface
-              igpGateway
+              hostAsns
+              sharedBgpPoolNames
+              nodeBgpPoolOwners
               ;
-            blocks = sharedBgpBlocks;
-            inherit (settings.bgp) upstreamPeers;
-            # D13: the node BIRD accepts pod CIDRs / ClusterIPs from Cilium
-            # only when the cluster opted in; per-peer export is further
-            # gated by bgp.upstreamPeers[].receivePodCIDRs/receiveClusterIPs.
-            acceptPods =
-              if settings.bgp.advertisePodCIDRs then
-                {
-                  v4 = cidrFacts.podCIDRv4;
-                  v6 = cidrFacts.podCIDRv6;
-                }
-              else
-                null;
-            acceptClusterIPs =
-              if settings.bgp.advertiseClusterIPs then
-                {
-                  v4 = cidrFacts.serviceCIDRv4;
-                  v6 = cidrFacts.serviceCIDRv6;
-                }
-              else
-                null;
+            members = map (m: m.machineName) members;
+            inherit (settings.bgp) advertiseClusterIPs;
           }
         else
           null;
@@ -210,8 +184,8 @@ let
         bgp = {
           enabled = bgpActive;
           ciliumAsn = asns.cilium;
-          birdAsn = asns.bird;
-          inherit (settings.bgp) upstreamPeers advertisePodCIDRs advertiseClusterIPs;
+          hostAsn = asns.host;
+          inherit (settings.bgp) advertiseClusterIPs;
         };
         fabric = {
           enabled = settings.fabric.enable;

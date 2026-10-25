@@ -38,7 +38,7 @@ let
       module.input = "self";
       roles.server = {
         settings = {
-          network.transport = null;
+          network.fabric = null;
           # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
           cilium.id = 1;
         };
@@ -98,7 +98,7 @@ let
         module.input = "self";
         roles.server = {
           settings = {
-            network.transport = {
+            network.fabric = {
               service = "wireguard-mesh";
               instance = "mesh";
             };
@@ -115,7 +115,7 @@ let
         };
         roles.agent = {
           settings = {
-            network.transport = {
+            network.fabric = {
               service = "wireguard-mesh";
               instance = "mesh";
             };
@@ -204,7 +204,7 @@ let
         module.input = "self";
         roles.server = {
           settings = {
-            network.transport = {
+            network.fabric = {
               service = "wireguard-mesh";
               instance = "mesh";
             };
@@ -282,9 +282,17 @@ in
     ];
   };
 
-  test_ciliumValuesTunnelMode = {
-    expr = ciliumConfigData."routing-mode";
-    expected = "tunnel";
+  test_ciliumValuesNativeMode = {
+    expr = {
+      routing = ciliumConfigData."routing-mode";
+      autoDirect = ciliumConfigData."auto-direct-node-routes";
+      ciliumIptables = ciliumConfigData."install-iptables-rules";
+    };
+    expected = {
+      routing = "native";
+      autoDirect = "false";
+      ciliumIptables = "true";
+    };
   };
 
   test_ciliumValuesKubeProxyReplacement = {
@@ -293,8 +301,9 @@ in
   };
 
   test_ciliumValuesMtu = {
+    # Native Cilium uses the fabric WireGuard MTU directly (no VXLAN -50).
     expr = ciliumConfigData."mtu";
-    expected = "1370";
+    expected = "1420";
   };
 
   test_ciliumValuesApiViaLocalHaproxy = {
@@ -571,7 +580,7 @@ in
             module.input = "self";
             roles.server = {
               settings = {
-                network.transport = null;
+                network.fabric = null;
                 cilium.id = 1;
               };
               machines.alpha.settings = {
@@ -585,7 +594,7 @@ in
           };
         };
       in
-      failedAssertion bad.config.nixosConfigurations.alpha.config "network.transport is null";
+      failedAssertion bad.config.nixosConfigurations.alpha.config "network.fabric is null";
     expected = true;
   };
 
@@ -599,7 +608,8 @@ in
         ciliumId
         meshGroup
         ;
-      inherit (kubeClusterExport) network transport;
+      inherit (kubeClusterExport) network;
+      meshPeers = kubeClusterExport.mesh.peers;
       controlRole = kubeClusterExport.controlDomain.role;
       memberNames = builtins.attrNames kubeClusterExport.members;
       alphaMember = kubeClusterExport.members.alpha;
@@ -608,20 +618,21 @@ in
       gammaPool = kubeClusterExport.pools.gamma;
     };
     expected = {
-      schemaVersion = 2;
+      schemaVersion = 3;
       name = "k3s";
       ciliumId = 1;
-      meshGroup = "clan";
+      meshGroup = "mesh";
+      meshPeers = null;
       network = {
         podCIDRv4 = "10.1.0.0/16";
         podCIDRv6 = "fd10:1::/56";
         serviceCIDRv4 = "10.2.0.0/16";
         serviceCIDRv6 = "fd10:2::/112";
         clusterDNS = "10.2.0.10";
-      };
-      transport = {
-        service = "wireguard-mesh";
-        instance = "mesh";
+        fabric = {
+          service = "wireguard-mesh";
+          instance = "mesh";
+        };
       };
       controlRole = "standalone";
       memberNames = [
@@ -635,6 +646,7 @@ in
         ipv6 = "fd10:42::1";
         endpoint = "alpha:51820";
         interface = "wg-mesh";
+        interfaces = [ "wg-mesh" ];
         mtu = 1420;
         port = 51820;
         topology = {
@@ -658,6 +670,7 @@ in
           "fd10:42::3/128"
         ];
         serviceSelector."clan.lol/pool" = "gamma";
+        owner = null;
         scope = "per-machine";
         delivery = "node-fate-bound";
       };
@@ -695,7 +708,7 @@ in
   # --- all-or-none transport posture (§6.3) ---------------------------------
 
   test_postureMissingMemberRejected = {
-    expr = failedAssertion postureEvaled.config.nixosConfigurations.alpha.config "no export from the configured node_transport source";
+    expr = failedAssertion postureEvaled.config.nixosConfigurations.alpha.config "no export from the configured fabric source";
     expected = true;
   };
 
@@ -716,8 +729,9 @@ in
         ccAlpha = find "CiliumBGPClusterConfig" "k3s-alpha";
         ccBeta = find "CiliumBGPClusterConfig" "k3s-beta";
         ccGamma = find "CiliumBGPClusterConfig" "k3s-gamma";
-        pc = find "CiliumBGPPeerConfig" "k3s-bird";
-        adv = find "CiliumBGPAdvertisement" "k3s-service-vips";
+        pc = find "CiliumBGPPeerConfig" "k3s-alpha-frr";
+        adv = find "CiliumBGPAdvertisement" "k3s-alpha-service-vips";
+        podAdv = find "CiliumBGPAdvertisement" "k3s-alpha-pod-pools";
         instance = builtins.head ccAlpha.spec.bgpInstances;
         fabricPool = find "CiliumLoadBalancerIPPool" "k3s-fabric";
       in
@@ -730,22 +744,26 @@ in
         };
         dialOut = (builtins.head instance.peers).peerAddress;
         noListener = !(instance ? localPort);
+        podAdvType = (builtins.head podAdv.spec.advertisements).advertisementType;
+        podAdvSelector = (builtins.head podAdv.spec.advertisements).selector.matchLabels;
         timers = pc.spec.timers;
         advPools = (builtins.head adv.spec.advertisements).selector.matchExpressions;
         fabricBlocks = fabricPool.spec.blocks;
-        # D13 default off
-        noPodAdvert = find "CiliumBGPAdvertisement" "k3s-pod-cidrs" == null;
-        noClusterIpAdvert = find "CiliumBGPAdvertisement" "k3s-cluster-ips" == null;
+        # D13 default off for ClusterIPs; pod-pool advertisement is
+        # always on (native routing, D49).
+        noClusterIpAdvert = find "CiliumBGPAdvertisement" "k3s-alpha-cluster-ips" == null;
       };
     expected = {
       perNode = true;
       selector = "alpha";
       asns = {
         local = 4240343820;
-        peer = 4214591604;
+        peer = 4202640987;
       };
-      dialOut = "169.254.179.1";
+      dialOut = "::1";
       noListener = true;
+      podAdvType = "CiliumPodIPPool";
+      podAdvSelector."clan.lol/cluster" = "k3s";
       timers = {
         holdTimeSeconds = 9;
         keepAliveTimeSeconds = 3;
@@ -762,7 +780,6 @@ in
         { cidr = "172.16.1.0/24"; }
         { cidr = "fd11:1::/64"; }
       ];
-      noPodAdvert = true;
       noClusterIpAdvert = true;
     };
   };
@@ -792,39 +809,23 @@ in
     };
   };
 
-  # The per-node BIRD (D19): fragment contributed under the namespaced key,
-  # routerId = the node's mesh IPv4, one bird service, loopback link unit.
-  test_birdWiring = {
+  # D19 revised: routed-fabric owns the ONE host routing stack (FRR) — the
+  # distro service renders NO BIRD and no second FRR stack: no bird
+  # module, no loopback BGP-link unit, no upstream-port firewall drop,
+  # no clan.bird fragments.
+  test_noSecondRoutingStack = {
     expr = {
-      birdEnabled = alphaTransport.services.bird.enable;
-      bird2Package = lib.hasInfix "bird-2." (toString alphaTransport.services.bird.package);
-      routerId = alphaTransport.clan.bird.routerId;
-      fragmentKey = alphaTransport.clan.bird.fragments ? kube-cluster-k3s;
-      fragmentHasCilium = lib.hasInfix "protocol bgp k3s_cilium" alphaTransport.clan.bird.fragments.kube-cluster-k3s.config;
-      fragmentStrictBind = lib.hasInfix "strict bind on;" alphaTransport.clan.bird.fragments.kube-cluster-k3s.config;
-      linkUnit = alphaTransport.systemd.services ? kube-cluster-k3s-bgp-link;
-      linkScript = lib.hasInfix "169.254.179.1/32 dev lo" alphaTransport.systemd.services.kube-cluster-k3s-bgp-link.script;
-      birdOrderedAfter = lib.elem "kube-cluster-k3s-bgp-link.service" alphaTransport.systemd.services.bird.after;
-      firewallDrop4179 = lib.hasInfix "tcp dport 4179 drop" alphaTransport.networking.firewall.extraInputRules;
-      checkConfig = alphaTransport.services.bird.checkConfig;
-      # agents too (fragment is per-cluster, identical on all members)
-      agentBird = gammaTransport.services.bird.enable;
-      agentRouterId = gammaTransport.clan.bird.routerId;
+      birdDisabled = !(alphaTransport.services.bird.enable or false);
+      linkUnitAbsent = !(alphaTransport.systemd.services ? kube-cluster-k3s-bgp-link);
+      noFirewallDrop4179 =
+        !(lib.hasInfix "tcp dport 4179 drop" alphaTransport.networking.firewall.extraInputRules);
+      agentBirdDisabled = !(gammaTransport.services.bird.enable or false);
     };
     expected = {
-      birdEnabled = true;
-      bird2Package = true;
-      routerId = "10.42.0.1";
-      fragmentKey = true;
-      fragmentHasCilium = true;
-      fragmentStrictBind = true;
-      linkUnit = true;
-      linkScript = true;
-      birdOrderedAfter = true;
-      firewallDrop4179 = true;
-      checkConfig = true;
-      agentBird = true;
-      agentRouterId = "10.42.0.3";
+      birdDisabled = true;
+      linkUnitAbsent = true;
+      noFirewallDrop4179 = true;
+      agentBirdDisabled = true;
     };
   };
 
@@ -838,44 +839,53 @@ in
           }
         );
       in
-      failedAssertion bad.config.nixosConfigurations.alpha.config "BGP only for shared-bgp pools";
+      failedAssertion bad.config.nixosConfigurations.alpha.config "BGP only for node-bgp/shared-bgp pools";
     expected = true;
   };
 
-  # D19: a second, conflicting routerId on the same host is an eval error.
-  test_routerIdConflictThrows = {
+  # D19 revised: the Cilium side dials the node-local FRR at `::1` in ONE
+  # dual-AF session (no localPort) — the rendered bundle carries no
+  # Cilium-to-Cilium peering and no per-cluster listener port.
+  test_localFrrSessionShape = {
     expr =
       let
-        conflicted = clanLib.clan {
-          self = { };
-          directory = ./fixtures;
-          inherit exportInterfaces;
-          imports = [ kube.fleetChecksModule ];
-          modules = {
-            wireguard-mesh = wgModule;
-            k3s = k3sModule;
-          };
-          machines = machineConfigs // {
-            alpha = {
-              nixpkgs.hostPlatform = "x86_64-linux";
-              clan.bird.routerId = "192.0.2.99";
-            };
-          };
-          inventory = transportInventory;
-        };
+        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
+        instance = builtins.head (find "CiliumBGPClusterConfig" "k3s-alpha").spec.bgpInstances;
+        peer = builtins.head instance.peers;
+        pc = find "CiliumBGPPeerConfig" "k3s-alpha-frr";
       in
-      !(builtins.tryEval (builtins.deepSeq conflicted.config true)).success;
-    expected = true;
+      {
+        inherit (peer) peerASN peerAddress;
+        noLocalPort = !(instance ? localPort);
+        peerRef = peer.peerConfigRef.name;
+        bothFamilies = map (f: f.afi) pc.spec.families;
+        timers = pc.spec.timers;
+      };
+    expected = {
+      peerASN = 4202640987;
+      peerAddress = "::1";
+      noLocalPort = true;
+      peerRef = "k3s-alpha-frr";
+      bothFamilies = [
+        "ipv4"
+        "ipv6"
+      ];
+      timers = {
+        holdTimeSeconds = 9;
+        keepAliveTimeSeconds = 3;
+        connectRetryTimeSeconds = 5;
+      };
+    };
   };
 
-  # The export's phase-5 facts (schema v2).
+  # The export's BGP/fabric facts (schema v3).
   test_kubeClusterExportBgpFabric = {
     expr = {
       inherit (kubeClusterExport.bgp)
         enabled
         ciliumAsn
-        birdAsn
-        upstreamPeers
+        hostAsn
+        advertiseClusterIPs
         ;
       inherit (kubeClusterExport) fabric;
       fabricPoolDelivery = kubeClusterExport.pools.k3s-fabric.delivery;
@@ -883,8 +893,8 @@ in
     expected = {
       enabled = true;
       ciliumAsn = 4240343820;
-      birdAsn = 4214591604;
-      upstreamPeers = [ ];
+      hostAsn = 4202640987;
+      advertiseClusterIPs = false;
       fabric = {
         enabled = true;
         pool = "k3s-fabric";

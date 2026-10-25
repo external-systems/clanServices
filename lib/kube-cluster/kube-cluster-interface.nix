@@ -16,8 +16,8 @@ in
   options = {
     schemaVersion = lib.mkOption {
       type = t.ints.positive;
-      default = 2;
-      description = "kube_cluster export schema version (2 = phase 5: bgp/fabric facts).";
+      default = 3;
+      description = "kube_cluster export schema version (3 = native Cilium/FRR data plane: fabric reference, mesh peers, pool owners).";
     };
 
     name = lib.mkOption {
@@ -33,6 +33,18 @@ in
     };
 
     network = {
+      fabric = {
+        service = lib.mkOption {
+          type = t.nullOr t.str;
+          default = null;
+          description = "Service name of the consumed routed-fabric source (routed_fabric export); null = manual addresses.";
+        };
+        instance = lib.mkOption {
+          type = t.nullOr t.str;
+          default = null;
+          description = "Instance name of the consumed routed-fabric source; null = manual addresses.";
+        };
+      };
       podCIDRv4 = lib.mkOption {
         type = t.nullOr t.str;
         default = null;
@@ -65,10 +77,25 @@ in
       default = "";
       description = ''
         The mesh (trust-domain) group string: the explicit meshGroup
-        setting, else the cluster's domain (meta.domain by default).
-        Same-group clusters form one ClusterMesh/control-domain trust
-        domain and must share one node_transport source.
+        setting, else the fabric instance name (D54). Same-group clusters
+        form one ClusterMesh/control-domain trust domain, must consume the
+        same fabric instance, and must have non-overlapping pod/service
+        CIDRs (fleet-asserted).
       '';
+    };
+
+    # D54: null = full peering within the fabric instance; an explicit
+    # list names selective (symmetric, non-transitive) peers.
+    mesh = {
+      peers = lib.mkOption {
+        type = t.nullOr (t.listOf t.str);
+        default = null;
+        description = ''
+          Explicit ClusterMesh peers (cluster instance names). null = full
+          peering among the fabric instance's clusters. Peering bounds the
+          automatic cross-cluster pod/Service route policy.
+        '';
+      };
     };
 
     controlDomain = {
@@ -87,24 +114,9 @@ in
       };
     };
 
-    # All-or-none transport posture fact (§6.3): the node_transport
-    # source this cluster consumes, or nulls for a manual-address cluster.
-    transport = {
-      service = lib.mkOption {
-        type = t.nullOr t.str;
-        default = null;
-        description = "Service name of the consumed node_transport exporter (e.g. wireguard-mesh); null = manual addresses.";
-      };
-      instance = lib.mkOption {
-        type = t.nullOr t.str;
-        default = null;
-        description = "Instance name of the consumed node_transport exporter; null = manual addresses.";
-      };
-    };
-
     # Per-member mesh endpoints: the member's node addresses plus its
-    # transport facts (when transport-provided) and effective topology
-    # labels.
+    # fabric facts (when fabric-provided) and effective topology
+    # labels. The fabric source itself is published under network.fabric.
     members = lib.mkOption {
       type = t.attrsOf (
         t.submodule {
@@ -132,15 +144,20 @@ in
               default = null;
               description = "The member's externally reachable transport endpoint (host:port), when known.";
             };
+            interfaces = lib.mkOption {
+              type = t.listOf t.str;
+              default = [ ];
+              description = "The member's fabric adjacency interface names (one per declared adjacency, D51); empty for manual-address clusters.";
+            };
             interface = lib.mkOption {
               type = t.nullOr t.str;
               default = null;
-              description = "The member's transport interface name (null for manual-address clusters).";
+              description = "COMPATIBILITY VIEW: the member's first fabric adjacency interface (node_transport shape); null for manual-address clusters.";
             };
             mtu = lib.mkOption {
               type = t.nullOr t.ints.positive;
               default = null;
-              description = "The member's transport MTU (null for manual-address clusters).";
+              description = "The member's smallest fabric adjacency MTU (native Cilium uses it directly, D51); null for manual-address clusters.";
             };
             port = lib.mkOption {
               type = t.nullOr t.port;
@@ -184,12 +201,18 @@ in
             delivery = lib.mkOption {
               type = t.enum [
                 "node-fate-bound"
+                "node-bgp"
                 "floating"
                 "shared-bgp"
                 "external-class"
               ];
               default = "node-fate-bound";
               description = "Delivery mode: how traffic reaches pool addresses + failure semantics (D8).";
+            };
+            owner = lib.mkOption {
+              type = t.nullOr t.str;
+              default = null;
+              description = "The machine that owns a node-bgp pool (D8 owner-only delivery); null for non-node-bgp pools.";
             };
             blocks = lib.mkOption {
               type = t.listOf t.str;
@@ -208,64 +231,29 @@ in
       description = "Resolved LB-IPAM pool handoff facts (phase-3 pools resolution) for fleet-routing.";
     };
 
-    # BGP plane facts (D9, phase 5): consumed by fleet-routing (its router
-    # role peers with the cluster BIRD ASNs; its client/admin roles learn
-    # where VIP routes come from) and by the fleet checks (ASN collision).
+    # BGP plane facts (D9 revised): consumed by routed-fabric (the host FRR
+    # terminates the Cilium `::1` sessions and exchanges filtered routes
+    # across the fabric) and by the fleet checks (ASN collision).
     bgp = {
       enabled = lib.mkOption {
         type = t.bool;
         default = false;
-        description = "Whether the cluster renders the BGP v2 plane (locked to shared-bgp pool presence, §6.12).";
+        description = "Whether the cluster renders the BGP v2 plane (locked to node-bgp/shared-bgp pool presence, §6.12).";
       };
       ciliumAsn = lib.mkOption {
         type = t.nullOr t.ints.positive;
         default = null;
         description = "The Cilium-side ASN (deterministic private 32-bit per cluster, or pinned).";
       };
-      birdAsn = lib.mkOption {
+      hostAsn = lib.mkOption {
         type = t.nullOr t.ints.positive;
         default = null;
-        description = "The BIRD-side ASN — the cluster's ASN as its upstream/fleet peers see it.";
-      };
-      upstreamPeers = lib.mkOption {
-        type = t.listOf (
-          t.submodule {
-            options = {
-              address = lib.mkOption {
-                type = t.str;
-                default = "";
-                description = "Upstream peer address.";
-              };
-              asn = lib.mkOption {
-                type = t.nullOr t.ints.positive;
-                default = null;
-                description = "Upstream peer ASN.";
-              };
-              receivePodCIDRs = lib.mkOption {
-                type = t.bool;
-                default = false;
-                description = "Peer receives pod CIDR routes (D13; requires the cluster's advertisePodCIDRs opt-in).";
-              };
-              receiveClusterIPs = lib.mkOption {
-                type = t.bool;
-                default = false;
-                description = "Peer receives ClusterIP routes (D13; requires the cluster's advertiseClusterIPs opt-in).";
-              };
-            };
-          }
-        );
-        default = [ ];
-        description = "Configured upstream BGP peers (D9).";
-      };
-      advertisePodCIDRs = lib.mkOption {
-        type = t.bool;
-        default = false;
-        description = "D13 opt-in fact: pod CIDRs are advertised.";
+        description = "The host-side ASN Cilium dials at `::1` — the fabric node ASN from routed_fabric when the fabric reference resolves, else the hashed/pinned fallback.";
       };
       advertiseClusterIPs = lib.mkOption {
         type = t.bool;
         default = false;
-        description = "D13 opt-in fact: ClusterIPs are advertised.";
+        description = "D13 opt-in fact: ClusterIPs are advertised (pod-pool advertisements are always on — native routing, D49).";
       };
     };
 

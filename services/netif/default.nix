@@ -700,11 +700,15 @@ in
       let
         resolved = resolveLinks settings settings.links;
 
-        machineEndpoint = resolveEndpoint {
-          inherit exports;
-          sources = settings.endpointSources;
-          machineName = machine.name;
-        };
+        machineEndpoint =
+          if settings.endpoint != null then
+            settings.endpoint
+          else
+            resolveEndpoint {
+              inherit exports;
+              sources = settings.endpointSources;
+              machineName = machine.name;
+            };
 
         # Endpoint-enabled links contribute their static addresses for
         # fabric endpoint discovery (routed-fabric dials these).
@@ -754,7 +758,7 @@ in
           else
             builtins.foldl' (acc: m: if m < acc then m else acc) (builtins.head mtus) mtus;
 
-        stem = logical: "40-netif-${instanceName}-${logical}";
+        stem = logical: "10-netif-${instanceName}-${logical}";
 
         linkNetwork =
           r:
@@ -824,6 +828,7 @@ in
             networkConfig = {
               DHCP = dhcpValue;
               IPv6AcceptRA = r.ra;
+              ConfigureWithoutCarrier = r.kind == "bridge";
             };
             address = r.static4 ++ r.static6;
             gateway = mainGateways;
@@ -950,6 +955,8 @@ in
         nixosModule =
           { lib, ... }:
           {
+            imports = [ ../../lib/kube-cluster/network-facts.nix ];
+
             assertions = [
               {
                 assertion = !settings.targetHost || targetHostValue != null;
@@ -972,9 +979,43 @@ in
 
             environment.etc = vlanDropIns;
 
-            clan.core.networking.targetHost = lib.mkIf (settings.targetHost && targetHostValue != null) (
-              lib.mkDefault targetHostValue
-            );
+            clan = {
+              core.networking.targetHost = lib.mkIf (settings.targetHost && targetHostValue != null) (
+                lib.mkDefault targetHostValue
+              );
+              _networkFacts = {
+                schemaVersion = 1;
+                node.name = machine.name;
+                netif.${instanceName} = {
+                  endpoint = machineEndpoint;
+                  mtu = minMtu;
+                  links = lib.mapAttrs (_: r: {
+                    inherit (r)
+                      kind
+                      interface
+                      mtu
+                      nameservers
+                      endpoint
+                      ra
+                      dhcp4
+                      dhcp6
+                      gateway4
+                      gateway6
+                      routes
+                      ;
+                    addresses = r.static4 ++ r.static6;
+                    gatewayInMain = v4Default r || v6Default r;
+                    routingPolicy = r.policy;
+                    trusted = r.trust;
+                  }) resolved;
+                };
+                graphs.underlay = lib.mapAttrsToList (_: r: {
+                  from = machine.name;
+                  to = r.interface;
+                  kind = "link";
+                }) resolved;
+              };
+            };
           };
       };
   };

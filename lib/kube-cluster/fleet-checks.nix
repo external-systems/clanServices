@@ -115,23 +115,24 @@ rec {
       ) { } clusters;
       doubleClaimed = lib.filterAttrs (_: ks: builtins.length (lib.unique ks) > 1) machineClusters;
 
-      # 5. Mesh-group transport consistency (§6.3 mapping): same-group
-      # clusters must consume the same node_transport source — one mesh
-      # group = one transport instance. Posture mixes (transport vs
-      # manual) inside a group are likewise rejected.
-      transportInconsistent = lib.concatMap (
+      # 5. Mesh-group fabric consistency (§6.3/D54): same-group clusters
+      # must consume the same fabric instance — one mesh group = one
+      # routed-fabric instance. Posture mixes (fabric vs manual) inside a
+      # group are likewise rejected.
+      fabricInconsistent = lib.concatMap (
         groupClusters:
         lib.filter (
           p:
-          (p.fst.cluster.transport.service or null) != (p.snd.cluster.transport.service or null)
-          || (p.fst.cluster.transport.instance or null) != (p.snd.cluster.transport.instance or null)
+          (p.fst.cluster.network.fabric.service or null) != (p.snd.cluster.network.fabric.service or null)
+          ||
+            (p.fst.cluster.network.fabric.instance or null) != (p.snd.cluster.network.fabric.instance or null)
         ) (pairs groupClusters)
       ) (lib.attrValues byGroup);
 
-      # 6. BGP ASN collisions (D9; phase 5): the hashed per-cluster ASNs
-      # must be unique fleet-wide (the escape hatch is the
-      # bgp.ciliumASN/bgp.birdASN pin). Defensive `or null` keeps hand-built
-      # export trees (tests, older publishers) evaluable.
+      # 6. BGP ASN collisions (D9): the hashed per-cluster Cilium-side and
+      # host-side ASNs must be unique fleet-wide (the escape hatch is the
+      # bgp.ciliumASN/bgp.hostASN pin). Defensive `or null` keeps
+      # hand-built export trees (tests, older publishers) evaluable.
       asnClaims = lib.concatMap (
         c:
         lib.optionals (c.cluster.bgp.enabled or false) [
@@ -140,32 +141,32 @@ rec {
             who = "${c.serviceName}/${c.instanceName} (cilium)";
           }
           {
-            asn = c.cluster.bgp.birdAsn or null;
-            who = "${c.serviceName}/${c.instanceName} (bird)";
+            asn = c.cluster.bgp.hostAsn or null;
+            who = "${c.serviceName}/${c.instanceName} (host)";
           }
         ]
       ) clusters;
       byAsn = lib.groupBy (x: toString x.asn) (builtins.filter (x: x.asn != null) asnClaims);
       duplicateAsns = lib.filterAttrs (_: xs: builtins.length (lib.unique (map (x: x.who) xs)) > 1) byAsn;
 
-      # 7. shared-bgp ⊆ router-role prefixes (D8, phase 5): fires once any
-      # fleet-routing ROUTER-role export exists in the same inventory
-      # (campaign B introduces the service + its fleet_routing export
-      # interface with `routerPrefixes`); vacuous until then. Consumed
-      # through parseScope only.
-      routerPrefixes = lib.concatMap (
+      # 7. shared-bgp ⊆ border-owned prefixes (D8 round 16): fires once any
+      # routed-fabric border export exists in the same inventory (the
+      # in-progress routed-fabric service publishes `borderOwnedPrefixes`
+      # on its routed_fabric export); vacuous until then. Consumed through
+      # parseScope only.
+      borderOwnedPrefixes = lib.concatMap (
         scope:
         let
           v = exports.${scope};
         in
-        v.fleet_routing.routerPrefixes or [ ]
+        v.routed_fabric.border.ownedPrefixes or [ ]
       ) (builtins.attrNames exports);
       sharedBgpOutside = lib.concatMap (
         c:
         let
           sharedPools = lib.filterAttrs (_: p: p.delivery or null == "shared-bgp") (c.cluster.pools or { });
           blocks = lib.concatMap (p: p.blocks or [ ]) (builtins.attrValues sharedPools);
-          uncovered = builtins.filter (b: !lib.any (r: cidr.contains r b) routerPrefixes) blocks;
+          uncovered = builtins.filter (b: !lib.any (r: cidr.contains r b) borderOwnedPrefixes) blocks;
         in
         map (b: {
           cluster = "${c.serviceName}/${c.instanceName}";
@@ -218,19 +219,19 @@ rec {
         }";
       };
 
-      kube-cluster-mesh-group-transport = {
-        assertion = transportInconsistent == [ ];
-        message = "kube-cluster fleet check: clusters in one mesh group must consume the same node_transport source (one group = one transport instance, §6.3): ${
+      kube-cluster-mesh-group-fabric = {
+        assertion = fabricInconsistent == [ ];
+        message = "kube-cluster fleet check: clusters in one mesh group must consume the same fabric instance (one group = one routed-fabric instance, D54): ${
           lib.concatMapStringsSep "; " (
             p:
-            "${p.fst.serviceName}/${p.fst.instanceName} (${builtins.toJSON p.fst.cluster.transport}) vs ${p.snd.serviceName}/${p.snd.instanceName} (${builtins.toJSON p.snd.cluster.transport})"
-          ) transportInconsistent
+            "${p.fst.serviceName}/${p.fst.instanceName} (${builtins.toJSON p.fst.cluster.network.fabric}) vs ${p.snd.serviceName}/${p.snd.instanceName} (${builtins.toJSON p.snd.cluster.network.fabric})"
+          ) fabricInconsistent
         }";
       };
 
       kube-cluster-unique-bgp-asns = {
         assertion = duplicateAsns == { };
-        message = "kube-cluster fleet check: BGP ASN collision (D9 — pin bgp.ciliumASN/bgp.birdASN on all but one claimant): ${
+        message = "kube-cluster fleet check: BGP ASN collision (D9 — pin bgp.ciliumASN/bgp.hostASN on all but one claimant): ${
           lib.concatStringsSep "; " (
             lib.mapAttrsToList (
               asn: xs: "ASN ${asn} claimed by ${lib.concatStringsSep ", " (lib.unique (map (x: x.who) xs))}"
@@ -239,9 +240,9 @@ rec {
         }";
       };
 
-      kube-cluster-shared-bgp-router-prefixes = {
-        assertion = routerPrefixes == [ ] || sharedBgpOutside == [ ];
-        message = "kube-cluster fleet check: shared-bgp pool blocks outside all fleet-routing router-role prefixes (D8): ${
+      kube-cluster-shared-bgp-border-prefixes = {
+        assertion = borderOwnedPrefixes == [ ] || sharedBgpOutside == [ ];
+        message = "kube-cluster fleet check: shared-bgp pool blocks outside all routed-fabric border-owned prefixes (D8): ${
           lib.concatMapStringsSep "; " (x: "${x.block} (${x.cluster})") sharedBgpOutside
         }";
       };

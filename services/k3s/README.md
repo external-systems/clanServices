@@ -170,7 +170,7 @@ nix build .#checks.x86_64-linux.k3s-data-plane
   succeed with 2/3 quorum, and pods still schedule.
 - `k3s-data-plane` — the data-plane contract over the bootstrap bundle: the
   cluster comes up via the bootstrap-apply oneshot, a pool-backed Service
-  (`loadBalancerClass: io.cilium/lb-ipam` + selector) draws from the declared
+  (`io.cilium/bgp-control-plane` + selector) draws from the declared
   `CiliumLoadBalancerIPPool`, a classless Service gets node IPs from Node
   IPAM with the ETP-Local candidate restriction (backend pinned to one node),
   plus firewall positive/negative exposure. Hermetic: go-httpbin fixture,

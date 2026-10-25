@@ -68,10 +68,10 @@ GitOps repo with the pinned chart of your choice, then:
   is safe with Node IPAM: real backends produce real EndpointSlices, and the
   Cilium dummy-Endpoints caveat only affects Cilium's own Gateway/Ingress,
   which stay disabled (D1/D41).
-- Draw addresses through pools: set the pool's `loadBalancerClass`
-  (`io.cilium/lb-ipam` for node-fate-bound/floating draws,
-  `io.cilium/bgp-control-plane` when the pool is `shared-bgp` — Cilium 1.20
-  announces only that class) plus pool-label selectors, or explicit
+- Draw addresses through pools: pin `io.cilium/bgp-control-plane` for every
+  explicit pool draw so it bypasses the classless Node-IPAM default. The
+  class selects LB-IPAM allocation; only `node-bgp` and `shared-bgp` pools
+  are selected for BGP announcement. Add pool-label selectors or explicit
   `lbipam.cilium.io/ips` projections, on the EnvoyProxy `envoyService`
   labels/annotations — never annotate the controller-managed Service
   directly.

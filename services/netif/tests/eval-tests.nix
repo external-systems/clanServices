@@ -193,6 +193,18 @@ let
     machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
 
+  explicitEndpointEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.endpoint = "mgmt.test";
+    }
+  );
+  explicitEndpointExport = clanLib.getExport {
+    serviceName = "netif";
+    instanceName = "mgmt";
+    roleName = "default";
+    machineName = "kamrui-h1";
+  } explicitEndpointEval.config.exports;
+
   # --- negatives: cross-instance conflicts (perMachine) ---
   ownershipConflictEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
@@ -257,13 +269,13 @@ in
     # multi-NIC: two links on kamrui-h1 in home-net, each its own file.
     test_multiNicWifiDhcp = {
       expr = {
-        inherit (kamNetworks."40-netif-home-net-wifi".matchConfig) Name;
-        inherit (kamNetworks."40-netif-home-net-wifi".networkConfig)
+        inherit (kamNetworks."10-netif-home-net-wifi".matchConfig) Name;
+        inherit (kamNetworks."10-netif-home-net-wifi".networkConfig)
           DHCP
           IPv6AcceptRA
           ;
-        inherit (kamNetworks."40-netif-home-net-wifi".linkConfig) MTUBytes;
-        dns = kamNetworks."40-netif-home-net-wifi".dns;
+        inherit (kamNetworks."10-netif-home-net-wifi".linkConfig) MTUBytes;
+        dns = kamNetworks."10-netif-home-net-wifi".dns;
       };
       expected = {
         Name = "wlp2s0";
@@ -275,9 +287,9 @@ in
     };
     test_multiNicStatic = {
       expr = {
-        inherit (kamNetworks."40-netif-home-net-eth".matchConfig) Name;
-        address = kamNetworks."40-netif-home-net-eth".address;
-        gateway = kamNetworks."40-netif-home-net-eth".gateway;
+        inherit (kamNetworks."10-netif-home-net-eth".matchConfig) Name;
+        address = kamNetworks."10-netif-home-net-eth".address;
+        gateway = kamNetworks."10-netif-home-net-eth".gateway;
       };
       expected = {
         Name = "enp3s0";
@@ -291,8 +303,8 @@ in
     # SFP+-shaped physical names on the router uplinks.
     test_sfpPlusPhysicalNames = {
       expr = map (n: edgeNetworks.${n}.matchConfig.Name) [
-        "40-netif-uplink-a-sfp0"
-        "40-netif-uplink-b-sfp1"
+        "10-netif-uplink-a-sfp0"
+        "10-netif-uplink-b-sfp1"
       ];
       expected = [
         "enp1s0f0np0"
@@ -305,15 +317,15 @@ in
     };
     test_uplinkDefaultRoute = {
       expr = {
-        gateway = edgeNetworks."40-netif-uplink-a-sfp0".gateway;
+        gateway = edgeNetworks."10-netif-uplink-a-sfp0".gateway;
         staticRoutes = map (r: {
           inherit (r)
             Destination
             Gateway
             ;
-        }) edgeNetworks."40-netif-uplink-a-sfp0".routes;
-        sfp1Mtu = edgeNetworks."40-netif-uplink-b-sfp1".linkConfig.MTUBytes;
-        sfp1Gateway = edgeNetworks."40-netif-uplink-b-sfp1".gateway;
+        }) edgeNetworks."10-netif-uplink-a-sfp0".routes;
+        sfp1Mtu = edgeNetworks."10-netif-uplink-b-sfp1".linkConfig.MTUBytes;
+        sfp1Gateway = edgeNetworks."10-netif-uplink-b-sfp1".gateway;
       };
       expected = {
         gateway = [ "203.0.113.1" ];
@@ -330,7 +342,7 @@ in
     # Underlay policy routing: gateway on-link in table 201, ip rule from.
     test_policyRouting = {
       expr = {
-        gateway = edgeNetworks."40-netif-dmz-net-vswitch".gateway;
+        gateway = edgeNetworks."10-netif-dmz-net-vswitch".gateway;
         rules = map (r: {
           inherit (r)
             Family
@@ -338,14 +350,14 @@ in
             Table
             Priority
             ;
-        }) edgeNetworks."40-netif-dmz-net-vswitch".routingPolicyRules;
+        }) edgeNetworks."10-netif-dmz-net-vswitch".routingPolicyRules;
         routes = map (r: {
           inherit (r)
             Gateway
             Table
             GatewayOnLink
             ;
-        }) edgeNetworks."40-netif-dmz-net-vswitch".routes;
+        }) edgeNetworks."10-netif-dmz-net-vswitch".routes;
       };
       expected = {
         gateway = [ ]; # policy table owns the gateway
@@ -369,11 +381,11 @@ in
     # VLAN: derived sub-interface name + drop-in on the parent.
     test_vlanNetdev = {
       expr = {
-        inherit (edgeNetdevs."40-netif-dmz-net-dmz10".netdevConfig)
+        inherit (edgeNetdevs."10-netif-dmz-net-dmz10".netdevConfig)
           Kind
           Name
           ;
-        inherit (edgeNetdevs."40-netif-dmz-net-dmz10".vlanConfig) Id;
+        inherit (edgeNetdevs."10-netif-dmz-net-dmz10".vlanConfig) Id;
       };
       expected = {
         Kind = "vlan";
@@ -383,7 +395,7 @@ in
     };
     test_vlanDropIn = {
       expr =
-        edge.environment.etc."systemd/network/40-netif-dmz-net-trunk.network.d/50-vlan-dmz10.conf".text;
+        edge.environment.etc."systemd/network/10-netif-dmz-net-trunk.network.d/50-vlan-dmz10.conf".text;
       expected = ''
         [Network]
         VLAN=enp2s0.10
@@ -392,11 +404,11 @@ in
     # Bond: derived netdev name, default mode, member claim files.
     test_bondNetdev = {
       expr = {
-        inherit (edgeNetdevs."40-netif-dmz-net-agg0".netdevConfig)
+        inherit (edgeNetdevs."10-netif-dmz-net-agg0".netdevConfig)
           Kind
           Name
           ;
-        inherit (edgeNetdevs."40-netif-dmz-net-agg0".bondConfig) Mode;
+        inherit (edgeNetdevs."10-netif-dmz-net-agg0".bondConfig) Mode;
       };
       expected = {
         Kind = "bond";
@@ -406,8 +418,8 @@ in
     };
     test_bondMembers = {
       expr = map (n: edgeNetworks.${n}.networkConfig.Bond) [
-        "40-netif-dmz-net-nic0"
-        "40-netif-dmz-net-nic1"
+        "10-netif-dmz-net-nic0"
+        "10-netif-dmz-net-nic1"
       ];
       expected = [
         "agg0"
@@ -417,41 +429,49 @@ in
     # Bridge: explicit empty kind (provider-MAC plumbing) with static addr.
     test_bridgeNetdev = {
       expr = {
-        inherit (edgeNetdevs."40-netif-dmz-net-virbr0".netdevConfig)
+        inherit (edgeNetdevs."10-netif-dmz-net-virbr0".netdevConfig)
           Kind
           Name
           ;
-        address = edgeNetworks."40-netif-dmz-net-virbr0".address;
+        address = edgeNetworks."10-netif-dmz-net-virbr0".address;
+        inherit (edgeNetworks."10-netif-dmz-net-virbr0".networkConfig) ConfigureWithoutCarrier;
       };
       expected = {
         Kind = "bridge";
         Name = "virbr0";
         address = [ "10.30.0.1/24" ];
+        ConfigureWithoutCarrier = true;
       };
     };
     # Instance-namespaced and deterministic unit names: netif's rendered
     # units on kamrui-h1 carry the instance name (the 99-* catch-all
     # networks are NixOS useNetworkd defaults, not netif units).
     test_instanceNamespacedUnits = {
-      expr = lib.filter (n: lib.hasPrefix "40-netif-" n) (lib.attrNames kamNetworks);
+      expr = lib.filter (n: lib.hasPrefix "10-netif-" n) (lib.attrNames kamNetworks);
       expected = [
-        "40-netif-home-net-eth"
-        "40-netif-home-net-wifi"
-        "40-netif-mgmt-mgmt0"
+        "10-netif-home-net-eth"
+        "10-netif-home-net-wifi"
+        "10-netif-mgmt-mgmt0"
       ];
+    };
+    test_networkUnitsPrecedeGenericEthUnits = {
+      expr = lib.all (n: n < "40-eth0.network") (
+        lib.filter (n: lib.hasPrefix "10-netif-" n) (lib.attrNames (kamNetworks // edgeNetworks))
+      );
+      expected = true;
     };
     # Multi-instance rendering on one host: home-net + mgmt files coexist.
     test_multiInstanceFiles = {
       expr = lib.all (n: kamNetworks ? ${n}) [
-        "40-netif-home-net-wifi"
-        "40-netif-home-net-eth"
-        "40-netif-mgmt-mgmt0"
+        "10-netif-home-net-wifi"
+        "10-netif-home-net-eth"
+        "10-netif-mgmt-mgmt0"
       ];
       expected = true;
     };
     # mgmt has no MTU anywhere: no linkConfig on its link.
     test_noMtuNoLinkConfig = {
-      expr = kamNetworks."40-netif-mgmt-mgmt0".linkConfig;
+      expr = kamNetworks."10-netif-mgmt-mgmt0".linkConfig;
       expected = { };
     };
     # Firewall trust + unmanaged interfaces from link facts.
@@ -553,6 +573,32 @@ in
           plain = "192.168.10.10";
         }
       ];
+    };
+    test_explicitEndpointPrecedesSources = {
+      expr = {
+        inherit (explicitEndpointExport.netif) endpoint;
+        inherit (explicitEndpointExport.peer) hosts;
+      };
+      expected = {
+        endpoint = "mgmt.test";
+        hosts = [ { plain = "mgmt.test"; } ];
+      };
+    };
+    test_networkFactsDeepEvalAndParity = {
+      expr = {
+        deep = builtins.deepSeq kam.clan.networkFacts true;
+        node = kam.clan.networkFacts.node.name;
+        mtu = kam.clan.networkFacts.netif.home-net.mtu;
+        interface = kam.clan.networkFacts.netif.home-net.links.eth.interface;
+        graphEdges = builtins.length kam.clan.networkFacts.graphs.underlay;
+      };
+      expected = {
+        deep = true;
+        node = "kamrui-h1";
+        mtu = 1500;
+        interface = "enp3s0";
+        graphEdges = 3;
+      };
     };
     # Uplink facts for routed-fabric: gateway-in-main + null MTU when unset.
     test_uplinkExport = {

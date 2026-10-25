@@ -11,28 +11,32 @@
     };
 
     network = {
-      transport = lib.mkOption {
+      fabric = lib.mkOption {
         type = lib.types.nullOr (
           lib.types.submodule {
             options = {
               service = lib.mkOption {
                 type = lib.types.str;
                 description = ''
-                  Name of the clanService that exports the node_transport
-                  interface (e.g. "wireguard-mesh").
+                  Name of the clanService that exports the routed_fabric
+                  interface (routed-fabric). The cluster consumes that
+                  instance's routed_fabric export (stable host addresses,
+                  per-adjacency interfaces/MTU); the node_transport export
+                  of the same instance remains a compatibility view.
                 '';
               };
               instance = lib.mkOption {
                 type = lib.types.str;
-                description = "Name of the service instance to consume.";
+                description = "Name of the routed-fabric instance to consume.";
               };
             };
           }
         );
         default = null;
         description = ''
-          Selects the node_transport export source. null requires explicit
-          per-node network.ipv4/ipv6 addresses.
+          Selects the routed-fabric (node transport) source. null requires
+          explicit per-node network.ipv4/ipv6 addresses. The mesh group
+          defaults to the fabric instance name (D54).
         '';
       };
       podCIDRv4 = lib.mkOption {
@@ -114,16 +118,15 @@
             serviceSelector = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               description = ''
-                matchLabels of the pool's serviceSelector — only Services
-                carrying these labels (and a Cilium-handled
-                loadBalancerClass: io.cilium/lb-ipam for non-BGP draws,
-                io.cilium/bgp-control-plane for shared-bgp draws) draw
-                from this pool.
+                matchLabels of the pool's serviceSelector. Every explicit
+                pool draw pins io.cilium/bgp-control-plane; only BGP pools
+                are selected for advertisement.
               '';
             };
             delivery = lib.mkOption {
               type = lib.types.enum [
                 "node-fate-bound"
+                "node-bgp"
                 "floating"
                 "shared-bgp"
                 "external-class"
@@ -131,13 +134,27 @@
               description = ''
                 How traffic reaches pool addresses + failure semantics
                 (D8). node-fate-bound is per-machine scope and is rejected
-                for declared (cluster-global) pools. shared-bgp requires the
-                BGP plane (bgp.enable — locked together, eval-asserted) and
-                Services drawing from it must pin
-                loadBalancerClass: io.cilium/bgp-control-plane (Cilium
-                announces only that class or unset). shared-bgp blocks must
-                stay inside router-role prefixes when a fleet-routing router
-                exists in the same inventory (fleet-wide check, phase 5+).
+                for declared (cluster-global) pools. node-bgp is the
+                owner-only BGP delivery: exactly one `owner` machine
+                advertises the pool's exact /32+/128 VIPs (no cross-node
+                ECMP), requiring the BGP plane (bgp.enable — locked
+                together, eval-asserted) and
+                loadBalancerClass: io.cilium/bgp-control-plane on drawing
+                Services (Cilium announces only that class or unset).
+                shared-bgp likewise requires the BGP plane and the
+                bgp-control-plane class; every healthy eligible node
+                advertises (FRR/upstream ECMP, ETP-Local withdrawal).
+                shared-bgp blocks must stay inside border-owned prefixes
+                when a border is declared (fleet-wide check, D8 round 16).
+              '';
+            };
+            owner = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = ''
+                The machine that owns a node-bgp pool: only that node's
+                Cilium advertises the pool's VIPs (D8 owner-only delivery).
+                Required for node-bgp pools; null otherwise.
               '';
             };
             candidates = lib.mkOption {
@@ -154,36 +171,27 @@
       );
       default = { };
       description = ''
-        Cluster-global CiliumLoadBalancerIPPool definitions (D8). Pools
-        serve only Services with loadBalancerClass: io.cilium/lb-ipam;
-        classless Services go to Node IPAM (D41).
+        Cluster-global CiliumLoadBalancerIPPool definitions (D8). Explicit
+        pool draws pin io.cilium/bgp-control-plane; classless Services go
+        to Node IPAM (D41).
       '';
     };
 
-    # BGP v2 control plane (D9). `enable` is locked to the presence of
-    # shared-bgp pools (invariant 6, eval-asserted): BGP exists only to
-    # deliver shared-bgp VIPs, and shared-bgp pools cannot work without it.
-    # With the default fabric (D10, fabric.enable = true) a shared-bgp pool
-    # always exists, so the default here is consistent.
+    # BGP v2 control plane (D9 revised). `enable` is locked to the presence
+    # of node-bgp/shared-bgp pools (invariant 6, eval-asserted): BGP exists
+    # only to deliver BGP pool VIPs (plus the always-on pod-pool
+    # advertisements native routing requires, D49), and those pools cannot
+    # work without it. With the default fabric (D10, fabric.enable = true)
+    # a shared-bgp pool always exists, so the default here is consistent.
     bgp = {
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
         description = ''
           Render the BGP v2 resources (CiliumBGPClusterConfig per node,
-          CiliumBGPPeerConfig, CiliumBGPAdvertisement) and the per-node
-          BIRD fragment. Must equal "any shared-bgp pool exists" (including
-          the default fabric pool) — both directions are eval-asserted
-          (§6.12).
-        '';
-      };
-      advertisePodCIDRs = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          D13 opt-in: advertise the cluster's pod CIDRs (CiliumPodIPPool
-          advertisement) to BGP peers. Default off — hosts reach Services
-          via VIPs, never pods directly.
+          CiliumBGPPeerConfig, CiliumBGPAdvertisement). Must equal "any
+          node-bgp or shared-bgp pool exists" — both directions are
+          eval-asserted (§6.12).
         '';
       };
       advertiseClusterIPs = lib.mkOption {
@@ -191,48 +199,9 @@
         default = false;
         description = ''
           D13 opt-in: advertise Service ClusterIPs to BGP peers. Default
-          off.
-        '';
-      };
-      upstreamPeers = lib.mkOption {
-        type = lib.types.listOf (
-          lib.types.submodule {
-            options = {
-              address = lib.mkOption {
-                type = lib.types.str;
-                description = "Upstream BGP peer address (v4 or v6).";
-              };
-              asn = lib.mkOption {
-                type = lib.types.ints.between 1 4294967295;
-                description = "Upstream peer ASN.";
-              };
-              receivePodCIDRs = lib.mkOption {
-                type = lib.types.bool;
-                default = false;
-                description = ''
-                  Also export the cluster's pod CIDRs to this peer (D13 —
-                  only meaningful with bgp.advertisePodCIDRs; a fleet
-                  admin-role peer pattern, never for real routers).
-                '';
-              };
-              receiveClusterIPs = lib.mkOption {
-                type = lib.types.bool;
-                default = false;
-                description = ''
-                  Also export Service ClusterIPs to this peer (D13 — only
-                  meaningful with bgp.advertiseClusterIPs).
-                '';
-              };
-            };
-          }
-        );
-        default = [ ];
-        description = ''
-          Upstream BGP peers the per-node BIRD dials out to (active,
-          family-split sessions; D9). With none configured, BIRD still runs
-          locally, terminating the Cilium sessions (the private fabric
-          works within the mesh; upstream reachability simply has no
-          carrier yet — D10).
+          off. Pod-pool advertisements are NOT optional: native routing
+          requires FRR-distributed remote pod routes (D49), so the
+          CiliumPodIPPool advertisement is always rendered.
         '';
       };
       ciliumASN = lib.mkOption {
@@ -244,12 +213,14 @@
           fleet-wide ASN collision (fleet-asserted).
         '';
       };
-      birdASN = lib.mkOption {
+      hostASN = lib.mkOption {
         type = lib.types.nullOr (lib.types.ints.between 1 4294967295);
         default = null;
         description = ''
-          The BIRD-side BGP ASN (the cluster's ASN as its upstream peers
-          see it). null derives like ciliumASN.
+          The host-side BGP ASN Cilium peers with at `::1` — the fallback
+          when the fabric reference is absent. With network.fabric set, the
+          fabric node's ASN from routed_fabric's export wins (D9 revised);
+          this pin then only matters for manual-address clusters.
         '';
       };
     };
@@ -322,7 +293,7 @@
             D22(b) opt-in: serve <instance>.pods.<domain> — suffix-rewritten
             to pod.cluster.local (dash-form), forwarded to the cluster
             CoreDNS (which has `pods insecure`). Meaningful only with
-            bgp.advertisePodCIDRs (D13). Consumed by the fleet-routing
+            bgp facts (D13). Consumed by the routed-fabric
             admin role.
           '';
         };
@@ -334,13 +305,26 @@
       default = null;
       description = ''
         The mesh (trust-domain) group this cluster belongs to. null =
-        the default group: all cluster instances under the clan's
-        meta.domain (or the instance's own domain override). An explicit
-        string names a group; clusters sharing a group form one trust
-        domain (ClusterMesh, control domains — D43). Phase-4 mapping: one
-        mesh group = one wireguard-mesh instance — same-group clusters
-        must consume the same node_transport source (fleet-asserted).
-        Recorded in the kube_cluster export.
+        the default group: the fabric instance name when network.fabric is
+        set, else the clan's meta.domain (or the instance's domain
+        override). An explicit string names a group; clusters sharing a
+        group form one trust domain (ClusterMesh, control domains — D43/
+        D54). Same-group clusters must consume the same fabric instance
+        (fleet-asserted). Recorded in the kube_cluster export.
+      '';
+    };
+
+    # D54: full peering within one fabric instance is the default (null);
+    # an explicit list names selective peers (symmetric, non-transitive).
+    meshPeers = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      description = ''
+        Explicit ClusterMesh peers (cluster instance names) for selective
+        peering (D54). null (default) = full peering among the clusters of
+        the fabric instance. Peering bounds the automatic cross-cluster
+        pod/Service route policy rendered into fabric filters; selective
+        peers must be symmetric (fleet-asserted).
       '';
     };
 

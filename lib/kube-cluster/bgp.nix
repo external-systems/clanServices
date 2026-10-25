@@ -1,29 +1,24 @@
-# BGP v2 resource rendering (D9) and the private fleet fabric (D10).
+# BGP v2 resource rendering (D9 revised round 14/15) and the private fleet
+# fabric (D10).
 #
-# Topology (D9): Cilium's GoBGP originates VIP routes and dials OUT to the
-# node-local BIRD over a node-local BGP link; BIRD listens only on that
-# link's loopback alias (169.254.179.1/32 on `lo`, strict-bind — no :179
-# listener on any non-loopback interface). BIRD refuses 127/8 neighbor
-# addresses ("Invalid remote address", verified against BIRD 2.20), hence
-# the link-local alias. BIRD imports ONLY the exact /32+/128 VIPs of the
-# cluster's shared-bgp pools (prefix filters + per-family import limits)
-# and re-exports exactly those to the configured upstream peer(s); it
-# installs nothing into the cluster node's kernel (no kernel protocol).
-# Cilium agents never peer with each other and listen on no port.
+# Topology (D9/D48/D55): Cilium's BGP control plane originates pod-pool and
+# authorized Service routes and dials OUT to the node's ONE host FRR over a
+# single node-local `::1` session carrying BOTH address families (no
+# localPort — Cilium listens on no :179; hold 9 / keepalive 3 / connect
+# retry 5 because Cilium has no BFD). FRR — rendered and owned exclusively
+# by routed-fabric (D19) — accepts the session with `neighbor ::1 capability
+# extended-nexthop`, rewrites the loopback next hop to the node's stable
+# fabric address, and exchanges filtered routes across the fabric. The
+# distro services NEVER render a routing stack; they publish the facts
+# routed-fabric consumes (kube_cluster export) and these Cilium-side CRs.
+# Cilium agents never peer with each other; cluster-side bgp.upstreamPeers
+# is gone (border owns upstream transit, D56).
 #
-# Upstream sessions are dialed out by the node (active) and split per
-# address family (a v4 session carries the ipv4 channel, a v6 session the
-# ipv6 channel — no cross-family next-hop games). `next hop self` makes the
-# router see the node's own session address as the VIP next hop, which is
-# what the upstream ECMPs across.
-#
-# Determinism (D9): two private 32-bit ASNs per cluster (RFC 6996 range
-# 4200000000–4294967294) hashed from the instance name; the Cilium-side and
-# BIRD-side ASNs use different hash salts (and a deterministic +1 fallback
-# on the astronomically unlikely salt collision). Router ids: Cilium's
-# default allocation (the node's IPv4 address — its mesh/transport address
-# under the tested transport); BIRD's `router id` is set to the same node
-# IPv4 via the vendored fragment renderer (bird.nix).
+# Determinism (D9): two deterministic private 32-bit ASNs per cluster
+# (RFC 6996 range 4200000000–4294967294) hashed from the instance name: the
+# Cilium-side ASN and the host-side ASN (used until the fabric's real node
+# ASN arrives from routed_fabric's export, which wins). Router ids: Cilium's
+# default allocation (the node's IPv4 address).
 { lib }:
 let
   cidrLib = import ./cidr.nix { inherit lib; };
@@ -48,75 +43,15 @@ let
   asnBase = 4200000000;
   asnSpan = 4294967294 - asnBase; # 94967294 values
 
-  # BIRD symbols may not contain '-' or '.'; instance names are DNS-style.
+  # BIRD-safe symbol form of a name (no '-' or '.'). LEGACY — consumed by
+  # the legacy fleet-routing service until its deletion (5R3).
   birdSym = s: lib.replaceStrings [ "-" "." ] [ "_" "_" ] s;
 
-  # Per-family block capacity (for the BIRD import limit), capped: the
-  # prefix filter already pins the exact /32+/128 shape, the limit is the
-  # second belt against surprises.
-  cap4 =
-    block:
-    let
-      prefix = builtins.fromJSON (builtins.elemAt (lib.splitString "/" block) 1);
-    in
-    if prefix >= 16 then lib.foldl' (acc: _: acc * 2) 1 (lib.genList (x: x) (32 - prefix)) else 4096;
-  cap6 =
-    block:
-    let
-      prefix = builtins.fromJSON (builtins.elemAt (lib.splitString "/" block) 1);
-    in
-    if prefix >= 120 then lib.foldl' (acc: _: acc * 2) 1 (lib.genList (x: x) (128 - prefix)) else 4096;
-
-  importLimit =
-    blocks: capFn:
-    let
-      total = lib.foldl' (acc: b: acc + capFn b) 0 blocks;
-    in
-    lib.max 1 (lib.min 4096 total);
-
-  byFamily = blocks: {
-    v4 = builtins.filter (b: !(lib.hasInfix ":" b)) blocks;
-    v6 = builtins.filter (lib.hasInfix ":") blocks;
-  };
-
-  # A BIRD prefix-set pattern list: exact /32s (or /128s) within the blocks.
-  exactSet =
-    blocks: len:
-    "[ ${lib.concatMapStringsSep ", " (b: "${b}{${toString len},${toString len}}") blocks} ]";
-
-  # Filter with exact-VIP acceptance of `blocks`, plus optional pod-CIDR
-  # (allocated /24 resp. /64) and ClusterIP acceptance branches (D13).
-  importFilter =
-    {
-      name,
-      blocks,
-      len,
-      podCidr ? null,
-      svcCidr ? null,
-    }:
-    let
-      vipLine = if blocks == [ ] then null else "  if net ~ ${exactSet blocks len} then accept;";
-      podLine =
-        if podCidr == null then
-          null
-        else
-          "  if net ~ [ ${podCidr}{${if len == 32 then "24,24" else "64,64"}} ] then accept;";
-      svcLine = if svcCidr == null then null else "  if net ~ ${exactSet [ svcCidr ] len} then accept;";
-      lines = lib.filter (l: l != null) [
-        vipLine
-        podLine
-        svcLine
-      ];
-    in
-    ''
-      filter ${name} {
-      ${if lines == [ ] then "  reject;" else lib.concatStringsSep "\n" (lines ++ [ "  else reject;" ])}
-      }
-    '';
+  mergeAttrs = items: lib.foldl' (acc: item: acc // item) { } items;
 in
 rec {
   # D9: two deterministic private 32-bit ASNs per cluster. Derivation:
-  # sha256("kube-cluster-bgp-cilium:<instance>") / ("...-bird:<instance>"),
+  # sha256("kube-cluster-bgp-cilium:<instance>") / ("...-host:<instance>"),
   # first 8 hex chars as u32, mapped into 4200000000..4294967293 by modulo
   # (the top of the RFC 6996 range is excluded so the collision fallback
   # +1 stays in range).
@@ -124,16 +59,29 @@ rec {
     instanceName:
     let
       cilium = asnBase + lib.mod (hash32 "kube-cluster-bgp-cilium:${instanceName}") asnSpan;
-      bird0 = asnBase + lib.mod (hash32 "kube-cluster-bgp-bird:${instanceName}") asnSpan;
-      bird = if bird0 == cilium then bird0 + 1 else bird0;
+      host0 = asnBase + lib.mod (hash32 "kube-cluster-bgp-host:${instanceName}") asnSpan;
+      host = if host0 == cilium then host0 + 1 else host0;
     in
     {
-      inherit cilium bird;
+      inherit cilium host;
+
+      # LEGACY alias (pre-round-14 salt) — consumed by the legacy
+      # fleet-routing service until its outright deletion (5R3); new code
+      # must use `host`.
+      bird = asnBase + lib.mod (hash32 "kube-cluster-bgp-bird:${instanceName}") asnSpan;
     };
 
-  # Resolved ASNs: explicit pins (bgp.ciliumASN/bgp.birdASN) win over the
-  # hashed defaults — the escape hatch for a fleet-wide ASN collision
-  # (fleet-asserted), parallel to the cilium.id pin (§6.2).
+  # LEGACY helpers consumed by the legacy fleet-routing service until its
+  # deletion (5R3). New code must not use these.
+  inherit birdSym;
+
+  hashAsn = salt: name: asnBase + lib.mod (hash32 "${salt}:${name}") asnSpan;
+
+  # Resolved ASNs: explicit pins win over the hashed defaults — the escape
+  # hatch for a fleet-wide ASN collision (fleet-asserted), parallel to the
+  # cilium.id pin (§6.2). `host` is the fallback host-side ASN; the fabric
+  # node ASN from routed_fabric's export supersedes it wherever the fabric
+  # reference resolves (D9 revised).
   resolveBgpAsns =
     { instanceName, settings }:
     let
@@ -141,22 +89,8 @@ rec {
     in
     {
       cilium = if settings.bgp.ciliumASN != null then settings.bgp.ciliumASN else hashed.cilium;
-      bird = if settings.bgp.birdASN != null then settings.bgp.birdASN else hashed.bird;
+      host = if settings.bgp.hostASN != null then settings.bgp.hostASN else hashed.host;
     };
-
-  # The node-local BGP link address (D9): a /32 alias on `lo` that BIRD
-  # strict-binds its :179 listener to and Cilium dials out to. One constant
-  # per host is safe: one cluster per node (D16). Link-local = never
-  # forwarded, never routed, never advertised (BIRD imports only the
-  # shared-bgp pool VIPs).
-  bgpLinkV4 = "169.254.179.1";
-
-  # A single private 32-bit ASN hashed from a salted name (same scheme as
-  # hashBgpAsns) — used by fleet-routing for the host's fleet-facing ASN.
-  hashAsn = salt: name: asnBase + lib.mod (hash32 "${salt}:${name}") asnSpan;
-
-  # BIRD-safe symbol form of a name (no '-' or '.').
-  inherit birdSym;
 
   # Fabric pool blocks (D10): RFC1918 + ULA derived from the resolved
   # cilium id (overridable). 172.16.<id>.0/24 sits inside 172.16.0.0/12 for
@@ -213,52 +147,148 @@ rec {
         ];
         serviceSelector."clan.lol/pool" = "${instanceName}-fabric";
         delivery = "shared-bgp";
+        owner = null;
         candidates = [ ];
       };
 
-  # The BGP v2 resource set (D9), rendered iff shared-bgp pools exist.
-  # Returns kubenix typed-tree fragments (custom types registered in
-  # bundle.nix).
+  # The BGP v2 resource set (D9 revised), rendered iff node-bgp or
+  # shared-bgp pools exist (§6.12). Returns kubenix typed-tree fragments
+  # (custom types registered in bundle.nix).
+  #
+  # ONE node-local `::1` session per node (no localPort, both AFs, D55);
+  # advertisements: the local CiliumPodIPPool allocations (REQUIRED for
+  # native routing — FRR distributes remote pod-pool routes, D49/D13) plus
+  # the pool VIPs of the BGP-delivered pools (shared-bgp: every healthy
+  # eligible node; node-bgp: owner-only by pool serviceSelector + ETP
+  # Local). ClusterIP stays an explicit opt-in (D13).
   mkBgpResources =
     {
       instanceName,
       asns,
+      hostAsns ? { },
       # [ machineName ] — one CiliumBGPClusterConfig per node (overlapping
       # node selectors are rejected by Cilium, so we never share one).
       members,
       # names of the cluster's shared-bgp pools (advertised VIP sources)
       sharedBgpPoolNames,
-      advertisePodCIDRs ? false,
+      # owners of the cluster's node-bgp pools (D8)
+      nodeBgpPoolOwners ? { },
       advertiseClusterIPs ? false,
       manifestLabels,
     }:
     let
-      advertLabel."clan.lol/bgp-advertisement" = instanceName;
+      nodeAdvertLabel = m: { "clan.lol/bgp-advertisement-node" = m; };
+      commonAdvertisements = mergeAttrs (
+        map (
+          m:
+          let
+            labels = manifestLabels // nodeAdvertLabel m;
+          in
+          {
+            # Native routing requires every node's local pool allocations.
+            "${instanceName}-${m}-pod-pools" = {
+              metadata.labels = labels;
+              spec.advertisements = [
+                {
+                  advertisementType = "CiliumPodIPPool";
+                  selector.matchLabels."clan.lol/cluster" = instanceName;
+                }
+              ];
+            };
+          }
+          // lib.optionalAttrs (sharedBgpPoolNames != [ ]) {
+            "${instanceName}-${m}-service-vips" = {
+              metadata.labels = labels;
+              spec.advertisements = [
+                {
+                  advertisementType = "Service";
+                  service.addresses = [ "LoadBalancerIP" ];
+                  selector.matchExpressions = [
+                    {
+                      key = "clan.lol/pool";
+                      operator = "In";
+                      values = sharedBgpPoolNames;
+                    }
+                  ];
+                }
+              ];
+            };
+          }
+          // lib.optionalAttrs advertiseClusterIPs {
+            "${instanceName}-${m}-cluster-ips" = {
+              metadata.labels = labels;
+              spec.advertisements = [
+                {
+                  advertisementType = "Service";
+                  service.addresses = [ "ClusterIP" ];
+                  selector.matchExpressions = [
+                    {
+                      key = "clan.lol/cluster";
+                      operator = "NotIn";
+                      values = [ "never" ];
+                    }
+                  ];
+                }
+              ];
+            };
+          }
+        ) members
+      );
+      ownerAdvertisements = mergeAttrs (
+        map (
+          m:
+          let
+            ownerPools = lib.filterAttrs (_: owner: owner == m) nodeBgpPoolOwners;
+          in
+          lib.optionalAttrs (ownerPools != { }) {
+            "${instanceName}-${m}-node-vips" = {
+              metadata.labels = manifestLabels // nodeAdvertLabel m;
+              spec.advertisements = [
+                {
+                  advertisementType = "Service";
+                  service.addresses = [ "LoadBalancerIP" ];
+                  selector.matchExpressions = [
+                    {
+                      key = "clan.lol/pool";
+                      operator = "In";
+                      values = builtins.attrNames ownerPools;
+                    }
+                  ];
+                }
+              ];
+            };
+          }
+        ) members
+      );
     in
     {
-      ciliumBGPPeerConfigs."${instanceName}-bird" = {
-        metadata.labels = manifestLabels;
-        spec = {
-          # D9 timers: fast datacenter failure detection (no BFD in 1.20).
-          timers = {
-            holdTimeSeconds = 9;
-            keepAliveTimeSeconds = 3;
-            connectRetryTimeSeconds = 5;
+      ciliumBGPPeerConfigs = lib.listToAttrs (
+        map (m: {
+          name = "${instanceName}-${m}-frr";
+          value = {
+            metadata.labels = manifestLabels;
+            spec = {
+              timers = {
+                holdTimeSeconds = 9;
+                keepAliveTimeSeconds = 3;
+                connectRetryTimeSeconds = 5;
+              };
+              families = [
+                {
+                  afi = "ipv4";
+                  safi = "unicast";
+                  advertisements.matchLabels = nodeAdvertLabel m;
+                }
+                {
+                  afi = "ipv6";
+                  safi = "unicast";
+                  advertisements.matchLabels = nodeAdvertLabel m;
+                }
+              ];
+            };
           };
-          families = [
-            {
-              afi = "ipv4";
-              safi = "unicast";
-              advertisements.matchLabels = advertLabel;
-            }
-            {
-              afi = "ipv6";
-              safi = "unicast";
-              advertisements.matchLabels = advertLabel;
-            }
-          ];
-        };
-      };
+        }) members
+      );
 
       ciliumBGPClusterConfigs = lib.listToAttrs (
         map (m: {
@@ -269,16 +299,14 @@ rec {
               nodeSelector.matchLabels."kubernetes.io/hostname" = m;
               bgpInstances = [
                 {
-                  name = "${instanceName}-bird";
+                  name = "${instanceName}-frr";
                   localASN = asns.cilium;
-                  # NO localPort: the Cilium side listens on no :179 — it
-                  # only dials out to the node-local BIRD (D9).
                   peers = [
                     {
-                      name = "bird";
-                      peerASN = asns.bird;
-                      peerAddress = bgpLinkV4;
-                      peerConfigRef.name = "${instanceName}-bird";
+                      name = "frr";
+                      peerASN = hostAsns.${m} or asns.host;
+                      peerAddress = "::1";
+                      peerConfigRef.name = "${instanceName}-${m}-frr";
                     }
                   ];
                 }
@@ -288,187 +316,6 @@ rec {
         }) members
       );
 
-      ciliumBGPAdvertisements = {
-        # Exact /32+/128 VIPs of the shared-bgp pools (ETP-Local
-        # withdrawal semantics come from the Services' ETP).
-        "${instanceName}-service-vips" = {
-          metadata.labels = manifestLabels // advertLabel;
-          spec.advertisements = [
-            {
-              advertisementType = "Service";
-              service.addresses = [ "LoadBalancerIP" ];
-              selector.matchExpressions = [
-                {
-                  key = "clan.lol/pool";
-                  operator = "In";
-                  values = sharedBgpPoolNames;
-                }
-              ];
-            }
-          ];
-        };
-      }
-      # D13 opt-ins (default off): pod CIDRs (multi-pool IPAM ⇒
-      # CiliumPodIPPool type selecting the cluster's pod pool by its
-      # manifest labels) and ClusterIPs (all Services).
-      // lib.optionalAttrs advertisePodCIDRs {
-        "${instanceName}-pod-cidrs" = {
-          metadata.labels = manifestLabels // advertLabel;
-          spec.advertisements = [
-            {
-              advertisementType = "CiliumPodIPPool";
-              selector.matchLabels."clan.lol/cluster" = instanceName;
-            }
-          ];
-        };
-      }
-      // lib.optionalAttrs advertiseClusterIPs {
-        "${instanceName}-cluster-ips" = {
-          metadata.labels = manifestLabels // advertLabel;
-          spec.advertisements = [
-            {
-              advertisementType = "Service";
-              service.addresses = [ "ClusterIP" ];
-              # match-all: NotIn with a dummy value (upstream-documented
-              # idiom).
-              selector.matchExpressions = [
-                {
-                  key = "clan.lol/cluster";
-                  operator = "NotIn";
-                  values = [ "never" ];
-                }
-              ];
-            }
-          ];
-        };
-      };
+      ciliumBGPAdvertisements = commonAdvertisements // ownerAdvertisements;
     };
-
-  # The cluster-node BIRD fragment (D9/D19): the text one cluster
-  # contributes to the host's single BIRD via the vendored fragment
-  # renderer. `blocks` = the cluster's shared-bgp pool blocks. acceptPods
-  # / acceptClusterIPs: null or { v4, v6 } CIDRs — when set (the cluster's
-  # bgp.advertisePodCIDRs/advertiseClusterIPs), the Cilium session import
-  # filter also accepts pod CIDRs (allocated /24 + /64) resp. ClusterIPs
-  # (exact /32 + /128). Upstream peers re-export VIPs only, unless the
-  # peer sets receivePodCIDRs/receiveClusterIPs (fleet admin-role peers,
-  # D33) AND the cluster opted in.
-  mkBirdFragment =
-    {
-      instanceName,
-      asns,
-      blocks,
-      igpInterface,
-      igpGateway,
-      upstreamPeers ? [ ],
-      acceptPods ? null,
-      acceptClusterIPs ? null,
-    }:
-    let
-      ns = birdSym instanceName;
-      fam = byFamily blocks;
-
-      upstreams4 = builtins.filter (p: !(lib.hasInfix ":" p.address)) upstreamPeers;
-      upstreams6 = builtins.filter (p: lib.hasInfix ":" p.address) upstreamPeers;
-
-      pods4 = if acceptPods != null then acceptPods.v4 else null;
-      pods6 = if acceptPods != null then acceptPods.v6 else null;
-      svc4 = if acceptClusterIPs != null then acceptClusterIPs.v4 else null;
-      svc6 = if acceptClusterIPs != null then acceptClusterIPs.v6 else null;
-
-      # Per-peer export filter: VIPs always; pod/ClusterIPs only when the
-      # peer opted in AND the cluster advertises them (D13 default off).
-      mkOutFilter =
-        i: len: peer:
-        importFilter {
-          name = "${ns}_upstream_${toString i}_out${if len == 32 then "4" else "6"}";
-          blocks = if len == 32 then fam.v4 else fam.v6;
-          inherit len;
-          podCidr = if (peer.receivePodCIDRs or false) then (if len == 32 then pods4 else pods6) else null;
-          svcCidr = if (peer.receiveClusterIPs or false) then (if len == 32 then svc4 else svc6) else null;
-        };
-
-      upstreamFilters = lib.concatStringsSep "\n" (
-        (lib.imap1 (i: p: mkOutFilter i 32 p) upstreams4)
-        ++ (lib.imap1 (i: p: mkOutFilter (i + builtins.length upstreams4) 128 p) upstreams6)
-      );
-
-      mkUpstream = i: peer: channel: ''
-        protocol bgp ${ns}_upstream_${toString i} {
-          local port 4179 as ${toString asns.bird};
-          neighbor ${peer.address} as ${toString peer.asn};
-          # /32 mesh hosts are reachable through routes, not interface subnets.
-          multihop 1;
-          hold time 9;
-          keepalive time 3;
-          connect retry time 5;
-          ${channel} {
-            import none;
-            export filter ${ns}_upstream_${toString i}_out${if channel == "ipv4" then "4" else "6"};
-            next hop self;
-          };
-        }
-      '';
-
-      limExtra =
-        (if acceptPods != null then 1024 else 0) + (if acceptClusterIPs != null then 4096 else 0);
-    in
-    ''
-      # kube-cluster/${instanceName} (D9): Cilium GoBGP dials out to this
-      # node-local BIRD over the loopback BGP link (${bgpLinkV4}, an alias on
-      # lo); BIRD re-exports approved VIPs to configured upstreams only and
-      # installs nothing into the kernel.
-      ${importFilter {
-        name = "${ns}_cilium_in4";
-        blocks = fam.v4;
-        len = 32;
-        podCidr = pods4;
-        svcCidr = svc4;
-      }}
-      ${importFilter {
-        name = "${ns}_cilium_in6";
-        blocks = fam.v6;
-        len = 128;
-        podCidr = pods6;
-        svcCidr = svc6;
-      }}
-      ${upstreamFilters}
-      # Dedicated BIRD-only IGP: recursive resolution must not treat the
-      # loopback NEXT_HOP as local, and must not alter the kernel's route.
-      ipv4 table ${ns}_cilium_igp_table;
-      protocol static ${ns}_cilium_igp {
-        ipv4 { table ${ns}_cilium_igp_table; };
-        route ${bgpLinkV4}/32 via ${igpGateway} dev "${igpInterface}" onlink;
-      }
-      protocol bgp ${ns}_cilium {
-        local ${bgpLinkV4} port 179 as ${toString asns.bird};
-        neighbor ${bgpLinkV4} as ${toString asns.cilium};
-        passive on;
-        strict bind on;
-        free bind on;
-        # BIRD's direct-neighbor gate rejects its own SCOPE_HOST (0) address.
-        multihop 1;
-        hold time 9;
-        keepalive time 3;
-        connect retry time 5;
-        ipv4 {
-          igp table ${ns}_cilium_igp_table;
-          import filter ${ns}_cilium_in4;
-          import limit ${toString ((importLimit fam.v4 cap4) + limExtra)} action block;
-          export none;
-        };
-        ipv6 {
-          igp table ${ns}_cilium_igp_table;
-          # Cilium uses the IPv4 session endpoint as NEXT_HOP on both AFIs.
-          extended next hop;
-          import filter ${ns}_cilium_in6;
-          import limit ${toString ((importLimit fam.v6 cap6) + limExtra)} action block;
-          export none;
-        };
-      }
-      ${lib.concatStringsSep "\n" (lib.imap1 (i: p: mkUpstream i p "ipv4") upstreams4)}
-      ${lib.concatStringsSep "\n" (
-        lib.imap1 (i: p: mkUpstream (i + builtins.length upstreams4) p "ipv6") upstreams6
-      )}
-    '';
 }

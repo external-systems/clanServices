@@ -133,7 +133,7 @@ report blockers with evidence.
   official overlays (no VXLAN/Geneve); local `::1` FRR peering in BOTH
   address families; Node IPAM at fabric scope; `node-bgp` and
   `shared-bgp` deliveries; kube-proxy off and Cilium
-  `install-iptables-rules=false` with nftables.
+  `install-iptables-rules=true` with nftables.
 - WireGuard `AllowedIPs` are the transit/source ACL. An external-transit
   0.0.0.0/0 and ::/0 is allowed ONLY as the WireGuard crypto ACL; it must
   NEVER appear as an installed, accepted, or leaked IP default route —
@@ -183,8 +183,9 @@ the native base lands FIRST, in pkgs, committed there:
    manifests/cilium/<chartVersion>.yaml at update time): switch
    routingMode to "native"; remove the tunnel/VXLAN settings entirely;
    keep ipv4/ipv6NativeRoutingCIDR active; add autoDirectNodeRoutes =
-   false and extraConfig."install-iptables-rules" = false (the chart has
-   no installIptablesRules value; kube-proxy stays replaced; multi-pool
+   false and extraConfig."install-iptables-rules" = true (the chart has
+   no installIptablesRules value; Cilium 1.20.3 requires its rules for KPR;
+   use iptables-nft; kube-proxy stays replaced; multi-pool
    IPAM, dual-stack, BPF masquerade+tproxy, maglev, pmtu,
    clustermesh-apiserver, Gateway/Ingress off all stay).
 2. `git add` the values edit, then re-inflate with the repo's own
@@ -264,7 +265,7 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
 - Native routing, multi-pool pod IPAM, no tunnel/overlay,
   `auto-direct-node-routes=false` on BOTH k3s and rke2; Cilium devices
   cover every fabric interface; nftables with Cilium
-  `install-iptables-rules=false`; kube-proxy off.
+  `install-iptables-rules=true`; kube-proxy off.
 - Local Cilium -> FRR at `::1` in both address families; next-hop
   rewrite to the stable transport address; FRR/Zebra distributes remote
   pod-pool routes.
@@ -354,8 +355,8 @@ devices, MTU, Node IPAM, pod-pool CIDRs, and mesh peers are layer-2):
 16. Separate routed-fabric trust domain: cross-domain route/pod negative.
 17. kamrui-h1 shape: single-node k3s + hub topology + access=admin
     dual-shape, local Cilium intact.
-18. No Cilium tunnel/iptables negatives (no VXLAN/Geneve, no
-    Cilium-installed iptables rules, kube-proxy off).
+18. No Cilium tunnel, no legacy-iptables or kube-proxy rules; Cilium's
+    required KPR datapath rules use iptables-nft.
 19. Firewall positive AND negative exposure assertions (nftables).
 20. Existing k3s/rke2 single/join/HA suites stay green.
 21. Network facts: deep eval, schema/no-secret/read-only/parity checks;

@@ -130,7 +130,11 @@ node connectivity, and working cross-cluster pod routes before readiness.
   `defaultLBServiceIPAM=nodeipam` provide the ServiceLB-style default.
   Node IPAM's node-IP answers are **fabric-scoped**; they are how classless
   Services reach fleet participants.
-- **Non-BGP pools → `io.cilium/lb-ipam`.**
+- **Explicit pools → `io.cilium/bgp-control-plane`.** Node IPAM owns every
+  unset-class Service, so pool draws need a recognized LB-IPAM class. This
+  class requests allocation, not automatic advertisement; BGP selectors
+  announce only `node-bgp` and `shared-bgp` pools. `io.cilium/lb-ipam` is
+  not a Cilium-handled class.
 - **`node-bgp` and `shared-bgp` pools →
   `io.cilium/bgp-control-plane`.** Cilium 1.20 announces that class (or an
   unset class) through BGP.
@@ -189,8 +193,9 @@ as external-dns.
 ## Firewall posture
 
 The host firewall is **nftables** (D55): kube-proxy is replaced by Cilium
-(kube-proxy off), and Cilium runs with `install-iptables-rules=false` as a
-target/probe — no iptables-based host rules from either layer. The API
+(kube-proxy off). Cilium 1.20.3 requires `install-iptables-rules=true` for
+KPR/BPF masquerade; its required datapath rules use the `iptables-nft`
+backend. Legacy iptables and kube-proxy rules remain forbidden. The API
 listens on transport only. Public ports open only where a Service exposes
 them. WireGuard is restricted to configured underlays; BGP/BFD is
 restricted to loopback and expected fabric/upstream peers. VM tests assert

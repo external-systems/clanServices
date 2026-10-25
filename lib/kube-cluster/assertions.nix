@@ -48,12 +48,11 @@ in
         in
         if explicit != null then explicit else hashCiliumId instanceName;
 
-      # §6.3 all-or-none transport posture: members either all ride the
-      # transport or all carry manual addresses; mixing breaks the mesh
-      # trust domain.
-      memberUsesTransport = m: (m.settings.network.transport or null) != null;
-      transportMembers = lib.filter memberUsesTransport roleMembers;
-      manualMembers = lib.filter (m: !memberUsesTransport m) roleMembers;
+      # §6.3 all-or-none fabric posture: members either all ride the fabric
+      # or all carry manual addresses; mixing breaks the mesh trust domain.
+      memberUsesFabric = m: (m.settings.network.fabric or null) != null;
+      fabricMembers = lib.filter memberUsesFabric roleMembers;
+      manualMembers = lib.filter (m: !memberUsesFabric m) roleMembers;
       membersMissingFacts = lib.filter (
         m: !(transportFacts ? ${m.machineName}) || transportFacts.${m.machineName} == null
       ) roleMembers;
@@ -82,7 +81,7 @@ in
           "bootstrap"
         ] rs
         // {
-          transport = rs.network.transport or null;
+          networkFabric = rs.network.fabric or null;
         };
       roleDrift =
         if builtins.length roleSettings < 2 then
@@ -102,7 +101,7 @@ in
         assertion =
           transportFacts != null
           || lib.all (m: m.settings.network.ipv4 != null && m.settings.network.ipv6 != null) roleMembers;
-        message = "kube-cluster/${instanceName}: network.transport is null, so every member must set network.ipv4 and network.ipv6";
+        message = "kube-cluster/${instanceName}: network.fabric is null, so every member must set network.ipv4 and network.ipv6";
       }
       {
         assertion =
@@ -136,14 +135,14 @@ in
         message = "kube-cluster/${instanceName}: all members must resolve the same cilium.id (resolved here: ${toString resolvedId}); check for per-member cilium.id drift";
       }
       {
-        assertion = transportMembers == [ ] || manualMembers == [ ];
-        message = "kube-cluster/${instanceName}: all-or-none transport posture (§6.3) — members mix transport-provided and manual addresses: transport: ${
-          lib.concatMapStringsSep ", " (m: m.machineName) transportMembers
+        assertion = fabricMembers == [ ] || manualMembers == [ ];
+        message = "kube-cluster/${instanceName}: all-or-none fabric posture (§6.3) — members mix fabric-provided and manual addresses: fabric: ${
+          lib.concatMapStringsSep ", " (m: m.machineName) fabricMembers
         }; manual: ${lib.concatMapStringsSep ", " (m: m.machineName) manualMembers}";
       }
       {
         assertion = transportFacts == null || membersMissingFacts == [ ];
-        message = "kube-cluster/${instanceName}: these members have no export from the configured node_transport source (add them to the transport instance or switch to manual addresses): ${
+        message = "kube-cluster/${instanceName}: these members have no export from the configured fabric source (add them to the routed-fabric instance or switch to manual addresses): ${
           lib.concatMapStringsSep ", " (m: m.machineName) membersMissingFacts
         }";
       }
@@ -154,6 +153,20 @@ in
         }";
       }
       {
+        assertion =
+          settings.network.podCIDRv4 == null || cidr.contains "10.0.0.0/8" settings.network.podCIDRv4;
+        message = "kube-cluster/${instanceName}: network.podCIDRv4 must be contained in ipv4NativeRoutingCIDR 10.0.0.0/8";
+      }
+      {
+        assertion =
+          settings.network.podCIDRv6 == null || cidr.contains "fd10::/16" settings.network.podCIDRv6;
+        message = "kube-cluster/${instanceName}: network.podCIDRv6 must be contained in ipv6NativeRoutingCIDR fd10::/16";
+      }
+      {
+        assertion = !settings.bgp.enable || settings.network.fabric != null;
+        message = "kube-cluster/${instanceName}: bgp.enable requires network.fabric so routed-fabric owns the node-local FRR peer; manual-address clusters must disable BGP and the default fabric pool";
+      }
+      {
         # Cluster-level settings are one logical cluster configuration:
         # they must be identical on every machine of every role
         # (server/agent), otherwise the bundle, the per-member exports,
@@ -161,17 +174,17 @@ in
         assertion = roleDrift == [ ];
         message = "kube-cluster/${instanceName}: cluster-level settings must be identical across all machines — drifted member(s): ${
           lib.concatStringsSep ", " (map (r: r.name) roleDrift)
-        } (set cilium/pools/bgp/fabric/meshGroup/domain/distroDefaults/coredns/bootstrap/network.transport uniformly on every machine of every role)";
+        } (set cilium/pools/bgp/fabric/meshGroup/domain/distroDefaults/coredns/bootstrap/network.fabric uniformly on every machine of every role)";
       }
     ];
 
-  # D8 pool assertions, including the phase-5 fabric pool (D10) and the
-  # BGP coupling (§6.12: BGP only for shared-bgp pools, and shared-bgp
-  # pools require BGP). members: [ { machineName, ipv4, ipv6, poolBlocks } ].
+  # D8 pool assertions, including the fabric pool (D10) and the BGP
+  # coupling (§6.12: BGP only for node-bgp/shared-bgp pools, and those pools
+  # require BGP). members: [ { machineName, ipv4, ipv6, poolBlocks } ].
   # ciliumId: the RESOLVED id (fabric blocks derive from it).
   # reservedCidrs: pod/service CIDRs — no pool block may overlap them.
-  # The shared-bgp ⊆ router-prefixes assertion is fleet-wide (it needs the
-  # router role's exports) and lives in fleet-checks.nix.
+  # The shared-bgp ⊆ border-owned-prefixes assertion is fleet-wide (it
+  # needs the fabric's border exports) and lives in fleet-checks.nix.
   mkPoolAssertions =
     {
       instanceName,
@@ -199,6 +212,7 @@ in
       declaredPools = lib.mapAttrsToList (name: p: {
         inherit name;
         inherit (p) blocks delivery candidates;
+        owner = p.owner or null;
       }) effectivePools;
 
       allBlocks = lib.concatMap (p: p.blocks) (
@@ -224,9 +238,16 @@ in
       ) declaredPools;
       nameCollisions = lib.filter (p: lib.elem p.name memberNames) declaredPools;
 
-      sharedBgpPoolNames = builtins.attrNames (
-        lib.filterAttrs (_: p: p.delivery == "shared-bgp") effectivePools
+      bgpPoolNames = builtins.attrNames (
+        lib.filterAttrs (_: p: p.delivery == "shared-bgp" || p.delivery == "node-bgp") effectivePools
       );
+
+      # D8: node-bgp pools are owner-only — the owner must be declared and
+      # must be a cluster member.
+      nodeBgpPools = lib.filter (p: p.delivery == "node-bgp") declaredPools;
+      nodeBgpBadOwner = lib.filter (
+        p: (p.owner or null) == null || !(lib.elem p.owner memberNames)
+      ) nodeBgpPools;
 
       # The fabric blocks must hold the well-known core VIPs (private
       # CoreDNS at offset 53): at least 64 addresses per family.
@@ -265,22 +286,19 @@ in
         }";
       }
       {
-        # §6.12: BGP only for shared-bgp pools; shared-bgp pools only with
-        # BGP. The two knobs are locked together.
-        assertion = settings.bgp.enable == (sharedBgpPoolNames != [ ]);
-        message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but shared-bgp pools = [${lib.concatStringsSep ", " sharedBgpPoolNames}] (§6.12: BGP only for shared-bgp pools; shared-bgp pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false)";
+        # §6.12: BGP only for node-bgp/shared-bgp pools; those pools only
+        # with BGP. The two knobs are locked together.
+        assertion = settings.bgp.enable == (bgpPoolNames != [ ]);
+        message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but node-bgp/shared-bgp pools = [${lib.concatStringsSep ", " bgpPoolNames}] (§6.12: BGP only for node-bgp/shared-bgp pools, and such pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false)";
       }
       {
-        # D13: a peer flagged receivePodCIDRs/receiveClusterIPs while the
-        # cluster doesn't advertise them is a no-op lie — reject at eval.
-        assertion =
-          lib.all (
-            p: !(p.receivePodCIDRs or false) || settings.bgp.advertisePodCIDRs
-          ) settings.bgp.upstreamPeers
-          && lib.all (
-            p: !(p.receiveClusterIPs or false) || settings.bgp.advertiseClusterIPs
-          ) settings.bgp.upstreamPeers;
-        message = "kube-cluster/${instanceName}: bgp.upstreamPeers entries with receivePodCIDRs/receiveClusterIPs require the matching cluster opt-in (bgp.advertisePodCIDRs/advertiseClusterIPs, D13)";
+        # D8: node-bgp pools need exactly one owner and it must be a member.
+        assertion = nodeBgpBadOwner == [ ];
+        message = "kube-cluster/${instanceName}: node-bgp pools need an owner that is a cluster member (D8 owner-only delivery): ${
+          lib.concatMapStringsSep ", " (
+            p: "${p.name} (owner: ${if (p.owner or null) == null then "null" else p.owner})"
+          ) nodeBgpBadOwner
+        }";
       }
       {
         assertion = fabricV4Ok && fabricV6Ok;

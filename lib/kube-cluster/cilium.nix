@@ -68,6 +68,10 @@ in
   mkCiliumValues =
     {
       settings,
+      # fabric device facts: { interfaces = [ ... ]; mtu = <smallest
+      # adjacency MTU>; } — devices covers EVERY fabric adjacency interface
+      # of this machine (D49/D51) and the MTU is the smallest adjacency MTU
+      # (native routing uses the WG MTU directly; no VXLAN -50, D51).
       transportFacts,
       instanceName,
       k8sServiceHost,
@@ -80,21 +84,26 @@ in
       };
       kubeProxyReplacement = true;
       inherit k8sServiceHost k8sServicePort;
-      routingMode = "tunnel";
-      tunnelProtocol = "vxlan";
+      # D49: native routing is mandatory; auto-direct-node-routes stays
+      # false — FRR/Zebra owns remote pod-pool routes (§6.4).
+      routingMode = "native";
+      autoDirectNodeRoutes = false;
+      # Cilium 1.20 requires its datapath rules for KPR/BPF masquerade;
+      # iptables-nft keeps them on the host's nftables backend (D55).
+      extraConfig."install-iptables-rules" = true;
       ipv4NativeRoutingCIDR = "10.0.0.0/8";
       ipv6NativeRoutingCIDR = "fd10::/16";
-      devices = lib.concatStringsSep " " (lib.unique [ transportFacts.interface ]);
-      nodePort.directRoutingDevice = transportFacts.interface;
-      MTU = transportFacts.mtu - 50;
+      devices = lib.concatStringsSep " " (lib.unique transportFacts.interfaces);
+      nodePort.directRoutingDevice = builtins.head transportFacts.interfaces;
+      MTU = transportFacts.mtu;
       ipam.mode = "multi-pool";
       # D41: Node IPAM is the default classless LoadBalancer mechanism
       # (replaces servicelb, which stays permanently disabled — D42).
       defaultLBServiceIPAM = "nodeipam";
       nodeIPAM.enabled = true;
-      # D9: BGP v2 control plane. Locked to shared-bgp pool presence by the
-      # pool assertions (§6.12); validateBundle re-checks post-merge.
-      bgpControlPlane.enabled = settings.bgp.enable;
+      # D41: explicit pools use the BGP class for LB-IPAM allocation even
+      # without BGP resources; D9's bgp.enable controls those resources.
+      bgpControlPlane.enabled = true;
       ipv4.enabled = true;
       ipv6.enabled = true;
       enableIPv4Masquerade = true;

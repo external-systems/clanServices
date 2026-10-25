@@ -45,7 +45,7 @@ and tested surface (D51); `fleet-routing` was renamed `routed-fabric`;
 assertions (D53); ClusterMesh defaulted to full peering within one fabric
 with explicit symmetric selective peers (D54); AllowedIPs/MTU/source-return
 transport blockers, nftables-only firewall with kube-proxy off and
-`install-iptables-rules=false`, fabric-scoped Node IPAM, netif bridge
+`install-iptables-rules=true`, fabric-scoped Node IPAM, netif bridge
 plumbing for KubeVirt attachment, and the dual-AF local Cilium↔FRR
 session were closed contractually (D51/D55). New decisions D51–D55;
 revised: D8, D9, D11, D13, D33, D41, D43, D44, D47, D50. Round 16
@@ -106,7 +106,8 @@ hub/spoke topology with one WireGuard interface per declared adjacency
 routes (D51). Cilium = CNI
 + KPR + **native routing** + multi-pool pod IPAM + Node IPAM for classless
 LoadBalancer Services + LB-IPAM pools + BGP v2 + ClusterMesh — networking
-only (D1); kube-proxy is off and Cilium owns no iptables rules (D55).
+only (D1); kube-proxy is off and Cilium's required datapath rules use
+iptables-nft (D55).
 Local Cilium agents advertise pod pools and Service VIPs only to their
 node-local FRR over one dual-AF session; FRR exchanges filtered routes
 across the encrypted fabric — hubs forward and readvertise with
@@ -170,16 +171,19 @@ buildable diagrams without becoming a clanServices dependency (D57).
 - Cilium only: one canonical upstream 1.20+ profile — KPR, **native
   routing**, multi-pool pod IPAM with derived non-clashing dual-stack
   CIDRs, BPF masquerade+tproxy, Maglev, pmtu, kube-proxy off,
-  `install-iptables-rules=false` (nftables-only, D55).
+  `install-iptables-rules=true` (nftables-only, D55).
   `auto-direct-node-routes` is false: FRR/Zebra owns remote pod-pool
   routes. `ipam.mode: kubernetes` remains an explicit override. Admin
   helm-values overrides pass post-merge invariant validation (§6.4).
 - **Node IPAM on by default** (`nodeIPAM.enabled=true`,
   `defaultLBServiceIPAM=nodeipam`, D41): classless `type: LoadBalancer`
   Services get node IPs, ServiceLB-style; ETP-Local-aware candidate
-  selection. Pool VIP draws use explicit Cilium-handled
-  `loadBalancerClass`es: `io.cilium/lb-ipam` for non-BGP deliveries and
-  `io.cilium/bgp-control-plane` for `node-bgp` and `shared-bgp`.
+  selection. Every explicit pool VIP draw pins
+  `io.cilium/bgp-control-plane` to bypass that default and select LB IPAM;
+  the class alone does not advertise. BGP advertisements select only
+  `node-bgp` and `shared-bgp` pools. `bgpControlPlane.enabled=true` keeps
+  the class registered even when `bgp.enable=false` renders no BGP
+  resources.
 - LB-IPAM pool model with five delivery modes (D8 revised round 15:
   `node-bgp` only where BGP delivery actually exists), BGP v2 +
   per-node FRR/Zebra (D9/D19/D48), default private fleet fabric (D10),
@@ -256,9 +260,13 @@ unless noted) — revoked entries keep one-line reasons for history.
   provider-static node-bound extras remain node-fate-bound) | `floating`
   (runtime controller moves one address; blackhole window) |
   `shared-bgp` (every healthy eligible node advertises; upstream ECMP;
-  ETP-Local withdrawal) | `external-class` (cloud CCM). Non-BGP draws
-  use `io.cilium/lb-ipam`; both BGP modes use
-  `io.cilium/bgp-control-plane`. Assertions: non-overlap; scope⇒mode
+  ETP-Local withdrawal) | `external-class` (cloud CCM). REVISED
+  2026-10-25 after the k3s runtime probe: every explicit pool draw pins
+  `io.cilium/bgp-control-plane`; `io.cilium/lb-ipam` is not Cilium-handled.
+  With Node IPAM as the unset-class default, an unset class cannot draw
+  from a pool. The BGP class requests LB-IPAM allocation; advertisement
+  remains selector-driven, so non-BGP pools stay unannounced. Assertions:
+  non-overlap; scope⇒mode
   validity; `node-bgp` exactly one owner and never shared; `shared-bgp`
   only cluster-global; floating candidate coverage; BGP pool blocks ⊆
   `border.ownedPrefixes` when a border is declared. Classless Node-IPAM
@@ -558,11 +566,13 @@ unless noted) — revoked entries keep one-line reasons for history.
   which are permanently disabled (D1) — third-party proxies with real
   backends (Envoy Gateway day-2) are unaffected. Clan-rendered VIP
   consumers (ClusterMesh apiserver, private CoreDNS, mirror Services)
-  always pin a Cilium-handled `loadBalancerClass` and draw from pools
-  (D8/D9/D10): `io.cilium/lb-ipam` for node-fate-bound/floating draws,
-  `io.cilium/bgp-control-plane` for `node-bgp` and `shared-bgp` draws
-  (the only class Cilium 1.20's BGP control plane announces, besides
-  unset). KubeVirt Hetzner/provider-MAC attachment is netif host-bridge
+  draw from pools (D8/D9/D10): every explicit pool draw pins
+  `io.cilium/bgp-control-plane`, because the Node-IPAM default owns every
+  unset-class Service. This class selects LB-IPAM allocation, not automatic
+  advertisement; only `node-bgp` and `shared-bgp` pools are selected by the
+  rendered BGP advertisements. `bgpControlPlane.enabled=true` registers
+  the class independently of `bgp.enable`, which controls BGP resources.
+  KubeVirt Hetzner/provider-MAC attachment is netif host-bridge
   plumbing, never a Cilium pool/BGP delivery; KubeVirt stays day-2
   (D52). Multi-pool remains the
   default pod IPAM with
@@ -621,7 +631,7 @@ unless noted) — revoked entries keep one-line reasons for history.
   default route, Internet source/return path, MTU floor + path-MTU);
   data-plane suite per distro (pool allocation + nodeipam + ETP-Local +
   native pod routes + node-bgp ownership + shared-bgp ECMP/withdrawal +
-  firewall positive/negative + no-iptables assertion + dual-AF local
+  firewall positive/negative + iptables-nft assertion + dual-AF local
   Cilium↔FRR session); bgp-ecmp (two hubs active-active + single-hub
   failover, upstream ECMP, border-not-hub, MikroTik-style FRR
   foreign-router fixture); selective ClusterMesh (full-peering default +
@@ -819,13 +829,15 @@ unless noted) — revoked entries keep one-line reasons for history.
   (peering edges) — similar shapes, independent edges. `meshGroup`
   defaults from the fabric instance; no repeated value required.
 - **D55 Host datapath hygiene: nftables-only firewall + dual-AF local
-  Cilium session.** (i) Host firewall is nftables-only; kube-proxy is
-  off; Cilium `install-iptables-rules=false`, gated by a preliminary probe
-  and a VM assertion. Cilium 1.20.3 exposes no `installIptablesRules` Helm
-  value; the artifact profile sets the supported
-  `extraConfig."install-iptables-rules" = false` key, and layer 2 preserves
-  it. iptables-nft userspace may exist but must not own rules. Official mycelium/yggdrasil/wireguard overlays are NOT
-  dependencies or underlays — peer exports are the integration seam.
+  Cilium session.** (REVISED 2026-10-25 from the k3s data-plane VM failure.)
+  (i) Host firewall is nftables-only; kube-proxy is off. Cilium 1.20.3
+  rejects KPR/BPF masquerade with `install-iptables-rules=false`, so the
+  canonical profile sets the supported `extraConfig."install-iptables-rules"
+  = true` key and layer 2 preserves it. Cilium's required datapath rules use
+  `iptables-nft`; legacy iptables and kube-proxy rules are forbidden.
+  Cilium 1.20.3 exposes no `installIptablesRules` Helm value. Official
+  mycelium/yggdrasil/wireguard overlays are NOT dependencies or underlays —
+  peer exports are the integration seam.
   (ii) The local Cilium↔FRR `::1` session carries BOTH address
   families; advertisement selectors and the `CiliumPodIPPool` type are
   pinned; explicit `extended-nexthop` capability and v4-over-v6 /
@@ -900,8 +912,9 @@ unless noted) — revoked entries keep one-line reasons for history.
    Services, ClusterMesh apiserver, private CoreDNS VIP); no silent
    Cluster fallback.
 6. LB IPAM ownership unambiguous: classless Services → Node IPAM (D41);
-   `io.cilium/lb-ipam` → non-BGP pools; `io.cilium/bgp-control-plane` →
-   `node-bgp` or `shared-bgp` only, with owner/advertiser coherence (D8).
+   every explicit pool draw → `io.cilium/bgp-control-plane`; BGP
+   advertisements select `node-bgp` or `shared-bgp` pools only, with
+   owner/advertiser coherence (D8).
 7. Topology always labeled: region/zone default to instance name,
    per-machine overrides, non-empty.
 8. Hermetic proof: pinned artifacts, eval rejection of invalid
@@ -943,8 +956,9 @@ unless noted) — revoked entries keep one-line reasons for history.
     automatic cross-cluster pod/Service route policy; separate
     routed-fabric instances are hard trust-domain separation (D54).
 20. Host firewall is nftables-only; kube-proxy is off; Cilium
-    `install-iptables-rules=false`; iptables-nft userspace may exist but
-    must not own rules; VMs assert no iptables-owned rules (D55).
+    `install-iptables-rules=true` for KPR/BPF masquerade through
+    iptables-nft; VMs assert Cilium datapath rules and no legacy-iptables
+    or kube-proxy rules (D55).
 21. WireGuard MTU derives per link from the underlay minus WireGuard
     overhead with a 1280 floor; VMs assert path MTU (D51).
 22. `clan.networkFacts` is versioned, non-secret, deep-evaluable, and
@@ -1087,7 +1101,8 @@ inventory.instances = {
     roles.default.machines.kamrui-h1.settings.links.lab = {
       interface = "enp3s0";
       static.ipv4 = [ "192.0.2.10/24" ];
-      gateway.ipv4 = "192.0.2.1";
+      # No default gateway here: home-net's DHCP link owns the host default.
+      routes = [ { destination = "192.0.2.0/24"; gateway = "192.0.2.1"; } ];
     };
   };
   fleet = {
@@ -1135,7 +1150,7 @@ bundled Cilium disabled. Always: KPR, `routing-mode: native`, no
 VXLAN/Geneve, multi-pool pod IPAM (default; derived non-clashing
 dual-stack CIDRs), `auto-direct-node-routes: false`, BPF
 masquerade+tproxy, Maglev, pmtu, Node IPAM (D41), kube-proxy off,
-`install-iptables-rules=false` (D55). Dual-stack
+`install-iptables-rules=true` (D55). Dual-stack
 native-routing CIDRs cover all pod CIDRs in the mesh trust domain
 (default `10.0.0.0/8` + `fd10::/16` for derived space; explicit overrides
 must contain every explicit pod CIDR). Cilium device configuration covers
@@ -1203,9 +1218,10 @@ D5 edge-proxy.
 ### 6.7 Pools, LB, BGP, FRR
 Per D8/D9/D10/D19/D41. Node IPAM serves classless Services with node IPs
 (no pools/BGP) — fabric-scoped; public exposure uses explicit pools
-(D41/D52). Non-BGP pools use `io.cilium/lb-ipam`; `node-bgp` and
-`shared-bgp` use `io.cilium/bgp-control-plane` or Cilium allocates without
-announcing. Pool updates may reassign IPs and are reviewed changes.
+(D41/D52). Every explicit pool draw uses
+`io.cilium/bgp-control-plane`; Cilium allocates through LB IPAM but only
+`node-bgp` and `shared-bgp` pools are selected for announcement. Pool
+updates may reassign IPs and are reviewed changes.
 
 | Delivery | Scope | Advertiser / failure semantics |
 | --- | --- | --- |
@@ -1243,12 +1259,11 @@ optional proxy-NDP for on-LAN prefixes.
 No Gateway API, Ingress, or proxy implementation is clan-rendered
 (revoked D2/D6/D7/D15/D17). The day-2 guide carries the Envoy Gateway
 recipe: DaemonSet-mode EnvoyProxy on labeled workers, ETP Local (safe
-with Node IPAM — real EndpointSlices, D41), `loadBalancerClass:
-io.cilium/lb-ipam` + pool-label selectors or explicit
-`lbipam.cilium.io/ips` projections for VIP draws from
-node-fate-bound/floating pools — and `io.cilium/bgp-control-plane` when
-the pool is `node-bgp` or `shared-bgp` (Cilium 1.20 only announces that class) — one
-proxy
+with Node IPAM — real EndpointSlices, D41),
+`loadBalancerClass: io.cilium/bgp-control-plane` + pool-label selectors or
+explicit `lbipam.cilium.io/ips` projections for every explicit pool draw.
+BGP advertisements still select only `node-bgp` and `shared-bgp` pools —
+one proxy
 implementation per IP:port, QUIC-passthrough on its own VIP. The
 contract guarantees the substrate (pools, BGP, firewall); the proxy
 is GitOps-owned.
@@ -1308,14 +1323,15 @@ Cilium devices missing WG links; ETP Cluster on clan-rendered external
 Services; base-manifest drift; IFD smuggling; unsupported k8s minor
 without acknowledgment; application-secret vars; control-domain
 violations; spoke without mirror/SAN; servicelb; distro-manifests-dir
-delivery; kube-proxy enabled or `install-iptables-rules=true` in the
+delivery; kube-proxy enabled or `install-iptables-rules=false` in the
 canonical profile. The read-only ClusterRole never contains `secrets`
-or write verbs (D38). Firewall: nftables-only — iptables-nft userspace
-may exist but must not own rules (D55); API on transport only; public
+or write verbs (D38). Firewall: nftables-only — Cilium's required
+KPR/BPF-masquerade rules use iptables-nft; legacy iptables and
+kube-proxy rules are forbidden (D55); API on transport only; public
 ports only where exposed; WireGuard only on configured underlays;
 BGP/BFD only on loopback and expected WG/upstream peers; mirror Services
 restricted to GitOps namespaces. VMs assert positive AND negative
-exposure and no iptables-owned rules.
+exposure, the nft backend, Cilium datapath rules, and no kube-proxy rules.
 
 ### 6.13 routed-fabric service
 Per D11/D13/D19/D22/D33/D47/D48/D51/D52/D53/D56. Two topology roles, no
@@ -1356,7 +1372,7 @@ client pod-route isolation, selective-leaf isolation, node-bgp
 owner-only and shared-bgp
 ECMP withdrawal, border filtering, border-not-hub without automatic
 admin DNS, composable admin-border, hub active-active + single-hub
-failover, NAT membership, MTU floor/path MTU, no iptables-owned rules,
+failover, NAT membership, MTU floor/path MTU, no legacy-iptables or kube-proxy rules,
 and the kamrui-h1 dual-shape with local Cilium behavior intact.
 
 ### 6.14 Control domain (D43)
@@ -1450,7 +1466,8 @@ Suites (the whole contract surface — nothing else is VM-tested):
   advertisement and withdrawal, shared-bgp dual-stack ECMP and
   single-path withdrawal (including Linux `ip -j` single-path shape),
   floating-pool blackhole window, firewall positive/negative exposure,
-  NO iptables-owned rules, dual-AF local Cilium↔FRR session;
+  iptables-nft Cilium rules plus NO legacy-iptables or kube-proxy rules,
+  dual-AF local Cilium↔FRR session;
 - **bgp-ecmp suite**: private fabric, TWO HUBS active-active ECMP +
   single-hub failover, upstream ECMP, border-not-hub, MikroTik-style FRR
   foreign-router fixture, upstream border pools and node-owned IPv6
@@ -1556,10 +1573,10 @@ tests together)
 - **5R2 planned — both repos** — (1) in external-systems/pkgs:
   re-inflate and COMMIT the pinned Cilium base manifest with the
   native-routing defaults (routing-mode native, multi-pool, Node IPAM,
-  kube-proxy off, install-iptables-rules=false) per D26 layer 1;
+  kube-proxy off, install-iptables-rules=true via iptables-nft) per D26 layer 1;
   (2) update the clanServices artifact pin to the new pkgs revision;
   (3) implement local Cilium↔FRR dual-AF `::1` session, multi-pool route
-  exchange, native CIDR/device/MTU invariants, no-iptables probe +
+  exchange, native CIDR/device/MTU invariants, iptables-nft probe +
   assertion, and node-bgp/shared-bgp delivery in shared lib + both
   distros; (4) land the FULL ClusterMesh phase (§6.5: apiserver
   node-bound exposure, DNS fan-in, mesh CA/certs vars, full-peering
@@ -1616,7 +1633,8 @@ official mycelium/yggdrasil/wireguard overlays as dependencies or
 underlays (peer exports are the integration seam, D55); mandatory
 all-to-all ClusterMesh as the only peering mode (full is the default,
 selective peers supported, D54); more than one routed-fabric membership
-per machine (D53); iptables-owned firewall rules (D55); single-stack internals; Rancher
+per machine (D53); legacy-iptables or kube-proxy-owned firewall rules
+(D55); single-stack internals; Rancher
 Manager; cross-inventory automatic mesh; implicit global Services;
 early/default-on MCS-API; bundled provider CCMs; replicated storage;
 Windows guests; direct-to-pod routing from edges; NAT64/app egress
@@ -1714,8 +1732,8 @@ such as external-dns).
   that advertises node IPs (ExternalIP, else InternalIP) as a Service's
   LB ingress; the classless-Service default (D41). Distinct from
   `ipam.mode: kubernetes` (pod IPAM), which is an allowed override.
-- **LB IPAM pool** — CiliumLoadBalancerIPPool; serves Cilium-handled
-  classes (`io.cilium/lb-ipam`, `io.cilium/bgp-control-plane`).
+- **LB IPAM pool** — CiliumLoadBalancerIPPool; explicit draws use
+  `io.cilium/bgp-control-plane`, while advertisement remains selector-driven.
 - **Node-fate-bound delivery** — provider/static routing to one node; no
   failover, no BGP.
 - **Node BGP delivery** — only the owner node advertises exact VIPs from
@@ -1817,8 +1835,9 @@ such as external-dns).
   effectively unmaintained (last non-dependabot commit 2023) —
   fork-don't-depend.
 - go-httpbin (mccutchen): standard airgapped HTTP VM-test workload.
-- Host firewall: nftables-only; iptables-nft userspace translation must
-  not own rules (D55).
+- Host firewall: nftables-only; Cilium 1.20.3 KPR/BPF masquerade requires
+  `install-iptables-rules=true` through iptables-nft; legacy iptables and
+  kube-proxy rules are forbidden (D55).
 - Cilium BGP session: one local `::1` session carrying both AFs;
   `extended-nexthop` capability and v4/v6 next-hop interworking are
   probed before renderer lock (D55).

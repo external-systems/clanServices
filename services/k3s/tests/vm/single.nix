@@ -42,7 +42,7 @@ _: {
 
           roles.server = {
             settings = {
-              network.transport = {
+              network.fabric = {
                 service = "wireguard-mesh";
                 instance = "mesh";
               };
