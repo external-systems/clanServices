@@ -3,57 +3,65 @@
 `routed-fabric` is the flat-L3 clanService for Kubernetes and ordinary
 NixOS machines: per-adjacency WireGuard, one FRR routing stack per host,
 access/border-based route policy, and fleet route consumption (member DNS
-is day-2, D22 amended). It replaces the legacy
-`wireguard-mesh` transport and the BIRD-based phase-5 design (round 15,
-D51–D55; role model revised round 16, D56).
+is day-2, D22 amended). Round 17 (D58–D60) makes it the **native Cilium
+profile** and renames its topology roles **`leaf`/`spine`**.
 
 ## Roles and switches
 
-**Two topology roles** (D56); each machine joins exactly one:
+**Two topology roles** (D56, renamed D59); each machine joins exactly one:
 
-- **`member`** — the fabric participant: encrypted dual-stack fabric
+- **`leaf`** — the fabric participant: encrypted dual-stack fabric
   transport, FRR/BFD/Zebra, and automatic native pod routes on Kubernetes
   nodes.
-- **`hub`** — a member that also forwards and readvertises between spokes,
-  with explicit hub↔hub links; spokes never transit.
+- **`spine`** — a leaf that also forwards and readvertises between leaves;
+  every spine pair is automatically adjacent; leaves never transit.
 
 Two **orthogonal, composable per-machine switches** layer on top:
 
 - **`access = member | client | admin`** (default `member`) — controls
-  route consumption. `client` adds fabric-pool LoadBalancer-VIP routes
-  only (explicit private pools; never pods or ClusterIPs); `admin` adds
-  pod/ClusterIP routes; Kubernetes nodes install pod/VIP routes
-  regardless of access (D49). kamrui-h1 remains the canonical
-  dual-shape example. Member-facing DNS is day-2 (external-dns), not an
-  MVP render.
+  route consumption; the enum is unchanged by the role rename — it is
+  baseline membership, not topology. `client` adds fabric-pool
+  LoadBalancer-VIP routes only (explicit private pools; never pods or
+  ClusterIPs); `admin` adds pod/ClusterIP routes; Kubernetes nodes install
+  pod/VIP routes regardless of access (D49). kamrui-h1 remains the
+  canonical dual-shape: single-node k3s + `spine` + `access = "admin"`.
+  Member-facing DNS is day-2 (external-dns),
+  not an MVP render.
 - **`border`** (optional) — the machine owns upstream transit: upstream
   peers, owned-prefix filtering, forwarding, optional NDP. A border is
-  **not automatically a hub**, gets **no automatic admin DNS**, and a hub
-  is **not automatically a border**; public endpoints imply neither.
-  Each spoke names its hubs per machine (`settings.hubs`); hub membership
-  is declared by the `hub` role, not inferred from the union of spoke
-  lists.
+  **not automatically a spine**, gets **no automatic admin DNS**, and a
+  spine is **not automatically a border**; public endpoints imply neither.
+
+## Topology: the automatic graph (D59)
+
+The adjacency graph is **derived, not mutually listed**: every unordered
+spine pair is automatically adjacent; every leaf attaches to **every spine
+by default**, and a leaf may declare an explicit spine subset
+(`settings.spines` on the machine). **Full spine peering is not full
+fabric mesh** — leaves never peer with leaves. Two spines are the HA
+default with no arbitrary maximum; there is no iBGP and no route
+reflectors — eBGP with `next-hop-self` over each derived adjacency
+replaces them.
 
 ## Data plane
 
 Every machine has stable loopback `/32` and `/128` addresses. Every
-**declared adjacency** — member↔hub, hub↔hub, border↔upstream — gets
-exactly one point-to-point WireGuard interface with one peer. This
+adjacency in the derived graph — leaf↔spine, spine↔spine, border↔upstream
+— gets exactly one point-to-point WireGuard interface with one peer. This
 preserves cryptokey correctness and kernel ECMP across interfaces.
 `AllowedIPs` is both outbound peer selection and the inbound source ACL,
-and includes the transit prefixes a hub readvertises; FRR filters derive
+and includes the transit prefixes a spine readvertises; FRR filters derive
 from the same route policy. External-transit links may list default entries
 as a crypto ACL without installing a default route, and Internet-sourced
 ingress requires source-policy return. Multiple NAT borders do not share
 conntrack state by default, so existing-flow failover requires a separate
 state mechanism (D56).
 
-The MVP topology is routed-hub: hubs forward/readvertise, members never
-provide spoke transit, one hub minimum and two for HA with no arbitrary
-maximum, Kubernetes managers not default hubs, and NAT members work
-through the hubs. Full mesh is deferred; there is no iBGP and no route
-reflectors — eBGP with `next-hop-self` over each adjacency replaces them.
-
+As the native profile (D58), routed-fabric publishes the generic
+`node_transport` export (schemaVersion 2) with `datapath.mode = native`,
+`native.routeExchange = local-router`, and the `internalLoadBalancer` +
+`nodePort` exposure capabilities; the provider-specific `routed_fabric`
+export carries ASN, topology, adjacencies, ACL, `access`, and `border`.
 FRR exchanges eBGP routes per address family, uses BFD on every fabric
 path, and installs accepted routes through Zebra. Cilium peers only with
 local FRR over `::1`; FRR rewrites its next hop before redistribution, and
@@ -70,7 +78,7 @@ attrset, not duplicated in cluster settings.
 A host belongs to at most one routed-fabric instance; multiple instances
 segment trust domains. The cluster-side reference is
 `settings.network.fabric`; selective ClusterMesh peering through
-`mesh.peers` is described in
+`mesh.peers` and the round-17 exposure profiles are described in
 [Multi-cluster](../architecture/multi-cluster.md).
 
 See [Routed fabric architecture](../architecture/routed-fabric.md) and
@@ -80,14 +88,19 @@ endpoints.
 
 ## Status
 
-Round-15/16 target, **planned for phases 5R1–5R3** — no implementation or VM
-evidence exists for the routed-hub shape yet. The round-15 implementation
-is a one-session complete overhaul delivered from
-[the implementation prompt](../guides/routed-fabric-mvp-prompt.md):
-multi-instance `netif`, `routed-fabric` (routed-hub MVP), native Cilium
-and pools on both distros, full and selective ClusterMesh, the
-`external-systems/pkgs` native Cilium base re-inflation, and the
-clanServices pin update.
+**Implemented (5R1, 2026-10-25) in the round-16 shape** — `member`/`hub`
+topology roles with service-specific transport facts. The round-17 surface
+on this page — the `leaf`/`spine` rename (D59), the generic `node_transport`
+schemaVersion 2 (D58), and the D60 ClusterMesh contract — is **planned in
+5R5: docs-locked, not yet implemented**, with no VM evidence. The implementation
+was delivered as a one-session complete overhaul from
+[the implementation prompt](../guides/routed-fabric-mvp-prompt.md)
+(historical: written for the round-16 `member`/`hub` role names, renamed
+`leaf`/`spine` by D59): multi-instance `netif`, `routed-fabric`,
+native Cilium and pools on both distros, full and selective ClusterMesh,
+the `external-systems/pkgs` native Cilium base re-inflation, and the
+clanServices pin update. Inventory examples in these docs that show
+`leaf`/`spine` are **Round 17 target, not current config**.
 
 The code still in the tree at `services/fleet-routing/` is legacy: the
 BIRD/VXLAN checkpoint at `2995ac3` (5 green / 7 red suites) and the

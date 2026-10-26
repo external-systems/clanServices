@@ -14,11 +14,14 @@ the Cilium chart. Clan never installs a GitOps controller.
 ## The layers
 
 **Machines and transport.** Machines are NixOS clan machines. `netif` owns
-inventory-declared links and static routes, multi-instance and multi-link.
-`routed-fabric` provides the only tested overlay: dual-stack, encrypted
-flat L3 with one WireGuard interface per declared adjacency and
-FRR/BFD/Zebra on every member, in a routed-hub topology (full mesh
-deferred).
+inventory-declared links and static routes, multi-instance and multi-link
+(implemented, 5R1). `routed-fabric` provides the native tested overlay:
+dual-stack, encrypted flat L3 with one WireGuard interface per adjacency
+and FRR/BFD/Zebra on every fabric machine (implemented 5R1 in the
+round-16 `member`/`hub` shape; the round-17 `leaf`/`spine` rename is the
+planned 5R5 target).
+`wireguard-mesh` is the supported tunnel/VXLAN profile over the same
+generic `node_transport` export.
 
 **Distro runtime.** `rke2` and `k3s` are thin services: they own bootstrap,
 TLS directory, and join semantics. Everything shared — interfaces,
@@ -30,18 +33,21 @@ the distro's own machinery. servicelb stays off in both modes — Node IPAM
 replaces it.
 
 **Cilium, networking-only (D1).** Cilium is the CNI, kube-proxy replacement,
-native-routed multi-pool pod IPAM, Node IPAM for classless LoadBalancer
-Services, LB-IPAM pools, BGP v2 speaker, and ClusterMesh control plane. Its
+multi-pool pod IPAM, Node IPAM for classless LoadBalancer
+Services, LB-IPAM pools, BGP v2 speaker, and ClusterMesh control plane.
+Native routing is the routed-fabric profile default; the wireguard-mesh
+tunnel/VXLAN profile is equally supported — both publish the generic
+`node_transport` export that distro services consume. Its
 Gateway and Ingress controllers are permanently disabled. See
 [Networking](networking.md).
 
 **FRR + Zebra fabric.** Per-node FRR receives pod-pool and VIP routes from
 local Cilium, exchanges filtered routes over per-adjacency WireGuard with
-`next-hop-self` on hub readvertisement, and uses Zebra to install kernel
-routes. BFD detects fabric failures. Hubs forward and readvertise; spokes
+`next-hop-self` on spine readvertisement, and uses Zebra to install kernel
+routes. BFD detects fabric failures. Spines forward and readvertise; leaves
 never transit; there is no iBGP or route reflector. Node-owned BGP pools
 have one advertiser; shared pools ECMP across healthy nodes — and across
-the two HA hubs. See [Routed fabric](routed-fabric.md).
+the two HA spines. See [Routed fabric](routed-fabric.md).
 
 **The bootstrap bundle (D40).** The entire day-1 in-cluster surface is ONE
 kubenix-rendered manifest set per cluster — Cilium, pools, ClusterMesh

@@ -2,7 +2,7 @@
 
 Declare machines and clusters in one file. Get clusters with a verifiable bootstrap and data plane.
 
-External Systems — 2026-10-24
+External Systems — 2026-10-25
 
 Note: Press `S` for the speaker view, `F` for fullscreen.
 
@@ -19,15 +19,15 @@ Note: Press `S` for the speaker view, `F` for fullscreen.
 ## What you get: the two contracts
 
 - **Bootstrap**: distro install/join (rke2, k3s, upstream kubeadm reserved); cluster PKI + rotation runbooks; per-node HAProxy kubeapi HA; one bootstrap bundle applied once
-- **Data plane**: native multi-pool Cilium, Node IPAM, five LB delivery modes, per-node FRR/BFD/Zebra, native ClusterMesh with selective peers, one WireGuard interface per declared adjacency, private CoreDNS zones
-- **Host network**: `netif` owns links/static routes (multi-instance); `routed-fabric` owns the flat-L3 fabric, routed-hub MVP
+- **Data plane**: multi-pool Cilium in native or tunnel/VXLAN profile, Node IPAM, five LB delivery modes, per-node FRR/BFD/Zebra, ClusterMesh with selective peers and exposure profiles, one WireGuard interface per fabric adjacency, in-cluster `cluster.local` CoreDNS (member DNS is day-2)
+- **Host network**: `netif` owns links/static routes (multi-instance); `routed-fabric` owns the flat-L3 native fabric (implemented, round-16 shape; round-17 spine/leaf is the planned target); `wireguard-mesh` is the supported tunnel/VXLAN profile
 - Airgap-ready: every artifact local at boot; last 3 Kubernetes minors per distro pinned
 
 ---
 
 <img src="assets/arch-overview.svg" alt="Architecture overview" style="width: 100%; max-height: 82vh; background: #fff; border-radius: 8px;" />
 
-Note: One inventory in, three cluster kinds out, connected by native routing and encrypted per-adjacency fabric transport. GitOps owns day two.
+Note: One inventory in, three cluster kinds out, connected by Cilium native routing (or the tunnel/VXLAN profile) over encrypted per-adjacency fabric transport. GitOps owns day two.
 
 ---
 
@@ -57,19 +57,19 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Why per-adjacency WireGuard + FRR?
 
-- WireGuard `AllowedIPs` is cryptokey routing and the inbound source ACL: duplicate peers on one interface cannot provide ECMP — and a hub's AllowedIPs must include the transit prefixes it readvertises
-- One peer per interface, one interface per declared adjacency (member↔hub, hub↔hub, border↔upstream); Linux ECMP works across interfaces — two hubs = active-active via BFD/ECMP
-- eBGP + BFD + Zebra, `next-hop-self` on hub readvertisement; no iBGP, no route reflectors; members never provide spoke transit
-- Cilium native routing forwards remote pods through that FIB — no VXLAN, multi-pool retained
+- WireGuard `AllowedIPs` is cryptokey routing and the inbound source ACL: duplicate peers on one interface cannot provide ECMP — and a spine's AllowedIPs must include the transit prefixes it readvertises
+- One peer per interface, one interface per derived adjacency (leaf↔spine, spine↔spine, border↔upstream); Linux ECMP works across interfaces — two spines = active-active via BFD/ECMP
+- eBGP + BFD + Zebra, `next-hop-self` on spine readvertisement; no iBGP, no route reflectors; leaves never provide transit
+- Cilium native routing forwards remote pods through that FIB — the wireguard-mesh profile uses tunnel/VXLAN instead; multi-pool retained
 - `node-bgp` has one owner; `shared-bgp` advertises from every healthy node
 
 ---
 
 ## Detail map: every component by layer
 
-- **Hosts**: NixOS; `netif` (multi-instance); per-adjacency WireGuard; per-node FRR/BFD/Zebra; routed-fabric member/hub roles + orthogonal access/border switches (D56); `clan.networkFacts` network-facts seam (D57, planned)
+- **Hosts**: NixOS; `netif` (multi-instance); per-adjacency WireGuard; per-node FRR/BFD/Zebra; routed-fabric leaf/spine roles + orthogonal access/border switches (D59); generic `node_transport` export both distros consume (D58); `clan.networkFacts` network-facts seam (D57, planned, schema 2)
 - **Distro**: k3s / rke2 (CIS default) / kubernetes (reserved); thin clanServices; `distroDefaults` restores stock components; servicelb off
-- **Networking**: native multi-pool Cilium, Node IPAM, five pool delivery modes, BGP v2, native ClusterMesh; no Gateway/Ingress/L7
+- **Networking**: multi-pool Cilium native or tunnel/VXLAN, Node IPAM, five pool delivery modes, BGP v2, ClusterMesh with placement/exposure profiles (D60); no Gateway/Ingress/L7
 - **Day two**: GitOps-owned proxies, cert-manager, external-dns, Sealed Secrets, storage, KubeVirt, CCMs
 - **Secrets**: clan vars = bootstrap plane only; application credentials GitOps-owned
 - **Packaging**: pinned distro runtimes, Cilium chart + committed base manifest, airgap default
@@ -78,9 +78,9 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Status and roadmap
 
-- **Done**: phases 0–4 bootstrap/base; round-14 contract; round-15 docs (D51–D55); round-16 docs (D56–D57: two topology roles + access/border, network-facts seam)
-- **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence
-- **Next**: round-15 one-session complete overhaul — 5R1 multi-instance netif + routed-fabric (routed-hub MVP); 5R2 native Cilium and both distros; 5R3 full + selective ClusterMesh and failure acceptance; plus the pkgs native Cilium base re-inflation and clanServices pin update — all planned, no implementation or VM evidence yet
+- **Done**: phases 0–4 bootstrap/base; round-14 contract; round-15 docs (D51–D55); round-16 docs (D56–D57); round-17 docs (D58–D60: generic `node_transport` profiles, leaf/spine auto graph, ClusterMesh placement/exposure); 5R1 + 5R2(1)–(3) implementation (netif + routed-fabric round-16 shape + native Cilium/pools + pkgs re-inflation + pin update — suites registered, not green-claimed)
+- **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence; `fleet-routing` + `lib/import-flake` deletion planned once replacement suites are green
+- **Next**: 5R5 — the round-17 contract (leaf/spine rename, generic `node_transport` seam, D60 ClusterMesh placement/exposure), then full + selective ClusterMesh suites — planned, docs-locked, no implementation or VM evidence yet
 - **Then**: control domain, PKI/GitOps-handoff suites, home migration and borg archival
 - **Reserved**: upstream `kubernetes` distro, MCS-API, clan-operator
 

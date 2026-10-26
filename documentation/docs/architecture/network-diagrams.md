@@ -1,9 +1,10 @@
 # Network diagrams
 
-How fleet network diagrams get their data. Round 16, D57: clanServices
-exposes **network facts** as a neutral NixOS-option seam; anything that
-draws diagrams — `nix-topology` included — is **consumer-owned** and lives
-outside this flake.
+How fleet network diagrams get their data. Round 17, D59: the
+`clan.networkFacts` schema bumps to **schemaVersion 2** alongside the
+`routed_fabric` export, with fabric topology facts in the `leaf`/`spine`
+role names (D58–D60). Anything that draws diagrams — `nix-topology`
+included — is **consumer-owned** and lives outside this flake.
 
 ## The seam: `clan.networkFacts`
 
@@ -24,13 +25,14 @@ The contract:
   complements the exports system; there is no second source of truth.
 - **Complete build-time-declared topology and policy.** Node identity;
   `netif` links/interfaces/networks/addresses/gateways/routes/policy
-  routes/MTU/DNS/firewall trust; fabric member/hub/access/border, stable
+  routes/MTU/DNS/firewall trust; fabric leaf/spine/access/border, stable
   loopbacks, per-adjacency WireGuard links, transfer prefixes, MTU,
   public endpoints, AllowedIPs, ASNs, upstreams, FRR prefix policy, and
   NAT/source-return intent; and k8s cluster identity, node membership,
-  distros, CIDRs, pools, Node-IPAM facts, private DNS, and API/mirror
+  distros, CIDRs, pools, Node-IPAM facts, and API/mirror
   endpoints — as independent underlay, fabric, ClusterMesh, and
-  control-domain graph facts.
+  control-domain graph facts. Member-facing private DNS is never rendered
+  (day-2), so no private DNS facts exist.
 - **Non-secret.** No private keys, certificates, tokens, kubeconfigs, or
   other secrets ever appear.
 - **Declared configuration, not runtime state.** Dynamic DHCP/RA addresses,
@@ -60,6 +62,7 @@ rendering of facts, one direction only.
 
 ## Status
 
-**Planned (D57).** There is no implementation or VM evidence yet: no
-`clan.networkFacts` options exist, no consumer wrapper ships in this repo,
-and the schema above is the design contract, not an API reference.
+**Planned (D57, schema version 2 per D59).** There is no implementation or
+VM evidence yet: no `clan.networkFacts` options exist, no consumer wrapper
+ships in this repo, and the schema above is the design contract, not an API
+reference.

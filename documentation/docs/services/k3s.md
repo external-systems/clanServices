@@ -26,14 +26,20 @@ semantics are distro-specific here.
   the distro's `coredns-custom` import path (k3s's stock Corefile imports
   `/etc/coredns/custom/*.override`). The clan CoreDNS carries the same
   `coredns-custom` import convention (D46 amended): day-2 custom config
-  drops in via a GitOps-managed `coredns-custom` ConfigMap.
+  drops in via a GitOps-managed `coredns-custom` ConfigMap. No private
+  member-facing CoreDNS is rendered in either mode — member DNS is day-2
+  (D22 amended).
 
 ## What is shared
 
-Transport, the native-routed Cilium base with Node IPAM, pools/BGP/FRR,
+Transport, the Cilium base with Node IPAM, pools/BGP/FRR,
 ClusterMesh, the bootstrap bundle and its GitOps handoff, the
 control-domain substrate, secrets planes, assertions — all from the shared
-library. See
+library. **Round-17 target (5R5):** transport facts arrive **only** through
+the generic
+`node_transport` export (schemaVersion 2); the service never branches on
+fabric service names (D58). Today's code still consumes the
+provider-specific `routed_fabric` export. See
 [Architecture](../architecture/overview.md).
 
 The entire day-1 in-cluster surface is delivered as one kubenix-rendered
@@ -48,13 +54,19 @@ k3s join/HA but red k3s single/data-plane suites, so it is not a green
 current-tree claim. Phase 5's BIRD/VXLAN implementation at `2995ac3` is
 legacy and superseded.
 
-Round 15/16 phases 5R1–5R4 deliver, as one complete overhaul session, the
-netif underlay and routed-fabric data plane (per-adjacency WireGuard,
-FRR/BFD/Zebra, routed-hub MVP), native-routed multi-pool Cilium,
-node-bgp/shared-bgp pools, full-by-default ClusterMesh with selective
-peers, read-only `clan.networkFacts` for consumer-owned diagrams, and the
-`external-systems/pkgs` native Cilium base re-inflation with the
-clanServices pin update — all planned, with no implementation or VM
-evidence yet. The canonical dual-shape remains kamrui-h1: a
-single-node k3s cluster holding the routed-fabric `hub` topology role
-with `access = "admin"` (D33, revised by D52 and D56).
+The 5R overhaul landed in stages: **5R1 and 5R2(1)–(3) are implemented
+(2026-10-25)** — the netif underlay and the routed-fabric data plane
+(per-adjacency WireGuard, FRR/BFD/Zebra), multi-pool Cilium and pools,
+and the `external-systems/pkgs` native Cilium base re-inflation with the
+clanServices pin update — in the round-16 shape (`member`/`hub` topology,
+service-specific transport facts), with suites registered but not
+green-claimed. **Still planned (round 17, docs-locked):** the generic
+`node_transport` transport + capability profiles (native routed-fabric /
+tunnel wireguard-mesh) consumed without service-name branching, the
+`leaf`/`spine` rename, full-by-default ClusterMesh with selective peers
+and the placement/exposure contract (D60), and read-only
+`clan.networkFacts` (schemaVersion 2) for consumer-owned diagrams — no
+implementation or VM evidence yet. The canonical dual-shape remains
+kamrui-h1: a
+single-node k3s cluster holding the routed-fabric `spine` topology role
+with `access = "admin"` (D33, revised by D52, D56, and renamed D59).

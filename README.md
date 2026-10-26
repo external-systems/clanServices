@@ -8,13 +8,15 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 
 - [k3s](services/k3s/README.md): k3s Kubernetes cluster
 - [rke2](services/rke2/README.md): RKE2 Kubernetes cluster
-- `netif` (planned): inventory-owned, multi-instance host links and static routes
-- `routed-fabric` (planned, round-16 target): per-adjacency WireGuard + FRR
-  flat-L3 fabric, routed-hub MVP with member/hub topology, orthogonal
-  access and border settings, and dependency-free network facts; the legacy
-  `services/fleet-routing/` tree predates the round-15/16 design and is not
-  its implementation
-- [wireguard-mesh](services/wireguard-mesh/README.md): legacy host transport, pending migration/removal
+- [netif](services/netif/README.md): inventory-owned, multi-instance host links and static routes
+- [routed-fabric](services/routed-fabric/README.md): per-adjacency WireGuard + FRR
+  flat-L3 fabric — implemented with the round-16 `member`/`hub` topology,
+  orthogonal access and border settings, and dependency-free network
+  facts; the native Cilium data-plane transport. The round-17 `leaf`/`spine`
+  rename (D59) is the locked target, planned in 5R5.
+- [wireguard-mesh](services/wireguard-mesh/README.md): supported tunnel transport
+  (Cilium tunnel/VXLAN + nodePort, D58) — one shared multi-peer WireGuard
+  interface per machine; no longer pending retirement
 - [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
 [SPEC.md](SPEC.md) is the canonical architecture, status, and delivery record — a single dense
@@ -25,10 +27,24 @@ routed-hub `routed-fabric`, multi-instance multi-link `netif`, fabric-derived me
 full-by-default ClusterMesh with selective peers. Round 16 (2026-10-24) refines the fabric into
 member/hub topology roles with orthogonal member/client/admin access and optional border
 configuration (D56), plus a read-only, non-secret `clan.networkFacts` interface for consumer-owned
-nix-topology diagram packages without a nix-topology dependency here (D57). Phases 5R1–5R4 remain
-planned, including the `external-systems/pkgs` native Cilium base re-inflation and clanServices pin
-update. Round 13's scope remains: everything else in-cluster is a documented day-2 GitOps pattern,
-never clan-rendered.
+nix-topology diagram packages without a nix-topology dependency here (D57).
+Round 17 (2026-10-25) is a docs-only contract lock: a generic
+`node_transport` schemaVersion 2 outside `lib/kube-cluster` will be the
+only transport seam k3s/rke2 consume (D58, round-17 target — 5R5); fabric
+roles are renamed
+`leaf`/`spine` with a symmetric derived graph (D59); ClusterMesh
+placement/exposure is locked (D60); and `wireguard-mesh` becomes a
+supported tunnel transport. Current status: `netif` and the round-16 `member`/`hub` `routed-fabric`
+are implemented, and the native k3s/rke2 data plane is implemented
+(5R1 + 5R2(1)–(3)); the round-17 contract (leaf/spine rename, generic
+`node_transport` schemaVersion 2, ClusterMesh placement/exposure) and
+the remaining 5R phases are planned.
+Breaking round-17 renames ship without migration shims — there
+are no external consumers or deployments. Round 13's scope
+remains: everything else in-cluster is a documented day-2 GitOps
+pattern, never clan-rendered; member-facing private DNS is wholly
+day-2 (no clan-rendered member zones, private DNS service, or private
+CoreDNS VIP in the MVP).
 
 ## Usage
 

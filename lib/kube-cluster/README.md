@@ -18,6 +18,20 @@ The library covers the bootstrap + data-plane contracts (SPEC.md §3) only.
 Day-2 in-cluster software (ingress/Gateway proxies, cert-manager, Sealed
 Secrets, storage, GitOps controllers) is never rendered here (SPEC.md §3.3).
 
+ROUND-17 TARGET (5R5): both distro services consume the generic
+`node_transport` schemaVersion 2
+(SPEC.md D58) — stable dual-stack node addresses, per-interface MTU keyed
+by Linux name, one `directRoutingDevice`, `datapath.mode native|tunnel`
+(+ protocol), native `routeExchange = local-router`, and the
+`internalLoadBalancer`/`nodePort` exposure capabilities — and never
+branch on provider service names; the current code still prefers
+`routed_fabric`. The schema itself is declared by the transport
+services, not by this library. The Cilium profile (mode, protocol,
+devices, MTU) derives from the transport; admin overrides cannot
+contradict the derived values. Shared fabric/FRR/facts helpers
+(`fabric.nix`, `frr.nix`, `network-facts.nix`) are imported directly by
+`routed-fabric`; they are not part of the `default.nix` attrset below.
+
 The library exposes:
 
 - shared, JSON-serializable option interfaces for role-level and per-machine
@@ -43,18 +57,19 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `interfaces.node` | Deferred module of shared per-machine options (incl. `topology.region`/`zone`, invariant 7). |
 | `interfaces.kube_cluster` | The custom export interface (§6.2, D45) published by both distro services. |
 | `hashCiliumId` / `resolveCiliumId` | Stable sha256-based hash of the instance name → 1–127 (pure Nix, no IFD); resolution of the nullable `cilium.id` pin. |
-| `render.mkCiliumValues` | The canonical Cilium profile tree (tunnel VXLAN, KPR, multi-pool IPAM, Node IPAM default, MTU math) with `cilium.helmValues` folded in. |
+| `render.mkCiliumValues` | The canonical Cilium profile tree (datapath mode derived from `node_transport` — native or tunnel/VXLAN; KPR, multi-pool IPAM, Node IPAM default, MTU math: native = minimum interface MTU, VXLAN = minimum minus 50, D58) with `cilium.helmValues` folded in. |
 | `render.resolveCidrs` | Resolved dual-stack CIDR structure from the resolved id + explicit overrides (combined strings, per-family components, clusterDNS). |
 | `render.mkBundle` | The kubenix bootstrap bundle (D26 layer 2 / D40): imports the artifact flake's committed Cilium manifest via the pure-Nix YAML-subset parser (`yaml.nix`, zero IFD), merges per-cluster variation into the typed resource tree (`cilium-config` ConfigMap data, KPR env, pod IP pool, LB pools, `coredns-custom`), validates post-merge invariants (`validateBundle`), and emits one multi-doc YAML + object list + config hash. |
 | `render.mkLBService` | External-facing Service helper: ETP Local + manifest labels; explicit pool draws default to `io.cilium/bgp-control-plane` so they bypass the classless Node-IPAM default (invariants 5/6). |
 | `render.mkHaproxyConfig` | Per-node haproxy kube-apiserver LB config, with an optional rke2 supervisor LB. |
 | `render.mkManifestLabels` | §6.11 labels for all rendered resources (managed-by, cluster, component; mkBundle adds a per-object `clan.lol/config-hash` label — first 32 hex chars of the full sha256, since Kubernetes label values cap at 63 bytes; the full hash stays on the bundle's `configHash` output). |
 | `render.resolvePools` | D8 pool resolution: auto per-machine node pools (join /32+/128 + `poolBlocks`) plus declared cluster-global pools and `extraPools` (the fabric pool). |
-| `resolveDataPlane` | Phase-5 seam (D9/D10/D19/D22): ASNs, fabric pool, shared-bgp sets, the mkBundle `bgp`/`privateCoreDNS` params, the per-cluster BIRD fragment text, and the export facts — one resolution shared by bundle, assertions, and export. |
+| `resolveDataPlane` | Phase-5 seam (D9/D10/D19/D22): ASNs, fabric pool, shared-bgp sets, the mkBundle `bgp` params, and the export facts — one resolution shared by bundle, assertions, and export. (The legacy `privateCoreDNS` bundle params are removal-planned with the day-2 member-DNS work, SPEC.md D22.) The per-cluster routing-daemon text is FRR, rendered by `routed-fabric` via `frr.nix`; this lib renders ONLY Cilium-side BGP v2 resources and publishes the facts routed-fabric consumes (D19). |
 | `bgp.hashBgpAsns` / `bgp.resolveBgpAsns` | Deterministic private 32-bit ASN pairs per cluster (sha256 of salted instance name → RFC 6996 range; pins override). |
-| `bgp.mkFabricPool` / `bgp.fabricBlocks` / `bgp.fabricCoreDNSVips` | The default private fabric pool (D10): `172.16.<id>.0/24` + `fd11:<id>::/64`, private CoreDNS VIP at offset 53/0x53. |
-| `bgp.mkBgpResources` / `bgp.mkBirdFragment` | The BGP v2 CR set (ClusterConfig per node, PeerConfig timers 9/3/5, Advertisements; D13 opt-ins) and the cluster-node BIRD fragment text (loopback link `169.254.179.1`, strict-bind :179, family-split upstream dial-out on local port 4179). |
-| `bird.assemble` / `birdModule` | The vendored BIRD named-fragment renderer (D19): `clan.bird.fragments` + `clan.bird.routerId` (set exactly once), assembled into ONE bird daemon per host, `bird -p`-validated at build time (services.bird checkConfig). |
+| `bgp.mkFabricPool` / `bgp.fabricBlocks` | The default private fabric pool (D10): `172.16.<id>.0/24` + `fd11:<id>::/64`; internal ClusterMesh VIPs are pinned at host offset 79 / 0x79 (D60). |
+| `bgp.fabricCoreDNSVips` | LEGACY — the old private CoreDNS VIP helper (offset 53/0x53). Member-facing DNS is wholly day-2 (SPEC.md D22): no private CoreDNS VIP is a target; removal planned with the legacy cleanup pass (§8 5R3). |
+| `bgp.mkBgpResources` / `bgp.mkBirdFragment` | The BGP v2 CR set (ClusterConfig per node, PeerConfig timers 9/3/5, Advertisements; D13 opt-ins) and the legacy cluster-node BIRD fragment text (loopback link `169.254.179.1`, strict-bind :179, family-split upstream dial-out on local port 4179). |
+| `bird.assemble` / `birdModule` | LEGACY — the vendored BIRD named-fragment renderer (D19): `clan.bird.fragments` + `clan.bird.routerId` (set exactly once), assembled into ONE bird daemon per host, `bird -p`-validated at build time (services.bird checkConfig). Superseded by FRR (rounds 14–15); removal planned with the legacy fleet-routing modules (SPEC.md §8). |
 | `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape (clusterInit count, addresses, resolved-id uniformity, id>127 ⇒ explicit v4 CIDRs, all-or-none transport posture, topology non-empty). |
 | `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (incl. against pod/service CIDRs), scope⇒mode, floating coverage, node-name collisions, bgp.enable⇔shared-bgp coupling, fabric block size (§6.12). |
 | `mkFleetChecks` / `fleetChecksModule` | Fleet-wide assertions (§6.2) computed from the `kube_cluster` exports as `clan.checks`: duplicate names/ids, same-group CIDR overlap, node-in-two-clusters (D16, cross-service), mesh-group transport consistency. Wire into a clan with `clan.imports = [ kube.fleetChecksModule ]`. |

@@ -22,23 +22,28 @@ comes from the private library.
   `distroDefaults.enable = true` to let RKE2's own machinery deploy its
   stock components and configure them through HelmChartConfig — your day-2
   concern. servicelb stays off in both modes; Node IPAM (D41) replaces it.
-  Cluster DNS (D46): RKE2's bundled `rke2-coredns` is a HelmChart and is
-  disabled in BOTH modes in favor of the uniform clan-rendered CoreDNS from
-  the bootstrap bundle — Service pinned to the derived clusterDNS IP,
-  `coredns.rewrites` folded into its Corefile. Under
-  `distroDefaults.enable = true` the stock `rke2-coredns` deploys and the
-  bundle skips its own CoreDNS (mode-exclusive); the stock rke2 chart does
-  not import `coredns-custom`, so on the minimal base day-2 custom DNS
-  config uses the clan CoreDNS's built-in import seam (D46 amended), and
-  under distroDefaults it wants day-2 chart config.
+  Cluster DNS (D46): on the minimal base (`distroDefaults.enable =
+  false`, the default) the uniform clan-rendered CoreDNS from the
+  bootstrap bundle serves `cluster.local` — Service pinned to the derived
+  clusterDNS IP, `coredns.rewrites` folded into its Corefile, with the
+  built-in `coredns-custom` import seam for day-2 custom config (D46
+  amended). Under `distroDefaults.enable = true` the stock
+  `rke2-coredns` HelmChart deploys and the bundle skips its own CoreDNS
+  (mode-exclusive; day-2 custom config then wants chart config). No
+  private member-facing CoreDNS is rendered in either mode — member DNS
+  is day-2 (D22 amended).
 - **PKI sync is non-destructive** (SPEC.md §6.10).
 
 ## What is shared
 
-Transport, the native-routed Cilium base with Node IPAM, pools/BGP/FRR,
+Transport, the Cilium base with Node IPAM, pools/BGP/FRR,
 ClusterMesh, the bootstrap bundle and its GitOps handoff, the
 control-domain substrate, secrets planes, assertions — all from the shared
-library. See
+library. **Round-17 target (5R5):** transport facts arrive **only** through
+the generic
+`node_transport` export (schemaVersion 2); the service never branches on
+fabric service names (D58). Today's code still consumes the
+provider-specific `routed_fabric` export. See
 [Architecture](../architecture/overview.md).
 
 The entire day-1 in-cluster surface is delivered as one kubenix-rendered
@@ -53,13 +58,18 @@ rke2 join/HA but red rke2 single/data-plane suites, so it is not a green
 current-tree claim. Phase 5's BIRD/VXLAN implementation at `2995ac3` is
 legacy and superseded.
 
-Round 15/16 phases 5R1–5R4 deliver, as one complete overhaul session, the
-netif underlay and routed-fabric data plane (per-adjacency WireGuard,
-FRR/BFD/Zebra, routed-hub MVP), native-routed multi-pool Cilium,
-node-bgp/shared-bgp pools, full-by-default ClusterMesh with selective
-peers, read-only `clan.networkFacts` for consumer-owned diagrams, and the
-`external-systems/pkgs` native Cilium base re-inflation with the
-clanServices pin update — all planned, with no implementation or VM
-evidence yet. CIS hardening, the bootstrap
+The 5R overhaul landed in stages: **5R1 and 5R2(1)–(3) are implemented
+(2026-10-25)** — the netif underlay and the routed-fabric data plane
+(per-adjacency WireGuard, FRR/BFD/Zebra), multi-pool Cilium and pools,
+and the `external-systems/pkgs` native Cilium base re-inflation with the
+clanServices pin update — in the round-16 shape (`member`/`hub` topology,
+service-specific transport facts), with suites registered but not
+green-claimed. **Still planned (round 17, docs-locked):** the generic
+`node_transport` transport + capability profiles (native routed-fabric /
+tunnel wireguard-mesh) consumed without service-name branching, the
+`leaf`/`spine` rename, full-by-default ClusterMesh with selective peers
+and the placement/exposure contract (D60), and read-only
+`clan.networkFacts` (schemaVersion 2) for consumer-owned diagrams — no
+implementation or VM evidence yet. CIS hardening, the bootstrap
 bundle, and distro-specific bootstrap behavior remain unchanged.
 

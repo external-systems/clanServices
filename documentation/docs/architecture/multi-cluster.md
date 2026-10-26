@@ -34,25 +34,94 @@ relationship to anyone.
 
 **One fabric = one mesh group** (D54): a cluster joins by referencing the
 routed-fabric instance in `settings.network.fabric`, and consumes that
-fabric's `node_transport` exports. Cross-cluster traffic uses the
+fabric's `node_transport` exports (round-17 target; today the distros
+consume the provider-specific `routed_fabric` export). Cross-cluster
+traffic uses the
 fabric's per-adjacency WireGuard and FRR routes. Clusters referencing
 different fabric instances never mesh; that is the trust-domain boundary.
+**Round-17 target (5R5):** distro services consume **only** the generic
+`node_transport` export
+(schemaVersion 2) — stable dual-stack node addresses/instance/endpoint,
+datapath interfaces keyed by Linux name with MTU, one
+`directRoutingDevice`, datapath mode + tunnel protocol, route exchange,
+and exposure capabilities — never the provider-specific `routed_fabric`
+export, and never a service name.
 
-Every cluster uses native routing with non-overlapping pod CIDRs.
-Dual-stack native-routing CIDRs cover every pod CIDR of every peered
-cluster, and FRR must install cross-cluster pod routes before ClusterMesh
-is ready.
+Every cluster in a mesh group uses the same datapath mode, the same tunnel
+protocol, and the same `maxConnectedClusters` (D54 revised round 17).
+Native members keep non-overlapping pod CIDRs: dual-stack
+native-routing CIDRs cover every pod CIDR of every peered cluster, and FRR
+must install cross-cluster pod routes before ClusterMesh is ready. Tunnel
+members need node connectivity instead. Native routing is the
+routed-fabric profile default, not a ClusterMesh mandate.
 
 Every eligible cluster runs clustermesh-apiserver and mesh certificates from
 first boot (a singleton's peer list is simply empty). Peering is rendered
-into `clustermesh.config.clusters` from exports. The datapath, Cilium
-profile, and `maxConnectedClusters` are uniform across the mesh.
+into `clustermesh.config.clusters` from exports.
 
-The ClusterMesh apiserver stays node-bound (D12): it is exposed on machine
-mesh addresses (LoadBalancer, ETP Local, ClientIP affinity, all servers as
-endpoints, anti-affinity; collision-checked NodePort as the escape hatch).
-Consumers are mesh members with direct routes, so the control plane takes
-the fewest dependencies.
+## ClusterMesh apiserver placement and exposure (D60)
+
+The ClusterMesh apiserver is exposed with `externalTrafficPolicy: Local`
+for **every** exposure method — ETP Local everywhere. ClientIP session
+affinity is useful, but **mTLS is identity**: source preservation is not
+required for identity.
+
+**Placement selectors** choose which nodes run the apiserver: `voters`
+(default — server-role nodes), `workers` (agents), `all`, or `labels`.
+Labels may be only clan-declared/generated labels; a selector matching zero
+nodes is an eval error.
+
+The **exposure enum** is `auto | internal-load-balancer | node-port |
+external-load-balancer`. The inventory surface (Round 17 target — not
+current config) is normalized as: `mesh.peers`, `mesh.placement`
+(default `voters`; `workers`/`all`/`labels`),
+`mesh.placementLabels`,
+`mesh.exposure` (default `auto`), `mesh.replicas`
+(internal/external LoadBalancer only —
+null defaults to `min(3, eligible)`; forbidden for `node-port`),
+`mesh.nodePort` (default `32379`), and
+`mesh.external.{loadBalancerClass,dnsName,annotations}` — required, and
+used, only for `external-load-balancer`. An explicit external choice
+requires the non-clan class + DNS name and works regardless of overlay
+capabilities.
+
+- **`node-port`** — no replica option: exactly one apiserver per selected
+  node, via a Deployment with `replicas` = the selected-node count,
+  required hostname anti-affinity + nodeSelector. All selected nodes'
+  stable addresses are published with a deterministic, collision-checked
+  NodePort — **default `32379`** (the upstream default), with an optional
+  explicit `mesh.nodePort` override, collision-checked per machine.
+  Rolling update `maxSurge=0`, `maxUnavailable=1`.
+- **`internal-load-balancer`** — pinned dual-stack literal VIPs from the
+  existing D10 `<instance>-fabric` private pool,
+  `loadBalancerClass: io.cilium/bgp-control-plane`; remote clusters connect
+  to the pinned VIPs; no DNS is required; existing private-pool names are
+  unchanged. The VIPs are **locked deterministically at host offset 79
+  decimal / `0x79`** inside the pool's IPv4 `/24` and IPv6 `/64` blocks
+  (analogous to the prior offset-`0x53` convention), rendered as literal
+  dual-stack addresses through an explicit `lbipam.cilium.io/ips`
+  projection, pool-contained and collision-checked against every other
+  pinned clan VIP. Replica count
+  is independent of placement: default `min(3, eligible)`, user-configurable
+  positive ≤ eligible, with required anti-affinity; the stable VIP means no
+  per-node endpoint publication; same rolling update.
+- **`external-load-balancer`** — explicit external always wins on every
+  overlay, regardless of capabilities. It requires an explicit non-clan
+  `mesh.external.loadBalancerClass` and a `mesh.external.dnsName`
+  (a DNS name only, never a literal IP), allows optional provider
+  `mesh.external.annotations` (external-dns stays day-2), and needs no
+  overlay internal
+  capability. The external DNS name goes into peers and certificate SANs;
+  dynamic, eval-unknown DNS resolution is a runtime prerequisite. Same
+  replica and rolling-update rules as internal.
+- **`auto`** (default) — chooses `internal-load-balancer` when the overlay
+  publishes the `internalLoadBalancer` capability, else `node-port`;
+  unsupported or no available method is an eval error. An explicit
+  `internal-load-balancer` choice requires the capability.
+
+DNS is supported by Cilium for LoadBalancer Services; external-dns remains
+day-2 only. Consumers are mesh members, so the control plane takes the
+fewest dependencies.
 
 Mesh identity comes from a shared `rancher-clustermesh-ca-<group>` vars
 generator (the group derived from the fabric) with per-cluster dependent
@@ -73,7 +142,8 @@ hub's GitOps tooling reconciles through it:
   `kube-api-<cluster>` with an EndpointSlice of its API endpoints (the same
   fan-in pattern as the ClusterMesh apiserver exposure, generalized),
   annotated `service.cilium.io/global: "true"`, with `loadBalancerClass`
-  pinned per D41.
+  pinned per D41. Mirror-Service allocation is separate from D60 and never
+  uses the clustermesh-apiserver's offset-79 VIP pair.
 - A consumer (the hub, admin tooling) renders a same-named Service with no
   local backends; ClusterMesh merges the remote endpoints, so consumer pods
   reach the remote API through that ClusterIP.
@@ -150,8 +220,9 @@ reserved (disabled initially).
 Both distro services publish a `kube_cluster` export per cluster member
 machine (identical content on every member; SPEC.md §6.2). It carries:
 
-- `schemaVersion` (`2` in the legacy implementation; the round-14 schema is
-  versioned again during 5R1);
+- `schemaVersion` — **3** in the current tree; the round-17 target moves
+  to **4** in 5R5 for the revised datapath/exposure facts — breaking
+  schema changes ship without compatibility shims;
 - cluster identity: `name` (= instance name), the resolved `ciliumId`, and
   the resolved dual-stack `network.{podCIDRv4,podCIDRv6,serviceCIDRv4,serviceCIDRv6,clusterDNS}`;
 - `network.fabric` — the consumed routed-fabric `{service, instance}`
@@ -159,14 +230,30 @@ machine (identical content on every member; SPEC.md §6.2). It carries:
   `meshGroup` string;
 - `mesh.peers` — the explicit selective-peering list, or null for
   full-mesh-by-default; symmetry (A lists B iff B lists A) is eval-asserted;
+- `mesh.exposure` — the apiserver exposure choice (`auto` |
+  `internal-load-balancer` | `node-port` | `external-load-balancer`, D60);
 - `controlDomain.role` — `"standalone"` placeholder until phase 6 (D43);
 - `members.<machine>` — per-member mesh endpoints: role, node v4/v6,
-  endpoint/interface/MTU/port from the consumed fabric transport, and the
-  effective `topology.{region,zone}` labels;
+  endpoint/interface/MTU/port from the consumed generic `node_transport`
+  export, and the effective `topology.{region,zone}` labels;
 - `pools.<name>` — pool handoff facts (scope, delivery mode, owner, blocks,
   serviceSelector), Cilium-side ASN and advertisement facts for
   routed-fabric; the fabric separately carries node ASN, per-adjacency
   transport, and router-prefix facts.
+
+The generic **`node_transport` export (schemaVersion 2)** is the only
+transport view distro services consume: stable dual-stack node
+addresses/instance/endpoint; every datapath interface keyed by its Linux
+name with MTU; exactly one `directRoutingDevice`; `datapath.mode`
+(`native`|`tunnel`) with sibling `datapath.tunnelProtocol`; for native
+mode, `native.routeExchange = local-router` (daemon-neutral, not
+`local-frr`/`local-bgp`); the independent `internalLoadBalancer` and
+`nodePort` exposure capabilities; and a `port` plus nullable endpoint. The
+provider-specific **`routed_fabric` export (schemaVersion 2)** remains for
+ASN, topology, adjacencies, ACL, `access`, and `border`. Because there are
+no external consumers and breaking changes need no migration shims, the
+schema stays open with strict validated profiles initially; a third-party
+eval overlay proves k3s/rke2 never branch on service names.
 
 The fleet-wide assertions (duplicate cluster names/ids, peering-symmetric
 `mesh.peers`, same-fabric CIDR overlap, node-in-two-clusters across
@@ -183,17 +270,19 @@ consumer-owned diagram tooling reads; see
 
 ## Inventory example
 
-Every cluster references its fabric; selective peers are explicit and
-symmetric. This gives A↔B and B↔C **without** A↔C — peering state is
-non-transitive:
+> **Round 17 target — not current config.** The cluster option stays
+> `network.fabric`; `mesh.*` below is the normalized round-17 ClusterMesh
+> surface. Every cluster references its fabric; selective peers are
+> explicit and symmetric. This gives A↔B and B↔C **without** A↔C —
+> peering state is non-transitive:
 
 ```nix
 inventory.instances = {
   fabric = {
     module.input = "clanServices";
     module.name = "routed-fabric";
-    # ... per-machine settings.hubs topology + member/hub roles and
-    #     access/border switches (see Routed fabric)
+    # ... derived spine/leaf topology: spine role + optional per-leaf
+    #     spine subsets, access/border switches (see Routed fabric)
   };
 
   cluster-a = {
@@ -203,6 +292,8 @@ inventory.instances = {
     settings = {
       network.fabric = { service = "routed-fabric"; instance = "fabric"; };
       mesh.peers = [ "cluster-b" ];        # selective: no cluster-c peering
+      mesh.placement = "voters";           # default; or workers | all | labels
+      mesh.exposure = "auto";              # default; see the enum above
     };
   };
   cluster-b = {
@@ -211,6 +302,11 @@ inventory.instances = {
     settings = {
       network.fabric = { service = "routed-fabric"; instance = "fabric"; };
       mesh.peers = [ "cluster-a" "cluster-c" ];   # symmetry is eval-asserted
+      mesh.placement = "labels";
+      mesh.placementLabels = { region = "hel" };  # clan-declared only
+      mesh.exposure = "internal-load-balancer";   # requires the capability
+      # mesh.replicas = 2;                 # LB only; default min(3, eligible)
+      # mesh.nodePort = 32379;             # node-port only; default 32379
     };
   };
   cluster-c = {
@@ -219,6 +315,12 @@ inventory.instances = {
     settings = {
       network.fabric = { service = "routed-fabric"; instance = "fabric"; };
       mesh.peers = [ "cluster-b" ];        # symmetric with B; no A↔C state
+      mesh.exposure = "external-load-balancer";   # always wins
+      mesh.external = {
+        loadBalancerClass = "example.com/ccm";    # non-clan, required
+        dnsName = "mesh-c.clus7er.example.com";   # DNS only, never a literal IP
+        annotations."external-dns.alpha.kubernetes.io/hostname" = "mesh-c.clus7er.example.com";
+      };
     };
   };
 };

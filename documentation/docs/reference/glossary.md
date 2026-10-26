@@ -4,9 +4,9 @@ One term per concept. Mirrors SPEC.md §10.
 
 - **Bootstrap contract** — distro install/join, PKI, HAProxy kubeapi HA,
   bootstrap bundle, and control-domain substrate.
-- **Data-plane contract** — native Cilium, Node IPAM + pools, FRR/BGP/Zebra,
-  ClusterMesh, per-adjacency WireGuard, in-cluster CoreDNS (cluster.local),
-  and routed-fabric.
+- **Data-plane contract** — Cilium (native or tunnel/VXLAN profile), Node
+  IPAM + pools, FRR/BGP/Zebra, ClusterMesh, per-adjacency WireGuard,
+  in-cluster CoreDNS (cluster.local), and the fabric transport.
 - **Day-2 GitOps** — everything in-cluster outside those contracts.
 - **Bootstrap bundle** — one kubenix manifest set applied once by SSA on
   the clusterInit node.
@@ -33,30 +33,52 @@ One term per concept. Mirrors SPEC.md §10.
 - **netif** — inventory-owned, multi-instance/multi-link host attachments:
   physical/VLAN/bond/bridge links, addressing, routes, MTU, DNS, firewall
   trust, and endpoint/deploy-target exports.
-- **Fabric adjacency** — a declared member↔hub, hub↔hub, or
+- **Fabric adjacency** — a derived leaf↔spine, spine↔spine, or
   border↔upstream relationship; exactly one point-to-point WireGuard
   interface per adjacency, carrying API traffic, native pods, BGP, and BFD.
 - **routed-fabric** — the flat-L3 service owning the fabric: two topology
-  roles (member/hub), orthogonal per-machine `access`/`border` settings,
-  explicit hub topology, FRR/BFD/Zebra, and fleet route
-  consumption (renamed from fleet-routing in round 15; role model from
-  round 16, D56).
-- **Fabric role** — one of the two topology roles, `member` or `hub`,
-  joined per machine; hub forwards and readvertises between members with
-  explicit hub↔hub links.
+  roles (leaf/spine, renamed from member/hub in round 17, D59), orthogonal
+  per-machine `access`/`border` settings, the automatically derived
+  spine/leaf graph, FRR/BFD/Zebra, and fleet route
+  consumption (renamed from fleet-routing in round 15; native Cilium
+  profile per D58).
+- **Fabric role** — one of the two topology roles, `leaf` or `spine`,
+  joined per machine; every spine pair is automatically adjacent and spines
+  forward/readvertise between leaves.
 - **Fabric access** — the per-machine orthogonal setting `member`
-  (default)/`client`/`admin` controlling route consumption (D56):
-  client adds fabric-pool LoadBalancer-VIP routes only; admin adds
+  (default)/`client`/`admin` controlling route consumption (D56; baseline
+  membership, not topology — the enum is unchanged by the round-17 role
+  rename): client adds fabric-pool LoadBalancer-VIP routes only; admin adds
   pod/ClusterIP routes; Kubernetes nodes install pod/VIP routes
   regardless (D49). Member DNS is day-2 (D22 amended).
 - **Fabric border** — the optional per-machine orthogonal attrset (D56)
   for upstream transit: upstream BGP peers, owned-prefix filtering,
   forwarding, optional NDP, authorized external/fabric transit; no
-  automatic admin DNS; a border need not be a hub and vice versa.
-- **Routed hub** — a fabric machine in the `hub` role, directly declared,
-  that forwards and readvertises between members; named by each member's
-  `settings.hubs`. Minimum one reachable, HA is two, no arbitrary
-  maximum; members never provide spoke transit.
+  automatic admin DNS; a border need not be a spine and vice versa.
+- **Routed spine** — a fabric machine in the `spine` role: automatically
+  adjacent to every other spine, forwarding and readvertising between
+  leaves with `next-hop-self`. Two spines are the HA default with no
+  arbitrary maximum; leaves never provide transit.
+- **node_transport** — the generic shared neutral transport export
+  (schemaVersion 2, D58, round-17 target) consumed by both distro services: stable
+  dual-stack node addresses/instance/endpoint, datapath interfaces keyed
+  by Linux name with MTU, one `directRoutingDevice`,
+  `datapath.mode` (`native`|`tunnel`) with sibling `datapath.tunnelProtocol`,
+  `native.routeExchange = local-router`, the independent
+  `internalLoadBalancer`/`nodePort` exposure capabilities, and a `port`
+  plus nullable endpoint. k3s/rke2 never
+  branch on service names. The wireguard-mesh profile exports its ONE
+  full-mesh multi-peer interface; routed-fabric exports one interface per
+  derived adjacency.
+- **ClusterMesh exposure** — the apiserver exposure enum (D60):
+  `auto` (default; internal-load-balancer when capable, else node-port),
+  `internal-load-balancer` (pinned dual-stack VIPs locked at host offset
+  `0x79` in the `<instance>-fabric` private pool, `lbipam.cilium.io/ips`
+  projection), `node-port` (exactly one apiserver per selected node,
+  default NodePort `32379`), or
+  `external-load-balancer` (explicit non-clan class + DNS name, always
+  wins). ETP Local applies to every method; placement selectors are
+  voters (default)/workers/all/labels.
 - **AllowedIPs / crypto ACL** — WireGuard's outbound peer selection, which
   is also the inbound source ACL; must include authorized transit prefixes.
 - **Network facts** — the planned per-node `clan.networkFacts` NixOS
@@ -64,7 +86,8 @@ One term per concept. Mirrors SPEC.md §10.
   build-time topology facts (underlay/fabric/ClusterMesh/control-domain
   graphs) populated through `readOnly = true` options by the service
   owning each fact; read by consumer-owned diagram wrappers and
-  complementary to exports. Exact schema planned, not implemented.
+  complementary to exports. Schema bumps to version 2 in round 17 (D59);
+  exact schema planned, not implemented.
 - **Alternative overlays** — official mycelium/yggdrasil/wireguard meshes;
   overlays, never underlays; the standard `peer` export set is the seam.
 - **Pool scope** — per-machine with one owner, or cluster-global.
@@ -82,7 +105,10 @@ One term per concept. Mirrors SPEC.md §10.
 - **Floating delivery** — a runtime controller moves one address; without
   it, the documented blackhole window remains.
 - **Private fleet fabric** — default private shared-bgp pool, FRR/BGP/Zebra,
-  and CoreDNS/mesh VIPs.
+  and the pinned clustermesh-apiserver internal VIP pair (host offset
+  `0x79` — that apiserver pair ONLY; kube-api mirror Services allocate
+  separately and cannot share it, D30) — never a
+  member-facing DNS VIP; member DNS is day-2.
 - **Private-domain zones** — day-2 member-facing DNS (NOT in the MVP):
   instance, service, and pod zones published by Kubernetes-side automation
   such as external-dns; `cluster.local` never appears on clients.

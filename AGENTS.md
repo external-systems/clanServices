@@ -6,16 +6,18 @@ is a review destination, not a dependency.
 
 ## Layout
 
-- `services/<name>/` — public clanServices (`rke2`, `k3s`; planned `netif`
-  and round-16 `routed-fabric`; legacy `fleet-routing` code predates the
-  round-15/16 design and is deleted outright once the `routed-fabric`
-  replacement suites are green — no archiving; legacy
-  `wireguard-mesh` pending migration/removal).
+- `services/<name>/` — public clanServices (`rke2`, `k3s`, `netif`,
+  `routed-fabric`; `wireguard-mesh` is a supported tunnel transport,
+  D58 — not pending retirement). Legacy `fleet-routing` code predates
+  the round-15/16 design and is deleted outright once the
+  `routed-fabric` replacement suites are green — no archiving;
+  `lib/import-flake/` is removed in the same pass.
   Auto-discovered via `flake-module.nix`; no central registration list.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
-- `lib/import-flake/` — legacy flake-input adapter (optional).
+- `lib/import-flake/` — legacy flake-input adapter; removal planned once
+  the `routed-fabric` replacement suites are green (SPEC.md §8 5R3).
 - `tests/` — eval-test wiring; every `clan.modules` entry must have a
   nix-unit test (enforced by `checks.coverage`).
 - `SPEC.md` (repo root) — the normative decision contract AND the status
@@ -29,12 +31,25 @@ is a review destination, not a dependency.
   roles plus orthogonal `access` and `border` settings (D56), and adds a
   read-only, non-secret `clan.networkFacts` NixOS interface for
   consumer-owned nix-topology wrappers; clanServices never depends on
-  nix-topology (D57). The implementation is a one-session complete
-  overhaul — netif + routed-fabric + native Cilium/pools + full and
-  selective ClusterMesh + network facts, including the
-  `external-systems/pkgs` native Cilium base re-inflation and clanServices
-  pin update; obsolete code is deleted outright once replacement suites
-  are green. Round 13's Bootstrap + Data-plane scope remains: Envoy
+  nix-topology (D57). Round 17 (2026-10-25) is a docs-only contract
+  lock: D58 defines the generic `node_transport` schemaVersion 2
+  OUTSIDE `lib/kube-cluster` as the only transport seam k3s/rke2 will
+  consume from 5R5 (target: native routed-fabric + `local-router` +
+  `internalLoadBalancer`/`nodePort`; tunnel wireguard-mesh/VXLAN +
+  `nodePort`; the current code still prefers `routed_fabric`), D59 renames fabric roles `member`/`hub` → `leaf`/`spine`
+  with a symmetric derived graph (`routed_fabric`/`networkFacts`
+  schemaVersion 2; `access = member|client|admin` unchanged — membership
+  is not topology), and D60 locks ClusterMesh placement/exposure — all
+  planned in 5R5; the implemented fabric is still round-16 member/hub.
+  `wireguard-mesh` is a supported tunnel transport, not pending
+  retirement. Breaking renames ship without migration shims: no external
+  consumers or deployments exist, so there is no compatibility burden.
+  The 5R implementation is a staged complete data-plane overhaul — 5R1
+  and 5R2(1)–(3) landed 2026-10-25 (netif + routed-fabric + native
+  Cilium/pools + pkgs re-inflation + pin update); full/selective
+  ClusterMesh and the round-17 contract remain planned (SPEC.md §8);
+  obsolete code is deleted outright once replacement suites are green.
+  Round 13's Bootstrap + Data-plane scope remains: Envoy
   Gateway, cert-manager, Flux install, external-dns, Sealed Secrets,
   OpenEBS, KubeVirt, Multus are day-2 GitOps patterns, never clan-rendered
   (SPEC.md §3.3, D39–D45).
@@ -61,13 +76,19 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D57) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D60) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
    FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
    target `routed-fabric` (routed-hub MVP, no iBGP/RR, AllowedIPs as
    crypto ACL) and made `netif` multi-instance/multi-link; round 16 uses
    member/hub topology roles plus orthogonal access/border (D56) and the
-   dependency-free `clan.networkFacts` seam (D57). Cilium stays
+   dependency-free `clan.networkFacts` seam (D57); round 17 (docs-only)
+   renames fabric roles `leaf`/`spine` with a symmetric derived graph
+   (D59), locks the generic `node_transport` schemaVersion 2 seam outside
+   `lib/kube-cluster` (D58), and locks ClusterMesh placement/exposure
+   (D60) — `wireguard-mesh` is a supported tunnel transport and breaking
+   changes carry no compatibility burden (no external consumers or
+   deployments, no migration shims). Cilium stays
    networking-only (D1) and multi-pool; Node IPAM is the classless-LB
    default (D41); `node-bgp` is owner-only while `shared-bgp` uses ECMP
    (D8); servicelb is permanently disabled (D42); the control domain is

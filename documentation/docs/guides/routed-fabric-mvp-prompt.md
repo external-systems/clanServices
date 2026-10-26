@@ -1,5 +1,16 @@
 # Routed-fabric MVP — implementation prompt (round 15, role model revised round 16)
 
+> **Historical — superseded in part by round 17 (D58–D60, 2026-10-25).**
+> This prompt is kept verbatim as the record of the round-15/16
+> implementation contract. Where round 17 changed the design, round 17
+> wins: the topology roles `member`/`hub` are renamed **`leaf`/`spine`**
+> with an automatic adjacency graph (no mutual lists), transport is the
+> generic **`node_transport` export (schemaVersion 2)** that both distros
+> consume without service-name branching, `wireguard-mesh` is a supported
+> tunnel/VXLAN profile (not retiring), and ClusterMesh placement/exposure
+> follows D60. Terminology below (`member`/`hub`, `settings.hubs`,
+> routed-hub) is round-16 vocabulary.
+
 This page is a **self-contained copy-paste prompt**. Paste the fenced block
 below, verbatim, into a fresh AI coding agent session whose working
 directory is the repository root of `external-systems/clanServices`. One

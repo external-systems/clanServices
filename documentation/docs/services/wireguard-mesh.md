@@ -1,17 +1,28 @@
-# wireguard-mesh (legacy)
+# wireguard-mesh
 
-`wireguard-mesh` is the implemented phase-4 transport: a dual-stack
-WireGuard full mesh on one multi-peer interface per member. Its VM suite
-proves basic pairwise host connectivity.
+`wireguard-mesh` is the tunnel-profile transport (round 17, D58): dual-stack
+WireGuard transport consumed through the same generic `node_transport`
+export as routed-fabric, paired with Cilium **tunnel mode (VXLAN)** and the
+`nodePort` exposure capability. Its VM suite proves basic pairwise host
+connectivity; the round-17 tunnel NodePort ClusterMesh suite is the
+mesh-level target.
 
-Round 15 supersedes this interface model. `routed-fabric` now owns stable
-loopback addressing, one point-to-point WireGuard interface per declared
-adjacency, FRR/BFD/Zebra, and native-routed cluster traffic. The old model
-cannot represent shared-VIP ECMP because overlapping `AllowedIPs` across
-peers on one interface select only one cryptokey.
+The service retains its existing interface model: **ONE shared full-mesh
+multi-peer WireGuard interface** with one peer per remote machine and
+stable `/32`+`/128` addresses per member. It does **not** adopt
+routed-fabric's one-interface-per-adjacency model — that cryptokey/ECMP
+shape is a routed-fabric property. The generic `node_transport` export
+(schemaVersion 2) describes that single interface: Linux-name-keyed
+datapath interfaces with MTU, one `directRoutingDevice`,
+`datapath.mode = tunnel` with sibling `datapath.tunnelProtocol` (VXLAN),
+and the `nodePort` exposure capability.
 
-The service remains temporarily while consumers migrate in phase 5R1. It
-is not the target transport and is **deleted outright** once
-`routed-fabric` reaches parity — not archived or commented out; the
-historical docs record it. New inventory should follow the round-15
-contract, not add the retired auxiliary routed-interface pattern.
+Round 17 ends the "pending migration/removal" status: `wireguard-mesh` is
+a **supported profile**, not a retiring service. Only the legacy
+`services/fleet-routing/` code and the `lib/import-flake/` adapter are
+planned for deletion once the replacement suites are green.
+
+New inventory should follow the round-17 contract: pick the profile by
+datapath need (native + internal LoadBalancer via `routed-fabric`, or
+tunnel/VXLAN + nodePort via `wireguard-mesh`) and let the generic
+`node_transport` export carry the facts to the distro services.

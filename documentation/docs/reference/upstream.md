@@ -12,8 +12,10 @@ The upstream facts behind the spec. Re-check these when versions move.
   per-remote clustermesh-apiserver connections, so selective peering and
   leaf isolation (unpeered clusters share no state and no pod routes) are
   upstream-supported behavior, not a custom deviation. Requirements stay:
-  same datapath, non-overlapping pod CIDRs, node connectivity, and
-  native-routing CIDRs covering all meshed pods.
+  same datapath mode and tunnel protocol across the mesh, non-overlapping
+  pod CIDRs, node connectivity, and — for native-routed members —
+  native-routing CIDRs covering all meshed pods (tunnel members need node
+  connectivity instead).
 - **Cilium LB features:** LB IPAM allocates; Node IPAM, provider routing,
   floating controllers, or BGP delivers. BGP announces only unset or
   `io.cilium/bgp-control-plane` classes. Node IPAM's ETP-Local dummy-
@@ -31,9 +33,9 @@ The upstream facts behind the spec. Re-check these when versions move.
   [FRR 10.7 documentation](https://docs.frrouting.org/en/frr-10.7/).
 - **FRR topology facts:** route reflection is an iBGP mechanism only
   (RFC 4456; FRR's `route-reflector` config); eBGP has no route
-  reflectors, so a routed hub is plain eBGP transit with `next-hop-self`
-  toward spokes — which is why the round-15 fabric forbids iBGP/RR
-  outright and makes spokes non-transit by policy, not by omission.
+  reflectors, so a routed spine is plain eBGP transit with `next-hop-self`
+  toward leaves — which is why the round-15+ fabric forbids iBGP/RR
+  outright and makes leaves non-transit by policy, not by omission.
 - **FRR with Cilium:** `allow-reserved-ranges` and martian-next-hop
   handling are needed for loopback peering; rewrite Cilium's `::1` next hop
   to the stable node address. Cilium has no BFD, so local sessions use

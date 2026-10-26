@@ -45,7 +45,7 @@ nav:
       - GitOps: architecture/gitops.md
       - Security: architecture/security.md
   - Decisions:
-      - Decision record D1–D57: decisions/index.md
+      - Decision record D1–D60: decisions/index.md
   - Services:
       - Overview: services/index.md
       - rke2: services/rke2.md
@@ -53,7 +53,7 @@ nav:
       - kubernetes (upstream, reserved): services/kubernetes.md
       - netif: services/netif.md
       - routed-fabric: services/routed-fabric.md
-      - wireguard-mesh (legacy): services/wireguard-mesh.md
+      - wireguard-mesh: services/wireguard-mesh.md
   - Guides:
       - Day-2 GitOps: guides/day-2-gitops.md
       - Airgap operation: guides/airgap.md

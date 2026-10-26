@@ -1,7 +1,8 @@
 # netif
 
-`netif` is the planned inventory-facing clanService for core host network
-configuration (round 15, D53). It replaces static IP ownership by home's
+`netif` is the inventory-facing clanService for core host network
+configuration (round 15, D53), **implemented in 5R1 (2026-10-25)**. It
+replaces static IP ownership by home's
 `hostSpec.networking` and `machines.json`; borg's `lan` service is the
 behavioral reference.
 
@@ -117,7 +118,9 @@ route. For example, when `home-net` supplies the default through DHCP, a
 
 ## Status
 
-Planned for phase 5R1. Evaluation and hermetic VM coverage include static
+**Implemented (5R1, 2026-10-25)** — multi-instance, multi-link, with the
+eval and hermetic VM coverage listed below; suites are registered but not
+green-claimed. Coverage: static
 and DHCP/RA rendering, VLAN/bond/bridge links, on-link and policy routes,
 cross-instance ownership/default-route/DNS checks, export defaults, and
 routed-fabric endpoint consumption.
