@@ -21,8 +21,6 @@
 # default allocation (the node's IPv4 address).
 { lib }:
 let
-  cidrLib = import ./cidr.nix { inherit lib; };
-
   # First 8 hex chars of sha256(s) as a 32-bit int (same scheme as the
   # cilium id hash in default.nix; pure Nix, no IFD).
   hash32 =
@@ -43,10 +41,6 @@ let
   asnBase = 4200000000;
   asnSpan = 4294967294 - asnBase; # 94967294 values
 
-  # BIRD-safe symbol form of a name (no '-' or '.'). LEGACY — consumed by
-  # the legacy fleet-routing service until its deletion (5R3).
-  birdSym = s: lib.replaceStrings [ "-" "." ] [ "_" "_" ] s;
-
   mergeAttrs = items: lib.foldl' (acc: item: acc // item) { } items;
 in
 rec {
@@ -64,18 +58,7 @@ rec {
     in
     {
       inherit cilium host;
-
-      # LEGACY alias (pre-round-14 salt) — consumed by the legacy
-      # fleet-routing service until its outright deletion (5R3); new code
-      # must use `host`.
-      bird = asnBase + lib.mod (hash32 "kube-cluster-bgp-bird:${instanceName}") asnSpan;
     };
-
-  # LEGACY helpers consumed by the legacy fleet-routing service until its
-  # deletion (5R3). New code must not use these.
-  inherit birdSym;
-
-  hashAsn = salt: name: asnBase + lib.mod (hash32 "${salt}:${name}") asnSpan;
 
   # Resolved ASNs: explicit pins win over the hashed defaults — the escape
   # hatch for a fleet-wide ASN collision (fleet-asserted), parallel to the
@@ -113,17 +96,14 @@ rec {
           "fd11:${toString ciliumId}::/64";
     };
 
-  # Well-known core VIPs inside the fabric blocks: offset 53 (the DNS
-  # port) is the private CoreDNS VIP (D22 substrate).
-  fabricCoreDNSVips =
-    { ciliumId, settings }:
-    let
-      blocks = fabricBlocks { inherit ciliumId settings; };
-    in
-    {
-      ipv4 = cidrLib.addressAt blocks.v4 53;
-      ipv6 = cidrLib.addressAtV6 blocks.v6 83; # 0x53
-    };
+  # Well-known internal VIPs inside the fabric blocks: the D10-locked host
+  # offset 79 (0x79) is the clustermesh-apiserver's pinned dual VIP pair
+  # (D60, see mesh.nix meshVips). No CoreDNS VIP is pinned or rendered
+  # (member-facing DNS is wholly day-2, D22 amended / D10 round 17).
+  #
+  # Capacity rule (D10 round 17): the IPv4 block MUST hold at least 128
+  # addresses (host offset 79 contained) — prefix /25 or shorter; the old
+  # offset-53 / 64-address rule is retired.
 
   # The default private fabric pool (D10): one cluster-global shared-bgp
   # pool per cluster, on by default. Returns null when fabric.enable=false.

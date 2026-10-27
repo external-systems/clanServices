@@ -7,58 +7,42 @@
 let
   kube = import ../../lib/kube-cluster { inherit lib; };
 
-  # Resolve the per-machine export from the configured fabric instance.
-  # routed_fabric is the authoritative view (stable host addresses +
-  # per-adjacency interfaces/MTU); node_transport of the same instance is
-  # a compatibility view. Returns the whole export scope value, or null.
-  fabricExportFor =
+  # Resolve the per-machine node_transport export from the configured
+  # transport instance (D58: the ONLY transport view rke2 consumes —
+  # generic schemaVersion 2, never provider service names). Returns the
+  # whole export scope value, or null.
+  transportExportFor =
     {
       exports,
-      fabric,
+      transport,
       machineName,
     }:
     let
       matches = lib.attrValues (
         clanLib.selectExports (
           scope:
-          scope.serviceName == fabric.service
-          && scope.instanceName == fabric.instance
+          scope.serviceName == transport.service
+          && scope.instanceName == transport.instance
           && scope.machineName == machineName
         ) exports
       );
     in
     if matches == [ ] then null else builtins.head matches;
 
-  # Reduce a machine's fabric export to the kube-cluster consumption shape:
-  # addresses + endpoint/port + EVERY adjacency interface + the smallest
-  # adjacency MTU (D49/D51). Manual-address clusters return null.
-  memberFabric =
-    exportValue:
+  # Reduce a machine's node_transport export to the validated generic
+  # profile. No provider-specific export is consulted (D58).
+  memberTransport =
+    {
+      instanceName,
+      machineName,
+      exportValue,
+    }:
     if exportValue == null then
       null
     else
-      let
-        rf = exportValue.routed_fabric or null;
-        nt = exportValue.node_transport or null;
-        view = if rf != null then rf else nt;
-        adjacencies = if rf != null then lib.attrValues (rf.adjacencies or { }) else [ ];
-        adjacencyIfaces = lib.filter (x: x != "") (map (a: a.interface or a.name or "") adjacencies);
-        adjacencyMtus = lib.filter (x: x > 0) (map (a: a.mtu or 0) adjacencies);
-        compatIface = view.interface or null;
-        interfaces =
-          if adjacencyIfaces != [ ] then
-            adjacencyIfaces
-          else
-            lib.optionals (compatIface != null) [ compatIface ];
-        mtu = if adjacencyMtus != [ ] then lib.foldl' lib.min 65535 adjacencyMtus else view.mtu or null;
-      in
-      {
-        inherit interfaces mtu;
-        ipv4 = view.ipv4 or null;
-        ipv6 = view.ipv6 or null;
-        endpoint = view.endpoint or null;
-        port = view.port or null;
-        asn = view.asn or null;
+      kube.transport.resolve {
+        inherit instanceName machineName;
+        transport = exportValue.node_transport or null;
       };
 
   # Artifact-flake Cilium facts (chart version -> committed manifest path;
@@ -136,28 +120,36 @@ let
       serverMembers = lib.filter (m: m.role == "server") roleMembers;
 
       fabricEnabled = settings.network.fabric != null;
-      allFabricExports = lib.genAttrs members (
+      allTransportExports = lib.genAttrs members (
         name:
         if fabricEnabled then
-          fabricExportFor {
+          transportExportFor {
             inherit exports;
-            fabric = settings.network.fabric;
+            transport = settings.network.fabric;
             machineName = name;
           }
         else
           null
       );
 
-      # Per-machine resolved fabric facts (null = manual-address member).
-      allFabricFacts = lib.mapAttrs (_: memberFabric) allFabricExports;
+      # Per-machine resolved transport facts (null = manual-address member).
+      allTransportFacts = lib.mapAttrs (
+        name: exportValue:
+        memberTransport {
+          inherit instanceName;
+          machineName = name;
+          inherit exportValue;
+        }
+      ) allTransportExports;
 
-      # A member's node addresses: the fabric export when configured,
-      # else the explicit per-machine network.ipv4/ipv6 settings.
+      # A member's node addresses: the node_transport export when
+      # configured, else the explicit per-machine network.ipv4/ipv6
+      # settings.
       memberAddr =
         name:
-        if allFabricFacts.${name} != null then
+        if allTransportFacts.${name} != null then
           {
-            inherit (allFabricFacts.${name}) ipv4 ipv6;
+            inherit (allTransportFacts.${name}) ipv4 ipv6;
           }
         else
           {
@@ -197,26 +189,42 @@ let
           domain;
 
       # --- Data plane (D9/D10/D19/D49/D55): the Cilium-side BGP v2
-      # resources, the fabric pool, and the private CoreDNS — one
-      # resolution seam shared by the bundle, assertions, and the export.
-      # The host FRR is owned by routed-fabric (D19); the distro service
-      # renders NO routing stack.
+      # resources and the fabric pool — one resolution seam shared by the
+      # bundle, assertions, and the export. The host FRR is owned by
+      # routed-fabric (D19); the distro service renders NO routing stack.
+      hostAsns = lib.filterAttrs (_: asn: asn != null) (
+        lib.mapAttrs (
+          name: facts:
+          if facts == null || facts.routeExchange != "local-router" then
+            null
+          else if allMembers.${name}.settings.bgp.hostASN != null then
+            allMembers.${name}.settings.bgp.hostASN
+          else
+            kube.hostNodeAsn settings.network.fabric.instance name
+        ) allTransportFacts
+      );
+
+      nativeRouting = transportProfile == null || transportProfile.nativeRouting;
+      localRouter =
+        transportProfile != null && nativeRouting && transportProfile.routeExchange == "local-router";
+      effectiveSettings = settings // {
+        fabric = settings.fabric // {
+          enable = if settings.fabric.enable != null then settings.fabric.enable else localRouter;
+        };
+        bgp = settings.bgp // {
+          enable = settings.bgp.enable && localRouter;
+        };
+      };
+
       dp = kube.resolveDataPlane {
-        inherit
-          instanceName
-          settings
-          domain
-          ;
+        inherit instanceName hostAsns;
+        settings = effectiveSettings;
         ciliumId = resolvedCiliumId;
-        inherit (resolvedCidrs) clusterDNS;
         members = poolMembers;
-        hostAsns = lib.filterAttrs (_: asn: asn != null) (
-          lib.mapAttrs (_: facts: if facts == null then null else facts.asn) allFabricFacts
-        );
       };
 
       resolvedPools = kube.render.resolvePools {
-        inherit settings;
+        settings = effectiveSettings;
         members = poolMembers;
         extraPools = lib.optionalAttrs (dp.fabricPool != null) { ${dp.fabricPool.name} = dp.fabricPool; };
       };
@@ -228,14 +236,88 @@ let
         zone = if m.settings.topology.zone != null then m.settings.topology.zone else instanceName;
       };
 
-      # kube_cluster export content (§6.2): identity + mesh endpoints +
-      # pool handoff. No secrets; every interface option has a default.
+      # The cluster's uniform transport view (D58): mode/protocol/
+      # capabilities from the members (uniformity is asserted in
+      # mkClusterAssertions); the cluster MTU is the minimum of the
+      # members' derived MTUs (one cilium-config serves all nodes).
+      transportProfile =
+        let
+          profiles = lib.filter (p: p != null) (lib.attrValues allTransportFacts);
+        in
+        if profiles == [ ] then
+          null
+        else
+          (builtins.head profiles)
+          // {
+            mtu = lib.foldl' lib.min 65535 (map (p: p.mtu) profiles);
+          };
+
+      # The mesh peers: same-group clusters (self excluded), keyed by
+      # cluster name. The bundle renders their published endpoints into
+      # the cilium-clustermesh secrets; fleet-checks asserts symmetry,
+      # same-group membership and group uniformity (D54/D60).
+      peerClusters =
+        let
+          all = kube.clustersOf clanLib exports;
+          sameGroup = lib.filter (c: c.cluster.meshGroup == meshGroup && c.cluster.name != instanceName) (
+            builtins.attrValues all
+          );
+        in
+        lib.listToAttrs (
+          map (c: {
+            name = c.cluster.name;
+            value = c.cluster;
+          }) sameGroup
+        );
+
+      # --- ClusterMesh resolution (D60): placement, exposure, replicas,
+      # VIPs, published endpoints, peer configs, cert SANs.
+      meshResolved = kube.mesh.resolve {
+        inherit instanceName domain;
+        settings = effectiveSettings;
+        ciliumId = resolvedCiliumId;
+        transport =
+          if transportProfile == null then
+            # Manual-address clusters: no internal LB capability (no
+            # transport-provided VIP pool); node-port is the universal
+            # fallback (operator-managed node connectivity).
+            {
+              internalLoadBalancer = false;
+              nodePort = true;
+            }
+          else
+            transportProfile;
+        members = map (m: {
+          inherit (m) machineName role settings;
+          inherit (memberAddr m.machineName) ipv4 ipv6;
+        }) roleMembers;
+        peers = peerClusters;
+        fabricBlocks =
+          if dp.fabricPool != null then
+            {
+              v4 = builtins.elemAt dp.fabricPool.blocks 0;
+              v6 = builtins.elemAt dp.fabricPool.blocks 1;
+            }
+          else
+            null;
+      };
+
+      # The cert SANs (D60) — every exported member address, the published
+      # endpoint set, the fan-in name and the external dnsName.
+      meshSans = {
+        dns = meshResolved.sanDns;
+        ip = meshResolved.sanIps;
+      };
+
+      # kube_cluster export content (§6.2, schemaVersion 4): identity +
+      # datapath facts (D58) + mesh facts (D60) + pool handoff. No secrets;
+      # every interface option has a default.
       memberExportFacts = lib.listToAttrs (
         map (
           m:
           let
             addr = memberAddr m.machineName;
-            facts = allFabricFacts.${m.machineName};
+            facts = allTransportFacts.${m.machineName};
           in
           {
             name = m.machineName;
@@ -245,7 +327,6 @@ let
               topology = topologyOf m;
             }
             // lib.optionalAttrs (facts != null) {
-              interface = if facts.interfaces != [ ] then builtins.head facts.interfaces else null;
               inherit (facts)
                 interfaces
                 mtu
@@ -280,7 +361,7 @@ let
     {
       exports = mkExports {
         kube_cluster = {
-          schemaVersion = 3;
+          schemaVersion = 4;
           name = instanceName;
           ciliumId = resolvedCiliumId;
           network = {
@@ -302,20 +383,52 @@ let
                   instance = null;
                 };
           };
+          # D58: the transport-derived datapath facts (group uniformity
+          # inputs for the fleet checks).
+          datapath =
+            if transportProfile == null then
+              {
+                mode = "native";
+                tunnelProtocol = null;
+                routeExchange = null;
+                devices = [ ];
+                directRoutingDevice = null;
+                mtu = null;
+                internalLoadBalancer = false;
+                nodePort = false;
+              }
+            else
+              {
+                inherit (transportProfile)
+                  mode
+                  tunnelProtocol
+                  routeExchange
+                  mtu
+                  internalLoadBalancer
+                  nodePort
+                  ;
+                devices = transportProfile.interfaces;
+                inherit (transportProfile) directRoutingDevice;
+              };
           inherit meshGroup;
-          # D54: null = full peering within the fabric instance.
-          mesh.peers = settings.meshPeers;
+          # D54: null = full peering within the mesh group; an explicit
+          # list names selective peers (symmetric, non-transitive).
+          mesh = {
+            inherit (settings.mesh)
+              peers
+              placement
+              maxConnectedClusters
+              ;
+            # D60: the resolved exposure facts (peers dial `published`).
+            exposure = kube.mesh.exportFacts { mesh = meshResolved; };
+          };
           # D43 placeholder: the real controlDomain option lands in
           # phase 6; the export field is structured now.
           controlDomain.role = "standalone";
           members = memberExportFacts;
           pools = poolExportFacts;
           bgp = dp.exportFacts.bgp // {
-            hostAsn =
-              if allFabricFacts.${machine.name} != null && allFabricFacts.${machine.name}.asn != null then
-                allFabricFacts.${machine.name}.asn
-              else
-                dp.exportFacts.bgp.hostAsn;
+            hostAsn = hostAsns.${machine.name} or dp.exportFacts.bgp.hostAsn;
           };
           inherit (dp.exportFacts) fabric;
         };
@@ -347,12 +460,12 @@ let
           nodeIPv4 = ownAddr.ipv4;
           nodeIPv6 = ownAddr.ipv6;
 
-          ownFabric = allFabricFacts.${machine.name};
-          # Every fabric adjacency interface of this machine (D49/D51) and
-          # the smallest adjacency MTU; manual clusters fall back to the
+          ownTransport = allTransportFacts.${machine.name};
+          # Every datapath interface of this machine (D58: the transport's
+          # exported interfaces — one per fabric adjacency on native
+          # fabrics) and its derived MTU; manual clusters fall back to the
           # single underlay guess eth0/1500 (the old behavior).
-          fabricInterfaces = if ownFabric != null then ownFabric.interfaces else [ ];
-          fabricMtu = if ownFabric != null then ownFabric.mtu else null;
+          transportInterfaces = if ownTransport != null then ownTransport.interfaces else [ ];
 
           # haproxy backend list: one entry per server-role member, both
           # families. Servers list THEMSELVES normally and the remote
@@ -391,12 +504,28 @@ let
 
           # The canonical Cilium profile (§6.4) with the admin's
           # cilium.helmValues folded in — translated into bundle patches by
-          # profilePatches (never re-run through helm, D26).
+          # profilePatches (never re-run through helm, D26). The datapath
+          # mode/protocol/MTU/devices derive from the node_transport
+          # export (D58) — admin overrides cannot contradict them
+          # (post-merge validated in mkCiliumValues).
           ciliumProfile = kube.render.mkCiliumValues {
             inherit settings instanceName;
             transportFacts = {
-              interfaces = if fabricInterfaces != [ ] then fabricInterfaces else [ "eth0" ];
-              mtu = if fabricMtu != null then fabricMtu else 1500;
+              # Devices cover EVERY cluster member's datapath interfaces
+              # (one cilium-config serves all nodes, §6.4/D51); the MTU is
+              # the cluster-wide minimum (transportProfile). Both fall back
+              # to the manual-cluster guess.
+              interfaces =
+                if transportProfile != null then
+                  lib.unique (
+                    lib.concatMap (p: p.interfaces) (lib.filter (p: p != null) (lib.attrValues allTransportFacts))
+                  )
+                else
+                  [ "eth0" ];
+              directRoutingDevice = if ownTransport != null then ownTransport.directRoutingDevice else "eth0";
+              mtu = if transportProfile != null then transportProfile.mtu else 1500;
+              mode = if ownTransport != null then ownTransport.mode else "native";
+              tunnelProtocol = if ownTransport != null then ownTransport.tunnelProtocol else null;
             };
             k8sServiceHost = kubeapiAddr;
             k8sServicePort = haproxyKubeapiPort;
@@ -409,10 +538,10 @@ let
           bundle = kube.render.mkBundle {
             inherit
               pkgs
-              settings
               instanceName
               manifestLabels
               ;
+            settings = effectiveSettings;
             kubenixSrc = inputs.kubenix;
             baseManifest = ciliumManifest;
             profile = ciliumProfile;
@@ -423,7 +552,7 @@ let
             k8sServiceHost = kubeapiAddr;
             k8sServicePort = haproxyKubeapiPort;
             bgp = dp.bgpBundle;
-            inherit (dp) privateCoreDNS;
+            mesh = meshResolved;
           };
 
           effectiveRke2Package =
@@ -655,7 +784,8 @@ let
                     roleMembers
                     settings
                     ;
-                  transportFacts = if fabricEnabled then allFabricFacts else null;
+                  transportFacts = if fabricEnabled then allTransportFacts else null;
+                  inherit nativeRouting;
                   # Cross-role parity (the export is per-member; fleet
                   # consumers read one scope — all roles must agree on the
                   # cluster-level knobs). Sourced from MACHINE-level
@@ -672,7 +802,8 @@ let
                   );
                 })
                 ++ (kube.assertions.mkPoolAssertions {
-                  inherit instanceName settings;
+                  inherit instanceName;
+                  settings = effectiveSettings;
                   members = poolMembers;
                   ciliumId = resolvedCiliumId;
                   reservedCidrs = [
@@ -693,6 +824,19 @@ let
                 [
                   (kube.vars.mkTokenGenerators { inherit pkgs instanceName; })
                   (kube.vars.mkHaproxyGenerator { inherit pkgs instanceName; })
+                  # D60: the mesh group CA (shared across the group) and the
+                  # per-cluster apiserver leaf set (SANs = the published
+                  # endpoints). Defined on every member; share = true keeps
+                  # one generation per group/instance.
+                  (kube.vars.mkMeshCaGenerator {
+                    inherit pkgs;
+                    group = meshGroup;
+                  })
+                  (kube.vars.mkMeshCertGenerator {
+                    inherit pkgs instanceName;
+                    group = meshGroup;
+                    sans = meshSans;
+                  })
                 ]
                 ++ lib.optionals isServer [
                   (kube.vars.mkPkiGenerator { inherit pkgs instanceName; })
@@ -775,19 +919,19 @@ let
                 firewall = {
                   checkReversePath = "loose";
                   extraReversePathFilterRules = lib.concatStringsSep "\n" (
-                    map (iface: ''iifname "${iface}" accept'') fabricInterfaces
+                    map (iface: ''iifname "${iface}" accept'') transportInterfaces
                     ++ [ "meta mark and 0x0f00 == 0x0200 accept" ]
                   );
                   trustedInterfaces = [
                     "cilium_host"
                     "cilium_net"
                   ]
-                  ++ fabricInterfaces;
+                  ++ transportInterfaces;
                   extraInputRules =
                     let
                       interfaceGuard =
-                        if fabricInterfaces != [ ] then
-                          "iifname { ${lib.concatStringsSep ", " (map (i: ''"${i}"'') fabricInterfaces)} } "
+                        if transportInterfaces != [ ] then
+                          "iifname { ${lib.concatStringsSep ", " (map (i: ''"${i}"'') transportInterfaces)} } "
                         else
                           "";
                     in
@@ -860,6 +1004,20 @@ let
               }
             ))
 
+            # The ClusterMesh apiserver TLS secrets from clan vars (D60) on
+            # the clusterInit node — after the bundle created the apiserver
+            # objects. Key material never enters the bundle/Nix store.
+            (lib.mkIf isInit (
+              kube.mkClustermeshSecretsApply {
+                inherit pkgs instanceName;
+                namePrefix = "rke2";
+                serverUnit = "rke2-server.service";
+                bootstrapUnit = "rke2-${instanceName}-bootstrap-apply.service";
+                kubeconfigPath = "/etc/rancher/rke2/rke2.yaml";
+                files = config.clan.core.vars.generators."rancher-clustermesh-${instanceName}".files;
+              }
+            ))
+
             # Offline resolution of the bundle's digest-pinned image
             # references (D26/D40 airgap): tag each preloaded image with
             # its name@digest alias on every node. Only when the default
@@ -884,12 +1042,9 @@ in
     categories = [ "System" ];
     readme = builtins.readFile ./README.md;
     exports = {
-      # The fabric reference resolves the routed_fabric export
-      # (authoritative) with node_transport as the compatibility view.
-      inputs = [
-        "routed_fabric"
-        "node_transport"
-      ];
+      # D58: the transport is consumed through the GENERIC node_transport
+      # schemaVersion 2 export only — never provider-specific exports.
+      inputs = [ "node_transport" ];
       out = [ "kube_cluster" ];
     };
   };

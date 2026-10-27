@@ -79,7 +79,7 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 ## Status and roadmap
 
 - **Done**: phases 0–4 bootstrap/base; round-14 contract; round-15 docs (D51–D55); round-16 docs (D56–D57); round-17 docs (D58–D60: generic `node_transport` profiles, leaf/spine auto graph, ClusterMesh placement/exposure); 5R1 + 5R2(1)–(3) implementation (netif + routed-fabric round-16 shape + native Cilium/pools + pkgs re-inflation + pin update — suites registered, not green-claimed)
-- **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence; `fleet-routing` + `lib/import-flake` deletion planned once replacement suites are green
+- **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence; `fleet-routing` + `lib/import-flake` + BIRD remnants deleted in the round-17 cleanup
 - **Next**: 5R5 — the round-17 contract (leaf/spine rename, generic `node_transport` seam, D60 ClusterMesh placement/exposure), then full + selective ClusterMesh suites — planned, docs-locked, no implementation or VM evidence yet
 - **Then**: control domain, PKI/GitOps-handoff suites, home migration and borg archival
 - **Reserved**: upstream `kubernetes` distro, MCS-API, clan-operator

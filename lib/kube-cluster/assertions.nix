@@ -5,6 +5,7 @@
 let
   cidr = import ./cidr.nix { inherit lib; };
   bgpLib = import ./bgp.nix { inherit lib; };
+  transport = import ./transport.nix { inherit lib; };
 
   prefixLen = block: builtins.fromJSON (builtins.elemAt (lib.splitString "/" block) 1);
 in
@@ -15,6 +16,10 @@ in
       roleMembers,
       settings,
       transportFacts ? null,
+      # Whether the cluster's transport profile is native routing (D58) —
+      # only then must the pod CIDRs stay inside the native-routing CIDRs
+      # (D49); tunnel transports encapsulate and never consult them.
+      nativeRouting ? true,
       # [ { name, settings } ] — the fully merged per-machine settings of
       # every cluster member, name = "<role>/<machine>" (for the parity
       # check across all machines of all roles).
@@ -74,6 +79,7 @@ in
           "pools"
           "bgp"
           "fabric"
+          "mesh"
           "meshGroup"
           "domain"
           "distroDefaults"
@@ -154,13 +160,17 @@ in
       }
       {
         assertion =
-          settings.network.podCIDRv4 == null || cidr.contains "10.0.0.0/8" settings.network.podCIDRv4;
-        message = "kube-cluster/${instanceName}: network.podCIDRv4 must be contained in ipv4NativeRoutingCIDR 10.0.0.0/8";
+          !nativeRouting
+          || settings.network.podCIDRv4 == null
+          || cidr.contains "10.0.0.0/8" settings.network.podCIDRv4;
+        message = "kube-cluster/${instanceName}: network.podCIDRv4 must be contained in ipv4NativeRoutingCIDR 10.0.0.0/8 (native transport, D49)";
       }
       {
         assertion =
-          settings.network.podCIDRv6 == null || cidr.contains "fd10::/16" settings.network.podCIDRv6;
-        message = "kube-cluster/${instanceName}: network.podCIDRv6 must be contained in ipv6NativeRoutingCIDR fd10::/16";
+          !nativeRouting
+          || settings.network.podCIDRv6 == null
+          || cidr.contains "fd10::/16" settings.network.podCIDRv6;
+        message = "kube-cluster/${instanceName}: network.podCIDRv6 must be contained in ipv6NativeRoutingCIDR fd10::/16 (native transport, D49)";
       }
       {
         assertion = !settings.bgp.enable || settings.network.fabric != null;
@@ -174,7 +184,19 @@ in
         assertion = roleDrift == [ ];
         message = "kube-cluster/${instanceName}: cluster-level settings must be identical across all machines — drifted member(s): ${
           lib.concatStringsSep ", " (map (r: r.name) roleDrift)
-        } (set cilium/pools/bgp/fabric/meshGroup/domain/distroDefaults/coredns/bootstrap/network.fabric uniformly on every machine of every role)";
+        } (set cilium/pools/bgp/fabric/mesh/meshGroup/domain/distroDefaults/coredns/bootstrap/network.fabric uniformly on every machine of every role)";
+      }
+      {
+        # D58: the transport mode/protocol/capabilities are uniform across
+        # the cluster's members (one transport instance = one trust domain).
+        assertion =
+          transportFacts == null
+          || lib.all (
+            n:
+            transport.uniformityKey transportFacts.${n}
+            == transport.uniformityKey transportFacts.${builtins.head (builtins.attrNames transportFacts)}
+          ) (lib.tail (builtins.attrNames transportFacts));
+        message = "kube-cluster/${instanceName}: node_transport profiles differ across members — one transport instance must present ONE uniform datapath mode/protocol/capability profile (D58)";
       }
     ];
 
@@ -249,9 +271,12 @@ in
         p: (p.owner or null) == null || !(lib.elem p.owner memberNames)
       ) nodeBgpPools;
 
-      # The fabric blocks must hold the well-known core VIPs (private
-      # CoreDNS at offset 53): at least 64 addresses per family.
-      fabricV4Ok = fabricPool == null || prefixLen (builtins.elemAt fabricPool.blocks 0) <= 26;
+      # The fabric blocks must hold the well-known internal VIPs: the
+      # clustermesh-apiserver pair at host offset 79 (D60) — at least 128
+      # addresses per v4 block (prefix /25 or shorter) and 256 per v6 block
+      # (prefix /120 or shorter). The old offset-53 / 64-address rule is
+      # retired (D10 round 17).
+      fabricV4Ok = fabricPool == null || prefixLen (builtins.elemAt fabricPool.blocks 0) <= 25;
       fabricV6Ok = fabricPool == null || prefixLen (builtins.elemAt fabricPool.blocks 1) <= 120;
     in
     [
@@ -302,7 +327,7 @@ in
       }
       {
         assertion = fabricV4Ok && fabricV6Ok;
-        message = "kube-cluster/${instanceName}: fabric pool blocks must have at least 64 addresses (v4 /26 or shorter, v6 /120 or shorter) — the private CoreDNS VIP lives at offset 53";
+        message = "kube-cluster/${instanceName}: fabric pool blocks must have at least 128 addresses (v4 /25 or shorter) and 256 (v6 /120 or shorter) — the internal ClusterMesh apiserver VIPs live at host offset 79 (D10 round 17/D60)";
       }
     ];
 }

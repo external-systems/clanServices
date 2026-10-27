@@ -268,19 +268,25 @@ in
     test_nodeTransport = {
       expr = (memberExport "alpha").node_transport;
       expected = {
+        schemaVersion = 2;
         ipv4 = "10.42.0.1";
         ipv6 = "fd10:42::1";
-        interface = "wg-mesh";
-        port = 51820;
-        mtu = 1420;
-        endpoint = "alpha.example.net:51820";
         instance = "mesh";
-        # Topology is a cluster-node concept (kube_cluster export);
-        # wireguard-mesh leaves the pass-through fields null.
-        topology = {
-          region = null;
-          zone = null;
+        endpoint = "alpha.example.net:51820";
+        port = 51820;
+        interfaces = {
+          wg-mesh = {
+            mtu = 1420;
+          };
         };
+        directRoutingDevice = "wg-mesh";
+        datapath = {
+          mode = "tunnel";
+          tunnelProtocol = "vxlan";
+        };
+        native.routeExchange = null;
+        internalLoadBalancer = false;
+        nodePort = true;
       };
     };
     test_standardPeer = {

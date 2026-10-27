@@ -38,7 +38,9 @@ let
 
   cidrLib = import ./cidr.nix { inherit lib; };
   bgp = import ./bgp.nix { inherit lib; };
-  bird = import ./bird.nix { inherit lib; };
+  fabric = import ./fabric.nix { inherit lib; };
+  transport = import ./transport.nix { inherit lib; };
+  mesh = import ./mesh.nix { inherit lib; };
   cilium = import ./cilium.nix {
     inherit
       lib
@@ -113,15 +115,12 @@ let
   #   effectivePools    — settings.pools + the fabric pool
   #   sharedBgpPoolNames / nodeBgpPoolNames / bgpActive / bgpPoolBlocks
   #   bgpBundle         — mkBundle's bgp param (null when bgp inactive)
-  #   privateCoreDNS    — mkBundle's privateCoreDNS param (null when off)
   #   exportFacts       — the kube_cluster export's bgp/fabric subtrees
   resolveDataPlane =
     {
       instanceName,
       settings,
       ciliumId,
-      domain,
-      clusterDNS,
       members,
       hostAsns ? { },
     }:
@@ -138,8 +137,6 @@ let
       bgpActive = sharedBgpPoolNames != [ ] || nodeBgpPoolNames != [ ];
       bgpPoolBlocks = lib.concatMap (p: p.blocks) (builtins.attrValues (sharedBgpPools // nodeBgpPools));
       fabricBlocks' = bgp.fabricBlocks { inherit ciliumId settings; };
-      vips = bgp.fabricCoreDNSVips { inherit ciliumId settings; };
-      privateDnsOn = settings.fabric.enable && settings.fabric.coredns.enable;
     in
     {
       inherit
@@ -167,19 +164,6 @@ let
         else
           null;
 
-      privateCoreDNS =
-        if privateDnsOn then
-          {
-            inherit domain clusterDNS;
-            vip4 = vips.ipv4;
-            vip6 = vips.ipv6;
-            fabricPoolName = fabricPool.name;
-            memberCount = builtins.length members;
-            inherit (settings.fabric.coredns) wildcardAddress svcZone podZone;
-          }
-        else
-          null;
-
       exportFacts = {
         bgp = {
           enabled = bgpActive;
@@ -192,15 +176,6 @@ let
           pool = if fabricPool != null then fabricPool.name else "";
           ipv4Block = if settings.fabric.enable then fabricBlocks'.v4 else null;
           ipv6Block = if settings.fabric.enable then fabricBlocks'.v6 else null;
-          coreDNS = {
-            ipv4 = if privateDnsOn then vips.ipv4 else null;
-            ipv6 = if privateDnsOn then vips.ipv6 else null;
-            zone = if privateDnsOn then "${instanceName}.${domain}" else "";
-            svcZone =
-              if privateDnsOn && settings.fabric.coredns.svcZone then "${instanceName}.svc.${domain}" else "";
-            podZone =
-              if privateDnsOn && settings.fabric.coredns.podZone then "${instanceName}.pods.${domain}" else "";
-          };
         };
       };
     };
@@ -213,19 +188,21 @@ rec {
     resolveDataPlane
     ;
 
-  # BGP v2 / fabric derivation helpers (D9/D10) and the vendored BIRD
-  # fragment machinery (D19).
-  inherit bgp bird;
+  # BGP v2 / fabric derivation helpers (D9/D10). The local-router ASN
+  # derivation is shared with native transport producers, so consumers need
+  # no provider-specific export.
+  inherit bgp;
+  hostNodeAsn = fabric.nodeAsn;
 
-  # The vendored BIRD NixOS module (path — NixOS dedups path imports, so
-  # every contributing clanService lands in ONE bird daemon per host).
-  birdModule = ./bird-module.nix;
+  # The generic node_transport consumer (D58) and the ClusterMesh
+  # placement/exposure resolution (D60).
+  inherit transport mesh;
 
   interfaces = {
     cluster = clusterInterface;
     node = nodeInterface;
     # The custom export interface (§6.2, D45): published by both distro
-    # services, consumed by fleet checks and (phase 5+) fleet-routing.
+    # services, consumed by fleet checks and routed-fabric.
     kube_cluster = ./kube-cluster-interface.nix;
   };
 
@@ -246,9 +223,10 @@ rec {
     inherit (assertFns) mkClusterAssertions mkPoolAssertions;
   };
 
-  # Bootstrap-apply oneshot fragment (D40) + the image digest-alias
-  # oneshot (offline digest-pinned references, D26/D40 airgap).
-  inherit (bootstrap) mkBootstrapApply mkImageDigestAliases;
+  # Bootstrap-apply oneshot fragment (D40) + the ClusterMesh secrets-apply
+  # oneshot (D60) + the image digest-alias oneshot (offline digest-pinned
+  # references, D26/D40 airgap).
+  inherit (bootstrap) mkBootstrapApply mkClustermeshSecretsApply mkImageDigestAliases;
 
   # Vars generators (bare generator attrsets — the distro service merges
   # them into clan.core.vars.generators, gated by role as documented in
@@ -261,6 +239,8 @@ rec {
   # Fleet-wide assertions (§6.2): mkFleetChecks computes the clan.checks
   # attrset from the kube_cluster exports; fleetChecksModule is a
   # clan-class module wiring them into a clan evaluation
-  # (`clan.imports = [ kube.fleetChecksModule ]`).
-  inherit (fleetChecks) mkFleetChecks fleetChecksModule;
+  # (`clan.imports = [ kube.fleetChecksModule ]`). clustersOf is the shared
+  # export-tree helper (also used by the distro services for ClusterMesh
+  # peer resolution, D60).
+  inherit (fleetChecks) mkFleetChecks fleetChecksModule clustersOf;
 }

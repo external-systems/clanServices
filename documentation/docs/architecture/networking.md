@@ -207,9 +207,10 @@ upstream router retain all equal paths. One VIP is never advertised from
 two clusters.
 
 The default private `<instance>-fabric` pool is shared-bgp and carries the
-pinned clustermesh-apiserver internal VIP pair — **host offset `0x79` is
-ONLY that apiserver pair** (D60). Kube-api mirror-Service VIP allocation
-(D30) is separate and future; it cannot share the ClusterMesh pair. The
+pinned clustermesh-apiserver internal IPv4 VIP — **host offset `0x79` is
+ONLY that apiserver VIP** (D60); control-plane exposure is IPv4-only on
+the pinned Cilium 1.20.3 profile. Kube-api mirror-Service VIP allocation
+(D30) is separate and future; it cannot share the ClusterMesh VIP. The
 pool never carries a member-facing DNS VIP: member DNS is day-2 entirely
 (D22 amended).
 Public BGP pools

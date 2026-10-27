@@ -6,7 +6,7 @@ in
 rec {
   clan = {
     modules.wireguard-mesh = module;
-    exportInterfaces.node_transport = ./node-transport-interface.nix;
+    exportInterfaces.node_transport = ../../lib/node-transport-interface.nix;
   };
 
   perSystem = _: {

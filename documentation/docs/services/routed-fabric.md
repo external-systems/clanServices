@@ -31,6 +31,15 @@ Two **orthogonal, composable per-machine switches** layer on top:
   peers, owned-prefix filtering, forwarding, optional NDP. A border is
   **not automatically a spine**, gets **no automatic admin DNS**, and a
   spine is **not automatically a border**; public endpoints imply neither.
+  Border is an external route-exchange policy, not automatically a public
+  WAN role: it supplies no public addresses, NAT, default route, or general
+  fabric transit. A border leaf stays non-transit for ordinary fabric
+  routes. Kubernetes leaves can originate private pod/VIP pools without a
+  border; use border only when selected prefixes must cross the fabric
+  boundary through an upstream router, with real upstream routing and
+  source-return policy. Automatic adjacency is instance-scoped: spines in
+  different routed-fabric instances never auto-peer. Separate instances
+  are hard trust-domain boundaries and need deliberate external routing.
 
 ## Topology: the automatic graph (D59)
 
@@ -102,9 +111,8 @@ the `external-systems/pkgs` native Cilium base re-inflation, and the
 clanServices pin update. Inventory examples in these docs that show
 `leaf`/`spine` are **Round 17 target, not current config**.
 
-The code still in the tree at `services/fleet-routing/` is legacy: the
-BIRD/VXLAN checkpoint at `2995ac3` (5 green / 7 red suites) and the
-round-14 full-mesh target it follows are both superseded, and it is not
-accepted as this service's implementation. It is **deleted outright** once
-the `services/routed-fabric/` replacement suites are green — no archiving,
-no commented-out remnants; the historical docs record it.
+The legacy `services/fleet-routing/` tree and its BIRD/VXLAN checkpoint at
+`2995ac3` (5 green / 7 red suites) were never accepted as this service's
+implementation. The obsolete tree, BIRD helpers, and BIRD-specific fixtures
+were deleted in the round-17 cleanup — no archiving or commented-out
+remnants; the historical docs record them.

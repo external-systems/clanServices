@@ -82,6 +82,23 @@ these schemas, so the breaking renames ship without migration shims. New
 decisions D58–D60; revised: D9, D11, D12, D33, D44, D47, D49, D51, D52,
 D54, D56, D57.
 
+Amended 2026-10-26 (round 17 correction, retained): **ClusterMesh
+control-plane exposure is IPv4-only.** The pinned Cilium v1.20.3 chart
+proves the round-17 dual-stack control-plane VIP assumption false: the
+clustermesh-apiserver Deployment embeds etcd with
+`--listen-client-urls=https://0.0.0.0:2379` (IPv4 wildcard;
+`--advertise-client-urls=https://localhost:2379`) and the template has
+no dual-stack listener knob, so an IPv6 control-plane VIP would be
+undialable. D60/D10 internal exposure therefore pins ONE IPv4 VIP at
+host offset 79 / 0x79 — `172.16.<id>.79` — with no ClusterMesh IPv6 VIP
+and no `RequireDualStack` advertisement; NodePort publishes every
+selected node's stable IPv4 address; external exposure uses DNS (a
+runtime A record); certificate SANs carry published IPv4/DNS endpoints
+only, never unreachable IPv6. The ClusterMesh DATA plane remains
+dual-stack (§3.2, §5 invariant 2); no unrelated dual-stack data-plane
+or BGP requirement changes. Revised: D10, D30, D44, D60; §3.2, §6.5,
+§7, §10, §11.
+
 Round 15 (2026-10-24, retained): **routed-hub MVP, routed-fabric,
 multi-instance netif, selective ClusterMesh, nftables-only.** The
 supported fabric topology became routed hub/spoke only: one WireGuard
@@ -252,7 +269,9 @@ buildable diagrams without becoming a clanServices dependency (D57).
   supported and peering bounds automatic cross-cluster route policy.
   Native groups need mesh-wide native-routing CIDRs covering every pod
   CIDR of every peered cluster and cross-cluster pod routes before
-  readiness; tunnel groups need node connectivity.
+  readiness; tunnel groups need node connectivity. The mesh DATA plane
+  stays dual-stack; apiserver control-plane exposure is IPv4-only on the
+  validated Cilium 1.20.3 profile (D60).
 - Routed spine/leaf host WireGuard fabric: exactly one point-to-point
   interface per adjacency — leaf↔spine attachments plus automatic
   spine↔spine pairs — never one per remote machine (§6.3, D51/D59).
@@ -379,10 +398,13 @@ unless noted) — revoked entries keep one-line reasons for history.
   64-address rule is retired).
   The clustermesh-apiserver VIP is a pinned literal at host offset 79
   decimal
-  / 0x79 — `172.16.<ciliumId>.79` + `fd11:<ciliumId>::79` — drawn by
+  / 0x79 — `172.16.<ciliumId>.79`, IPv4 ONLY (the pinned Cilium 1.20.3
+  clustermesh-apiserver etcd listens on an IPv4 wildcard with no
+  dual-stack listener knob, D60) — drawn by
   explicit `lbipam.cilium.io/ips` projection, asserted pool-contained and
   collision-checked against every other pinned clan VIP (D60). No CoreDNS
-  VIP is pinned or rendered. `bgp.enable` ⇔
+  VIP is pinned or rendered, and no ClusterMesh IPv6 VIP /
+  `RequireDualStack` advertisement exists. `bgp.enable` ⇔
   "any node-bgp or shared-bgp pool exists" is eval-locked (§6.12).
 - **D11 routed-fabric is the flat-L3 fabric.** (REVISED round 14:
   fleet-routing; round 15: renamed + routed-hub; round 16: composable
@@ -510,7 +532,7 @@ unless noted) — revoked entries keep one-line reasons for history.
   EndpointSlice of API endpoints (D12 fan-in), annotated
   `service.cilium.io/global: "true"`, with `loadBalancerClass` pinned per
   D41/D8. Mirror-Service allocation is separate from D60 and MUST NOT use
-  the clustermesh-apiserver's offset-79 VIP pair.
+  the clustermesh-apiserver's offset-79 VIP.
   Consumers render the same-name Service; ClusterMesh merges endpoints.
   Consumer CoreDNS rewrite (rendered from exports):
   `kubernetes.<cluster>.<meta.domain>` → `kube-api-<cluster>.<ns>.
@@ -743,9 +765,12 @@ unless noted) — revoked entries keep one-line reasons for history.
   proof** (bootstrap bundle applied, then re-applied SSA under a second
   field manager — strict no-op, dataplane green before/after; no Flux in
   VMs, Flux artifacts were cut from pkgs); rke2 CIS profile. Round-17
-  additions (all planned, no new evidence): eval third-party
+  additions (status by suite; k3s/RKE2 native and tunnel external class+DNS
+  are VM-proven):
+  eval third-party
   node_transport overlay with NO provider service-name branching;
-  native internal-load-balancer ClusterMesh (pinned VIPs + class + SANs);
+  native internal-load-balancer ClusterMesh (pinned IPv4 VIP + class +
+  SANs);
   tunnel NodePort ClusterMesh (one pod per selected node, deterministic
   collision-checked NodePort); external class+DNS exposure on both
   profiles; ClusterMesh placement (voters/workers/all/labels + zero-match
@@ -947,7 +972,12 @@ unless noted) — revoked entries keep one-line reasons for history.
   Peering state is non-transitive. Peering alone is not isolation:
   selective peers also bound the automatic cross-cluster pod/Service
   route policy rendered into fabric filters; a routed-only exception
-  between non-peered clusters must be deliberate and eval-visible.
+  between non-peered clusters must be deliberate and eval-visible. Spine
+  transit is that exception: a spine carries the union its attached leaves
+  consume, even when a cluster on that spine does not peer with the route's
+  origin. A single kernel FIB cannot both withhold such a route locally and
+  forward it, so leaf-local route isolation is proven on non-transit leaves;
+  ClusterMesh/global-Service isolation still applies on every node.
   Separate `routed-fabric` instances provide HARD trust-domain
   separation (no mesh, no routes, no DNS across instances). Three
   distinct graphs: the **underlay graph** (netif links), the **fabric
@@ -995,7 +1025,20 @@ unless noted) — revoked entries keep one-line reasons for history.
   weakening least-privilege defaults. A fabric spine is internal transit; a
   border is external transit; a default gateway is a route next hop; DHCP
   and NAT are separate functions; Kubernetes Gateway API is day-2
-  application traffic management. None is a synonym for another.
+  application traffic management. None is a synonym for another. A border
+  is not necessarily a spine, is not inherently a public-WAN node, and does
+  not automatically supply public addresses, NAT, or a default route. A
+  border leaf remains non-transit for ordinary fabric routes; only its
+  explicitly authorized upstream policy is added. Kubernetes leaves can
+  originate private pod/VIP pools without any border; border configuration
+  is needed only when selected prefixes cross the fabric boundary through
+  an upstream router, and public reachability requires actual upstream
+  routing and return policy. Automatic spine-pair and leaf-spine adjacency
+  derivation is instance-scoped: spines in different routed-fabric
+  instances never auto-peer, even when an operator describes them as one
+  administrative domain. Separate instances remain hard trust-domain
+  boundaries; cross-instance connectivity requires deliberate external
+  routing through border/upstream policy.
 - **D57 Dependency-free network facts; consumer-owned nix-topology.**
   (REVISED round 17: `networkFacts` moves to schemaVersion 2 with
   leaf/spine fabric facts, D59.)
@@ -1056,7 +1099,12 @@ unless noted) — revoked entries keep one-line reasons for history.
   + `local-router` route exchange + `internalLoadBalancer` AND
   `nodePort` capabilities; `wireguard-mesh` ⇒ Cilium tunnel/VXLAN +
   `nodePort`. Native-mode Cilium MTU = the minimum interface MTU; VXLAN
-  = minimum minus 50.
+  = minimum minus 50. Because `cilium-config` is cluster-wide,
+  `directRoutingDevice` must be identical and present on every cluster node;
+  routed-fabric therefore always exports its stable loopback and uses it as
+  the direct device, while the broader `devices` set also retains every
+  per-adjacency interface. Machine-local adjacency names must not be copied
+  from the cluster-init node into the shared direct-device value.
 - **D59 Spine/leaf symmetric fabric graph; schema renames.** Fabric
   topology roles are `leaf` and `spine` (renamed from `member`/`hub` in
   rounds 15–16; the rename is breaking and ships without migration
@@ -1092,7 +1140,7 @@ unless noted) — revoked entries keep one-line reasons for history.
   eval errors. Node-port has NO replica knob: the Deployment replicas
   equal the selected node count with required hostname anti-affinity +
   nodeSelector (one pod per selected node), all selected nodes' stable
-  addresses are advertised; the NodePort defaults to 32379 with an
+  IPv4 addresses are advertised; the NodePort defaults to 32379 with an
   optional explicit port override, collision-checked per machine; and
   rolling updates use maxSurge=0 /
   maxUnavailable=1. Internal (and external) LB exposure has an
@@ -1103,18 +1151,26 @@ unless noted) — revoked entries keep one-line reasons for history.
   `dnsName` (DNS name ONLY — no literal IP), allows provider annotations
   (external-dns is day-2), needs no internal capability — it works
   regardless of transport capabilities — and puts the
-  DNS name in peers and certificate SANs; DNS resolution is a runtime
-  prerequisite. Internal exposure (clustermesh-apiserver ONLY — mirror
+  DNS name in peers and certificate SANs; DNS (A record) resolution is a
+  runtime prerequisite. Internal exposure (clustermesh-apiserver ONLY —
+  mirror
   Services get a separate, future allocation and must NOT share offset
-  79, D30) uses pinned dual-stack literal VIPs at
-  the D10-locked host offset 79 / 0x79 (`172.16.<id>.79` +
-  `fd11:<id>::79`) drawn from the existing `<instance>-fabric` private
-  pool by explicit `lbipam.cilium.io/ips` projection, class
-  `io.cilium/bgp-control-plane`; VIPs are asserted pool-contained and
+  79, D30) pins ONE IPv4-only literal VIP at
+  the D10-locked host offset 79 / 0x79 — `172.16.<id>.79` — drawn from
+  the existing `<instance>-fabric` private pool's IPv4 block by explicit
+  `lbipam.cilium.io/ips` projection, class
+  `io.cilium/bgp-control-plane`; the VIP is asserted pool-contained and
   collision-checked against every other pinned clan VIP; remote peers
-  consume those VIPs
+  consume the VIP
   directly (no DNS needed); pool names are unchanged and pool
-  membership/collision assertions stay. Normalized settings
+  membership/collision assertions stay. Control-plane exposure is
+  IPv4-only on the validated Cilium 1.20.3 profile (the pinned chart's
+  clustermesh-apiserver Deployment embeds etcd with
+  `--listen-client-urls=https://0.0.0.0:2379` and no dual-stack
+  listener knob): there is NO ClusterMesh IPv6 VIP and NO
+  `RequireDualStack` advertisement, while the ClusterMesh data plane
+  stays dual-stack; certificate SANs carry published IPv4/DNS endpoints
+  only, never unreachable IPv6. Normalized settings
   (round-17 target shape): `mesh.peers` (explicit symmetric selective
   peers; default full), `mesh.placement = voters | workers | all |
   labels` (default `voters`), `mesh.placementLabels`
@@ -1475,26 +1531,31 @@ external-load-balancer`. `auto` = internal-load-balancer when the
 transport exposes that capability, else node-port; unsupported or
 no-method selections are eval errors. `internal-load-balancer`
 (clustermesh-apiserver ONLY — mirror Services get a separate, future
-allocation and must NOT share offset 79, D30) uses
-pinned dual-stack literal VIPs at the D10-locked host offset 79 / 0x79
-(`172.16.<id>.79` + `fd11:<id>::79`) drawn from the `<instance>-fabric`
-private
-pool by explicit `lbipam.cilium.io/ips` projection,
-class `io.cilium/bgp-control-plane`; VIPs are asserted pool-contained
+allocation and must NOT share offset 79, D30) pins
+ONE IPv4-only literal VIP at the D10-locked host offset 79 / 0x79 —
+`172.16.<id>.79` — drawn from the `<instance>-fabric`
+private pool's IPv4 block
+by explicit `lbipam.cilium.io/ips` projection,
+class `io.cilium/bgp-control-plane`; the VIP is asserted pool-contained
 and collision-checked against every other pinned clan VIP; remote peers
-consume those
-VIPs (no DNS needed); independent replica count — default
+consume the
+VIP (no DNS needed); control-plane exposure is IPv4-only on the
+validated Cilium 1.20.3 profile (the pinned chart's
+clustermesh-apiserver etcd listens on `https://0.0.0.0:2379` with no
+dual-stack listener knob) — NO ClusterMesh IPv6 VIP, NO
+`RequireDualStack` advertisement, data plane stays dual-stack;
+independent replica count — default
 min(3, eligible), user positive ≤ eligible, required anti-affinity, no
 per-node remote endpoints, rolling update maxSurge=0 / maxUnavailable=1.
 `node-port` has NO replica knob: replicas = selected node count,
 required hostname anti-affinity + nodeSelector (one pod per selected
-node), all selected nodes' stable addresses advertised; the NodePort
+node), all selected nodes' stable IPv4 addresses advertised; the NodePort
 defaults to 32379 with an optional explicit port override,
 collision-checked per machine. `external-load-balancer` always wins on
 every overlay: explicit non-clan `loadBalancerClass` + `dnsName` (DNS
 ONLY, no literal IP), provider annotations allowed (external-dns is
 day-2), no internal capability needed, DNS name in peers and cert SANs,
-resolution a runtime prerequisite. ETP Local on every method: mTLS
+resolution (a runtime A record) a prerequisite. ETP Local on every method: mTLS
 identity does not depend on source IP, but Local preserves the source,
 avoids a second hop, supports ClientIP affinity, and enables
 internal-LB withdrawal. DNS fan-in: selectorless local ClusterIP Service
@@ -1502,7 +1563,8 @@ internal-LB withdrawal. DNS fan-in: selectorless local ClusterIP Service
 generalized, carries the kube-apiserver mirror Services (D30; mandatory
 for spokes). Shared `rancher-clustermesh-ca-<group>` vars generator
 (share=true); per-cluster dependent cert generators; SANs include every
-exported address + fan-in name + external dnsName; endpoint set is a
+published IPv4/DNS endpoint + fan-in name + external dnsName — never an
+unreachable IPv6 endpoint; endpoint set is a
 public validation
 input (membership change ⇒ reissue before advertise). CA/cert material
 never in exports/helm/store. Global Services opt-in per Service (mirror
@@ -1803,21 +1865,48 @@ Suites (the whole contract surface — nothing else is VM-tested):
   foreign-router fixture, upstream border pools and node-owned IPv6
   pools;
 - **selective ClusterMesh suite**: full-peering default, explicit
-  selective peers (A↔B, B↔C) with A/C selective isolation, a
-  deliberate routed-only exception;
+  selective peers (A↔B, B↔C) with A/C selective isolation on non-transit
+  leaves; the dedicated spine's union-of-leaf-consumers carriage is the
+  deliberate routed-only exception. k3s and RKE2 are VM-proven on BOTH
+  native and tunnel profiles: selective edges synchronize only their
+  intended global-Service backends, native A/C leaves install no routes for
+  each other (dual-stack /24 + /64 allocation assertions), and the full-peering
+  defaults remain green. Final selective evidence:
+  `.baton-pass/vm-logs/k3s-clustermesh-selective-native-service-proof-28.log`,
+  `.baton-pass/vm-logs/rke2-clustermesh-selective-native-initial-30.log`,
+  `.baton-pass/vm-logs/k3s-clustermesh-selective-tunnel-initial-32.log`, and
+  `.baton-pass/vm-logs/rke2-clustermesh-selective-tunnel-initial-34.log`;
+  full-default regression evidence:
+  `.baton-pass/vm-logs/k3s-clustermesh-native-selective-regression-36.log`,
+  `.baton-pass/vm-logs/rke2-clustermesh-native-selective-regression-37.log`,
+  `.baton-pass/vm-logs/k3s-clustermesh-tunnel-selective-regression-38.log`, and
+  `.baton-pass/vm-logs/rke2-clustermesh-tunnel-selective-regression-39.log`;
 - **ClusterMesh suite per profile (round 17, planned)**: native
-  internal-load-balancer exposure (D10-locked offset-79 VIPs +
+  internal-load-balancer exposure (D10-locked offset-79 IPv4 VIP +
   `lbipam.cilium.io/ips` projection +
-  `io.cilium/bgp-control-plane` class + SANs + pool membership/
-  collision checks) and tunnel NodePort exposure (replicas = selected
+  `io.cilium/bgp-control-plane` class + SANs covering published IPv4/DNS
+  endpoints only + pool membership/
+  collision checks; NO ClusterMesh IPv6 VIP and NO `RequireDualStack`
+  advertisement — control-plane exposure is IPv4-only on the pinned
+  Cilium 1.20.3 profile) and tunnel NodePort exposure (replicas = selected
   nodes, one pod per selected node, NodePort default 32379 with
-  optional explicit override); external class+DNS exposure wins on BOTH
+  optional explicit override, selected nodes' stable IPv4 addresses
+  published); external class+DNS exposure wins on BOTH
   profiles
-  (non-clan class + dnsName in peers/SANs); placement
+  (non-clan class + dnsName in peers/SANs, runtime A record); placement
   voters/workers/all/labels with zero-match negatives; group-uniformity
   negatives (mixed datapath mode/tunnel protocol/maxConnectedClusters);
   cross-cluster pod routes + kube-api mirror Service reachability (D30)
-  in native groups;
+  in native groups. The k3s and RKE2 external-native and external-tunnel
+  suites are VM-proven with a dedicated transport-attached DNS VM, real
+  A-record resolution, authenticated external-LB health checks, and
+  bidirectional ClusterMesh status. Tunnel suites additionally assert VXLAN
+  and the transport-derived MTU. Final selective-regression evidence:
+  `.baton-pass/vm-logs/k3s-clustermesh-external-native-selective-regression-40.log`,
+  `.baton-pass/vm-logs/rke2-clustermesh-external-native-selective-regression-41.log`,
+  `.baton-pass/vm-logs/k3s-clustermesh-external-tunnel-selective-regression-42.log`,
+  and
+  `.baton-pass/vm-logs/rke2-clustermesh-external-tunnel-selective-regression-43.log`;
 - eval seam suite (round 17, planned): a third-party overlay
   implementing `node_transport` schemaVersion 2 is consumed by k3s/rke2
   with NO provider service-name branching, and contradicting overrides
@@ -1933,16 +2022,19 @@ tests together)
   implementation is ONE fresh-agent-session complete data-plane overhaul
   spanning both repos — commits per repo are acceptable; it is NOT a
   one-commit landing.
-- **5R3 planned** — selective ClusterMesh policy (explicit symmetric
-  peers, selective isolation, deliberate routed-only exceptions),
-  topology/access/border route consumption and filtering (border-not-
-  spine and composable admin-border; member DNS stays day-2),
-  failure/withdrawal/firewall suites, migration: DELETE
-  the legacy BIRD/VXLAN/fleet-routing modules, options,
-  and tests OUTRIGHT once replacement coverage is green — no archiving,
-  no comment-out (historical design docs may remain); DELETE the legacy
-  `lib/import-flake/` adapter in the same pass. `wireguard-mesh` is NOT
-  retired — it is the supported tunnel transport (D58).
+- **5R3 in progress** — selective ClusterMesh policy is implemented and
+  VM-proven for k3s/RKE2 on native and tunnel profiles (explicit symmetric
+  peers, selective isolation, and the dedicated-spine routed-only exception;
+  full-peering and external regressions green). Topology/access/border route
+  consumption and filtering (border-not-spine and composable admin-border;
+  member DNS stays day-2), and failure/withdrawal/firewall suites remain.
+  Legacy cleanup completed early
+  to remove ghost gate failures: the BIRD/VXLAN/fleet-routing modules,
+  BIRD-specific helpers and VM fixtures, `lib/import-flake/`, and
+  `lib/inputs-module.nix` are deleted outright with no archives (historical
+  design docs remain). This is not runtime acceptance of the replacement
+  suites. `wireguard-mesh` is NOT retired — it is the supported tunnel
+  transport (D58).
 - **5R4 planned** — complete `clan.networkFacts` parity across netif,
   routed-fabric, and both distros at schemaVersion 2 (D59); prove
   deep-eval/schema/no-secret/
@@ -2108,13 +2200,16 @@ such as external-dns).
   share datapath mode, tunnel protocol, and maxConnectedClusters (D60).
 - **ClusterMesh exposure** — how the clustermesh-apiserver is reached:
   `auto | internal-load-balancer | node-port | external-load-balancer`
-  (D60). Internal uses its pinned dual-stack literal VIP pair from the D10
-  `<instance>-fabric` pool (class `io.cilium/bgp-control-plane`); node-port
-  advertises selected nodes' stable addresses with replicas = selected
+  (D60). Internal pins ONE IPv4 literal VIP from the D10
+  `<instance>-fabric` pool (class `io.cilium/bgp-control-plane`) —
+  control-plane exposure is IPv4-only on the validated Cilium 1.20.3
+  profile, while the ClusterMesh data plane stays dual-stack; node-port
+  advertises selected nodes' stable IPv4 addresses with replicas = selected
   count and no replica knob; external always wins, requires a non-clan
-  `loadBalancerClass` + a DNS-only `dnsName`, and needs no internal
-  capability. ETP Local on every method. Mirror-Service allocation is
-  separate and never uses the clustermesh-apiserver's VIP pair.
+  `loadBalancerClass` + a DNS-only `dnsName` (runtime A record), and needs
+  no internal capability. Certificate SANs carry published IPv4/DNS
+  endpoints only. ETP Local on every method. Mirror-Service allocation is
+  separate and never uses the clustermesh-apiserver's VIP.
 - **ClusterMesh placement** — which nodes run the clustermesh-apiserver:
   `voters` (default — servers), `workers` (agents), `all`, or `labels`
   (clan-declared/generated only; zero matches = eval error) (D60).
@@ -2211,6 +2306,15 @@ such as external-dns).
   (D26 layer-2 seam); official install = Helm, cosign-signed
   digest-pinnable OCI charts; the chart ships no `crds/` dir — the
   operator manages CRDs at runtime (D40).
+- Cilium ClusterMesh control plane (D10/D60): the pinned chart's
+  v1.20.3 clustermesh-apiserver Deployment embeds etcd with
+  `--listen-client-urls=https://0.0.0.0:2379` (IPv4 wildcard;
+  `--advertise-client-urls=https://localhost:2379`) and the template has
+  no dual-stack listener knob — control-plane exposure is IPv4-only on
+  the validated profile: ONE pinned IPv4 VIP internally, selected nodes'
+  stable IPv4 addresses on NodePort, DNS (A record) externally, and cert
+  SANs covering published IPv4/DNS endpoints only. The ClusterMesh data
+  plane stays dual-stack.
 - Cilium bootstrap/handoff evidence (D40): Flux prune only touches the
   Kustomization's own `.status.inventory` (fluxcd.io Kustomization
   docs); SSA vs client-side-apply field-manager friction and

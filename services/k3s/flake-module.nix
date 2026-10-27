@@ -12,7 +12,10 @@ rec {
   clan = {
     modules.k3s = module;
     exportInterfaces = {
-      node_transport = ../wireguard-mesh/node-transport-interface.nix;
+      # D58: the NEUTRAL node_transport schemaVersion 2 seam, shared by
+      # every transport provider (routed-fabric, wireguard-mesh, and any
+      # third-party overlay). k3s consumes ONLY this export.
+      node_transport = ../../lib/node-transport-interface.nix;
       kube_cluster = ../../lib/kube-cluster/kube-cluster-interface.nix;
     };
   };
@@ -45,8 +48,28 @@ rec {
         imports = [ (import ./tests/vm/data-plane.nix { inherit inputs; }) ];
         inherit clan;
       };
-      k3s-bgp-ecmp = {
-        imports = [ ./tests/vm/bgp-ecmp.nix ];
+      k3s-clustermesh = {
+        imports = [ ./tests/vm/clustermesh.nix ];
+        inherit clan;
+      };
+      k3s-clustermesh-tunnel = {
+        imports = [ ./tests/vm/clustermesh-tunnel.nix ];
+        inherit clan;
+      };
+      k3s-clustermesh-external = {
+        imports = [ ./tests/vm/clustermesh-external.nix ];
+        inherit clan;
+      };
+      k3s-clustermesh-external-native = {
+        imports = [ ./tests/vm/clustermesh-external-native.nix ];
+        inherit clan;
+      };
+      k3s-clustermesh-selective = {
+        imports = [ ./tests/vm/clustermesh-selective.nix ];
+        inherit clan;
+      };
+      k3s-clustermesh-selective-tunnel = {
+        imports = [ ./tests/vm/clustermesh-selective-tunnel.nix ];
         inherit clan;
       };
     };

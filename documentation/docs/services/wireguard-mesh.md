@@ -18,9 +18,9 @@ datapath interfaces with MTU, one `directRoutingDevice`,
 and the `nodePort` exposure capability.
 
 Round 17 ends the "pending migration/removal" status: `wireguard-mesh` is
-a **supported profile**, not a retiring service. Only the legacy
-`services/fleet-routing/` code and the `lib/import-flake/` adapter are
-planned for deletion once the replacement suites are green.
+a **supported profile**, not a retiring service. The legacy
+`services/fleet-routing/` code and the `lib/import-flake/` adapter were
+deleted in the round-17 cleanup.
 
 New inventory should follow the round-17 contract: pick the profile by
 datapath need (native + internal LoadBalancer via `routed-fabric`, or

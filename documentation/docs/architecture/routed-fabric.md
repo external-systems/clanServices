@@ -9,8 +9,8 @@ consumption (member-facing DNS is day-2, D22 amended 2026-10-25). Round 17
 `native.routeExchange = local-router`, and the `internalLoadBalancer` and
 `nodePort` exposure capabilities, and its topology roles are **`leaf`/`spine`**
 (renamed from round 16's `member`/`hub`, D59). The BIRD/VXLAN design and the
-round-14 full-mesh target are superseded; the existing
-`services/fleet-routing/` code is legacy and is not the implementation.
+round-14 full-mesh target are superseded; the legacy
+`services/fleet-routing/` tree was deleted in the round-17 cleanup.
 
 > **Status.** `netif` and `routed-fabric` are **implemented** (5R1,
 > 2026-10-25) in their round-16 form — `member`/`hub` topology roles,
@@ -58,6 +58,23 @@ endpoints do not imply either. The round-15 `router` role is
 retired — upstream transit is the `border` switch, spine placement is the
 `spine` role, and neither implies the other. Edge proxies on a border remain
 separate operator NixOS modules, never part of routed-fabric.
+
+A border is an **external route-exchange policy**, not automatically a
+public-WAN designation. It does not supply public addresses, NAT, a default
+route, member DNS, or general fabric transit. A border leaf still never
+readvertises ordinary fabric routes; only its explicitly authorized
+upstream policy is added. A Kubernetes leaf can originate private pod
+pools and Service VIPs without any border. Add border configuration only
+when selected prefixes must cross the fabric boundary through an upstream
+router. Public reachability additionally requires real upstream routing and
+correct source-return policy; `border` alone cannot make private addresses
+publicly reachable.
+
+Automatic adjacency is **instance-scoped**. Spines in different
+routed-fabric instances never auto-peer, even when an operator informally
+calls them one domain. Separate instances are hard trust-domain boundaries;
+connecting them requires deliberate external routing through border and
+upstream policy, not another automatic fabric graph.
 
 Keep the terms apart: a **fabric spine** forwards/readvertises fabric
 traffic; a **border** owns upstream/external transit; a **default gateway**

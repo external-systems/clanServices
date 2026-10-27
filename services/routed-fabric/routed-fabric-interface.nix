@@ -6,8 +6,8 @@ in
   options = {
     schemaVersion = lib.mkOption {
       type = t.ints.positive;
-      default = 1;
-      description = "routed_fabric export schema version.";
+      default = 2;
+      description = "routed_fabric export schema version; version 2 is the leaf/spine topology (SPEC.md D59).";
     };
     asn = lib.mkOption {
       type = t.nullOr t.ints.positive;
@@ -26,8 +26,8 @@ in
     };
     topology = lib.mkOption {
       type = t.enum [
-        "member"
-        "hub"
+        "leaf"
+        "spine"
         ""
       ];
       default = "";

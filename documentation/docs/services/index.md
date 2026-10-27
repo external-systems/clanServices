@@ -17,14 +17,13 @@ placement/exposure profiles.
 | [routed-fabric](routed-fabric.md) | flat-L3 WG/FRR fabric | **implemented** (5R1, round-16 `member`/`hub` shape); round-17 `leaf`/`spine` + generic schema planned |
 | [wireguard-mesh](wireguard-mesh.md) | host transport | implemented; **supported tunnel/VXLAN profile** (round 17, D58) |
 
-The legacy code still at `services/fleet-routing/` predates the round-15+
-design (full-mesh target, BIRD-era checkpoint) and is not the
-routed-fabric implementation. The replacement landed under
-`services/routed-fabric/` in 5R1, and the obsolete `fleet-routing`
-code — like the legacy `lib/import-flake/` adapter — is **deleted
-outright** once the replacement suites are green — no archiving, no
-commented-out remnants. `wireguard-mesh` is **not** retiring: round 17
-keeps it as the validated tunnel/VXLAN profile.
+The obsolete `services/fleet-routing/` code (full-mesh target, BIRD-era
+checkpoint) and the legacy `lib/import-flake/` adapter were deleted in the
+round-17 cleanup, along with BIRD helpers and BIRD-specific VM fixtures.
+Their ghost eval failures no longer block the active gates; this cleanup is
+not runtime acceptance of the remaining replacement suites. There are no
+archives or commented-out remnants. `wireguard-mesh` is **not** retiring:
+round 17 keeps it as the validated tunnel/VXLAN profile.
 
 ## How the cluster services share code
 

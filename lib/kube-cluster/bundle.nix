@@ -21,6 +21,7 @@
 let
   yaml = import ./yaml.nix { inherit lib; };
   bgpLib = import ./bgp.nix { inherit lib; };
+  meshLib = import ./mesh.nix { inherit lib; };
 
   boolStr = b: if b then "true" else "false";
 
@@ -121,36 +122,51 @@ rec {
       k8sServicePort,
     }:
     let
-      cmData = lib.mapAttrs (_: lib.mkForce) {
-        "cluster-name" = profile.cluster.name;
-        "cluster-id" = toString profile.cluster.id;
-        "kube-proxy-replacement" = boolStr profile.kubeProxyReplacement;
-        "routing-mode" = profile.routingMode;
-        "auto-direct-node-routes" = boolStr profile.autoDirectNodeRoutes;
-        # D55: Cilium's required KPR rules use the host's nft backend.
-        "install-iptables-rules" = boolStr profile.extraConfig."install-iptables-rules";
-        "ipv4-native-routing-cidr" = profile.ipv4NativeRoutingCIDR;
-        "ipv6-native-routing-cidr" = profile.ipv6NativeRoutingCIDR;
-        "devices" = profile.devices;
-        "direct-routing-device" = profile.nodePort.directRoutingDevice;
-        "mtu" = toString profile.MTU;
-        "ipam" = profile.ipam.mode;
-        # D41: Node IPAM is the default classless LoadBalancer mechanism.
-        "default-lb-service-ipam" = profile.defaultLBServiceIPAM;
-        "enable-node-ipam" = boolStr profile.nodeIPAM.enabled;
-        # D9: BGP v2 control plane (locked to shared-bgp pool presence).
-        "enable-bgp-control-plane" = boolStr profile.bgpControlPlane.enabled;
-        "enable-ipv4" = boolStr profile.ipv4.enabled;
-        "enable-ipv6" = boolStr profile.ipv6.enabled;
-        "enable-ipv4-masquerade" = boolStr profile.enableIPv4Masquerade;
-        "enable-ipv6-masquerade" = boolStr profile.enableIPv6Masquerade;
-        "enable-bpf-masquerade" = boolStr profile.bpf.masquerade;
-        "enable-bpf-tproxy" = boolStr profile.bpf.tproxy;
-        "cni-chaining-mode" = profile.cni.chainingMode;
-        "cni-exclusive" = boolStr profile.cni.exclusive;
-        "bpf-lb-algorithm" = profile.loadBalancer.algorithm;
-        "enable-pmtu-discovery" = boolStr profile.pmtuDiscovery.enabled;
-      };
+      cmData = lib.mapAttrs (_: lib.mkForce) (
+        {
+          "cluster-name" = profile.cluster.name;
+          "cluster-id" = toString profile.cluster.id;
+          "kube-proxy-replacement" = boolStr profile.kubeProxyReplacement;
+          "routing-mode" = profile.routingMode;
+          "auto-direct-node-routes" = boolStr profile.autoDirectNodeRoutes;
+          # D55: Cilium's required KPR rules use the host's nft backend.
+          "install-iptables-rules" = boolStr profile.extraConfig."install-iptables-rules";
+          "devices" = profile.devices;
+          "direct-routing-device" = profile.nodePort.directRoutingDevice;
+          "mtu" = toString profile.MTU;
+          "ipam" = profile.ipam.mode;
+          # D41: Node IPAM is the default classless LoadBalancer mechanism.
+          "default-lb-service-ipam" = profile.defaultLBServiceIPAM;
+          "enable-node-ipam" = boolStr profile.nodeIPAM.enabled;
+          # D9: BGP v2 control plane (locked to shared-bgp pool presence).
+          "enable-bgp-control-plane" = boolStr profile.bgpControlPlane.enabled;
+          "enable-ipv4" = boolStr profile.ipv4.enabled;
+          "enable-ipv6" = boolStr profile.ipv6.enabled;
+          "enable-ipv4-masquerade" = boolStr profile.enableIPv4Masquerade;
+          "enable-ipv6-masquerade" = boolStr profile.enableIPv6Masquerade;
+          "enable-bpf-masquerade" = boolStr profile.bpf.masquerade;
+          "enable-bpf-tproxy" = boolStr profile.bpf.tproxy;
+          "cni-chaining-mode" = profile.cni.chainingMode;
+          "cni-exclusive" = boolStr profile.cni.exclusive;
+          "bpf-lb-algorithm" = profile.loadBalancer.algorithm;
+          "enable-pmtu-discovery" = boolStr profile.pmtuDiscovery.enabled;
+          # D60: the ClusterMesh control plane is part of the canonical
+          # profile (clustermesh-apiserver + agents, from first boot).
+          "clustermesh-enable" = boolStr profile.clusterMesh.enable;
+          "max-connected-clusters" = toString profile.clusterMesh.maxConnectedClusters;
+        }
+        # D49/D58: native-routing CIDRs apply to native routing only; on
+        # tunnel transports they render empty (unset), like the chart.
+        // lib.optionalAttrs (profile.routingMode == "native") {
+          "ipv4-native-routing-cidr" = profile.ipv4NativeRoutingCIDR;
+          "ipv6-native-routing-cidr" = profile.ipv6NativeRoutingCIDR;
+        }
+        // lib.optionalAttrs (profile.routingMode == "tunnel") {
+          "ipv4-native-routing-cidr" = "";
+          "ipv6-native-routing-cidr" = "";
+          "tunnel-protocol" = profile.tunnelProtocol;
+        }
+      );
       # KPR's API endpoint is passed to the agent and operator as env, not
       # via the ConfigMap (cilium chart: k8sServiceHost/k8sServicePort →
       # KUBERNETES_SERVICE_HOST/PORT).
@@ -194,6 +210,7 @@ rec {
     [ "k8sServiceHost" ]
     [ "k8sServicePort" ]
     [ "routingMode" ]
+    [ "tunnelProtocol" ]
     [ "autoDirectNodeRoutes" ]
     [
       "extraConfig"
@@ -266,6 +283,14 @@ rec {
       "pmtuDiscovery"
       "enabled"
     ]
+    [
+      "clusterMesh"
+      "enable"
+    ]
+    [
+      "clusterMesh"
+      "maxConnectedClusters"
+    ]
   ];
 
   # Attr paths (dotted) present in an attrset tree.
@@ -279,14 +304,16 @@ rec {
   unsupportedHelmValues =
     helmValues: lib.filter (p: !(lib.elem p knownProfilePaths)) (leafPaths [ ] helmValues);
 
-  # §6.4 post-merge invariant validation. Runs over the FINAL rendered
+  # §6.4/D60 post-merge invariant validation. Runs over the FINAL rendered
   # objects (so it sees the merged result, not the intent) plus the merged
-  # profile (for the assert-only invariants that have no ConfigMap key).
-  # Throws at eval on violation.
+  # profile (for the assert-only invariants that have no ConfigMap key) and
+  # the resolved mesh facts (apiserver placement/exposure). Throws at eval
+  # on violation.
   validateBundle =
     {
       instanceName,
       profile,
+      mesh,
       objects,
       baseObjects,
     }:
@@ -325,6 +352,23 @@ rec {
         ) (agent.spec.template.spec.initContainers or [ ])
       );
 
+      # The ClusterMesh apiserver (D60): rendered from first boot on every
+      # cluster (peers may be empty).
+      apiserver = lib.findFirst (
+        o: o.kind == "Deployment" && o.metadata.name == "clustermesh-apiserver"
+      ) null objects;
+      apiserverSvc = lib.findFirst (
+        o: o.kind == "Service" && o.metadata.name == "clustermesh-apiserver"
+      ) null objects;
+      apiserverContainers =
+        if apiserver == null then
+          throw "kube-cluster/${instanceName}: bundle lost the clustermesh-apiserver Deployment"
+        else
+          apiserver.spec.template.spec.containers;
+      apiserverArgsOf =
+        name: map (a: a) ((lib.findFirst (c: c.name == name) null apiserverContainers).args or [ ]);
+      maxConnArg = prefix: args: lib.findFirst (a: lib.hasPrefix prefix a) null args;
+
       # Every container in every pod template must carry a non-empty image.
       # A named-container patch that misses its target key silently APPENDS
       # an imageless phantom container, and the apiserver rejects the whole
@@ -348,18 +392,33 @@ rec {
       renderedImages = lib.sort builtins.lessThan (imagesOf objects);
       baseImages = lib.sort builtins.lessThan (imagesOf baseObjects);
 
+      native = profile.routingMode == "native";
+
+      svcType = apiserverSvc.spec.type or null;
+      expectedType = if mesh.method == "node-port" then "NodePort" else "LoadBalancer";
+
       checks = [
         {
           ok = cmData."kube-proxy-replacement" == "true" && profile.kubeProxyReplacement == true;
           msg = "kube-proxy-replacement must stay enabled (KPR)";
         }
         {
-          ok = cmData."routing-mode" == "native";
-          msg = "routing-mode=native is invariant (D49; the base chart's inert tunnel-protocol template key is not the datapath signal)";
+          ok = cmData."routing-mode" == profile.routingMode;
+          msg = "routing-mode must equal the transport-derived mode '${profile.routingMode}' (D58)";
+        }
+        {
+          ok = !native -> (cmData."tunnel-protocol" or null) == (profile.tunnelProtocol or null);
+          msg = "tunnel-protocol must equal the transport-derived protocol '${
+            profile.tunnelProtocol or "null"
+          }' (D58)";
+        }
+        {
+          ok = native -> (cmData ? "ipv4-native-routing-cidr" && cmData ? "ipv6-native-routing-cidr");
+          msg = "native-routing CIDRs must render on the native profile (D49)";
         }
         {
           ok = cmData."auto-direct-node-routes" == "false" && profile.autoDirectNodeRoutes == false;
-          msg = "auto-direct-node-routes=false is invariant (FRR/Zebra owns remote pod-pool routes, §6.4)";
+          msg = "auto-direct-node-routes=false is invariant (remote pod routes ride the transport, §6.4/D58)";
         }
         {
           ok = cmData."install-iptables-rules" == "true";
@@ -395,6 +454,15 @@ rec {
           msg = "enable-bgp-control-plane=true is required to register the explicit-pool LB-IPAM class (D41)";
         }
         {
+          # D60: the ClusterMesh subsystem is part of the canonical profile.
+          ok = cmData."clustermesh-enable" == "true";
+          msg = "clustermesh-enable=true is required (ClusterMesh from first boot, D60)";
+        }
+        {
+          ok = cmData."max-connected-clusters" == toString profile.clusterMesh.maxConnectedClusters;
+          msg = "max-connected-clusters must match the mesh setting (group uniformity, D60)";
+        }
+        {
           # Every base-manifest image reference must survive unchanged
           # (overrides may never retag/repoint them); clan-added resources
           # (e.g. the D46 CoreDNS) may add their own pinned images.
@@ -419,6 +487,45 @@ rec {
         {
           ok = imageless == [ ];
           msg = "every pod-template container must carry a non-empty image (imageless: ${lib.concatStringsSep ", " imageless})";
+        }
+        {
+          # D60 placement/exposure on the upstream apiserver objects.
+          ok = apiserver != null && apiserver.spec.replicas == mesh.replicas;
+          msg = "clustermesh-apiserver replicas must equal the resolved placement count (${toString mesh.replicas})";
+        }
+        {
+          ok =
+            apiserver.spec.strategy.type == "RollingUpdate"
+            && apiserver.spec.strategy.rollingUpdate.maxSurge == 0
+            && apiserver.spec.strategy.rollingUpdate.maxUnavailable == 1;
+          msg = "clustermesh-apiserver rolling update must be maxSurge=0 / maxUnavailable=1 (D60)";
+        }
+        {
+          ok =
+            (apiserver.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution
+              or [ ]
+            ) != [ ];
+          msg = "clustermesh-apiserver needs REQUIRED hostname anti-affinity (D60)";
+        }
+        {
+          ok = apiserverSvc != null && svcType == expectedType;
+          msg = "clustermesh-apiserver Service type must be ${expectedType} (mesh method ${mesh.method})";
+        }
+        {
+          ok = apiserverSvc != null && apiserverSvc.spec.externalTrafficPolicy == "Local";
+          msg = "clustermesh-apiserver Service must keep ETP Local on every exposure method (D60/invariant 5)";
+        }
+        {
+          ok =
+            maxConnArg "--max-connected-clusters=" (apiserverArgsOf "apiserver")
+            == "--max-connected-clusters=${toString profile.clusterMesh.maxConnectedClusters}";
+          msg = "apiserver container --max-connected-clusters must match the mesh setting (D60)";
+        }
+        {
+          ok =
+            maxConnArg "--max-connected-clusters=" (apiserverArgsOf "kvstoremesh")
+            == "--max-connected-clusters=${toString profile.clusterMesh.maxConnectedClusters}";
+          msg = "kvstoremesh container --max-connected-clusters must match the mesh setting (D60)";
         }
       ];
       bad = lib.filter (c: !c.ok) checks;
@@ -739,245 +846,6 @@ rec {
       };
     };
 
-  # The private-zone CoreDNS (D22 substrate, phase 5): a second CoreDNS
-  # instance serving <instance>.<domain> (+ opt-in svc/pod zones) on a
-  # fabric-pool VIP. Distinct from the D46 cluster.local CoreDNS — this one
-  # NEVER serves cluster.local (D21): the svc/pod zones suffix-rewrite and
-  # forward to the cluster CoreDNS instead, so no kubernetes plugin and no
-  # RBAC are needed here. The instance zone's wildcard target is the day-2
-  # proxy (D22 round-13): null wildcardAddress = the zone serves NXDOMAIN
-  # until day-2 sets a target. Rendered in BOTH distroDefaults modes.
-  mkPrivateCoreDNSResources =
-    {
-      instanceName,
-      domain,
-      image,
-      manifestLabels,
-      # deterministic fabric VIPs (fabric blocks + offset 53)
-      vip4,
-      vip6,
-      # the fabric pool's serviceSelector value (clan.lol/pool label)
-      fabricPoolName,
-      wildcardAddress, # nullOr str
-      svcZone, # bool — D22(a)
-      podZone, # bool — D22(b)
-      clusterDNS, # forward target for the svc/pod zones
-      memberCount,
-    }:
-    let
-      zone = "${instanceName}.${domain}";
-      svcZoneName = "${instanceName}.svc.${domain}";
-      podZoneName = "${instanceName}.pods.${domain}";
-
-      wildcardIsV6 = wildcardAddress != null && lib.hasInfix ":" wildcardAddress;
-
-      baseZone = [
-        "${zone}:53 {"
-        "    errors"
-        "    ready"
-        "    health {"
-        "        lameduck 5s"
-        "    }"
-      ]
-      ++ (
-        if wildcardAddress != null then
-          [
-            "    template IN ${if wildcardIsV6 then "AAAA" else "A"} ${zone} {"
-            "        answer \"{{ .Name }} 60 IN ${if wildcardIsV6 then "AAAA" else "A"} ${wildcardAddress}\""
-            "        fallthrough"
-            "    }"
-          ]
-        else
-          [ ]
-      )
-      ++ [
-        "    template IN ANY ${zone} {"
-        "        rcode NXDOMAIN"
-        "    }"
-        "    cache 30"
-        "    loadbalance"
-        "}"
-      ];
-
-      rewriteZone = name: target: [
-        "${name}:53 {"
-        "    errors"
-        "    ready"
-        "    rewrite name suffix .${name}. .${target}. answer auto"
-        "    forward . ${clusterDNS}"
-        "    cache 30"
-        "}"
-      ];
-
-      corefile = lib.concatStringsSep "\n" (
-        baseZone
-        ++ lib.optionals svcZone (rewriteZone svcZoneName "svc.cluster.local")
-        ++ lib.optionals podZone (rewriteZone podZoneName "pod.cluster.local")
-        ++ [ "" ]
-      );
-    in
-    {
-      "core"."v1".ConfigMap."coredns-private" = {
-        metadata = {
-          namespace = "kube-system";
-          labels = manifestLabels;
-        };
-        data.Corefile = corefile;
-      };
-
-      "apps"."v1".Deployment."coredns-private" = {
-        metadata = {
-          namespace = "kube-system";
-          labels = manifestLabels // {
-            "k8s-app" = "coredns-private";
-          };
-        };
-        spec = {
-          replicas = 2;
-          strategy = {
-            type = "RollingUpdate";
-            rollingUpdate.maxUnavailable = 1;
-          };
-          selector.matchLabels."k8s-app" = "coredns-private";
-          template = {
-            metadata.labels = manifestLabels // {
-              "k8s-app" = "coredns-private";
-            };
-            spec = {
-              tolerations = [
-                {
-                  key = "node-role.kubernetes.io/control-plane";
-                  operator = "Exists";
-                  effect = "NoSchedule";
-                }
-              ];
-              nodeSelector."kubernetes.io/os" = "linux";
-              # ETP Local advertises only from replica hosts. Require a
-              # two-node spread where possible; preserve single-node scheduling.
-              affinity.podAntiAffinity =
-                if memberCount > 1 then
-                  {
-                    requiredDuringSchedulingIgnoredDuringExecution = [
-                      {
-                        labelSelector.matchLabels."k8s-app" = "coredns-private";
-                        topologyKey = "kubernetes.io/hostname";
-                      }
-                    ];
-                  }
-                else
-                  {
-                    preferredDuringSchedulingIgnoredDuringExecution = [
-                      {
-                        weight = 100;
-                        podAffinityTerm = {
-                          labelSelector.matchLabels."k8s-app" = "coredns-private";
-                          topologyKey = "kubernetes.io/hostname";
-                        };
-                      }
-                    ];
-                  };
-              containers.coredns = {
-                inherit image;
-                imagePullPolicy = "IfNotPresent";
-                args = [
-                  "-conf"
-                  "/etc/coredns/Corefile"
-                ];
-                volumeMounts."config-volume" = {
-                  name = "config-volume";
-                  mountPath = "/etc/coredns";
-                  readOnly = true;
-                };
-                ports = {
-                  dns = {
-                    name = "dns";
-                    containerPort = 53;
-                    protocol = "UDP";
-                  };
-                  dns-tcp = {
-                    name = "dns-tcp";
-                    containerPort = 53;
-                    protocol = "TCP";
-                  };
-                };
-                resources = {
-                  limits.memory = "170Mi";
-                  requests = {
-                    cpu = "100m";
-                    memory = "70Mi";
-                  };
-                };
-                securityContext = {
-                  allowPrivilegeEscalation = false;
-                  capabilities = {
-                    add = [ "NET_BIND_SERVICE" ];
-                    drop = [ "all" ];
-                  };
-                  readOnlyRootFilesystem = true;
-                };
-                livenessProbe.httpGet = {
-                  path = "/health";
-                  port = 8080;
-                  scheme = "HTTP";
-                };
-                readinessProbe.httpGet = {
-                  path = "/ready";
-                  port = 8181;
-                  scheme = "HTTP";
-                };
-              };
-              volumes."config-volume" = {
-                name = "config-volume";
-                configMap = {
-                  name = "coredns-private";
-                  items = [
-                    {
-                      key = "Corefile";
-                      path = "Corefile";
-                    }
-                  ];
-                };
-              };
-            };
-          };
-        };
-      };
-
-      # The VIP Service (invariants 5/6): ETP Local, BGP-advertised class
-      # (shared-bgp delivery — Cilium announces only io.cilium/bgp-control-plane
-      # or unset), pinned to the deterministic fabric VIPs.
-      "core"."v1".Service."coredns-private" = mkLBService {
-        name = "coredns-private";
-        namespace = "kube-system";
-        inherit manifestLabels;
-        labels."clan.lol/pool" = fabricPoolName;
-        annotations."lbipam.cilium.io/ips" = "${vip4},${vip6}";
-        loadBalancerClass = "io.cilium/bgp-control-plane";
-        selector."k8s-app" = "coredns-private";
-        ports = [
-          {
-            name = "dns";
-            port = 53;
-            targetPort = 53;
-            protocol = "UDP";
-          }
-          {
-            name = "dns-tcp";
-            port = 53;
-            targetPort = 53;
-            protocol = "TCP";
-          }
-        ];
-        extraSpec = {
-          ipFamilies = [
-            "IPv4"
-            "IPv6"
-          ];
-          ipFamilyPolicy = "RequireDualStack";
-        };
-      };
-    };
-
   # The bundle itself. Returns:
   #   objects    — final object list (labels + config-hash applied; the
   #                clan.lol/config-hash LABEL carries only the first 32 hex
@@ -1009,15 +877,21 @@ rec {
       # advertiseClusterIPs } — the D9 revised BGP v2 resource set.
       # Rendered iff node-bgp/shared-bgp pools exist (§6.12).
       bgp ? null,
-      # null or { domain, vip4, vip6, fabricPoolName, wildcardAddress,
-      # svcZone, podZone, clusterDNS } — the D22 private-zone CoreDNS.
-      privateCoreDNS ? null,
+      # The resolved ClusterMesh facts (mesh.nix resolve, D60): placement,
+      # exposure, replicas, VIPs, published endpoints, and peer configs.
+      # Always non-null — every cluster runs the apiserver from first boot.
+      mesh,
     }:
     let
       unsupported = unsupportedHelmValues settings.cilium.helmValues;
 
+      # Helm-inflated TLS Secrets contain generated private keys. They are
+      # never clan inputs: ClusterMesh material arrives at runtime through
+      # clan vars, and endpoint-only peer Secrets are rendered separately.
       baseDocs = map (d: d // { obj = normalizeDoc d.obj; }) (
-        map docResource (yaml.fromYAMLMulti (builtins.readFile baseManifest))
+        builtins.filter (d: d.kind != "Secret") (
+          map docResource (yaml.fromYAMLMulti (builtins.readFile baseManifest))
+        )
       );
 
       baseResources = lib.foldl' (
@@ -1087,17 +961,23 @@ rec {
               [ baseResources ]
               ++ [
                 (profilePatches { inherit profile k8sServiceHost k8sServicePort; })
+                (meshLib.apiserverDeploymentPatch { inherit mesh; })
+                (meshLib.apiserverServicePatch { inherit mesh; })
+                (meshLib.peerSecrets {
+                  inherit manifestLabels;
+                  inherit (mesh) peerConfigs;
+                })
                 {
                   # The chart omits this object when clustermesh.config is
-                  # disabled, but its singleton Deployment still mounts it.
-                  # Start with no remote users; the ClusterMesh phase merges
-                  # the exported peers into this same object.
+                  # disabled; the base manifest's apiserver mounts it. The
+                  # resolved peers each get an etcd user bound to the shared
+                  # read-only `remote` role (D60 route/identity bounds).
                   "core"."v1".ConfigMap."clustermesh-remote-users" = {
                     metadata = {
                       namespace = "kube-system";
                       labels = manifestLabels;
                     };
-                    data."users.yaml" = "users:\n";
+                    data."users.yaml" = meshLib.remoteUsersYaml mesh.peerConfigs;
                   };
                   ciliumPodIPPools.default = mkPodIPPoolResource {
                     clusterCidr = podIPCidr;
@@ -1144,24 +1024,49 @@ rec {
               ++ lib.optional (bgp != null) (
                 bgpLib.mkBgpResources ({ inherit instanceName manifestLabels; } // bgp)
               )
-              # D22 substrate: the private-zone CoreDNS on its fabric VIP
-              # (rendered in both distroDefaults modes — D46).
-              ++ lib.optional (privateCoreDNS != null) (
-                mkPrivateCoreDNSResources (
-                  {
-                    inherit instanceName manifestLabels;
-                    image = coreDNSImage;
-                  }
-                  // privateCoreDNS
-                )
-              )
             );
           };
         };
 
       evalK8s = import "${kubenixSrc}/lib/eval-modules.nix" { inherit pkgs; };
       evaled = evalK8s { module = kubenixModule; };
-      objects = evaled.config.kubernetes.objects;
+
+      # Post-render object patching: list-valued leaves the kubenix typed
+      # tree can only replace wholesale, which would go stale on chart
+      # bumps. The --max-connected-clusters args of the apiserver and
+      # kvstoremesh containers are patched list-surgically instead (D60
+      # group uniformity), before validation and hashing.
+      replaceArg =
+        prefix: value: args:
+        map (a: if lib.hasPrefix prefix a then "${prefix}${toString value}" else a) args;
+      patchObject =
+        o:
+        if o.kind == "Deployment" && o.metadata.name == "clustermesh-apiserver" then
+          o
+          // {
+            spec = o.spec // {
+              template = o.spec.template // {
+                spec = o.spec.template.spec // {
+                  containers = map (
+                    c:
+                    if
+                      lib.elem c.name [
+                        "apiserver"
+                        "kvstoremesh"
+                      ]
+                    then
+                      c // { args = replaceArg "--max-connected-clusters=" settings.mesh.maxConnectedClusters c.args; }
+                    else
+                      c
+                  ) o.spec.template.spec.containers;
+                };
+              };
+            };
+          }
+        else
+          o;
+
+      objects = map patchObject evaled.config.kubernetes.objects;
 
       baseObjects = map (d: d.obj) baseDocs;
 
@@ -1169,6 +1074,7 @@ rec {
         inherit
           instanceName
           profile
+          mesh
           objects
           baseObjects
           ;

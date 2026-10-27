@@ -292,17 +292,27 @@ in
             }
           ];
           node_transport = {
+            schemaVersion = 2;
             inherit (ownAddr) ipv4 ipv6;
-            inherit (settings)
-              port
-              mtu
-              ;
-            inherit interface;
+            inherit (settings) port;
             instance = instanceName;
+            interfaces = {
+              ${interface} = {
+                inherit (settings) mtu;
+              };
+            };
+            directRoutingDevice = interface;
             endpoint = endpointString {
               host = endpointOf machine.name;
               inherit (settings) port;
             };
+            datapath = {
+              mode = "tunnel";
+              tunnelProtocol = "vxlan";
+            };
+            native.routeExchange = null;
+            internalLoadBalancer = false;
+            nodePort = true;
           };
         };
 

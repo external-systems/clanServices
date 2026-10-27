@@ -18,9 +18,14 @@ Round 15 keeps three graphs separate (D54):
 State is **non-transitive**: cluster A peering with B, and B with C, does
 not give A any C state or route policy. ClusterMesh peering also **bounds
 the automatic cross-cluster pod/Service route policy** the fabric renders —
-unpeered clusters get no automatic cross-cluster pod or Service routes.
-For hard trust isolation, use separate routed-fabric instances (separate
-trust domains), not peering tricks.
+unpeered leaf clusters get no automatic cross-cluster pod or Service routes.
+Spine transit is the deliberate, eval-visible routed-only exception: a spine
+carries the union its attached leaves consume, even when a cluster on that
+spine does not peer with the route's origin. One kernel FIB cannot both
+withhold that route locally and forward it, so route-isolation proofs use
+non-transit leaves; ClusterMesh/global-Service isolation applies on every
+node. For hard trust isolation, use separate routed-fabric instances
+(separate trust domains), not peering tricks.
 
 ## Mesh groups and trust domains
 
@@ -88,20 +93,26 @@ capabilities.
 - **`node-port`** — no replica option: exactly one apiserver per selected
   node, via a Deployment with `replicas` = the selected-node count,
   required hostname anti-affinity + nodeSelector. All selected nodes'
-  stable addresses are published with a deterministic, collision-checked
+  stable IPv4 addresses are published with a deterministic, collision-checked
   NodePort — **default `32379`** (the upstream default), with an optional
   explicit `mesh.nodePort` override, collision-checked per machine.
   Rolling update `maxSurge=0`, `maxUnavailable=1`.
-- **`internal-load-balancer`** — pinned dual-stack literal VIPs from the
+- **`internal-load-balancer`** — ONE pinned IPv4 literal VIP from the
   existing D10 `<instance>-fabric` private pool,
   `loadBalancerClass: io.cilium/bgp-control-plane`; remote clusters connect
-  to the pinned VIPs; no DNS is required; existing private-pool names are
-  unchanged. The VIPs are **locked deterministically at host offset 79
-  decimal / `0x79`** inside the pool's IPv4 `/24` and IPv6 `/64` blocks
-  (analogous to the prior offset-`0x53` convention), rendered as literal
-  dual-stack addresses through an explicit `lbipam.cilium.io/ips`
+  to the pinned VIP; no DNS is required; existing private-pool names are
+  unchanged. The VIP is **locked deterministically at host offset 79
+  decimal / `0x79`** inside the pool's IPv4 `/24` block
+  (analogous to the prior offset-`0x53` convention), rendered as a literal
+  IPv4 address through an explicit `lbipam.cilium.io/ips`
   projection, pool-contained and collision-checked against every other
-  pinned clan VIP. Replica count
+  pinned clan VIP. Control-plane exposure is **IPv4-only** on the
+  validated Cilium 1.20.3 profile — the pinned chart's
+  clustermesh-apiserver Deployment embeds etcd with
+  `--listen-client-urls=https://0.0.0.0:2379` and the template has no
+  dual-stack listener knob — so there is no ClusterMesh IPv6 VIP and no
+  `RequireDualStack` advertisement; the ClusterMesh data plane stays
+  dual-stack. Replica count
   is independent of placement: default `min(3, eligible)`, user-configurable
   positive ≤ eligible, with required anti-affinity; the stable VIP means no
   per-node endpoint publication; same rolling update.
@@ -112,7 +123,8 @@ capabilities.
   `mesh.external.annotations` (external-dns stays day-2), and needs no
   overlay internal
   capability. The external DNS name goes into peers and certificate SANs;
-  dynamic, eval-unknown DNS resolution is a runtime prerequisite. Same
+  dynamic, eval-unknown DNS (A record) resolution is a runtime
+  prerequisite. Same
   replica and rolling-update rules as internal.
 - **`auto`** (default) — chooses `internal-load-balancer` when the overlay
   publishes the `internalLoadBalancer` capability, else `node-port`;
@@ -125,9 +137,9 @@ fewest dependencies.
 
 Mesh identity comes from a shared `rancher-clustermesh-ca-<group>` vars
 generator (the group derived from the fabric) with per-cluster dependent
-cert generators. SANs include every exported address; a membership or
-peering change reissues certificates before the new endpoint set is
-advertised. CA and cert material never appear in exports,
+cert generators. SANs include every published IPv4/DNS endpoint; a
+membership or peering change reissues certificates before the new
+endpoint set is advertised. CA and cert material never appear in exports,
 Helm values, or the Nix store. CA rotation is a separate two-phase bundle
 design — blind regeneration is unsupported.
 
@@ -143,7 +155,7 @@ hub's GitOps tooling reconciles through it:
   fan-in pattern as the ClusterMesh apiserver exposure, generalized),
   annotated `service.cilium.io/global: "true"`, with `loadBalancerClass`
   pinned per D41. Mirror-Service allocation is separate from D60 and never
-  uses the clustermesh-apiserver's offset-79 VIP pair.
+  uses the clustermesh-apiserver's offset-79 VIP.
 - A consumer (the hub, admin tooling) renders a same-named Service with no
   local backends; ClusterMesh merges the remote endpoints, so consumer pods
   reach the remote API through that ClusterIP.

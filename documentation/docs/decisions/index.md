@@ -22,13 +22,27 @@ profile, `wireguard-mesh` is the supported tunnel/VXLAN + nodePort profile,
 and k3s/rke2 consume **only** `node_transport`, never branching on service
 names. ClusterMesh gains **placement selectors** (voters/workers/all/labels)
 and a four-value exposure enum (`auto`, `internal-load-balancer`,
-`node-port`, `external-load-balancer`) with pinned internal VIPs from the
+`node-port`, `external-load-balancer`) with a pinned internal IPv4 VIP
+from the
 existing `<instance>-fabric` private pool, or an explicit external class +
 DNS name (D60). Round 17 is a docs-only contract lock: everything in it is
 **planned in 5R5** — today's code still consumes the provider-specific
 `routed_fabric` export and the round-16 `member`/`hub` fabric shape. There
 is no implementation or VM evidence for round 17 yet;
 the existing SPEC acceptance baseline stands.
+
+**Amended 2026-10-26 — ClusterMesh control plane is IPv4-only.** The
+pinned Cilium v1.20.3 chart's
+[clustermesh-apiserver Deployment](https://github.com/cilium/cilium/blob/v1.20.3/install/kubernetes/cilium/templates/clustermesh-apiserver/deployment.yaml)
+embeds etcd with `--listen-client-urls=https://0.0.0.0:2379` and the
+template has no dual-stack listener knob, so the round-17 dual-stack
+control-plane VIP assumption is false. D60/D10 internal exposure pins ONE
+IPv4 VIP at host offset `0x79` (`172.16.<id>.79`); there is no
+ClusterMesh IPv6 VIP and no `RequireDualStack` advertisement; NodePort
+publishes selected nodes' stable IPv4 addresses; external exposure uses
+DNS (runtime A record); cert SANs carry published IPv4/DNS endpoints
+only. The ClusterMesh data plane remains dual-stack. D10, D30, D44, D60
+wording revised; SPEC.md and this site updated in the same pass.
 
 **Round 16 (2026-10-24) — two topology roles + network facts.** Revised
 D33, D52; added D56, D57. Routed-fabric's four exclusive roles
@@ -141,7 +155,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D57 | revised (r16, r17) | Versioned non-secret producer-owned `clan.networkFacts` NixOS interface (schemaVersion 2, D59); nix-topology stays consumer-owned; no clanServices dependency on it |
 | D58 | active (r17) | Generic neutral `node_transport` export (schemaVersion 2): Linux-name-keyed datapath interfaces + MTU, one directRoutingDevice, datapath.mode native\|tunnel + protocol, native.routeExchange = local-router, internalLoadBalancer/nodePort capabilities; k3s/rke2 consume only node_transport, never branch on service names |
 | D59 | active (r17) | Fabric topology roles renamed leaf/spine; automatic symmetric adjacency graph (every spine pair adjacent, leaves default to all spines, explicit leaf subset allowed, no mutual lists); routed_fabric and networkFacts schemas bump to 2 |
-| D60 | active (r17) | ClusterMesh placement selectors (voters/workers/all/labels) and exposure enum auto\|internal-load-balancer\|node-port\|external-load-balancer; NodePort pins exactly one apiserver per selected node; internal VIPs from the existing `<instance>-fabric` pool; external always wins with explicit non-clan class + DNS name |
+| D60 | active (r17, amended 2026-10-26) | ClusterMesh placement selectors (voters/workers/all/labels) and exposure enum auto\|internal-load-balancer\|node-port\|external-load-balancer; NodePort pins exactly one apiserver per selected node; internal exposure is ONE pinned IPv4 VIP (host offset `0x79`) from the existing `<instance>-fabric` pool — control plane IPv4-only on Cilium 1.20.3, data plane stays dual-stack; external always wins with explicit non-clan class + DNS name |
 
 ## Round 17 decisions in detail
 
@@ -203,8 +217,8 @@ ClusterMesh apiserver exposure becomes an explicit, eval-validated contract:
   clan-declared/generated; a selector matching zero nodes is an eval error.
 - **NodePort has no replica option**: exactly one apiserver per selected
   node — Deployment `replicas` = the selected-node count, required hostname
-  anti-affinity + nodeSelector; all selected nodes' stable addresses plus a
-  collision-checked NodePort are published — **default `32379`** (the
+  anti-affinity + nodeSelector; all selected nodes' stable IPv4 addresses
+  plus a collision-checked NodePort are published — **default `32379`** (the
   upstream default), optional explicit per-machine-collision-checked
   override; rolling update
   `maxSurge=0`, `maxUnavailable=1`.
@@ -231,18 +245,24 @@ ClusterMesh apiserver exposure becomes an explicit, eval-validated contract:
     day-2), and needs no overlay internal capability. The external DNS name
     goes into peers and certificate SANs; dynamic, eval-unknown DNS
     resolution is a runtime prerequisite;
-  - **internal-load-balancer** uses pinned dual-stack literal VIPs locked at
-    **host offset 79 decimal / `0x79`** in the
-    existing D10 `<instance>-fabric` private pool's IPv4 `/24` and IPv6
-    `/64` blocks (analogous to the prior offset-`0x53` convention), with
+  - **internal-load-balancer** pins ONE IPv4 literal VIP locked at
+    **host offset 79 decimal / `0x79`** — `172.16.<id>.79` — in the
+    existing D10 `<instance>-fabric` private pool's IPv4 `/24` block
+    (analogous to the prior offset-`0x53` convention), with
     `loadBalancerClass: io.cilium/bgp-control-plane` and an explicit
     `lbipam.cilium.io/ips` projection; remote clusters use
-    pinned VIPs; no DNS is required; existing private-pool names are
-    unchanged. Explicit internal requires the capability. **auto** chooses
+    the pinned VIP; no DNS is required; existing private-pool names are
+    unchanged. Control-plane exposure is **IPv4-only** on the pinned
+    Cilium 1.20.3 profile (the chart's clustermesh-apiserver Deployment
+    embeds etcd with `--listen-client-urls=https://0.0.0.0:2379` and no
+    dual-stack listener exists), so there is no ClusterMesh IPv6 VIP and
+    no `RequireDualStack` advertisement while the data plane stays
+    dual-stack. Explicit internal requires the capability. **auto**
+    chooses
     internal when capable, else nodePort; unsupported or no method is an
-    eval error. Internal VIPs are pool-contained and collision-checked
+    eval error. The internal VIP is pool-contained and collision-checked
     against every other pinned clan VIP;
-  - **node-port** publishes the stable selected node addresses;
+  - **node-port** publishes the stable selected node IPv4 addresses;
   - DNS is supported by Cilium for LoadBalancer Services; external-dns
     remains day-2 only.
 
@@ -405,9 +425,14 @@ ClusterMesh is **full by default within one fabric**. Explicit selective
 peers via `mesh.peers` are supported within that fabric: symmetric
 (A lists B iff B lists A, eval-asserted) and **non-transitive** — A↔B plus
 B↔C gives no A↔C state. Peering bounds the automatic cross-cluster
-pod/Service route policy the fabric renders; routed-only exceptions must
-be explicit. Separate routed-fabric instances are the hard trust-isolation
-boundary. The underlay, fabric, and ClusterMesh graphs are distinct.
+pod/Service route policy the fabric renders. Spine transit is the
+eval-visible routed-only exception: a spine carries the union its attached
+leaves consume, even when a cluster on that spine does not peer with the
+route's origin. One kernel FIB cannot both withhold that route locally and
+forward it, so route-isolation proofs use non-transit leaves;
+ClusterMesh/global-Service isolation applies everywhere. Separate
+routed-fabric instances are the hard trust-isolation boundary. The underlay,
+fabric, and ClusterMesh graphs are distinct.
 
 ### D55 — Datapath hygiene and local Cilium peering
 

@@ -12,7 +12,7 @@ rec {
   clan = {
     modules.routed-fabric = module;
     exportInterfaces = {
-      node_transport = ./node-transport-interface.nix;
+      node_transport = ../../lib/node-transport-interface.nix;
       netif = ../netif/netif-interface.nix;
       kube_cluster = ../../lib/kube-cluster/kube-cluster-interface.nix;
       routed_fabric = ./routed-fabric-interface.nix;

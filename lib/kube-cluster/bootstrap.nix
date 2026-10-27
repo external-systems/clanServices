@@ -146,4 +146,91 @@
         };
       };
     };
+
+  # The ClusterMesh apiserver TLS secrets (D60): this oneshot supplies the
+  # clan vars material on the clusterInit node (the shared mesh group CA +
+  # the per-cluster leaf set; SANs carry the cluster's published endpoints).
+  # Key material never enters the bundle/Nix store: the unit reads the
+  # deployed vars files and base64-encodes them at runtime.
+  #
+  # The four secrets are exactly what the upstream Deployment mounts:
+  #   clustermesh-apiserver-server-cert  (etcd server + apiserver serverAuth)
+  #   clustermesh-apiserver-admin-cert   (etcd admin client, root role)
+  #   clustermesh-apiserver-remote-cert  (projected as common-etcd-client —
+  #                                      what PEERS dial with, CN remote-<cluster>)
+  #   clustermesh-apiserver-local-cert   (local agents/kvstoremesh reader)
+  mkClustermeshSecretsApply =
+    {
+      pkgs,
+      instanceName,
+      namePrefix,
+      # unit ordering after the bootstrap-apply unit (same name the distro
+      # passes to mkBootstrapApply): the bundle creates the apiserver
+      # objects; the secrets must follow so the pods mount real material.
+      bootstrapUnit,
+      serverUnit,
+      kubeconfigPath,
+      # the rancher-clustermesh-<instance> generator's files attrset
+      files,
+    }:
+    let
+      unitName = "${namePrefix}-${instanceName}-clustermesh-secrets";
+      kubectl = "${pkgs.kubectl}/bin/kubectl";
+      b64 = path: "$(${pkgs.coreutils}/bin/base64 -w0 ${path})";
+      secret = name: cert: ''
+        test -s ${files."ca.crt".path}
+        test -s ${files."${cert}.crt".path}
+        test -s ${files."${cert}.key".path}
+        printf '%s\n' "$(${pkgs.jq}/bin/jq -n \
+          --arg name "${name}" \
+          --arg ca "${b64 files."ca.crt".path}" \
+          --arg crt "${b64 files."${cert}.crt".path}" \
+          --arg key "${b64 files."${cert}.key".path}" \
+          '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:"kube-system"},type:"kubernetes.io/tls",data:{"ca.crt":$ca,"tls.crt":$crt,"tls.key":$key}}')"
+      '';
+    in
+    {
+      systemd.services."${unitName}" = {
+        description = "Apply the ${instanceName} ClusterMesh apiserver TLS secrets (clan vars material, idempotent)";
+        wantedBy = [ "multi-user.target" ];
+        after = [
+          serverUnit
+          bootstrapUnit
+        ];
+        requires = [ serverUnit ];
+        unitConfig.StartLimitIntervalSec = 0;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          Restart = "on-failure";
+          RestartSec = 10;
+          ExecStart = pkgs.writeShellScript unitName ''
+            set -euo pipefail
+            export KUBECONFIG="${kubeconfigPath}"
+            i=0
+            while [ "$i" -lt 120 ]; do
+              if ${kubectl} get --raw=/readyz >/dev/null 2>&1; then
+                break
+              fi
+              i=$((i + 1))
+              ${pkgs.coreutils}/bin/sleep 5
+            done
+            ${kubectl} get --raw=/readyz >/dev/null
+            {
+              ${secret "clustermesh-apiserver-server-cert" "server"}
+              ${secret "clustermesh-apiserver-admin-cert" "admin"}
+              ${secret "clustermesh-apiserver-remote-cert" "remote"}
+              ${secret "clustermesh-apiserver-local-cert" "local"}
+            } | ${pkgs.jq}/bin/jq -s '{apiVersion:"v1",kind:"List",items:.}' \
+              | ${kubectl} apply --server-side --field-manager=clan-clustermesh -f -
+            # The chart-generated Secret objects are absent from the bundle,
+            # so apiserver pods start only after this unit supplies their
+            # mounts. Restart once to make the vars-issued certificates the
+            # unequivocal live identity, then prove readiness before peering.
+            ${kubectl} rollout restart deployment/clustermesh-apiserver -n kube-system
+            ${kubectl} rollout status deployment/clustermesh-apiserver -n kube-system --timeout=300s
+          '';
+        };
+      };
+    };
 }

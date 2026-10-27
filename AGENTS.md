@@ -8,16 +8,14 @@ is a review destination, not a dependency.
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`, `netif`,
   `routed-fabric`; `wireguard-mesh` is a supported tunnel transport,
-  D58 — not pending retirement). Legacy `fleet-routing` code predates
-  the round-15/16 design and is deleted outright once the
-  `routed-fabric` replacement suites are green — no archiving;
-  `lib/import-flake/` is removed in the same pass.
+  D58 — not pending retirement). The obsolete `fleet-routing`,
+  `lib/import-flake/`, `lib/inputs-module.nix`, BIRD helpers, and
+  BIRD-specific VM fixtures were deleted in the round-17 cleanup;
+  their former ghost failures no longer block eval gates. No archives.
   Auto-discovered via `flake-module.nix`; no central registration list.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
-- `lib/import-flake/` — legacy flake-input adapter; removal planned once
-  the `routed-fabric` replacement suites are green (SPEC.md §8 5R3).
 - `tests/` — eval-test wiring; every `clan.modules` entry must have a
   nix-unit test (enforced by `checks.coverage`).
 - `SPEC.md` (repo root) — the normative decision contract AND the status
@@ -48,7 +46,7 @@ is a review destination, not a dependency.
   and 5R2(1)–(3) landed 2026-10-25 (netif + routed-fabric + native
   Cilium/pools + pkgs re-inflation + pin update); full/selective
   ClusterMesh and the round-17 contract remain planned (SPEC.md §8);
-  obsolete code is deleted outright once replacement suites are green.
+  obsolete code is deleted outright; early cleanup is not runtime proof.
   Round 13's Bootstrap + Data-plane scope remains: Envoy
   Gateway, cert-manager, Flux install, external-dns, Sealed Secrets,
   OpenEBS, KubeVirt, Multus are day-2 GitOps patterns, never clan-rendered

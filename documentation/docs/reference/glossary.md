@@ -72,12 +72,17 @@ One term per concept. Mirrors SPEC.md §10.
   derived adjacency.
 - **ClusterMesh exposure** — the apiserver exposure enum (D60):
   `auto` (default; internal-load-balancer when capable, else node-port),
-  `internal-load-balancer` (pinned dual-stack VIPs locked at host offset
+  `internal-load-balancer` (ONE pinned IPv4 VIP locked at host offset
   `0x79` in the `<instance>-fabric` private pool, `lbipam.cilium.io/ips`
-  projection), `node-port` (exactly one apiserver per selected node,
-  default NodePort `32379`), or
+  projection; control-plane exposure is IPv4-only on the pinned Cilium
+  1.20.3 profile — no ClusterMesh IPv6 VIP, no `RequireDualStack`
+  advertisement — while the data plane stays dual-stack),
+  `node-port` (exactly one apiserver per selected node,
+  default NodePort `32379`, selected nodes' stable IPv4 addresses
+  published), or
   `external-load-balancer` (explicit non-clan class + DNS name, always
-  wins). ETP Local applies to every method; placement selectors are
+  wins; runtime A record). Cert SANs carry published IPv4/DNS endpoints
+  only. ETP Local applies to every method; placement selectors are
   voters (default)/workers/all/labels.
 - **AllowedIPs / crypto ACL** — WireGuard's outbound peer selection, which
   is also the inbound source ACL; must include authorized transit prefixes.
@@ -105,8 +110,8 @@ One term per concept. Mirrors SPEC.md §10.
 - **Floating delivery** — a runtime controller moves one address; without
   it, the documented blackhole window remains.
 - **Private fleet fabric** — default private shared-bgp pool, FRR/BGP/Zebra,
-  and the pinned clustermesh-apiserver internal VIP pair (host offset
-  `0x79` — that apiserver pair ONLY; kube-api mirror Services allocate
+  and the pinned clustermesh-apiserver internal IPv4 VIP (host offset
+  `0x79` — that apiserver VIP ONLY; kube-api mirror Services allocate
   separately and cannot share it, D30) — never a
   member-facing DNS VIP; member DNS is day-2.
 - **Private-domain zones** — day-2 member-facing DNS (NOT in the MVP):
@@ -114,6 +119,8 @@ One term per concept. Mirrors SPEC.md §10.
   such as external-dns; `cluster.local` never appears on clients.
 - **Selective ClusterMesh** — explicit symmetric `mesh.peers` within one
   fabric; non-transitive; full mesh is the default when peers are omitted.
+  Native leaf route policy follows the same edges; spine carriage of the
+  union its leaves consume is the eval-visible routed-only exception.
 - **Airgap-ready** — every artifact pinned and local at boot.
 - **VM-proven** — behavior passed fresh, sandboxed, hermetic on the final
   tree.

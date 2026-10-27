@@ -11,9 +11,16 @@ ordinary NixOS machines, rke2, k3s, or other clanServices.
 
 For Kubernetes clusters, `wireguard-mesh` is a **supported tunnel
 transport** (SPEC.md D58): Cilium runs tunnel/VXLAN over the mesh, and
-the `nodePort` exposure capability arrives as a round-17 target export
-(D58, 5R5). VXLAN MTU = minimum interface MTU
-minus 50. It is not pending retirement.
+the `nodePort` exposure capability is exported (D58). VXLAN MTU =
+minimum interface MTU minus 50. It is not pending retirement.
+
+Status: the round-17 generic `node_transport` schemaVersion 2 export
+(D58) is implemented on this service — tunnel/VXLAN + `nodePort`, one
+shared multi-peer interface keyed by its Linux name, exactly one
+`directRoutingDevice`. The old per-service transport interface files are
+gone; the shared neutral schema lives at `lib/node-transport-interface.nix`.
+VM suites for the round-17 tree have **not** been re-run; no VM-green
+claim is made here.
 
 One inventory instance is one independent mesh. Each member receives one `/32`
 IPv4 and one `/128` IPv6 on its WireGuard interface. The default peer
@@ -125,8 +132,8 @@ The service declares `peer` as an input and publishes:
 - `networking.priority = 1000` at instance scope;
 - `peer.hosts = [ "<machine>.<domain>" ]` per member, retaining the standard
   peer port semantics (SSH port 22, not the WireGuard UDP port);
-- `node_transport` (schemaVersion 2 TARGET shape, SPEC.md D58/5R5) per
-  member — exporting
+- `node_transport` (schemaVersion 2, SPEC.md D58) per member — the
+  tunnel/VXLAN + `nodePort` profile, exporting
   that ONE shared interface: stable
   dual-stack node addresses (`ipv4`, `ipv6`), `instance`, `endpoint`
   (nullable), `port`, the datapath interface keyed by its Linux
@@ -134,10 +141,9 @@ The service declares `peer` as an input and publishes:
   interface, `datapath.mode = "tunnel"` with sibling
   `datapath.tunnelProtocol = "vxlan"` and `native.routeExchange = null`
   (tunnel mode needs none), and the exposure
-  capability `nodePort`; plus the optional `topology.region` /
-  `topology.zone` pass-through fields (null here — effective topology
-  labels are a cluster-node fact, published in the distro services'
-  `kube_cluster` export).
+  capability `nodePort` (`internalLoadBalancer = false`). Effective
+  topology labels are a cluster-node fact, published in the distro
+  services' `kube_cluster` export — not in this transport schema.
 
 Consumers should use `clanLib.getExport` or `clanLib.selectExports`, never raw
 export scope keys. The mesh addresses, interface, and MTU are sufficient for a

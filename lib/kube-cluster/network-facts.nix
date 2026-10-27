@@ -65,7 +65,7 @@ let
       };
     in
     {
-      schemaVersion = fact t.ints.positive 1 "Network facts schema version.";
+      schemaVersion = fact t.ints.positive 2 "Network facts schema version.";
       node = {
         name = str "Clan machine identity.";
       };
@@ -92,7 +92,7 @@ let
         type = t.attrsOf (
           t.submodule {
             options = {
-              topology = str "Member or hub topology role.";
+              topology = str "Leaf or spine topology role.";
               access = str "Member, client, or admin route-consumption access.";
               asn = nullableInt "Deterministic private node ASN.";
               ipv4 = nullableStr "Stable fabric IPv4 address.";

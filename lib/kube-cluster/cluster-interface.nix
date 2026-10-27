@@ -18,25 +18,27 @@
               service = lib.mkOption {
                 type = lib.types.str;
                 description = ''
-                  Name of the clanService that exports the routed_fabric
-                  interface (routed-fabric). The cluster consumes that
-                  instance's routed_fabric export (stable host addresses,
-                  per-adjacency interfaces/MTU); the node_transport export
-                  of the same instance remains a compatibility view.
+                  Name of the clanService that exports the generic
+                  node_transport interface (the transport source — e.g.
+                  routed-fabric or wireguard-mesh, or any third-party
+                  overlay implementing the neutral schemaVersion 2 seam,
+                  D58). The cluster consumes that instance's node_transport
+                  export ONLY; it never branches on provider service names.
                 '';
               };
               instance = lib.mkOption {
                 type = lib.types.str;
-                description = "Name of the routed-fabric instance to consume.";
+                description = "Name of the transport instance to consume.";
               };
             };
           }
         );
         default = null;
         description = ''
-          Selects the routed-fabric (node transport) source. null requires
+          Selects the transport source consumed through the generic
+          node_transport schemaVersion 2 export (D58). null requires
           explicit per-node network.ipv4/ipv6 addresses. The mesh group
-          defaults to the fabric instance name (D54).
+          defaults to the transport instance name (D54).
         '';
       };
       podCIDRv4 = lib.mkOption {
@@ -217,25 +219,28 @@
         type = lib.types.nullOr (lib.types.ints.between 1 4294967295);
         default = null;
         description = ''
-          The host-side BGP ASN Cilium peers with at `::1` — the fallback
-          when the fabric reference is absent. With network.fabric set, the
-          fabric node's ASN from routed_fabric's export wins (D9 revised);
-          this pin then only matters for manual-address clusters.
+          The host-side BGP ASN Cilium peers with at `::1`. null derives
+          the same deterministic node ASN as the native local-router
+          producer. Set this explicitly when a third-party local-router
+          implementation uses a different ASN.
         '';
       };
     };
 
-    # The private fleet fabric (D10), on by default: one private shared-bgp
-    # pool derived from the cluster's CIDR space + core VIPs on it.
+    # The private fleet fabric (D10, round 17): one private shared-bgp
+    # pool derived from the cluster's CIDR space, carrying the pinned
+    # internal ClusterMesh apiserver IPv4 VIP at host offset 79 (D60).
+    # Member-facing private DNS is wholly day-2 (D22 amended).
     fabric = {
       enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
         description = ''
           Render the private fleet fabric (D10): a cluster-global
-          shared-bgp pool "<instance>-fabric" (RFC1918 + ULA blocks derived
-          from the resolved cilium id, non-overlap with pod/service CIDRs
-          eval-asserted) plus the private CoreDNS VIP.
+          shared-bgp pool "<instance>-fabric" carrying the internal
+          ClusterMesh apiserver IPv4 VIP (offset 79, D60). null defaults on
+          for native local-router transports and off for tunnel/manual
+          transports. Explicitly enabling it requires local-router BGP.
         '';
       };
       ipv4Block = lib.mkOption {
@@ -243,8 +248,8 @@
         default = null;
         description = ''
           Fabric pool IPv4 block. null derives 172.16.<ciliumId>.0/24.
-          The prefix must be /26 or shorter (at least 64 addresses: the
-          private CoreDNS VIP lives at offset 53).
+          The prefix must be /25 or shorter (at least 128 addresses: the
+          ClusterMesh apiserver VIP lives at offset 79, D10 round 17).
         '';
       };
       ipv6Block = lib.mkOption {
@@ -252,51 +257,9 @@
         default = null;
         description = ''
           Fabric pool IPv6 block. null derives fd11:<ciliumId>::/64.
-          Prefix must be /120 or shorter (the private CoreDNS VIP lives at
-          offset 0x53).
+          Prefix must be /120 or shorter (the ClusterMesh apiserver VIP
+          lives at offset 0x79).
         '';
-      };
-      coredns = {
-        enable = lib.mkOption {
-          type = lib.types.bool;
-          default = true;
-          description = ''
-            Render the private-zone CoreDNS (D22 substrate): a second
-            CoreDNS Deployment + a type:LoadBalancer Service pinned to the
-            fabric VIP (offset 53 in the fabric blocks), serving the zone
-            <instance>.<domain>. cluster.local is NEVER served here (D21).
-          '';
-        };
-        wildcardAddress = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = ''
-            The day-2 proxy address the <instance>.<domain> wildcard A/AAAA
-            answer points at (D22: the zone's wildcard target is whatever
-            proxy the operator installs). null = the zone serves NXDOMAIN —
-            it exists and resolves negatively until day-2 sets a target.
-          '';
-        };
-        svcZone = lib.mkOption {
-          type = lib.types.bool;
-          default = false;
-          description = ''
-            D22(a) opt-in: serve <instance>.svc.<domain> — suffix-rewritten
-            to svc.cluster.local with answer-name reversal, forwarded to the
-            cluster CoreDNS. Consumed by the fleet-routing admin role.
-          '';
-        };
-        podZone = lib.mkOption {
-          type = lib.types.bool;
-          default = false;
-          description = ''
-            D22(b) opt-in: serve <instance>.pods.<domain> — suffix-rewritten
-            to pod.cluster.local (dash-form), forwarded to the cluster
-            CoreDNS (which has `pods insecure`). Meaningful only with
-            bgp facts (D13). Consumed by the routed-fabric
-            admin role.
-          '';
-        };
       };
     };
 
@@ -314,18 +277,135 @@
       '';
     };
 
-    # D54: full peering within one fabric instance is the default (null);
-    # an explicit list names selective peers (symmetric, non-transitive).
-    meshPeers = lib.mkOption {
-      type = lib.types.nullOr (lib.types.listOf lib.types.str);
-      default = null;
-      description = ''
-        Explicit ClusterMesh peers (cluster instance names) for selective
-        peering (D54). null (default) = full peering among the clusters of
-        the fabric instance. Peering bounds the automatic cross-cluster
-        pod/Service route policy rendered into fabric filters; selective
-        peers must be symmetric (fleet-asserted).
-      '';
+    # D60 normalized ClusterMesh settings (round-17 target shape; replaces
+    # the old flat meshPeers knob — breaking, no migration shims).
+    mesh = {
+      # D54: full peering within one fabric instance is the default (null);
+      # an explicit list names selective peers (symmetric, non-transitive;
+      # fleet-asserted).
+      peers = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = ''
+          Explicit ClusterMesh peers (cluster instance names) for selective
+          peering (D54). null (default) = full peering among the clusters
+          of the mesh group. Peering bounds the automatic cross-cluster
+          pod/Service route policy rendered into fabric filters; selective
+          peers must be symmetric and same-group (fleet-asserted).
+        '';
+      };
+
+      placement = lib.mkOption {
+        type = lib.types.enum [
+          "voters"
+          "workers"
+          "all"
+          "labels"
+        ];
+        default = "voters";
+        description = ''
+          clustermesh-apiserver placement (D60): voters (default — server
+          nodes), workers (agent nodes), all, or labels (clan-declared/
+          generated node labels only — a selector matching zero nodes is
+          an eval error).
+        '';
+      };
+
+      placementLabels = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        description = ''
+          Label selector for placement = labels. Only clan-declared
+          (nodeLabels) or generated (role/machine/cluster/topology) labels
+          are selectable; a selector matching zero cluster nodes is an
+          eval error (D60).
+        '';
+      };
+
+      exposure = lib.mkOption {
+        type = lib.types.enum [
+          "auto"
+          "internal-load-balancer"
+          "node-port"
+          "external-load-balancer"
+        ];
+        default = "auto";
+        description = ''
+          clustermesh-apiserver exposure (D60): auto (default) picks
+          internal-load-balancer when the transport exposes that
+          capability, else node-port; unsupported or no-method selections
+          are eval errors. external-load-balancer always wins on every
+          overlay: it needs no internal capability, but requires an
+          explicit non-clan loadBalancerClass and a dnsName (mesh.external).
+          ETP Local on every method.
+        '';
+      };
+
+      replicas = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 500);
+        default = null;
+        description = ''
+          Independent clustermesh-apiserver replica count — internal and
+          external LoadBalancer exposure ONLY. null (default) =
+          min(3, eligible nodes); a user value must be positive and no
+          larger than the eligible node count. FORBIDDEN on node-port
+          exposure (replicas there equal the selected node count, D60).
+        '';
+      };
+
+      nodePort = lib.mkOption {
+        type = lib.types.ints.between 30000 32767;
+        default = 32379;
+        description = ''
+          Node-port exposure port (Kubernetes NodePort range 30000–32767).
+          Collision-checked per machine against every other mesh NodePort
+          (D60).
+        '';
+      };
+
+      maxConnectedClusters = lib.mkOption {
+        type = lib.types.enum [
+          255
+          511
+        ];
+        default = 255;
+        description = ''
+          Cilium maxConnectedClusters (Cilium 1.20: 255 or 511). Set at
+          install time; MUST be identical across every cluster of the mesh
+          group (fleet-asserted, D60) — changing it live disrupts
+          connectivity and policy enforcement.
+        '';
+      };
+
+      external = {
+        loadBalancerClass = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = ''
+            External exposure ONLY: an explicit non-clan LoadBalancerClass
+            (io.cilium/* classes are clan-internal and rejected). The
+            class needs no internal transport capability — external
+            exposure wins on every overlay (D60).
+          '';
+        };
+        dnsName = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = ''
+            External exposure ONLY: the DNS name peers dial and the
+            certificate carries (DNS ONLY — a literal IP is rejected).
+            DNS resolution is a runtime prerequisite (D60).
+          '';
+        };
+        annotations = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = { };
+          description = ''
+            External exposure ONLY: provider Service annotations
+            (external-dns is day-2 and never clan-rendered).
+          '';
+        };
+      };
     };
 
     bootstrap = {

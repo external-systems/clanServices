@@ -74,25 +74,37 @@ artifacts are mandatory.
   (leaf isolation); cross-cluster pod routes and mirror-Service
   reachability for peering pairs; separate routed-fabric trust domains
   stay isolated (negative); mesh-group uniformity negatives (mixed
-  datapath mode, tunnel protocol, or maxConnectedClusters).
+  datapath mode, tunnel protocol, or maxConnectedClusters). VM proof covers
+  k3s/RKE2 on native and tunnel profiles: selected edges' authenticated
+  health and global-Service backends, A/B/C backend sets, and native
+  dual-stack route isolation on non-transit leaves. A dedicated spine carries
+  the union leaves consume; that is the eval-visible routed-only exception.
+  Full-peering native/tunnel defaults and all four external suites also pass
+  on the selective-aware resolver. Final logs are linked from SPEC.md §7.
 - **ClusterMesh exposure and placement (D60):** native internal
-  ClusterMesh (pinned dual-stack VIPs locked at host offset `0x79` in the
-  `<instance>-fabric` private pool's IPv4 `/24` + IPv6 `/64`, explicit
+  ClusterMesh (ONE pinned IPv4 VIP locked at host offset `0x79` in the
+  `<instance>-fabric` private pool's IPv4 `/24`, explicit
   `lbipam.cilium.io/ips` projection, collision-checked against other pinned
-  clan VIPs and pool-contained); tunnel NodePort
+  clan VIPs and pool-contained; NO ClusterMesh IPv6 VIP and NO
+  `RequireDualStack` advertisement — the pinned Cilium 1.20.3
+  clustermesh-apiserver etcd listens on an IPv4 wildcard with no
+  dual-stack listener knob; cert SANs carry published IPv4/DNS endpoints
+  only); tunnel NodePort
   ClusterMesh (exactly one apiserver per selected node — Deployment
   replicas = selected count, required hostname anti-affinity +
-  nodeSelector — with stable selected node addresses + default NodePort
-  `32379`, optional explicit override, collision-checked per machine,
+  nodeSelector — with stable selected node IPv4 addresses + default
+  NodePort `32379`, optional explicit override, collision-checked per
+  machine,
   maxSurge=0/maxUnavailable=1);
   external class + DNS name on BOTH profiles (explicit non-clan
   loadBalancerClass, DNS-only name, external DNS name in peers and cert
-  SANs); placement selectors (voters/workers/all/labels) with
-  clan-declared/generated labels only and zero-match eval negatives;
+  SANs, runtime A record); placement selectors (voters/workers/all/labels)
+  with clan-declared/generated labels only and zero-match eval negatives;
   LB replica rules (default min(3, eligible), positive ≤ eligible,
   required anti-affinity); auto choosing internal when capable else
   nodePort; unsupported/no-method eval negatives; ETP Local on every
-  method.
+  method. Current VM proof covers k3s and RKE2 external class+DNS exposure
+  on both native and tunnel profiles; final logs are linked from SPEC.md §7.
 - **Roles and switches:** exactly two topology roles — `leaf` and
   `spine` (D59, renamed from round 16's member/hub); plus the orthogonal
   per-machine `access` switch (`member` default,
@@ -119,17 +131,15 @@ Sealed-Secrets suites. Reserved: MCS-API and upstream-kubernetes suites.
 
 ## Status evidence
 
-**Implemented (suites registered, not green-claimed):** netif and the
-round-16 `member`/`hub` routed-fabric data plane (5R1, 2026-10-25), plus
-the native Cilium/pools stages 5R2(1)–(3). **Planned (round 17, 5R5,
-docs-locked, no implementation or VM evidence):** the `leaf`/`spine`
-rename, the generic `node_transport` schema, and the D60 ClusterMesh
-placement/exposure suites above — the existing SPEC acceptance baseline is
-the only standing evidence for those.
-The imported baseline recorded
-green wireguard-mesh and distro single/join/HA suites in the source
-fork; the later BIRD checkpoint `2995ac3` retained 5 green and 7 red
-suites. Both are legacy evidence only — they say nothing about
-round-17 spine/leaf routed fabrics, generic `node_transport` profiles,
-ClusterMesh exposure profiles, or native multi-pool
-routing. No full-mesh suite exists or is required.
+**VM-proven on the final tree:** k3s and RKE2 external class+DNS exposure on
+native and tunnel profiles; explicit selective ClusterMesh on both profiles;
+and full-peering native/tunnel defaults. The selective proofs include
+symmetric A↔B and B↔C edges, non-transitive A/C global-Service isolation,
+and dual-stack route isolation on non-transit leaves. SPEC.md §7 links the
+final logs and remains the status authority for the other suites.
+
+The imported baseline recorded green wireguard-mesh and distro single/join/HA
+suites in the source fork; the later BIRD checkpoint `2995ac3` retained
+5 green and 7 red suites. Both are legacy evidence only, not evidence for the
+current round-17 implementation. No full-mesh fabric suite exists or is
+required.

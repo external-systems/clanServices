@@ -6,7 +6,7 @@ _: {
     test.useContainers = false;
 
     modules.wireguard-mesh = ../../../wireguard-mesh/default.nix;
-    exportInterfaces.node_transport = ../../../wireguard-mesh/node-transport-interface.nix;
+    exportInterfaces.node_transport = ../../../../lib/node-transport-interface.nix;
 
     inventory = {
       meta.domain = "test.clan";

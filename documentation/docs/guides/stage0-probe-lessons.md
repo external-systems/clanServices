@@ -132,6 +132,48 @@ hard way.
   layer 2 must also emit `direct-routing-device` in `cilium-config`. Without
   that translation Cilium 1.20.3 repeatedly exits with `unable to determine
   direct routing device` after initially starting its BGP session.
+- `cilium-config` is cluster-wide, but per-adjacency WireGuard interface
+  names are machine-local. Copying the cluster-init node's direct device to
+  every agent makes the other agents fail startup. Always export the stable
+  routed-fabric loopback and use it as the uniform `directRoutingDevice`;
+  retain the per-adjacency interfaces in the broader `devices` set. More
+  generally, never put `eth0` on one machine and `eno1` on another into a
+  shared direct-device value. A shared `devices` union and a uniform direct
+  device are separate concerns. Do not assume that auto-detection or a
+  wildcard will choose the intended interface on a multihomed host.
+- ClusterMesh certificates need both upstream's mandatory loopback SANs and
+  the published endpoint SANs. Cilium 1.20.3's
+  [certificate helper](https://github.com/cilium/cilium/blob/v1.20.3/install/kubernetes/cilium/templates/clustermesh-apiserver/_helpers.tpl)
+  always adds `127.0.0.1` and `::1`; local apiserver/etcd clients fail
+  without them. Include those plus the internal VIP, selected NodePort
+  addresses, or external DNS name as applicable, and regenerate certificates
+  when that endpoint set changes.
+- Vars files marked `deploy = false` do not exist on the target machine. A
+  runtime Secret-apply unit cannot read them from a generator's `$out` or
+  `$in` directory: those paths exist only during generation. Deploy the leaf
+  certificates and keys needed at runtime, but keep the CA private key
+  generation-only. Also check every input with `test -s` before encoding:
+  `set -e` did not stop a `base64` failure inside a command substitution used
+  as a `jq` argument, and the unit applied an empty `tls.key`, causing
+  `tls: failed to find any PEM data in key input`.
+- `kubectl` finding the Rancher kubeconfig by default does not configure the
+  Cilium CLI. Set `KUBECONFIG` explicitly in VM nodes; otherwise `cilium
+  status` tries `localhost:8080`, which is a harness configuration error,
+  not evidence of an unhealthy agent. Bound diagnostic `cilium` commands
+  with `timeout`, and collect agent and every apiserver container's logs so
+  the failure dump itself cannot hide the original failure behind a hang.
+- Peering success is not exposure-path success. Keep direct health checks
+  from every node, cross-cluster traffic, global-Service, and withdrawal
+  assertions separate so a working control plane cannot mask an untested
+  Service path. The ClusterMesh etcd endpoint requires a client certificate:
+  an unauthenticated health probe can complete TCP and begin TLS, then fail
+  with `tlsv13 alert certificate required`. VM health checks must use the
+  deployed CA/client certificate/key and require HTTP 200; accepting a
+  timeout or treating that TLS failure as a datapath outage hides the actual
+  result. Evidence: `.baton-pass/vm-logs/k3s-clustermesh-native-round17-12.log`.
+- JSONPath assertions must match Kubernetes output, not YAML intuition:
+  `.spec.ipFamilies` prints `["IPv4"]`, not `[IPv4]`. Asserting element zero
+  is the simpler exact check when only single-stack is allowed.
 - The chart always renders an inert `tunnel-protocol: "vxlan"` key in native
   mode. Native mode and no `cilium_vxlan` device are the real datapath
   assertions; do not require the chart template key itself to disappear.
@@ -165,6 +207,79 @@ hard way.
 - Native-routing CIDR containment and BGP⇒fabric belong in eval assertions:
   manual-address clusters have no routed-fabric-owned FRR at `::1`, so the
   default fabric/BGP plane must be explicitly disabled there.
+- Do not collect same-fabric `kube_cluster` exports into an attrset keyed by
+  the fabric reference: every cluster has the same key, so `listToAttrs`
+  silently discards all but one. Preserve a list. Otherwise only one cluster
+  gets local `::1` neighbors and cross-cluster pod routes; the native VM
+  exposed this as two active (never established) sessions. The regression
+  needs two clusters in one fabric, not two nodes in one cluster.
+- `cilium bgp peers` is cluster-wide, not local-node-only. A two-node cluster
+  reports two rows; require both to be `established` instead of expecting
+  one. Evidence: `.baton-pass/vm-logs/k3s-clustermesh-native-round17-22.log`.
+- Rolling replacements make raw pod counts racy: a ready deployment can
+  briefly have an extra terminating pod. Assert the Deployment's desired
+  replica count plus per-node placement, not the total number of pod objects.
+- Generate nontrivial JSON patches with `jq` rather than balancing shell and
+  Nix braces. The external-LB fixture's hand-written status patch repeatedly
+  failed API decoding; `jq -nc --arg ip "$ip" ...` made the payload directly
+  validatable. Also use `test -z "$(...jsonpath...)"` for absent values —
+  zero-byte output does not give `grep '^$'` a line to match.
+- The external suites had three independent fixture failures. Per-node
+  dnsmasq on each node's own resolver address caused a fatal CoreDNS
+  `plugin/loop`; the completed `deployment/coredns` capture proved it.
+  Starting the fake external LoadBalancer only after both clusters and
+  Cilium are healthy also let the previously stalled RKE2 etcd joins finish.
+  A dedicated transport-attached DNS VM with `no-resolv` now serves the real
+  A records (native `access = "admin"`; explicit pod return routes for the
+  tunnel profile). Use `bind-dynamic` while its stable address appears, and
+  keep the address in the same first-match `10-dns.network` unit as its
+  routes: a routes-only unit shadows `40-eth1.network` and silently leaves
+  the underlay unnumbered.
+- Explicit per-node underlay addresses must REPLACE the NixOS VM defaults,
+  not merge with them. Plain `networking.interfaces.eth1.ipv4.addresses`
+  left default addresses on gamma and delta, duplicating `192.168.1.3` on
+  both. Delta then routed gamma's WireGuard endpoint to itself and repeated
+  k3s `/cacerts` failures until the join timeout. `lib.mkForce` on the
+  explicit address list removed the duplicate; both tunnel suites then
+  passed. Evidence: failure
+  `.baton-pass/vm-logs/k3s-clustermesh-external-tunnel-initial-54.log`;
+  passing `.baton-pass/vm-logs/k3s-clustermesh-external-tunnel-underlay-force-56.log`.
+- All four external suites pass on the final shared fixture: k3s/RKE2,
+  native/tunnel, with real DNS, authenticated external-LB health checks and
+  bidirectional ClusterMesh status. The tunnel runs also assert
+  `routing-mode=tunnel`, `tunnel-protocol=vxlan`, and MTU 1370. Final
+  evidence is linked from SPEC.md §7.
+- A Nix substituter timeout is not VM evidence. Keep its log separate from
+  behavioral failures and materialize the required derivation before judging
+  a rerun; one external-native attempt spent five retries in fetch stalls
+  before the actual suite ran.
+
+## Selective ClusterMesh and transit
+
+- Filter selective peers in the shared mesh resolver so the remote agent and
+  kvstoremesh configs plus the apiserver's remote-etcd users all see the same
+  edge set. Leaving `mesh.peers = null` must keep full peering; the native and
+  tunnel full-default regressions prove that path separately.
+- A Kubernetes spine cannot both omit a non-peer prefix from its only kernel
+  table and forward that prefix to another leaf. Keep the spine's transit
+  union intact and prove A/C route isolation on non-transit leaves. This is
+  the D54 routed-only exception, not a second routing stack or a reason to
+  filter the spine out of B's path. ClusterMesh and global-Service isolation
+  still applies on every node, including dual-shape spines.
+- Cilium advertises per-node `/24` and `/64` pod allocations, not the whole
+  pool. Native selective-route assertions must match those exact prefixes in
+  both families; `ip route show <whole-pool>` can be empty while the intended
+  allocation route exists.
+- The four-node selective fixture also needed forced underlay addresses:
+  alphabetical VM defaults gave gamma `.4` and delta `.3`, opposite the
+  inventory. `lib.mkForce` on every node's explicit eth1 address list fixed
+  the WireGuard endpoint path. Evidence:
+  `.baton-pass/vm-logs/k3s-clustermesh-selective-native-readiness-24.log`.
+- Do not accept a ClusterMesh name or `status --wait` alone. Authenticated
+  HTTP 200 checks prove each published endpoint, and global-Service backend
+  sets prove non-transitive synchronization. All four selective suites and
+  the four full-default suites pass on the final tree; evidence is linked
+  from SPEC.md §7.
 
 ## WireGuard transit and policy routing
 
@@ -207,7 +322,10 @@ hard way.
 - `wg show interfaces` prints one space-separated line. Count interfaces
   with `wc -w`, not `wc -l`. Interface existence is not transport readiness:
   wait for a nonzero timestamp in `wg show all latest-handshakes` before
-  ping/BGP assertions, and capture full `wg show` on failure.
+  ping/BGP assertions, and capture full `wg show` on failure. Its fields are
+  interface, peer public key, timestamp: check `$3`, not `$2`. Build the
+  test's `.driver` after generated-Python edits so type checking and linting
+  fail before an expensive VM boot.
 - `kubectl apply -f` does not accept a bare JSON array of resources. Render
   either multi-document YAML or a Kubernetes `v1/List` object with `items`;
   otherwise validation fails with `invalid object to validate`. Raw API

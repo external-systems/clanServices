@@ -24,7 +24,6 @@ let
       helmValues = { };
     };
     meshGroup = null;
-    meshPeers = null;
     pools = { };
     distroDefaults.enable = false;
     coredns = {
@@ -43,21 +42,80 @@ let
       modules = [
         kube.interfaces.cluster
         (_: {
-          config = lib.recursiveUpdate baseConfig extraConfig;
+          config = lib.recursiveUpdate baseConfig (lib.recursiveUpdate { fabric.enable = true; } extraConfig);
         })
       ];
     }).config;
 
-  baseSettings = evalSettings { };
+  baseSettings = evalSettings { fabric.enable = true; };
 
-  # Fabric device facts: EVERY adjacency interface, smallest adjacency MTU
-  # (D49/D51).
+  # Native transport device facts: EVERY datapath interface, smallest
+  # interface MTU (D58 — the derived profile MTU; VXLAN subtracts 50).
   transportFacts = {
     interfaces = [
       "wg-fleet-1"
       "wg-fleet-2"
     ];
+    directRoutingDevice = "wg-fleet-1";
     mtu = 1404;
+    mode = "native";
+    tunnelProtocol = null;
+  };
+
+  # The same facts via the generic resolver (profile validation, D58).
+  nativeProfile = kube.transport.resolve {
+    instanceName = "test";
+    machineName = "node-1";
+    transport = {
+      schemaVersion = 2;
+      ipv4 = "10.0.0.1";
+      ipv6 = "fd00::1";
+      instance = "fleet";
+      endpoint = null;
+      port = 51820;
+      interfaces = {
+        "wg-fleet-1" = {
+          mtu = 1404;
+        };
+        "wg-fleet-2" = {
+          mtu = 1420;
+        };
+      };
+      directRoutingDevice = "wg-fleet-1";
+      datapath = {
+        mode = "native";
+        tunnelProtocol = null;
+      };
+      native.routeExchange = "local-router";
+      internalLoadBalancer = true;
+      nodePort = true;
+    };
+  };
+
+  tunnelProfile = kube.transport.resolve {
+    instanceName = "test";
+    machineName = "node-1";
+    transport = {
+      schemaVersion = 2;
+      ipv4 = "10.0.0.1";
+      ipv6 = "fd00::1";
+      instance = "mesh";
+      endpoint = null;
+      port = 51820;
+      interfaces = {
+        "wg-mesh" = {
+          mtu = 1420;
+        };
+      };
+      directRoutingDevice = "wg-mesh";
+      datapath = {
+        mode = "tunnel";
+        tunnelProtocol = "vxlan";
+      };
+      native.routeExchange = null;
+      internalLoadBalancer = false;
+      nodePort = true;
+    };
   };
 
   instanceName = "test";
@@ -91,7 +149,69 @@ let
     }
   ];
 
+  # ClusterMesh members (placement selection needs role + settings).
+  meshMembers = [
+    {
+      machineName = "node-1";
+      role = "server";
+      ipv4 = "10.0.0.1";
+      ipv6 = "fd00::1";
+      settings = {
+        nodeLabels = { };
+        topology = {
+          region = null;
+          zone = null;
+        };
+      };
+    }
+    {
+      machineName = "node-2";
+      role = "server";
+      ipv4 = "10.0.0.2";
+      ipv6 = "fd00::2";
+      settings = {
+        nodeLabels = { };
+        topology = {
+          region = null;
+          zone = null;
+        };
+      };
+    }
+  ];
+
   manifestLabels = kube.render.mkManifestLabels { inherit instanceName; };
+
+  # The ClusterMesh resolution seam the distro services use (D60). The
+  # fixture transport exposes BOTH capabilities (routed-fabric-like);
+  # exposure follows the settings (auto → internal-load-balancer when the
+  # fabric pool renders, else node-port).
+  mkTestMesh =
+    {
+      settings,
+      peers ? { },
+    }:
+    kube.mesh.resolve {
+      inherit
+        instanceName
+        settings
+        peers
+        ;
+      ciliumId = 1;
+      domain = "example.org";
+      members = meshMembers;
+      transport = {
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+      fabricBlocks =
+        if settings.fabric.enable then
+          kube.bgp.fabricBlocks {
+            ciliumId = 1;
+            inherit settings;
+          }
+        else
+          null;
+    };
 
   mkTestBundle =
     settings:
@@ -101,8 +221,6 @@ let
       dp = kube.resolveDataPlane {
         inherit settings instanceName members;
         ciliumId = 1;
-        domain = "example.org";
-        clusterDNS = "10.2.0.10";
       };
     in
     kube.render.mkBundle {
@@ -128,7 +246,7 @@ let
       coreDNSImage = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
       k8sServiceHost = "kubeapi-test.example.org";
       bgp = dp.bgpBundle;
-      inherit (dp) privateCoreDNS;
+      mesh = mkTestMesh { inherit settings; };
     };
 
   bundle = mkTestBundle baseSettings;
@@ -240,6 +358,7 @@ let
 
   # Hand-built kube_cluster exports for the fleet checks (the applied
   # exports tree shape: scope string -> { kube_cluster = { ... }; }).
+  # schemaVersion 4 shape (D58/D60): datapath facts + mesh facts.
   mkKubeExport =
     {
       name,
@@ -248,6 +367,18 @@ let
       fabricService ? "routed-fabric",
       fabricInstance ? "fleet",
       meshPeers ? null,
+      datapathMode ? "native",
+      tunnelProtocol ? null,
+      maxConnectedClusters ? 255,
+      exposure ? {
+        method = "internal-load-balancer";
+        nodePort = null;
+        replicas = 2;
+        vip4 = "172.16.${toString ciliumId}.79";
+        dnsName = null;
+        loadBalancerClass = "io.cilium/bgp-control-plane";
+        published = [ "https://172.16.${toString ciliumId}.79:2379" ];
+      },
       podCIDRv4 ? "10.1.0.0/16",
       podCIDRv6 ? "fd10:1::/56",
       serviceCIDRv4 ? "10.2.0.0/16",
@@ -268,11 +399,28 @@ let
           instance = fabricInstance;
         };
       };
-      mesh.peers = meshPeers;
+      datapath = {
+        mode = datapathMode;
+        inherit tunnelProtocol;
+        routeExchange = if datapathMode == "native" then "local-router" else null;
+        devices = [ "wg-fleet-1" ];
+        directRoutingDevice = "wg-fleet-1";
+        mtu = 1404;
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+      mesh = {
+        peers = meshPeers;
+        inherit
+          maxConnectedClusters
+          exposure
+          ;
+        placement = "voters";
+      };
       controlDomain.role = "standalone";
       members = { };
       pools = { };
-      schemaVersion = 3;
+      schemaVersion = 4;
     };
 
   # Two clusters (rke2/prod + k3s/prod2), alpha shared → D16 violation;
@@ -389,7 +537,8 @@ let
         bgp.advertiseClusterIPs = true;
       })).json;
 
-  # BGP off: fabric off + bgp.enable=false (the consistent pair).
+  # BGP off: fabric off + bgp.enable=false (the consistent pair). The
+  # fabric pool is gone, so auto exposure resolves to node-port (D60).
   bundleNoBgpObjects =
     builtins.fromJSON
       (mkTestBundle (evalSettings {
@@ -397,20 +546,26 @@ let
         bgp.enable = false;
       })).json;
 
-  # Private CoreDNS with the D22 knobs on.
-  bundleZonesObjects =
+  # node-port exposure bundle (explicit; no pool draw).
+  bundleNodePortObjects =
     builtins.fromJSON
       (mkTestBundle (evalSettings {
-        fabric.coredns = {
-          wildcardAddress = "172.16.1.200";
-          svcZone = true;
-          podZone = true;
+        fabric.enable = false;
+        bgp.enable = false;
+        mesh.exposure = "node-port";
+      })).json;
+
+  # External exposure bundle (no internal capability needed, D60).
+  bundleExternalObjects =
+    builtins.fromJSON
+      (mkTestBundle (evalSettings {
+        mesh.exposure = "external-load-balancer";
+        mesh.external = {
+          loadBalancerClass = "cloud.example/mesh-lb";
+          dnsName = "mesh.test.example.org";
+          annotations."external-dns.alpha.kubernetes.io/hostname" = "mesh.test.example.org";
         };
       })).json;
-  zonesCorefile = (findObjKind bundleZonesObjects "ConfigMap" "coredns-private").data.Corefile;
-
-  privateCorefile = (findObj "ConfigMap" "coredns-private").data.Corefile;
-  privateSvc = findObj "Service" "coredns-private";
 
   # BGP ASN collision via the export facts (phase-5 schema).
   fleetExportsAsnCollision = {
@@ -468,6 +623,272 @@ let
         enabled = true;
         ownedPrefixes = borderOwnedPrefixes;
       };
+    };
+  };
+
+  # --- ClusterMesh + transport fixtures (D58/D60) --------------------------
+
+  apiserverDeploy = findObj "Deployment" "clustermesh-apiserver";
+  apiserverService = findObj "Service" "clustermesh-apiserver";
+  remoteUsers = (findObj "ConfigMap" "clustermesh-remote-users").data."users.yaml";
+
+  meshThrows =
+    extraMesh:
+    !(builtins.tryEval (
+      builtins.deepSeq (mkTestMesh { settings = evalSettings { mesh = extraMesh; }; }) true
+    )).success;
+
+  meshThrowsWithTransport =
+    extraMesh: transport:
+    !(builtins.tryEval (
+      builtins.deepSeq (kube.mesh.resolve {
+        inherit instanceName transport;
+        settings = evalSettings { mesh = extraMesh; };
+        ciliumId = 1;
+        domain = "example.org";
+        members = meshMembers;
+        peers = { };
+        fabricBlocks = null;
+      }) true
+    )).success;
+
+  transportThrows =
+    transport:
+    !(builtins.tryEval (
+      builtins.deepSeq (kube.transport.resolve {
+        inherit instanceName;
+        machineName = "node-1";
+        inherit transport;
+      }) true
+    )).success;
+
+  ciliumThrows =
+    helmValues:
+    !(builtins.tryEval (
+      builtins.deepSeq (kube.render.mkCiliumValues {
+        settings = evalSettings {
+          cilium.helmValues = helmValues;
+        };
+        transportFacts = {
+          interfaces = [ "wg-fleet-1" ];
+          directRoutingDevice = "wg-fleet-1";
+          mtu = 1404;
+          mode = "native";
+          tunnelProtocol = null;
+        };
+        inherit instanceName;
+        k8sServiceHost = "kubeapi-test.example.org";
+      }) true
+    )).success;
+
+  # The VXLAN profile renders the tunnel cilium-config keys.
+  tunnelBundle =
+    let
+      settings = baseSettings;
+      dp = kube.resolveDataPlane {
+        inherit settings instanceName members;
+        ciliumId = 1;
+      };
+    in
+    builtins.fromJSON
+      (kube.render.mkBundle {
+        inherit
+          pkgs
+          settings
+          instanceName
+          manifestLabels
+          baseManifest
+          ;
+        kubenixSrc = inputs.kubenix;
+        profile = kube.render.mkCiliumValues {
+          inherit settings instanceName;
+          transportFacts = {
+            interfaces = [ "wg-mesh" ];
+            directRoutingDevice = "wg-mesh";
+            inherit (tunnelProfile) mtu;
+            mode = "tunnel";
+            tunnelProtocol = "vxlan";
+          };
+          k8sServiceHost = "kubeapi-test.example.org";
+          k8sServicePort = 6443;
+        };
+        pools = kube.render.resolvePools {
+          inherit settings members;
+          extraPools = lib.optionalAttrs (dp.fabricPool != null) { ${dp.fabricPool.name} = dp.fabricPool; };
+        };
+        podIPCidr = "10.1.0.0/16,fd10:1::/56";
+        clusterDNS = "10.2.0.10";
+        coreDNSImage = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
+        k8sServiceHost = "kubeapi-test.example.org";
+        bgp = dp.bgpBundle;
+        mesh = mkTestMesh { inherit settings; };
+      }).json;
+
+  # Uniformity: mixed datapath mode / maxConnectedClusters inside one
+  # group is rejected; identical members pass.
+  fleetExportsMixedMode = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 1;
+    };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      datapathMode = "tunnel";
+      tunnelProtocol = "vxlan";
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  fleetExportsSameGroupMccBase = {
+    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod";
+      ciliumId = 1; # default maxConnectedClusters = 255
+    };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      maxConnectedClusters = 511;
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # Selective peers: symmetric A↔B passes; one-directional is rejected;
+  # unknown peers are rejected.
+  fleetExportsSelectiveOk = {
+    "rke2:prod:server:alpha".kube_cluster =
+      (mkKubeExport {
+        name = "prod";
+        ciliumId = 1;
+      })
+      // {
+        mesh.peers = [ "staging" ];
+      };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      meshPeers = [ "prod" ];
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  fleetExportsSelectiveAsymmetric = {
+    "rke2:prod:server:alpha".kube_cluster =
+      (mkKubeExport {
+        name = "prod";
+        ciliumId = 1;
+      })
+      // {
+        mesh.peers = [ "staging" ];
+      };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      meshPeers = [ "other" ];
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # NodePort collision fleet check: two clusters claiming the same machine
+  # with the same NodePort (machine-level claims, D60).
+  fleetExportsNodePortCollision = {
+    "rke2:prod:server:alpha".kube_cluster =
+      (mkKubeExport {
+        name = "prod";
+        ciliumId = 1;
+      })
+      // {
+        mesh.exposure = {
+          method = "node-port";
+          nodePort = 32379;
+          replicas = 1;
+          vip4 = null;
+          dnsName = null;
+          loadBalancerClass = null;
+          published = [ "https://10.0.0.1:32379" ];
+        };
+      };
+    "k3s:prod2:server:alpha".kube_cluster = mkKubeExport {
+      name = "prod2";
+      ciliumId = 2;
+      exposure = {
+        method = "node-port";
+        nodePort = 32379;
+        replicas = 1;
+        vip4 = null;
+        dnsName = null;
+        loadBalancerClass = null;
+        published = [ "https://10.0.0.1:32379" ];
+      };
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # VIP collision fleet check: explicit fabric block pins colliding at
+  # offset 79 across clusters.
+  fleetExportsVipCollision = {
+    "rke2:prod:server:alpha".kube_cluster =
+      (mkKubeExport {
+        name = "prod";
+        ciliumId = 1;
+      })
+      // {
+        mesh.exposure.vip4 = "172.16.7.79";
+        mesh.exposure.published = [ "https://172.16.7.79:2379" ];
+      };
+    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
+      name = "staging";
+      ciliumId = 2;
+      exposure = {
+        method = "internal-load-balancer";
+        nodePort = null;
+        replicas = 1;
+        vip4 = "172.16.7.79";
+        dnsName = null;
+        loadBalancerClass = "io.cilium/bgp-control-plane";
+        published = [ "https://172.16.7.79:2379" ];
+      };
+      podCIDRv4 = "10.3.0.0/16";
+      podCIDRv6 = "fd10:3::/56";
+      serviceCIDRv4 = "10.4.0.0/16";
+      serviceCIDRv6 = "fd10:4::/112";
+    };
+  };
+
+  # --- Mesh vars generators (D60) ------------------------------------------
+
+  meshCaGen = kube.vars.mkMeshCaGenerator {
+    pkgs = fakePackage;
+    group = "clan";
+  };
+  meshCertGen = kube.vars.mkMeshCertGenerator {
+    pkgs = fakePackage;
+    instanceName = "test";
+    group = "clan";
+    sans = {
+      dns = [
+        "test.mesh.example.org"
+        "mesh.example.org"
+      ];
+      ip = [
+        "172.16.1.79"
+        "10.0.0.1"
+      ];
     };
   };
 in
@@ -1707,6 +2128,10 @@ in
     expected = {
       kube-cluster-meshed-cidr-overlap = true;
       kube-cluster-mesh-group-fabric = true;
+      kube-cluster-mesh-group-uniformity = true;
+      kube-cluster-mesh-nodeport-collisions = true;
+      kube-cluster-mesh-peers = true;
+      kube-cluster-mesh-vip-collisions = true;
       kube-cluster-node-in-two-clusters = true;
       kube-cluster-shared-bgp-border-prefixes = true;
       kube-cluster-unique-bgp-asns = true;
@@ -1857,27 +2282,22 @@ in
       foo = {
         cilium = 4260531340;
         host = 4240043293;
-        bird = 4201913244;
       };
       k3s = {
         cilium = 4240343820;
         host = 4202640987;
-        bird = 4214591604;
       };
       rke2 = {
         cilium = 4200812391;
         host = 4253360446;
-        bird = 4226982861;
       };
       test = {
         cilium = 4250252234;
         host = 4238856295;
-        bird = 4202719071;
       };
       prod = {
         cilium = 4227504799;
         host = 4203270962;
-        bird = 4293236873;
       };
     };
   };
@@ -1974,17 +2394,14 @@ in
     };
   };
 
-  # The private CoreDNS VIP is offset 53 in the fabric blocks (v6 rendered
-  # full-form, case-normalized).
-  test_fabricCoreDNSVips = {
-    expr = kube.bgp.fabricCoreDNSVips {
+  # The internal ClusterMesh IPv4 VIP is pinned at host offset 79 of the
+  # fabric pool's IPv4 block (D10 round 17/D60 amended 2026-10-26).
+  test_meshVips = {
+    expr = kube.mesh.meshVips {
       ciliumId = 1;
       settings = baseSettings;
     };
-    expected = {
-      ipv4 = "172.16.1.53";
-      ipv6 = "fd11:1:0:0:0:0:0:53";
-    };
+    expected.ipv4 = "172.16.1.79";
   };
 
   # Each node has one local session and selects common pod/shared routes;
@@ -2138,25 +2555,28 @@ in
 
   # §6.12: no BGP pools (fabric off, none declared) + bgp.enable = false ⇒
   # no BGP resources. D41 keeps the explicit-pool LB-IPAM class registered.
+  # The ClusterMesh apiserver still renders (node-port exposure — the
+  # fabric pool is off, D60).
   test_bundleNoBgpWithoutSharedBgp = {
     expr =
       let
         bgpKinds = builtins.filter (o: lib.hasPrefix "CiliumBGP" o.kind) bundleNoBgpObjects;
         cm = (findObjKind bundleNoBgpObjects "ConfigMap" "cilium-config").data;
         fabricPool = findObjKind bundleNoBgpObjects "CiliumLoadBalancerIPPool" "test-fabric";
-        privateDns = findObjKind bundleNoBgpObjects "Deployment" "coredns-private";
+        apiserver = findObjKind bundleNoBgpObjects "Deployment" "clustermesh-apiserver";
+        apiserverSvc = findObjKind bundleNoBgpObjects "Service" "clustermesh-apiserver";
       in
       {
         bgpResourceCount = builtins.length bgpKinds;
         flag = cm."enable-bgp-control-plane";
         fabricPoolAbsent = fabricPool == null;
-        privateDnsAbsent = privateDns == null;
+        apiserverNodePort = apiserver != null && apiserverSvc.spec.type == "NodePort";
       };
     expected = {
       bgpResourceCount = 0;
       flag = "true";
       fabricPoolAbsent = true;
-      privateDnsAbsent = true;
+      apiserverNodePort = true;
     };
   };
 
@@ -2216,7 +2636,8 @@ in
   };
 
   # Fabric/pool blocks may not overlap the pod/service CIDRs
-  # (reservedCidrs), and tiny fabric blocks are rejected (VIP at offset 53).
+  # (reservedCidrs), and tiny fabric blocks are rejected (the offset-79
+  # ClusterMesh VIPs need at least 128 v4 addresses, D10 round 17).
   test_fabricReservedOverlapAndSize = {
     expr = {
       overlap = failedAssertion (kube.assertions.mkPoolAssertions {
@@ -2231,83 +2652,671 @@ in
         inherit instanceName members;
         ciliumId = 1;
         settings = evalSettings {
-          fabric.ipv4Block = "172.16.1.0/27";
+          fabric.ipv4Block = "172.16.1.0/26";
         };
-      }) "at least 64 addresses";
+      }) "at least 128 addresses";
+      fitsAt25 =
+        !(failedAssertion (kube.assertions.mkPoolAssertions {
+          inherit instanceName members;
+          ciliumId = 1;
+          settings = evalSettings {
+            fabric.ipv4Block = "172.16.1.0/25";
+          };
+        }) "at least 128 addresses");
     };
     expected = {
       overlap = true;
       tooSmall = true;
+      fitsAt25 = true;
     };
   };
 
-  # D22 substrate: the private CoreDNS Service pins ETP Local, the
-  # bgp-control-plane class, the fabric-pool selector, and the deterministic
-  # VIPs; the Corefile serves the instance zone and NEVER cluster.local
-  # (D21).
-  test_privateCoreDNSDefault = {
+  # --- ClusterMesh apiserver rendering (D60) -------------------------------
+
+  test_bundleContainsNoPrivateKeyMaterial = {
+    expr = !(lib.hasInfix "PRIVATE KEY-----" (builtins.toJSON bundleObjects));
+    expected = true;
+  };
+
+  # The default bundle (fabric pool on, auto exposure) renders the
+  # internal-load-balancer exposure: pinned offset-79 VIPs projected via
+  # lbipam, the BGP class, ETP Local, and the D60 placement shape.
+  test_clustermeshInternalLbExposure = {
     expr = {
-      svc = {
-        inherit (privateSvc.spec) externalTrafficPolicy loadBalancerClass;
-        annotations = privateSvc.metadata.annotations;
-        poolLabel = privateSvc.metadata.labels."clan.lol/pool";
-        selector = privateSvc.spec.selector;
-        ipPolicy = privateSvc.spec.ipFamilyPolicy;
+      deploy = {
+        replicas = apiserverDeploy.spec.replicas;
+        strategy = apiserverDeploy.spec.strategy;
+        requiredAntiAffinity =
+          apiserverDeploy.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution
+          != [ ];
+        nodeSelector = apiserverDeploy.spec.template.spec.nodeSelector;
       };
-      zoneServed = lib.hasInfix "test.example.org:53 {" privateCorefile;
-      nxdomainDefault = lib.hasInfix "rcode NXDOMAIN" privateCorefile;
-      noWildcardByDefault = !(lib.hasInfix "172.16.1.200" privateCorefile);
-      # D21: no cluster.local ZONE (rewrites/forward targets to
-      # svc.cluster.local are allowed — those are not served zones).
-      noClusterLocalZone =
-        !(lib.hasInfix "kubernetes cluster.local" privateCorefile)
-        && !(lib.hasInfix "cluster.local:53" privateCorefile)
-        && !(lib.hasInfix "cluster.local {" privateCorefile);
-      deploy = (findObj "Deployment" "coredns-private") != null;
-      imagePinned = lib.hasInfix "@sha256:" (builtins.head (findObj "Deployment" "coredns-private")
-        .spec.template.spec.containers).image;
+      svc = {
+        type = apiserverService.spec.type;
+        inherit (apiserverService.spec) externalTrafficPolicy loadBalancerClass;
+        annotations = apiserverService.metadata.annotations;
+        poolLabel = apiserverService.metadata.labels."clan.lol/pool";
+        ipPolicy = apiserverService.spec.ipFamilyPolicy;
+        hasNodePort = apiserverService.spec.ports ? nodePort;
+      };
+      usersEmptySingleton = remoteUsers == "users:\n";
+      clustermeshEnable = ciliumConfig."clustermesh-enable";
+      maxConn = ciliumConfig."max-connected-clusters";
     };
     expected = {
+      deploy = {
+        replicas = 2; # min(3, eligible) — two fixture servers
+        strategy = {
+          type = "RollingUpdate";
+          rollingUpdate = {
+            maxSurge = 0;
+            maxUnavailable = 1;
+          };
+        };
+        requiredAntiAffinity = true;
+        nodeSelector = {
+          "kubernetes.io/os" = "linux";
+          cluster = "test";
+          role = "server";
+        };
+      };
       svc = {
+        type = "LoadBalancer";
         externalTrafficPolicy = "Local";
         loadBalancerClass = "io.cilium/bgp-control-plane";
-        annotations."lbipam.cilium.io/ips" = "172.16.1.53,fd11:1:0:0:0:0:0:53";
+        annotations."lbipam.cilium.io/ips" = "172.16.1.79";
         poolLabel = "test-fabric";
-        selector."k8s-app" = "coredns-private";
-        ipPolicy = "RequireDualStack";
+        ipPolicy = "SingleStack";
+        hasNodePort = false;
       };
-      zoneServed = true;
-      nxdomainDefault = true;
-      noWildcardByDefault = true;
-      noClusterLocalZone = true;
-      deploy = true;
-      imagePinned = true;
+      usersEmptySingleton = true;
+      clustermeshEnable = "true";
+      maxConn = "255";
     };
   };
 
-  # D22 knobs: wildcard answer + svc/pod zone rewrites forwarded to the
-  # cluster DNS — still no cluster.local zone (D21).
-  test_privateCoreDNSZones = {
+  # Node-port exposure: NodePort service on the default port 32379, ETP
+  # Local, replicas = selected node count, per-machine node affinity, no
+  # loadBalancerClass (the apiserver rejects it on NodePort services).
+  test_clustermeshNodePortExposure = {
+    expr =
+      let
+        d = findObjKind bundleNodePortObjects "Deployment" "clustermesh-apiserver";
+        s = findObjKind bundleNodePortObjects "Service" "clustermesh-apiserver";
+        terms =
+          d.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms;
+      in
+      {
+        replicas = d.spec.replicas;
+        machineAffinity = lib.flatten (
+          map (t: map (e: e.key + ":" + builtins.concatStringsSep "," e.values) t.matchExpressions) terms
+        );
+        type = s.spec.type;
+        etp = s.spec.externalTrafficPolicy;
+        nodePort = lib.head (map (port: port.nodePort) s.spec.ports);
+        hasClass = s.spec ? loadBalancerClass;
+      };
+    expected = {
+      replicas = 2;
+      machineAffinity = [ "machine:node-1,node-2" ];
+      type = "NodePort";
+      etp = "Local";
+      nodePort = 32379;
+      hasClass = false;
+    };
+  };
+
+  # External exposure wins on every overlay: explicit non-clan class +
+  # dnsName (DNS only), provider annotations, no internal capability or
+  # pool draw needed, ETP Local.
+  test_clustermeshExternalExposure = {
+    expr =
+      let
+        d = findObjKind bundleExternalObjects "Deployment" "clustermesh-apiserver";
+        s = findObjKind bundleExternalObjects "Service" "clustermesh-apiserver";
+      in
+      {
+        type = s.spec.type;
+        etp = s.spec.externalTrafficPolicy;
+        class = s.spec.loadBalancerClass;
+        dnsAnnotation = s.metadata.annotations."external-dns.alpha.kubernetes.io/hostname";
+        noLbipam = !(s.metadata.annotations ? "lbipam.cilium.io/ips");
+        replicas = d.spec.replicas;
+      };
+    expected = {
+      type = "LoadBalancer";
+      etp = "Local";
+      class = "cloud.example/mesh-lb";
+      dnsAnnotation = "mesh.test.example.org";
+      noLbipam = true;
+      replicas = 2;
+    };
+  };
+
+  # The peer remote configs: one cilium-clustermesh + cilium-kvstoremesh
+  # secret entry per peered cluster, endpoints = the peer's published set;
+  # the etcd users file gets one remote-<cluster> user per peer.
+  test_clustermeshPeerRendering = {
+    expr =
+      let
+        peer = {
+          name = "peer-b";
+          mesh.exposure.published = [
+            "https://172.16.2.79:2379"
+          ];
+        };
+        meshWithPeer = mkTestMesh {
+          settings = baseSettings;
+          peers = {
+            peer-b = peer;
+          };
+        };
+        meshSelective = mkTestMesh {
+          settings = evalSettings { mesh.peers = [ "peer-b" ]; };
+          peers = {
+            peer-b = peer;
+            peer-c = peer // {
+              name = "peer-c";
+            };
+          };
+        };
+      in
+      {
+        resolvedPeers = meshWithPeer.peerConfigs;
+        selectivePeers = meshSelective.peerConfigs;
+        singletonPeers = (mkTestMesh { settings = baseSettings; }).peerConfigs;
+        users = kube.mesh.remoteUsersYaml meshWithPeer.peerConfigs;
+        singletonUsers = kube.mesh.remoteUsersYaml [ ];
+        missingPeerSkipped =
+          (mkTestMesh {
+            settings = baseSettings;
+            peers = {
+              peer-b = {
+                name = "peer-b";
+              };
+            };
+          }).peerConfigs;
+        remoteConfig = kube.mesh.remoteClusterConfig {
+          endpoints = [ "https://10.0.0.1:32379" ];
+        };
+      };
+    expected = {
+      resolvedPeers = [
+        {
+          name = "peer-b";
+          endpoints = [
+            "https://172.16.2.79:2379"
+          ];
+        }
+      ];
+      selectivePeers = [
+        {
+          name = "peer-b";
+          endpoints = [
+            "https://172.16.2.79:2379"
+          ];
+        }
+      ];
+      singletonPeers = [ ];
+      users = "users:\n- name: remote-peer-b\n  role: remote\n";
+      singletonUsers = "users:\n";
+      missingPeerSkipped = [ ];
+      remoteConfig = "endpoints:\n- https://10.0.0.1:32379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+    };
+  };
+
+  # --- ClusterMesh negatives (D60) -----------------------------------------
+
+  test_clustermeshPlacementNegatives = {
     expr = {
-      wildcard = lib.hasInfix "answer \"{{ .Name }} 60 IN A 172.16.1.200\"" zonesCorefile;
-      svcZone = lib.hasInfix "test.svc.example.org:53 {" zonesCorefile;
-      svcRewrite = lib.hasInfix "rewrite name suffix .test.svc.example.org. .svc.cluster.local. answer auto" zonesCorefile;
-      podZone = lib.hasInfix "test.pods.example.org:53 {" zonesCorefile;
-      podRewrite = lib.hasInfix "rewrite name suffix .test.pods.example.org. .pod.cluster.local. answer auto" zonesCorefile;
-      forwardToClusterDns = lib.hasInfix "forward . 10.2.0.10" zonesCorefile;
-      noClusterLocalZone =
-        !(lib.hasInfix "kubernetes cluster.local" zonesCorefile)
-        && !(lib.hasInfix "cluster.local:53" zonesCorefile)
-        && !(lib.hasInfix "cluster.local {" zonesCorefile);
+      # replicas on node-port is FORBIDDEN (no replica knob).
+      replicasOnNodePort = meshThrows {
+        exposure = "node-port";
+        replicas = 2;
+      };
+      # replicas beyond the eligible count.
+      tooManyReplicas = meshThrows {
+        replicas = 3; # only two fixture servers
+      };
+      # zero-match label placement.
+      zeroMatchLabels = meshThrows {
+        placement = "labels";
+        placementLabels.disk = "nvme";
+      };
+      # empty selector with placement = labels.
+      emptyLabels = meshThrows {
+        placement = "labels";
+      };
     };
     expected = {
-      wildcard = true;
-      svcZone = true;
-      svcRewrite = true;
-      podZone = true;
-      podRewrite = true;
-      forwardToClusterDns = true;
-      noClusterLocalZone = true;
+      replicasOnNodePort = true;
+      tooManyReplicas = true;
+      zeroMatchLabels = true;
+      emptyLabels = true;
+    };
+  };
+
+  test_clustermeshExposureNegatives = {
+    expr = {
+      # explicit internal-load-balancer without the capability.
+      internalNotCapable = meshThrowsWithTransport { exposure = "internal-load-balancer"; } {
+        internalLoadBalancer = false;
+        nodePort = true;
+      };
+      # external without a non-clan class.
+      externalNoClass = meshThrows {
+        exposure = "external-load-balancer";
+      };
+      # external with a clan class.
+      externalClanClass = meshThrows {
+        exposure = "external-load-balancer";
+        mesh.external = {
+          loadBalancerClass = "io.cilium/bgp-control-plane";
+          dnsName = "mesh.test.example.org";
+        };
+      };
+      # external without a dnsName.
+      externalNoDns = meshThrows {
+        exposure = "external-load-balancer";
+        mesh.external.loadBalancerClass = "cloud.example/mesh-lb";
+      };
+      # external with a LITERAL IP dnsName (DNS only).
+      externalIpDns = meshThrows {
+        exposure = "external-load-balancer";
+        mesh.external = {
+          loadBalancerClass = "cloud.example/mesh-lb";
+          dnsName = "203.0.113.10";
+        };
+      };
+      # explicit internal LB without the fabric pool.
+      internalNoPool = meshThrowsWithTransport { exposure = "internal-load-balancer"; } {
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+    };
+    expected = {
+      internalNotCapable = true;
+      externalNoClass = true;
+      externalClanClass = true;
+      externalNoDns = true;
+      externalIpDns = true;
+      internalNoPool = true;
+    };
+  };
+
+  # VIP containment: a /25 fabric block still holds offset 79; a block
+  # where offset 79 falls outside the network rejects (explicit pins are
+  # the escape hatch).
+  test_clustermeshVipContainment = {
+    expr = {
+      ok =
+        (mkTestMesh {
+          settings = evalSettings {
+            fabric.ipv4Block = "172.16.1.128/25";
+          };
+        }).vip4 == "172.16.1.207";
+      outside =
+        !(builtins.tryEval (
+          builtins.deepSeq (mkTestMesh {
+            settings = evalSettings {
+              fabric.ipv4Block = "172.16.1.128/26";
+            };
+          }) true
+        )).success;
+    };
+    expected = {
+      ok = true;
+      outside = true;
+    };
+  };
+
+  # --- Generic node_transport consumption (D58) ----------------------------
+
+  test_transportProfileDerivation = {
+    expr = {
+      nativeMtu = nativeProfile.mtu;
+      nativeMode = nativeProfile.mode;
+      nativeDevices = nativeProfile.interfaces;
+      tunnelMtu = tunnelProfile.mtu;
+      tunnelProto = tunnelProfile.tunnelProtocol;
+      tunnelNative = tunnelProfile.routeExchange;
+    };
+    expected = {
+      nativeMtu = 1404; # minimum interface MTU, no VXLAN subtraction
+      nativeMode = "native";
+      nativeDevices = [
+        "wg-fleet-1"
+        "wg-fleet-2"
+      ];
+      tunnelMtu = 1370; # 1420 - 50 (VXLAN)
+      tunnelProto = "vxlan";
+      tunnelNative = null;
+    };
+  };
+
+  test_transportUnsupportedProfiles = {
+    expr = {
+      badVersion = transportThrows {
+        schemaVersion = 1;
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+        instance = "fleet";
+        endpoint = null;
+        port = 51820;
+        interfaces.wg0.mtu = 1400;
+        directRoutingDevice = "wg0";
+        datapath.mode = "native";
+        datapath.tunnelProtocol = null;
+        native.routeExchange = "local-router";
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+      badMode = transportThrows {
+        schemaVersion = 2;
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+        instance = "fleet";
+        endpoint = null;
+        port = 51820;
+        interfaces.wg0.mtu = 1400;
+        directRoutingDevice = "wg0";
+        datapath.mode = "ptp";
+        datapath.tunnelProtocol = null;
+        native.routeExchange = "local-router";
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+      nativeWithTunnel = transportThrows {
+        schemaVersion = 2;
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+        instance = "fleet";
+        endpoint = null;
+        port = 51820;
+        interfaces.wg0.mtu = 1400;
+        directRoutingDevice = "wg0";
+        datapath.mode = "native";
+        datapath.tunnelProtocol = "vxlan";
+        native.routeExchange = "local-router";
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+      tunnelWithRouteExchange = transportThrows {
+        schemaVersion = 2;
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+        instance = "fleet";
+        endpoint = null;
+        port = 51820;
+        interfaces.wg0.mtu = 1400;
+        directRoutingDevice = "wg0";
+        datapath.mode = "tunnel";
+        datapath.tunnelProtocol = "vxlan";
+        native.routeExchange = "local-router";
+        internalLoadBalancer = false;
+        nodePort = true;
+      };
+      badRouteExchange = transportThrows {
+        schemaVersion = 2;
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+        instance = "fleet";
+        endpoint = null;
+        port = 51820;
+        interfaces.wg0.mtu = 1400;
+        directRoutingDevice = "wg0";
+        datapath.mode = "native";
+        datapath.tunnelProtocol = null;
+        native.routeExchange = "local-bgp";
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+      badDirectDevice = transportThrows {
+        schemaVersion = 2;
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+        instance = "fleet";
+        endpoint = null;
+        port = 51820;
+        interfaces.wg0.mtu = 1400;
+        directRoutingDevice = "wg-other";
+        datapath.mode = "native";
+        datapath.tunnelProtocol = null;
+        native.routeExchange = "local-router";
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+      emptyInterfaces = transportThrows {
+        schemaVersion = 2;
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+        instance = "fleet";
+        endpoint = null;
+        port = 51820;
+        interfaces = { };
+        directRoutingDevice = "wg0";
+        datapath.mode = "native";
+        datapath.tunnelProtocol = null;
+        native.routeExchange = "local-router";
+        internalLoadBalancer = true;
+        nodePort = true;
+      };
+    };
+    expected = {
+      badVersion = true;
+      badMode = true;
+      nativeWithTunnel = true;
+      tunnelWithRouteExchange = true;
+      badRouteExchange = true;
+      badDirectDevice = true;
+      emptyInterfaces = true;
+    };
+  };
+
+  # Admin cilium.helmValues cannot contradict the transport-derived profile
+  test_ciliumHelmValuesContradictions = {
+    expr = {
+      routingMode = ciliumThrows {
+        routingMode = "tunnel";
+      };
+      mtu = ciliumThrows {
+        MTU = 1500;
+      };
+      directDevice = ciliumThrows {
+        nodePort.directRoutingDevice = "eth0";
+      };
+      devices = ciliumThrows {
+        devices = "eth0";
+      };
+      disableMesh = ciliumThrows {
+        clusterMesh.enable = false;
+      };
+      maxConnDrift = ciliumThrows {
+        clusterMesh.maxConnectedClusters = 511;
+      };
+      # Compatible overrides stay fine (devices superset).
+      devicesSupersetOk =
+        (builtins.tryEval (
+          builtins.deepSeq (kube.render.mkCiliumValues {
+            settings = evalSettings {
+              cilium.helmValues.devices = "wg-fleet-1 eth1";
+            };
+            transportFacts = {
+              interfaces = [ "wg-fleet-1" ];
+              directRoutingDevice = "wg-fleet-1";
+              mtu = 1404;
+              mode = "native";
+              tunnelProtocol = null;
+            };
+            inherit instanceName;
+            k8sServiceHost = "kubeapi-test.example.org";
+          }) true
+        )).success;
+    };
+    expected = {
+      routingMode = true;
+      mtu = true;
+      directDevice = true;
+      devices = true;
+      disableMesh = true;
+      maxConnDrift = true;
+      devicesSupersetOk = true;
+    };
+  };
+
+  # The VXLAN profile renders the tunnel cilium-config keys.
+  test_tunnelProfileBundle = {
+    expr =
+      let
+        cm = (findObjKind tunnelBundle "ConfigMap" "cilium-config").data;
+      in
+      {
+        routing = cm."routing-mode";
+        proto = cm."tunnel-protocol";
+        nativeCidrV4 = cm."ipv4-native-routing-cidr";
+        mtu = cm."mtu";
+        autoDirect = cm."auto-direct-node-routes";
+      };
+    expected = {
+      routing = "tunnel";
+      proto = "vxlan";
+      nativeCidrV4 = "";
+      mtu = "1370";
+      autoDirect = "false";
+    };
+  };
+
+  # --- ClusterMesh fleet checks (D54/D60) ----------------------------------
+
+  test_clustermeshFleetChecks = {
+    expr = {
+      # Mixed datapath mode inside one group.
+      mixedMode =
+        let
+          checks = kube.mkFleetChecks clanLib fleetExportsMixedMode;
+        in
+        !checks."kube-cluster-mesh-group-uniformity".assertion;
+      # Mixed maxConnectedClusters inside one group.
+      mixedMcc =
+        let
+          checks = kube.mkFleetChecks clanLib fleetExportsSameGroupMccBase;
+        in
+        !checks."kube-cluster-mesh-group-uniformity".assertion;
+      # Symmetric selective peers pass.
+      selectiveOk =
+        let
+          checks = kube.mkFleetChecks clanLib fleetExportsSelectiveOk;
+        in
+        checks."kube-cluster-mesh-peers".assertion;
+      # One-directional selective peering is rejected.
+      asymmetric =
+        let
+          checks = kube.mkFleetChecks clanLib fleetExportsSelectiveAsymmetric;
+        in
+        !checks."kube-cluster-mesh-peers".assertion;
+      unknownPeers =
+        let
+          checks = kube.mkFleetChecks clanLib fleetExportsSelectiveAsymmetric;
+        in
+        lib.any (p: lib.hasInfix "unknown peer 'other'" p) [
+          checks."kube-cluster-mesh-peers".message
+        ];
+      basePass =
+        let
+          checks = kube.mkFleetChecks clanLib fleetExportsSeparateGroupsPass;
+        in
+        checks."kube-cluster-mesh-group-uniformity".assertion
+        && checks."kube-cluster-mesh-peers".assertion
+        && checks."kube-cluster-mesh-nodeport-collisions".assertion
+        && checks."kube-cluster-mesh-vip-collisions".assertion;
+    };
+    expected = {
+      mixedMode = true;
+      mixedMcc = true;
+      selectiveOk = true;
+      asymmetric = true;
+      unknownPeers = true;
+      basePass = true;
+    };
+  };
+
+  test_clustermeshCollisionFleetChecks = {
+    expr = {
+      nodePort =
+        !(kube.mkFleetChecks clanLib fleetExportsNodePortCollision)
+        ."kube-cluster-mesh-nodeport-collisions".assertion;
+      vip =
+        !(kube.mkFleetChecks clanLib fleetExportsVipCollision)."kube-cluster-mesh-vip-collisions".assertion;
+      distinctOk =
+        let
+          checks = kube.mkFleetChecks clanLib fleetExportsOverlap;
+        in
+        checks."kube-cluster-mesh-nodeport-collisions".assertion
+        && checks."kube-cluster-mesh-vip-collisions".assertion;
+    };
+    expected = {
+      nodePort = true;
+      vip = true;
+      distinctOk = true;
+    };
+  };
+
+  # --- Mesh vars generators (D60) ------------------------------------------
+
+  test_meshVarsGenerators = {
+    expr = {
+      caFiles = builtins.attrNames meshCaGen."rancher-clustermesh-ca-clan".files;
+      certFiles = builtins.attrNames meshCertGen."rancher-clustermesh-test".files;
+      caShare = meshCaGen."rancher-clustermesh-ca-clan".share;
+      certShare = meshCertGen."rancher-clustermesh-test".share;
+      certDeps = meshCertGen."rancher-clustermesh-test".dependencies;
+      certValidation = meshCertGen."rancher-clustermesh-test".validation.endpoints;
+      caSecretDeploy =
+        meshCaGen."rancher-clustermesh-ca-clan".files."ca.key".secret
+        && !meshCaGen."rancher-clustermesh-ca-clan".files."ca.key".deploy;
+      certFilesDeploy = lib.all (file: file.deploy or true) (
+        builtins.attrValues meshCertGen."rancher-clustermesh-test".files
+      );
+      # The remote cert CN is the etcd user remote clusters dial with.
+      remoteCn = lib.hasInfix "CN=remote-test" meshCertGen."rancher-clustermesh-test".script;
+      sanInServer =
+        lib.hasInfix
+          "subjectAltName=IP:172.16.1.79,IP:10.0.0.1,DNS:test.mesh.example.org,DNS:mesh.example.org"
+          meshCertGen."rancher-clustermesh-test".script;
+    };
+    expected = {
+      caFiles = [
+        "ca.crt"
+        "ca.key"
+      ];
+      certFiles = [
+        "admin.crt"
+        "admin.key"
+        "ca.crt"
+        "local.crt"
+        "local.key"
+        "remote.crt"
+        "remote.key"
+        "server.crt"
+        "server.key"
+      ];
+      caShare = true;
+      certShare = true;
+      certDeps = [ "rancher-clustermesh-ca-clan" ];
+      certValidation = builtins.toJSON {
+        dns = [
+          "test.mesh.example.org"
+          "mesh.example.org"
+        ];
+        ip = [
+          "172.16.1.79"
+          "10.0.0.1"
+        ];
+      };
+      caSecretDeploy = true;
+      certFilesDeploy = true;
+      remoteCn = true;
+      sanInServer = true;
     };
   };
 
@@ -2373,7 +3382,7 @@ in
     };
   };
 
-  # D8: shared-bgp ⊆ router-role prefixes — fires once a fleet-routing
+  # D8: shared-bgp ⊆ border-owned prefixes — fires once routed-fabric
   # router export exists (campaign-B contract), vacuous before.
   test_fleetCheckRouterPrefixes = {
     expr = {

@@ -26,6 +26,7 @@ let
   kube = import ../../../../lib/kube-cluster { inherit lib; };
   fabric = import ../../../../lib/kube-cluster/fabric.nix { inherit lib; };
   fabricLink = fabric.adjacencyName (fabric.adjacencyKey "mesh" "alpha" "beta");
+  fabricLoopback = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" "mesh")}";
   nodeAsns = lib.genAttrs [ "alpha" "beta" ] (fabric.nodeAsn "mesh");
 
   httpbinVersions = import (inputs.pkgs + "/pkgs/go-httpbin/versions.nix");
@@ -297,7 +298,7 @@ let
     cilium.id = 1;
     # The upstream-facing underlay joins the complete fabric device set for
     # VIP ingress from the foreign router.
-    cilium.helmValues.devices = "${fabricLink} eth1";
+    cilium.helmValues.devices = "${fabricLoopback} ${fabricLink} eth1";
     pools = {
       # external-class needs no delivery machinery for an allocation proof.
       dataplane = {
@@ -357,7 +358,7 @@ in
     modules.routed-fabric = ../../../routed-fabric/default.nix;
     exportInterfaces = {
       routed_fabric = ../../../routed-fabric/routed-fabric-interface.nix;
-      node_transport = ../../../routed-fabric/node-transport-interface.nix;
+      node_transport = ../../../../lib/node-transport-interface.nix;
     };
 
     inventory = {
@@ -383,65 +384,69 @@ in
         mesh = {
           module.name = "routed-fabric";
           module.input = "self";
-          roles.hub.machines = {
-            alpha.settings = {
-              ipv4 = "192.168.77.1";
-              ipv6 = "fd77::1";
-              endpoint = "192.168.1.1";
-              hubs = [ "beta" ];
-              endpointSources = [
-                {
-                  service = "clan-core/internet";
-                  instance = "underlay";
-                }
-              ];
-              border = {
-                ownedPrefixes = [
-                  "172.16.0.0/12"
-                  "fd11::/16"
-                  "192.0.2.128/28"
-                  "fd20:db8:2::/112"
-                ];
-                upstreamPeers = [
+          # Default Round-17 shape: one spine and one Kubernetes leaf;
+          # border configuration remains orthogonal on both nodes (D59).
+          roles = {
+            spine.machines = {
+              alpha.settings = {
+                ipv4 = "192.168.77.1";
+                ipv6 = "fd77::1";
+                endpoint = "192.168.1.1";
+                endpointSources = [
                   {
-                    address = "192.168.1.3";
-                    asn = 65001;
-                  }
-                  {
-                    address = "2001:db8:1::3";
-                    asn = 65001;
+                    service = "clan-core/internet";
+                    instance = "underlay";
                   }
                 ];
+                border = {
+                  ownedPrefixes = [
+                    "172.16.0.0/12"
+                    "fd11::/16"
+                    "192.0.2.128/28"
+                    "fd20:db8:2::/112"
+                  ];
+                  upstreamPeers = [
+                    {
+                      address = "192.168.1.3";
+                      asn = 65001;
+                    }
+                    {
+                      address = "2001:db8:1::3";
+                      asn = 65001;
+                    }
+                  ];
+                };
               };
             };
-            beta.settings = {
-              ipv4 = "192.168.77.2";
-              ipv6 = "fd77::2";
-              endpoint = "192.168.1.2";
-              hubs = [ "alpha" ];
-              endpointSources = [
-                {
-                  service = "clan-core/internet";
-                  instance = "underlay";
-                }
-              ];
-              border = {
-                ownedPrefixes = [
-                  "172.16.0.0/12"
-                  "fd11::/16"
-                  "192.0.2.128/28"
-                  "fd20:db8:2::/112"
-                ];
-                upstreamPeers = [
+            leaf.machines = {
+              beta.settings = {
+                ipv4 = "192.168.77.2";
+                ipv6 = "fd77::2";
+                endpoint = "192.168.1.2";
+                endpointSources = [
                   {
-                    address = "192.168.1.3";
-                    asn = 65001;
-                  }
-                  {
-                    address = "2001:db8:1::3";
-                    asn = 65001;
+                    service = "clan-core/internet";
+                    instance = "underlay";
                   }
                 ];
+                border = {
+                  ownedPrefixes = [
+                    "172.16.0.0/12"
+                    "fd11::/16"
+                    "192.0.2.128/28"
+                    "fd20:db8:2::/112"
+                  ];
+                  upstreamPeers = [
+                    {
+                      address = "192.168.1.3";
+                      asn = 65001;
+                    }
+                    {
+                      address = "2001:db8:1::3";
+                      asn = 65001;
+                    }
+                  ];
+                };
               };
             };
           };
@@ -642,7 +647,7 @@ in
         )
         alpha.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -q '^native$'")
         alpha.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.auto-direct-node-routes}' | grep -q '^false$'")
-        alpha.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.direct-routing-device}' | grep -q '^${fabricLink}$'")
+        alpha.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.direct-routing-device}' | grep -q '^${fabricLoopback}$'")
         alpha.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.install-iptables-rules}' | grep -q '^true$'")
 
         for m in [alpha, beta]:
@@ -746,11 +751,22 @@ in
             "ip -j -6 route show fd11:1::80 | jq -e '.[0].nexthops | length == 2' >/dev/null",
             timeout=300,
         )
-        # The private CoreDNS VIP (D10/D22 substrate) is advertised too
-        # (2 replicas, one per node).
-        router.wait_until_succeeds(
-            "ip -j route show 172.16.1.53 | jq -e '.[0].nexthops | length == 2' >/dev/null",
+        # The internal ClusterMesh apiserver VIPs (D60: offset 79 of the
+        # fabric pool, internal-load-balancer exposure — auto on this
+        # native transport) are advertised by the replica nodes (2 voters).
+        alpha.wait_until_succeeds(
+            "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
             timeout=300,
+        )
+        alpha.succeed(
+            "kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.externalTrafficPolicy}' | grep -q '^Local$'"
+        )
+        router.wait_until_succeeds(
+            "ip -j route show 172.16.1.79 | jq -e '.[0].nexthops | length == 2' >/dev/null",
+            timeout=300,
+        )
+        alpha.succeed(
+            "kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.ipFamilies}' | grep -q '^\\[IPv4\\]$'"
         )
         # Round-trip from the router through the fabric.
         router.wait_until_succeeds(

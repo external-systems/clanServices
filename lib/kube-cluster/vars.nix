@@ -16,7 +16,7 @@
 # Naming is distro-neutral: rancher-<what>-<instance>. The PKI layout the
 # certificates are synced INTO differs per distro (rke2 vs k3s tls dirs) —
 # that is nixos.mkPkiSync's parameter, not the generator's.
-_: {
+{ lib }: {
   # Join tokens: plain random secrets, one per role.
   mkTokenGenerators =
     { pkgs, instanceName }:
@@ -224,6 +224,143 @@ _: {
           cat "$WORK_DIR/haproxy.crt" "$WORK_DIR/haproxy.key" > "$out/kubeapi-client.pem"
           PASSWORD=$(openssl rand -hex 16)
           echo -n "$PASSWORD" | openssl passwd -6 -stdin > "$out/password-hash-haproxy"
+        '';
+      };
+    };
+
+  # ClusterMesh mTLS material (D60): ONE shared CA per mesh group
+  # (share = true across the group; the generator name carries the group so
+  # same-group instances merge the identical definition) and per-cluster
+  # dependent leaf certs. The etcdinit's user/role scheme pins the client
+  # CNs: remote-<cluster> (the user every PEER dials with, authorized by
+  # the peer's clustermesh-remote-users entry), local-<cluster> (the local
+  # agents/kvstoremesh reader), admin-<cluster> (root role).
+  #
+  # SANs are eval-computed (every exported member address + the published
+  # endpoint set + the fan-in name + the external dnsName): the endpoint
+  # set is a public validation input — membership/placement changes re-run
+  # `clan vars generate` before advertise. CA/cert material never reaches
+  # exports, helm, or the Nix store: only the CA key stays deploy = false;
+  # the clusterInit node's secrets-apply oneshot reads leaf runtime paths.
+  mkMeshCaGenerator =
+    { pkgs, group }:
+    {
+      "rancher-clustermesh-ca-${group}" = {
+        share = true;
+        files = {
+          "ca.crt" = {
+            secret = false;
+            deploy = false;
+          };
+          "ca.key" = {
+            secret = true;
+            deploy = false;
+          };
+        };
+        runtimeInputs = [ pkgs.openssl ];
+        script = ''
+          openssl genrsa -out "$out/ca.key" 4096
+          openssl req -x509 -new -nodes -sha256 -days 3650 \
+            -subj "/CN=clustermesh-${group}-ca" \
+            -key "$out/ca.key" \
+            -out "$out/ca.crt" \
+            -addext "basicConstraints=critical,CA:true" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign"
+        '';
+      };
+    };
+
+  # The per-cluster leaf set: server (etcd/apiserver serverAuth, the SANs),
+  # remote/local/admin (etcd clientAuth CNs — see above).
+  mkMeshCertGenerator =
+    {
+      pkgs,
+      instanceName,
+      group,
+      # { dns = [ ... ]; ip = [ ... ] } — eval-computed SANs (D60).
+      sans,
+    }:
+    let
+      sanLine = lib.optionalString (sans.ip != [ ] || sans.dns != [ ]) (
+        lib.concatStringsSep "," (map (ip: "IP:${ip}") sans.ip ++ map (d: "DNS:${d}") sans.dns)
+      );
+      leaves = [
+        {
+          name = "server";
+          cn = "${instanceName}-clustermesh-server";
+          usage = "serverAuth";
+        }
+        {
+          name = "remote";
+          cn = "remote-${instanceName}";
+          usage = "clientAuth";
+        }
+        {
+          name = "local";
+          cn = "local-${instanceName}";
+          usage = "clientAuth";
+        }
+        {
+          name = "admin";
+          cn = "admin-${instanceName}";
+          usage = "clientAuth";
+        }
+      ];
+    in
+    {
+      "rancher-clustermesh-${instanceName}" = {
+        share = true;
+        dependencies = [ "rancher-clustermesh-ca-${group}" ];
+        validation.endpoints = builtins.toJSON sans;
+        files = lib.listToAttrs (
+          lib.concatMap (l: [
+            {
+              name = "${l.name}.crt";
+              value.secret = false;
+            }
+            {
+              name = "${l.name}.key";
+              value.secret = true;
+            }
+          ]) leaves
+          ++ [
+            {
+              name = "ca.crt";
+              value.secret = false;
+            }
+          ]
+        );
+        runtimeInputs = with pkgs; [
+          openssl
+          coreutils
+        ];
+        script = ''
+          set -euo pipefail
+          WORK_DIR=$(mktemp -d "$out/.work.XXXXXXXX")
+          trap 'rm -rf "$WORK_DIR"' EXIT
+          cp "$in/rancher-clustermesh-ca-${group}/ca.crt" "$out/ca.crt"
+          ${lib.concatMapStringsSep "\n" (l: ''
+            openssl ecparam -name prime256v1 -genkey -noout -out "$out/${l.name}.key"
+            openssl req -new \
+              -key "$out/${l.name}.key" \
+              -subj "/CN=${l.cn}" \
+              -out "$WORK_DIR/${l.name}.csr"
+            {
+              echo "basicConstraints=CA:false"
+              echo "keyUsage=digitalSignature,keyEncipherment"
+              echo "extendedKeyUsage=${l.usage}"
+              ${lib.optionalString (sanLine != "" && l.name == "server") ''
+                echo "subjectAltName=${sanLine}"
+              ''}
+            } > "$WORK_DIR/${l.name}.ext"
+            openssl x509 -req -sha256 -days 3650 \
+              -in "$WORK_DIR/${l.name}.csr" \
+              -CA "$in/rancher-clustermesh-ca-${group}/ca.crt" \
+              -CAkey "$in/rancher-clustermesh-ca-${group}/ca.key" \
+              -CAcreateserial \
+              -extfile "$WORK_DIR/${l.name}.ext" \
+              -out "$out/${l.name}.crt"
+          '') leaves}
         '';
       };
     };

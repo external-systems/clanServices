@@ -16,6 +16,19 @@ The upstream facts behind the spec. Re-check these when versions move.
   pod CIDRs, node connectivity, and — for native-routed members —
   native-routing CIDRs covering all meshed pods (tunnel members need node
   connectivity instead).
+  **Control-plane exposure is IPv4-only on the pinned profile:** the
+  [v1.20.3 clustermesh-apiserver Deployment](https://github.com/cilium/cilium/blob/v1.20.3/install/kubernetes/cilium/templates/clustermesh-apiserver/deployment.yaml)
+  embeds etcd with `--listen-client-urls=https://0.0.0.0:2379` (IPv4
+  wildcard; `--advertise-client-urls=https://localhost:2379`) and the
+  template exposes no dual-stack listener knob — so the round-17
+  dual-stack control-plane VIP assumption is false. The contract pins ONE
+  IPv4 VIP for internal exposure, selected nodes' stable IPv4 addresses
+  for NodePort, and a DNS (A record) name for external exposure; cert
+  SANs carry published IPv4/DNS endpoints plus the upstream-required
+  loopbacks: the
+  [v1.20.3 certificate helper](https://github.com/cilium/cilium/blob/v1.20.3/install/kubernetes/cilium/templates/clustermesh-apiserver/_helpers.tpl)
+  always includes `127.0.0.1` and `::1` for local etcd clients. The
+  ClusterMesh data plane stays dual-stack (D10/D60).
 - **Cilium LB features:** LB IPAM allocates; Node IPAM, provider routing,
   floating controllers, or BGP delivers. BGP announces only unset or
   `io.cilium/bgp-control-plane` classes. Node IPAM's ETP-Local dummy-

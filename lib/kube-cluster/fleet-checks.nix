@@ -67,6 +67,22 @@ let
       ) (lib.range 0 (builtins.length xs - 2));
 in
 rec {
+  inherit clustersOf;
+
+  # Mesh-group helpers shared with the distro services (peer resolution).
+  # cluster values are the kube_cluster export attrsets; the defensive
+  # `or` fallbacks keep hand-built export trees (tests) evaluable.
+  meshGroupsOf = clusters: lib.groupBy (c: c.cluster.meshGroup or "") clusters;
+
+  # The peering edge view used by the symmetry + bounds checks: an explicit
+  # peer list names edges; null = full peering with every same-group peer.
+  peerEdge =
+    a: b:
+    if (a.cluster.mesh.peers or null) == null then
+      true
+    else
+      lib.elem b.cluster.name (a.cluster.mesh.peers or [ ]);
+
   mkFleetChecks =
     clanLib: exports:
     let
@@ -173,6 +189,99 @@ rec {
           block = b;
         }) uncovered
       ) clusters;
+
+      # 8. ClusterMesh group uniformity (D60): identical datapath mode,
+      # tunnel protocol and maxConnectedClusters across every member.
+      groupUniformity = lib.concatMap (
+        groupClusters:
+        lib.filter (
+          p:
+          let
+            a = p.fst.cluster;
+            b = p.snd.cluster;
+          in
+          (a.datapath.mode or null) != (b.datapath.mode or null)
+          || (a.datapath.tunnelProtocol or null) != (b.datapath.tunnelProtocol or null)
+          || (a.mesh.maxConnectedClusters or 255) != (b.mesh.maxConnectedClusters or 255)
+        ) (pairs groupClusters)
+      ) (lib.attrValues (meshGroupsOf clusters));
+
+      # 9. Selective ClusterMesh peers (D54/D60): explicit peers must
+      # resolve to same-group clusters and be symmetric (A↔B). Full peering
+      # (null) covers every same-group peer, so an explicit edge toward a
+      # full-peering cluster is consistent iff the reverse holds.
+      peerProblems = lib.concatMap (
+        c:
+        let
+          explicit = c.cluster.mesh.peers or null;
+          peers' = if explicit == null then [ ] else explicit;
+          group = c.cluster.meshGroup or "";
+          groupClusters = lib.filter (
+            o: o.cluster.name != c.cluster.name && (o.cluster.meshGroup or "") == group
+          ) clusters;
+          knownNames = map (o: o.cluster.name) clusters;
+          unknown = lib.filter (n: !(lib.elem n knownNames)) peers';
+          wrongGroup = lib.filter (
+            n: !(lib.elem n (map (o: o.cluster.name) groupClusters)) && lib.elem n knownNames
+          ) peers';
+          asymmetric = lib.filter (o: !(peerEdge o { cluster.name = c.cluster.name; })) groupClusters;
+        in
+        lib.optionals (explicit != null) (
+          map (n: {
+            cluster = "${c.serviceName}/${c.instanceName}";
+            problem = "unknown peer '${n}' (no kube_cluster export with that name)";
+          }) unknown
+          ++ map (n: {
+            cluster = "${c.serviceName}/${c.instanceName}";
+            problem = "peer '${n}' is not in mesh group '${group}' (selective peers are same-trust-domain only, D54)";
+          }) wrongGroup
+          ++ map (o: {
+            cluster = "${c.serviceName}/${c.instanceName}";
+            problem = "selective peer '${o.cluster.name}' does not peer back (symmetric selective peers, D54/D60)";
+          }) asymmetric
+        )
+      ) clusters;
+
+      # 10. Duplicate mesh NodePorts per machine (D60): two clusters
+      # exposing the apiserver NodePort on the SAME machine must not share
+      # the port. (One cluster per node is D16, but the check guards the
+      # port set anyway — it is the fleet-visible half of the per-machine
+      # collision rule; the port-range half is type-level.)
+      nodePortClaims = lib.concatMap (
+        c:
+        let
+          np = c.cluster.mesh.exposure.nodePort or null;
+        in
+        lib.optionals (np != null) (
+          map (m: {
+            machine = m;
+            port = np;
+            cluster = "${c.serviceName}/${c.instanceName}";
+          }) c.machines
+        )
+      ) clusters;
+      byMachinePort = lib.groupBy (x: "${x.machine}:${toString x.port}") nodePortClaims;
+      nodePortCollisions = lib.filterAttrs (_: xs: builtins.length xs > 1) byMachinePort;
+
+      # 11. Pinned internal ClusterMesh IPv4 VIP collisions (D60): every
+      # cluster's offset-79 VIP must be fleet-unique (explicit fabric block
+      # overrides can collide across clusters).
+      vipClaims = lib.concatMap (
+        c:
+        let
+          e = c.cluster.mesh.exposure or { };
+        in
+        lib.optionals (e.vip4 or null != null) [
+          {
+            vip = e.vip4;
+            cluster = "${c.serviceName}/${c.instanceName}";
+          }
+        ]
+      ) clusters;
+      byVip = lib.groupBy (x: x.vip) vipClaims;
+      vipCollisions = lib.filterAttrs (
+        _: xs: builtins.length (lib.unique (map (x: x.cluster) xs)) > 1
+      ) byVip;
     in
     {
       kube-cluster-unique-names = {
@@ -244,6 +353,54 @@ rec {
         assertion = borderOwnedPrefixes == [ ] || sharedBgpOutside == [ ];
         message = "kube-cluster fleet check: shared-bgp pool blocks outside all routed-fabric border-owned prefixes (D8): ${
           lib.concatMapStringsSep "; " (x: "${x.block} (${x.cluster})") sharedBgpOutside
+        }";
+      };
+
+      kube-cluster-mesh-group-uniformity = {
+        assertion = groupUniformity == [ ];
+        message = "kube-cluster fleet check: ClusterMesh group members must share datapath mode, tunnel protocol and maxConnectedClusters (D60): ${
+          lib.concatMapStringsSep "; " (
+            p:
+            "${p.fst.serviceName}/${p.fst.instanceName} ~ ${p.snd.serviceName}/${p.snd.instanceName} (${
+              builtins.toJSON {
+                fst = {
+                  mode = p.fst.cluster.datapath.mode or null;
+                  proto = p.fst.cluster.datapath.tunnelProtocol or null;
+                  mcc = p.fst.cluster.mesh.maxConnectedClusters or 255;
+                };
+                snd = {
+                  mode = p.snd.cluster.datapath.mode or null;
+                  proto = p.snd.cluster.datapath.tunnelProtocol or null;
+                  mcc = p.snd.cluster.mesh.maxConnectedClusters or 255;
+                };
+              }
+            })"
+          ) groupUniformity
+        }";
+      };
+
+      kube-cluster-mesh-peers = {
+        assertion = peerProblems == [ ];
+        message = "kube-cluster fleet check: ClusterMesh peer problems (D54/D60): ${
+          lib.concatMapStringsSep "; " (p: "${p.cluster}: ${p.problem}") peerProblems
+        }";
+      };
+
+      kube-cluster-mesh-nodeport-collisions = {
+        assertion = nodePortCollisions == { };
+        message = "kube-cluster fleet check: duplicate ClusterMesh NodePort on one machine (D60): ${
+          lib.concatMapStringsSep "; " (
+            k: xs: "${k} claimed by ${lib.concatMapStringsSep ", " (x: x.cluster)}"
+          ) nodePortCollisions
+        }";
+      };
+
+      kube-cluster-mesh-vip-collisions = {
+        assertion = vipCollisions == { };
+        message = "kube-cluster fleet check: pinned internal ClusterMesh VIP collision (offset 79, D60): ${
+          lib.concatMapStringsSep "; " (
+            k: xs: "${k} claimed by ${lib.concatMapStringsSep ", " (x: x.cluster)}"
+          ) vipCollisions
         }";
       };
     };

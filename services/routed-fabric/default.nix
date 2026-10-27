@@ -89,10 +89,10 @@ let
           default = [ ];
           description = "Ordered peer export sources used when endpoint is null.";
         };
-        hubs = lib.mkOption {
+        spines = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];
-          description = "Hub-role machines to adjoin; required on members and optional hub-to-hub links on hubs.";
+          description = "Leaf-only explicit subset of spine-role machines to attach to; empty attaches every spine. Must stay empty on spines.";
         };
         access = lib.mkOption {
           type = lib.types.enum [
@@ -138,7 +138,7 @@ let
                     }
                   );
                   default = [ ];
-                  description = "External BGP peers, independent of fabric hub topology.";
+                  description = "External BGP peers, independent of fabric spine/leaf topology.";
                 };
                 ndpInterfaces = lib.mkOption {
                   type = lib.types.listOf lib.types.str;
@@ -154,7 +154,7 @@ let
             }
           );
           default = null;
-          description = "Optional external/upstream transit configuration; orthogonal to hub and access.";
+          description = "Optional external/upstream transit configuration; orthogonal to leaf/spine and access.";
         };
         firewall = {
           openPort = lib.mkOption {
@@ -241,12 +241,32 @@ let
 
   roleFor =
     roles: machineName:
-    if (roles.hub.machines or { }) ? ${machineName} then
-      "hub"
-    else if (roles.member.machines or { }) ? ${machineName} then
-      "member"
+    if (roles.spine.machines or { }) ? ${machineName} then
+      "spine"
+    else if (roles.leaf.machines or { }) ? ${machineName} then
+      "leaf"
     else
       null;
+
+  # D59: a leaf attaches every spine by default; an explicit spines
+  # subset is allowed. Spines derive their attachments symmetrically.
+  attachedSpines =
+    roles: leafName:
+    let
+      leafSettings = roles.leaf.machines.${leafName}.settings;
+      allSpines = lib.sort builtins.lessThan (builtins.attrNames (roles.spine.machines or { }));
+    in
+    if leafSettings.spines == [ ] then allSpines else lib.unique leafSettings.spines;
+
+  leavesAttachedTo =
+    roles: spineName:
+    lib.sort builtins.lessThan (
+      builtins.attrNames (
+        lib.filterAttrs (
+          name: leaf: name != spineName && builtins.elem spineName (attachedSpines roles name)
+        ) (roles.leaf.machines or { })
+      )
+    );
 
   perInstance =
     {
@@ -258,7 +278,7 @@ let
       ...
     }:
     let
-      allMachines = (roles.member.machines or { }) // (roles.hub.machines or { });
+      allMachines = (roles.leaf.machines or { }) // (roles.spine.machines or { });
       ownRole = roleFor roles machine.name;
       ownSettings = allMachines.${machine.name}.settings;
 
@@ -288,34 +308,19 @@ let
 
       allExports = lib.attrValues (clanLib.selectExports (_: true) exports);
       clusterExports = builtins.filter (value: value ? kube_cluster) allExports;
-      fabricClusters = lib.listToAttrs (
-        map
-          (
-            value:
-            let
-              facts = value.kube_cluster;
-              reference = facts.network.fabric or facts.transport;
-            in
-            {
-              name = "${reference.service}:${reference.instance}";
-              value = facts;
-            }
-          )
-          (
-            builtins.filter (
-              value:
-              let
-                facts = value.kube_cluster;
-                reference = facts.network.fabric or facts.transport;
-              in
-              reference.service != null
-              && reference.instance != null
-              && reference.service == "routed-fabric"
-              && reference.instance == instanceName
-            ) clusterExports
-          )
+      clusterList = map (value: value.kube_cluster) (
+        builtins.filter (
+          value:
+          let
+            facts = value.kube_cluster;
+            reference = facts.network.fabric or facts.transport;
+          in
+          reference.service != null
+          && reference.instance != null
+          && reference.service == "routed-fabric"
+          && reference.instance == instanceName
+        ) clusterExports
       );
-      clusterList = builtins.attrValues fabricClusters;
       kubernetesMachines = lib.unique (
         lib.concatMap (facts: builtins.attrNames facts.members) clusterList
       );
@@ -340,7 +345,6 @@ let
             facts.network.serviceCIDRv6
           ];
         };
-      allClusterRoutes = frr.mergeRoutes (map clusterRoutes clusterList);
       localClusterRoutes = frr.mergeRoutes (
         map clusterRoutes (builtins.filter (facts: facts.members ? ${machine.name}) clusterList)
       );
@@ -357,24 +361,33 @@ let
           access = allMachines.${name}.settings.access;
           includePods = isKubernetes name || access == "admin";
           includeServices = access == "admin" && !isKubernetes name;
+          localFacts = builtins.filter (facts: facts.members ? ${name}) clusterList;
+          fullPeering = lib.all (facts: (facts.mesh.peers or null) == null) localFacts;
+          selectedPeers = lib.unique (
+            lib.concatMap (
+              facts: if (facts.mesh.peers or null) == null then [ ] else facts.mesh.peers
+            ) localFacts
+          );
+          accessibleFacts = builtins.filter (
+            facts: facts.members ? ${name} || fullPeering || builtins.elem facts.name selectedPeers
+          ) clusterList;
+          accessibleRoutes = frr.mergeRoutes (map clusterRoutes accessibleFacts);
         in
         {
           hosts = stableHosts;
-          inherit (allClusterRoutes) vips;
-          pods = lib.optionals includePods allClusterRoutes.pods;
-          services = lib.optionals includeServices allClusterRoutes.services;
+          inherit (accessibleRoutes) vips;
+          pods = lib.optionals includePods accessibleRoutes.pods;
+          services = lib.optionals includeServices accessibleRoutes.services;
         };
 
-      membersAttachedTo =
-        hubName:
-        builtins.attrNames (
-          lib.filterAttrs (name: member: name != hubName && builtins.elem hubName member.settings.hubs) (
-            roles.member.machines or { }
+      spineNames = lib.sort builtins.lessThan (builtins.attrNames (roles.spine.machines or { }));
+      peerNames =
+        if ownRole == "spine" then
+          lib.unique (
+            (builtins.filter (name: name != machine.name) spineNames) ++ leavesAttachedTo roles machine.name
           )
-        );
-      peerNames = lib.unique (
-        if ownRole == "hub" then ownSettings.hubs ++ membersAttachedTo machine.name else ownSettings.hubs
-      );
+        else
+          attachedSpines roles machine.name;
 
       endpointOf =
         name:
@@ -447,9 +460,9 @@ let
           extraAllowedIPs = localOverride.extraAllowedIPs or [ ];
           remoteRole = roleFor roles remoteName;
           import =
-            if ownRole == "hub" && remoteRole == "hub" then
+            if ownRole == "spine" && remoteRole == "spine" then
               consumptionRoutes machine.name
-            else if ownRole == "hub" then
+            else if ownRole == "spine" then
               (clusterRoutesFor remoteName)
               // {
                 hosts =
@@ -463,7 +476,7 @@ let
               }
             else
               consumptionRoutes machine.name;
-          export = if ownRole == "hub" then consumptionRoutes remoteName else localRoutes;
+          export = if ownRole == "spine" then consumptionRoutes remoteName else localRoutes;
           cryptoRoutes = frr.mergeRoutes [
             import
             export
@@ -515,7 +528,7 @@ let
           local = localAddress;
           remote = remoteAddress;
           remoteAsn = fabric.nodeAsn instanceName remoteName;
-          nextHopSelf = ownRole == "hub";
+          nextHopSelf = ownRole == "spine";
           inherit (ownSettings) maximumPaths;
           inherit (transfer) prefixes;
         };
@@ -553,16 +566,11 @@ let
           }
         ) (builtins.filter (facts: facts.members ? ${machine.name}) clusterList);
       };
-      missingHubs = builtins.filter (name: roleFor roles name != "hub") ownSettings.hubs;
+      ownSpines = if ownRole == "leaf" then attachedSpines roles machine.name else [ ];
+      invalidSpines = builtins.filter (name: roleFor roles name != "spine") ownSettings.spines;
       unreachables = builtins.filter (
         adjacency: adjacency.endpoint == null && endpointOf machine.name == null
       ) adjacencies;
-      invalidHubHub = builtins.filter (
-        name:
-        ownRole == "hub"
-        && roleFor roles name == "hub"
-        && !(builtins.elem machine.name allMachines.${name}.settings.hubs)
-      ) ownSettings.hubs;
       allAddresses = lib.concatMap (
         name:
         let
@@ -577,6 +585,25 @@ let
       listenPorts = map (adjacency: adjacency.port) adjacencies;
       sourceReturns = builtins.filter (adjacency: adjacency.sourceReturn) adjacencies;
       inherit (ownSettings) border;
+
+      # D58: routed-fabric is the native transport — every adjacency
+      # WireGuard interface is a datapath interface keyed by its Linux
+      # name. The stable loopback is also exported on every node and is the
+      # uniform directRoutingDevice in the cluster-wide Cilium ConfigMap.
+      transportInterfaces = {
+        ${loopbackName} = {
+          mtu = fabric.adjacencyMtu (underlayMtuOf machine.name);
+        };
+      }
+      // lib.listToAttrs (
+        map (adjacency: {
+          inherit (adjacency) name;
+          value = {
+            inherit (adjacency) mtu;
+          };
+        }) adjacencies
+      );
+      directRoutingDevice = loopbackName;
     in
     {
       exports = mkExports {
@@ -589,20 +616,19 @@ let
           inherit (ownAddress) ipv4 ipv6;
           inherit (ownSettings) port;
           instance = instanceName;
-          interface = if adjacencies == [ ] then loopbackName else (builtins.head adjacencies).name;
-          mtu =
-            if adjacencies == [ ] then
-              fabric.adjacencyMtu (underlayMtuOf machine.name)
-            else
-              lib.foldl' lib.min 65535 (map (adjacency: adjacency.mtu) adjacencies);
+          interfaces = transportInterfaces;
+          inherit directRoutingDevice;
           endpoint = endpointString (endpointOf machine.name) ownSettings.port;
-          topology = {
-            region = null;
-            zone = null;
+          datapath = {
+            mode = "native";
+            tunnelProtocol = null;
           };
+          native.routeExchange = "local-router";
+          internalLoadBalancer = true;
+          nodePort = true;
         };
         routed_fabric = {
-          schemaVersion = 1;
+          schemaVersion = 2;
           asn = ownAsn;
           inherit (ownAddress) ipv4 ipv6;
           inherit (ownSettings) access;
@@ -718,16 +744,16 @@ let
 
           assertions = [
             {
-              assertion = ownRole == "hub" || ownSettings.hubs != [ ];
-              message = "routed-fabric/${instanceName}: member '${machine.name}' must name at least one hub-role machine";
+              assertion = ownRole == "spine" || ownSpines != [ ];
+              message = "routed-fabric/${instanceName}: leaf '${machine.name}' must attach to at least one spine-role machine";
             }
             {
-              assertion = missingHubs == [ ];
-              message = "routed-fabric/${instanceName}: invalid or non-hub references on '${machine.name}': ${lib.concatStringsSep ", " missingHubs}";
+              assertion = invalidSpines == [ ];
+              message = "routed-fabric/${instanceName}: invalid or non-spine references on '${machine.name}': ${lib.concatStringsSep ", " invalidSpines}";
             }
             {
-              assertion = invalidHubHub == [ ];
-              message = "routed-fabric/${instanceName}: hub-to-hub adjacencies must be mutual: ${lib.concatStringsSep ", " invalidHubHub}";
+              assertion = ownRole != "spine" || ownSettings.spines == [ ];
+              message = "routed-fabric/${instanceName}: spine '${machine.name}' must not declare settings.spines (spine pairs and leaf attachments are derived)";
             }
             {
               assertion = unreachables == [ ];
@@ -790,7 +816,7 @@ let
               '';
             };
             _networkFacts = {
-              schemaVersion = 1;
+              schemaVersion = 2;
               node.name = machine.name;
               fabric.${instanceName} = {
                 topology = ownRole;
@@ -856,7 +882,7 @@ let
             config = frrConfig;
           };
           boot.kernel.sysctl = lib.mkMerge [
-            (lib.mkIf (ownRole == "hub" || (border != null && border.forwarding)) {
+            (lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) {
               "net.ipv4.ip_forward" = lib.mkDefault true;
               "net.ipv6.conf.all.forwarding" = lib.mkDefault true;
             })
@@ -904,7 +930,7 @@ in
   _class = "clan.service";
   manifest = {
     name = "routed-fabric";
-    description = "Routed-hub WireGuard, eBGP/BFD, and Zebra fabric with orthogonal access and border policy";
+    description = "Routed spine/leaf WireGuard, eBGP/BFD, and Zebra fabric with orthogonal access and border policy";
     categories = [ "Network" ];
     readme = builtins.readFile ./README.md;
     exports = {
@@ -922,13 +948,13 @@ in
     };
   };
 
-  roles.member = {
-    description = "Non-transit fabric participant attached to one or more declared hubs";
+  roles.leaf = {
+    description = "Non-transit fabric participant attached to one or more derived spines";
     interface = roleInterface;
     inherit perInstance;
   };
-  roles.hub = {
-    description = "Forwarding and readvertising fabric hub with next-hop-self";
+  roles.spine = {
+    description = "Forwarding and readvertising fabric spine with next-hop-self";
     interface = roleInterface;
     inherit perInstance;
   };
@@ -945,11 +971,11 @@ in
               instance = instances.${instanceName};
             in
             lib.optional (
-              instance.roles ? member && instance.roles.member.machines ? ${machine.name}
-            ) "${instanceName}:member"
+              instance.roles ? leaf && instance.roles.leaf.machines ? ${machine.name}
+            ) "${instanceName}:leaf"
             ++ lib.optional (
-              instance.roles ? hub && instance.roles.hub.machines ? ${machine.name}
-            ) "${instanceName}:hub"
+              instance.roles ? spine && instance.roles.spine.machines ? ${machine.name}
+            ) "${instanceName}:spine"
           ) (builtins.attrNames instances);
         in
         {

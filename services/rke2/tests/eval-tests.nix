@@ -13,9 +13,17 @@ let
   wgModule = ../../wireguard-mesh/default.nix;
   kube = import ../../../lib/kube-cluster { inherit lib; };
 
-  machineConfigs = lib.genAttrs [ "alpha" "beta" "gamma" ] (_: {
-    nixpkgs.hostPlatform = "x86_64-linux";
-  });
+  machineConfigs =
+    lib.genAttrs
+      [
+        "alpha"
+        "beta"
+        "gamma"
+        "delta"
+      ]
+      (_: {
+        nixpkgs.hostPlatform = "x86_64-linux";
+      });
 
   mkEvaled =
     inventory:
@@ -28,6 +36,7 @@ let
       imports = [ kube.fleetChecksModule ];
       modules = {
         wireguard-mesh = wgModule;
+        fake-transport = fakeTransportModule;
         rke2 = rke2Module;
         k3s = k3sModule;
       };
@@ -219,6 +228,282 @@ let
       };
     }
   );
+
+  # --- D58: a THIRD-PARTY overlay implementing the neutral node_transport
+  # schemaVersion 2 seam — rke2 must consume it with NO provider branching.
+  # Native profile (local-router exchange, both exposure capabilities) with
+  # per-link MTUs to exercise the minimum-MTU derivation.
+  fakeTransportModule = {
+    _class = "clan.service";
+    manifest = {
+      name = "fake-transport";
+      description = "Third-party fake overlay transport (D58 eval fixture)";
+      categories = [ "System" ];
+      readme = "Eval fixture only: a native node_transport provider.";
+      exports = {
+        inputs = [ ];
+        out = [ "node_transport" ];
+      };
+    };
+    roles.node = {
+      description = "Fake transport node.";
+      interface =
+        { lib, ... }:
+        {
+          options = {
+            ipv4 = lib.mkOption {
+              type = lib.types.str;
+              description = "Node IPv4 on the fake overlay.";
+            };
+            ipv6 = lib.mkOption {
+              type = lib.types.str;
+              description = "Node IPv6 on the fake overlay.";
+            };
+            mtu = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 1500;
+              description = "Underlay MTU of the fake link.";
+            };
+          };
+        };
+      perInstance =
+        {
+          instanceName,
+          settings,
+          machine,
+          roles,
+          mkExports,
+          ...
+        }:
+        let
+          allMembers = roles.node.machines;
+          own = allMembers.${machine.name}.settings;
+          ifaces = [
+            "fk-${machine.name}-1"
+            "fk-${machine.name}-2"
+          ];
+        in
+        {
+          exports = mkExports {
+            node_transport = {
+              schemaVersion = 2;
+              inherit (own) ipv4 ipv6;
+              instance = instanceName;
+              endpoint = null;
+              port = 59999;
+              interfaces = {
+                ${builtins.head ifaces} = {
+                  mtu = own.mtu - 100;
+                };
+                ${builtins.elemAt ifaces 1} = {
+                  inherit (own) mtu;
+                };
+              };
+              directRoutingDevice = builtins.head ifaces;
+              datapath = {
+                mode = "native";
+                tunnelProtocol = null;
+              };
+              native.routeExchange = "local-router";
+              internalLoadBalancer = true;
+              nodePort = true;
+            };
+          };
+          nixosModule = _: { };
+        };
+    };
+  };
+
+  fakeInventory = {
+    instances = {
+      fabric = {
+        module.name = "fake-transport";
+        module.input = "self";
+        roles.node.machines = {
+          alpha.settings = {
+            ipv4 = "192.168.77.1";
+            ipv6 = "fd77::1";
+            mtu = 1500;
+          };
+          beta.settings = {
+            ipv4 = "192.168.77.2";
+            ipv6 = "fd77::2";
+            mtu = 1400;
+          };
+          gamma.settings = {
+            ipv4 = "192.168.77.3";
+            ipv6 = "fd77::3";
+            mtu = 1500;
+          };
+          delta.settings = {
+            ipv4 = "192.168.77.4";
+            ipv6 = "fd77::4";
+            mtu = 1500;
+          };
+        };
+      };
+      rke2-a = {
+        module.name = "rke2";
+        module.input = "self";
+        roles.server = {
+          settings = {
+            network.fabric = {
+              service = "fake-transport";
+              instance = "fabric";
+            };
+            cilium.id = 1;
+          };
+          machines = {
+            alpha.settings.clusterInit = true;
+            beta.settings.clusterInit = false;
+          };
+        };
+      };
+      rke2-b = {
+        module.name = "rke2";
+        module.input = "self";
+        roles.server = {
+          settings = {
+            network.fabric = {
+              service = "fake-transport";
+              instance = "fabric";
+            };
+            cilium.id = 2;
+          };
+          machines = {
+            gamma.settings.clusterInit = true;
+            delta.settings.clusterInit = false;
+          };
+        };
+      };
+    };
+  };
+
+  fakeEvaled = mkEvaled fakeInventory;
+
+  alphaFake = fakeEvaled.config.nixosConfigurations.alpha.config;
+  gammaFake = fakeEvaled.config.nixosConfigurations.gamma.config;
+
+  fakeBundleObjs = builtins.fromJSON alphaFake.clan.kubeClusters.rke2-a.bundleJson;
+  fakeFindObj =
+    kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
+  fakeCiliumConfigData = (fakeFindObj "ConfigMap" "cilium-config").data;
+  fakeUsers = (fakeFindObj "ConfigMap" "clustermesh-remote-users").data."users.yaml";
+  fakeApiserverDeploy = fakeFindObj "Deployment" "clustermesh-apiserver";
+  fakeApiserverSvc = fakeFindObj "Service" "clustermesh-apiserver";
+  fakeClustermeshSecret = fakeFindObj "Secret" "cilium-clustermesh";
+
+  fakeExportOf =
+    instanceName:
+    (clanLib.getExport {
+      serviceName = "rke2";
+      inherit instanceName;
+      roleName = "server";
+      machineName = if instanceName == "rke2-a" then "alpha" else "gamma";
+    } fakeEvaled.config.exports).kube_cluster;
+
+  # One-directional selective peers: the symmetry fleet check throws at
+  # clan eval.
+  fakeAsymmetricEvaled = mkEvaled {
+    instances = {
+      fabric = {
+        module.name = "fake-transport";
+        module.input = "self";
+        roles.node.machines = {
+          alpha.settings = {
+            ipv4 = "192.168.77.1";
+            ipv6 = "fd77::1";
+          };
+          beta.settings = {
+            ipv4 = "192.168.77.2";
+            ipv6 = "fd77::2";
+          };
+          gamma.settings = {
+            ipv4 = "192.168.77.3";
+            ipv6 = "fd77::3";
+          };
+          delta.settings = {
+            ipv4 = "192.168.77.4";
+            ipv6 = "fd77::4";
+          };
+        };
+      };
+      rke2-a = {
+        module.name = "rke2";
+        module.input = "self";
+        roles.server = {
+          settings = {
+            network.fabric = {
+              service = "fake-transport";
+              instance = "fabric";
+            };
+            cilium.id = 1;
+            mesh.peers = [ "rke2-b" ];
+          };
+          machines = {
+            alpha.settings.clusterInit = true;
+            beta.settings.clusterInit = false;
+          };
+        };
+      };
+      rke2-b = {
+        module.name = "rke2";
+        module.input = "self";
+        roles.server = {
+          settings = {
+            network.fabric = {
+              service = "fake-transport";
+              instance = "fabric";
+            };
+            cilium.id = 2;
+          };
+          machines = {
+            gamma.settings.clusterInit = true;
+            delta.settings.clusterInit = false;
+          };
+        };
+      };
+    };
+  };
+
+  # Contradicting admin overrides on the fake transport must eval-fail.
+  fakeContradictionEvaled = mkEvaled {
+    instances = {
+      fabric = {
+        module.name = "fake-transport";
+        module.input = "self";
+        roles.node.machines = {
+          alpha.settings = {
+            ipv4 = "192.168.77.1";
+            ipv6 = "fd77::1";
+          };
+          beta.settings = {
+            ipv4 = "192.168.77.2";
+            ipv6 = "fd77::2";
+          };
+        };
+      };
+      rke2-a = {
+        module.name = "rke2";
+        module.input = "self";
+        roles.server = {
+          settings = {
+            network.fabric = {
+              service = "fake-transport";
+              instance = "fabric";
+            };
+            cilium.id = 1;
+            cilium.helmValues.MTU = 9000;
+          };
+          machines = {
+            alpha.settings.clusterInit = true;
+            beta.settings.clusterInit = false;
+          };
+        };
+      };
+    };
+  };
+
 in
 {
   test_serviceEnabled = {
@@ -266,6 +551,8 @@ in
     expected = [
       "rancher-admin-kubeconfig-rke2"
       "rancher-agent-token-rke2"
+      "rancher-clustermesh-ca-clan"
+      "rancher-clustermesh-rke2"
       "rancher-haproxy-rke2"
       "rancher-pki-rke2"
       "rancher-server-token-rke2"
@@ -274,11 +561,14 @@ in
   };
 
   test_generatorNamesAgentNoPki = {
-    # Agents get the join tokens and the haproxy healthcheck material, but
-    # NEVER the PKI / admin kubeconfig generators.
+    # Agents get the join tokens, the haproxy healthcheck material, and
+    # the mesh material (CA + apiserver leaf set — SANs are eval-computed),
+    # but NEVER the PKI / admin kubeconfig generators.
     expr = builtins.attrNames gammaTransport.clan.core.vars.generators;
     expected = [
       "rancher-agent-token-rke2"
+      "rancher-clustermesh-ca-mesh"
+      "rancher-clustermesh-rke2"
       "rancher-haproxy-rke2"
       "rancher-server-token-rke2"
       "state-version"
@@ -286,16 +576,21 @@ in
     ];
   };
 
+  # D58: the wireguard-mesh transport derives the VXLAN tunnel profile.
   test_ciliumValuesNativeMode = {
     expr = {
       routing = ciliumConfigData."routing-mode";
+      tunnel = ciliumConfigData."tunnel-protocol";
       autoDirect = ciliumConfigData."auto-direct-node-routes";
       ciliumIptables = ciliumConfigData."install-iptables-rules";
+      directDevice = ciliumConfigData."direct-routing-device";
     };
     expected = {
-      routing = "native";
+      routing = "tunnel";
+      tunnel = "vxlan";
       autoDirect = "false";
       ciliumIptables = "true";
+      directDevice = "wg-mesh";
     };
   };
 
@@ -305,9 +600,9 @@ in
   };
 
   test_ciliumValuesMtu = {
-    # Native Cilium uses the fabric WireGuard MTU directly (no VXLAN -50).
+    # D58: VXLAN tunnel mode = minimum interface MTU minus 50.
     expr = ciliumConfigData."mtu";
-    expected = "1420";
+    expected = "1370";
   };
 
   test_ciliumValuesApiViaLocalHaproxy = {
@@ -585,6 +880,9 @@ in
         ;
       inherit (kubeClusterExport) network;
       meshPeers = kubeClusterExport.mesh.peers;
+      meshPlacement = kubeClusterExport.mesh.placement;
+      meshExposure = kubeClusterExport.mesh.exposure;
+      inherit (kubeClusterExport) datapath;
       controlRole = kubeClusterExport.controlDomain.role;
       memberNames = builtins.attrNames kubeClusterExport.members;
       alphaMember = kubeClusterExport.members.alpha;
@@ -593,11 +891,36 @@ in
       alphaPool = kubeClusterExport.pools.alpha;
     };
     expected = {
-      schemaVersion = 3;
+      schemaVersion = 4;
       name = "rke2";
       ciliumId = 1;
       meshGroup = "mesh";
       meshPeers = null;
+      meshPlacement = "voters";
+      # D60: wireguard-mesh exposes no internalLoadBalancer capability and
+      # no fabric pool → auto resolves to node-port with the default port.
+      meshExposure = {
+        method = "node-port";
+        nodePort = 32379;
+        replicas = 2;
+        vip4 = null;
+        dnsName = null;
+        loadBalancerClass = null;
+        published = [
+          "https://10.42.0.1:32379"
+          "https://10.42.0.2:32379"
+        ];
+      };
+      datapath = {
+        mode = "tunnel";
+        tunnelProtocol = "vxlan";
+        routeExchange = null;
+        devices = [ "wg-mesh" ];
+        directRoutingDevice = "wg-mesh";
+        mtu = 1370;
+        internalLoadBalancer = false;
+        nodePort = true;
+      };
       network = {
         podCIDRv4 = "10.1.0.0/16";
         podCIDRv6 = "fd10:1::/56";
@@ -620,9 +943,8 @@ in
         ipv4 = "10.42.0.1";
         ipv6 = "fd10:42::1";
         endpoint = "alpha:51820";
-        interface = "wg-mesh";
         interfaces = [ "wg-mesh" ];
-        mtu = 1420;
+        mtu = 1370;
         port = 51820;
         topology = {
           region = "rke2";
@@ -637,7 +959,6 @@ in
         "alpha"
         "beta"
         "gamma"
-        "rke2-fabric"
       ];
       alphaPool = {
         blocks = [
@@ -704,21 +1025,21 @@ in
 
   # --- phase 5: BGP / fabric / BIRD (D9/D10/D19/D22) ---------------------------
 
-  # The default fabric renders the BGP v2 resource set into the bundle.
+  # The native third-party transport renders the BGP v2 resource set.
   test_bgpResourcesInBundle = {
     expr =
       let
-        ccAlpha = findObj "CiliumBGPClusterConfig" "rke2-alpha";
-        ccBeta = findObj "CiliumBGPClusterConfig" "rke2-beta";
-        ccGamma = findObj "CiliumBGPClusterConfig" "rke2-gamma";
-        pc = findObj "CiliumBGPPeerConfig" "rke2-alpha-frr";
-        adv = findObj "CiliumBGPAdvertisement" "rke2-alpha-service-vips";
-        podAdv = findObj "CiliumBGPAdvertisement" "rke2-alpha-pod-pools";
+        ccAlpha = fakeFindObj "CiliumBGPClusterConfig" "rke2-a-alpha";
+        ccBeta = fakeFindObj "CiliumBGPClusterConfig" "rke2-a-beta";
+        ccGamma = fakeFindObj "CiliumBGPClusterConfig" "rke2-a-gamma";
+        pc = fakeFindObj "CiliumBGPPeerConfig" "rke2-a-alpha-frr";
+        adv = fakeFindObj "CiliumBGPAdvertisement" "rke2-a-alpha-service-vips";
+        podAdv = fakeFindObj "CiliumBGPAdvertisement" "rke2-a-alpha-pod-pools";
         instance = builtins.head ccAlpha.spec.bgpInstances;
-        fabricPool = findObj "CiliumLoadBalancerIPPool" "rke2-fabric";
+        fabricPool = fakeFindObj "CiliumLoadBalancerIPPool" "rke2-a-fabric";
       in
       {
-        perNode = ccAlpha != null && ccBeta != null && ccGamma != null;
+        perNode = ccAlpha != null && ccBeta != null && ccGamma == null;
         selector = ccAlpha.spec.nodeSelector.matchLabels."kubernetes.io/hostname";
         asns = {
           local = instance.localASN;
@@ -731,19 +1052,19 @@ in
         advPools = (builtins.head adv.spec.advertisements).selector.matchExpressions;
         podAdvType = (builtins.head podAdv.spec.advertisements).advertisementType;
         podAdvSelector = (builtins.head podAdv.spec.advertisements).selector.matchLabels;
-        noClusterIpAdvert = findObj "CiliumBGPAdvertisement" "rke2-alpha-cluster-ips" == null;
+        noClusterIpAdvert = fakeFindObj "CiliumBGPAdvertisement" "rke2-a-alpha-cluster-ips" == null;
       };
     expected = {
       perNode = true;
       selector = "alpha";
       asns = {
-        local = 4200812391;
-        peer = 4253360446;
+        local = 4268898264;
+        peer = 4258224172;
       };
       dialOut = "::1";
       noListener = true;
       podAdvType = "CiliumPodIPPool";
-      podAdvSelector."clan.lol/cluster" = "rke2";
+      podAdvSelector."clan.lol/cluster" = "rke2-a";
       timers = {
         holdTimeSeconds = 9;
         keepAliveTimeSeconds = 3;
@@ -757,54 +1078,27 @@ in
         {
           key = "clan.lol/pool";
           operator = "In";
-          values = [ "rke2-fabric" ];
+          values = [ "rke2-a-fabric" ];
         }
       ];
       noClusterIpAdvert = true;
     };
   };
 
-  # The private CoreDNS (D22 substrate) on its fabric VIP — rendered in the
-  # minimal base AND under distroDefaults (D46).
-  test_privateCoreDNSInBundle = {
+  # Member-facing private DNS is wholly day-2 (D22): no private CoreDNS
+  # objects or offset-53 VIP appear in the bootstrap bundle.
+  test_noPrivateCoreDNSInBundle = {
     expr =
-      let
-        svc = findObj "Service" "coredns-private";
-        cm = findObj "ConfigMap" "coredns-private";
-      in
-      {
-        inherit (svc.spec) externalTrafficPolicy loadBalancerClass;
-        ips = svc.metadata.annotations."lbipam.cilium.io/ips";
-        poolLabel = svc.metadata.labels."clan.lol/pool";
-        zone = lib.hasInfix "rke2.clan:53 {" cm.data.Corefile;
-        noClusterLocal = !(lib.hasInfix "cluster.local:53" cm.data.Corefile);
-      };
-    expected = {
-      externalTrafficPolicy = "Local";
-      loadBalancerClass = "io.cilium/bgp-control-plane";
-      ips = "172.16.1.53,fd11:1:0:0:0:0:0:53";
-      poolLabel = "rke2-fabric";
-      zone = true;
-      noClusterLocal = true;
-    };
+      lib.all (o: o.metadata.name != "coredns-private") bundleObjs
+      && !(lib.hasInfix "172.16.1.53" (builtins.toJSON bundleObjs));
+    expected = true;
   };
 
   # D19 revised: routed-fabric owns the ONE host routing stack (FRR) — the
-  # distro service renders NO BIRD and no second FRR stack.
+  # distro service renders no second routing stack or legacy loopback-link unit.
   test_noSecondRoutingStack = {
-    expr = {
-      birdDisabled = !(alphaTransport.services.bird.enable or false);
-      linkUnitAbsent = !(alphaTransport.systemd.services ? kube-cluster-rke2-bgp-link);
-      noFirewallDrop4179 =
-        !(lib.hasInfix "tcp dport 4179 drop" alphaTransport.networking.firewall.extraInputRules);
-      agentBirdDisabled = !(gammaTransport.services.bird.enable or false);
-    };
-    expected = {
-      birdDisabled = true;
-      linkUnitAbsent = true;
-      noFirewallDrop4179 = true;
-      agentBirdDisabled = true;
-    };
+    expr = !(alphaTransport.systemd.services ? kube-cluster-rke2-bgp-link);
+    expected = true;
   };
 
   # §6.12: disabling the fabric while leaving bgp.enable on is an eval error.
@@ -812,8 +1106,8 @@ in
     expr =
       let
         bad = mkEvaled (
-          lib.recursiveUpdate transportInventory {
-            instances.rke2.roles.server.settings.fabric.enable = false;
+          lib.recursiveUpdate fakeInventory {
+            instances.rke2-a.roles.server.settings.fabric.enable = false;
           }
         );
       in
@@ -826,10 +1120,10 @@ in
   test_localFrrSessionShape = {
     expr =
       let
-        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
-        instance = builtins.head (find "CiliumBGPClusterConfig" "rke2-alpha").spec.bgpInstances;
+        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
+        instance = builtins.head (find "CiliumBGPClusterConfig" "rke2-a-alpha").spec.bgpInstances;
         peer = builtins.head instance.peers;
-        pc = find "CiliumBGPPeerConfig" "rke2-alpha-frr";
+        pc = find "CiliumBGPPeerConfig" "rke2-a-alpha-frr";
       in
       {
         inherit (peer) peerASN peerAddress;
@@ -839,10 +1133,10 @@ in
         timers = pc.spec.timers;
       };
     expected = {
-      peerASN = 4253360446;
+      peerASN = 4258224172;
       peerAddress = "::1";
       noLocalPort = true;
-      peerRef = "rke2-alpha-frr";
+      peerRef = "rke2-a-alpha-frr";
       bothFamilies = [
         "ipv4"
         "ipv6"
@@ -855,7 +1149,7 @@ in
     };
   };
 
-  # The export's BGP/fabric facts (schema v3).
+  # Tunnel transports render no pod-route BGP plane or private fabric pool.
   test_kubeClusterExportBgpFabric = {
     expr = {
       inherit (kubeClusterExport.bgp)
@@ -865,27 +1159,182 @@ in
         advertiseClusterIPs
         ;
       inherit (kubeClusterExport) fabric;
-      fabricPoolDelivery = kubeClusterExport.pools.rke2-fabric.delivery;
+      fabricPoolAbsent = !(kubeClusterExport.pools ? rke2-fabric);
     };
     expected = {
-      enabled = true;
+      enabled = false;
       ciliumAsn = 4200812391;
       hostAsn = 4253360446;
       advertiseClusterIPs = false;
       fabric = {
-        enabled = true;
-        pool = "rke2-fabric";
-        ipv4Block = "172.16.1.0/24";
-        ipv6Block = "fd11:1::/64";
-        coreDNS = {
-          ipv4 = "172.16.1.53";
-          ipv6 = "fd11:1:0:0:0:0:0:53";
-          svcZone = "";
-          podZone = "";
-          zone = "rke2.clan";
+        enabled = false;
+        pool = "";
+        ipv4Block = null;
+        ipv6Block = null;
+      };
+      fabricPoolAbsent = true;
+    };
+  };
+
+  # --- D58: generic node_transport consumption (third-party overlay) -------
+
+  test_fakeTransportNodeAddresses = {
+    expr = alphaFake.services.rke2.nodeIP;
+    expected = "192.168.77.1,fd77::1";
+  };
+
+  test_fakeTransportDerivedProfile = {
+    expr = {
+      routing = fakeCiliumConfigData."routing-mode";
+      autoDirect = fakeCiliumConfigData."auto-direct-node-routes";
+      directDevice = fakeCiliumConfigData."direct-routing-device";
+      # Devices cover EVERY member's datapath interfaces; the MTU is the
+      # cluster-wide minimum (beta's 1400-underlay link derives 1300).
+      devices = fakeCiliumConfigData."devices";
+      mtu = fakeCiliumConfigData."mtu";
+    };
+    expected = {
+      routing = "native";
+      autoDirect = "false";
+      directDevice = "fk-alpha-1";
+      devices = "fk-alpha-1 fk-alpha-2 fk-beta-1 fk-beta-2";
+      mtu = "1300";
+    };
+  };
+
+  test_fakeTransportExportFacts = {
+    expr = {
+      a = {
+        inherit (fakeExportOf "rke2-a") meshGroup datapath;
+        exposure = (fakeExportOf "rke2-a").mesh.exposure;
+      };
+      bExposure = (fakeExportOf "rke2-b").mesh.exposure;
+    };
+    expected = {
+      a = {
+        meshGroup = "fabric";
+        datapath = {
+          mode = "native";
+          tunnelProtocol = null;
+          routeExchange = "local-router";
+          devices = [
+            "fk-alpha-1"
+            "fk-alpha-2"
+          ];
+          directRoutingDevice = "fk-alpha-1";
+          mtu = 1300;
+          internalLoadBalancer = true;
+          nodePort = true;
+        };
+        exposure = {
+          method = "internal-load-balancer";
+          nodePort = null;
+          replicas = 2;
+          vip4 = "172.16.1.79";
+          dnsName = null;
+          loadBalancerClass = "io.cilium/bgp-control-plane";
+          published = [ "https://172.16.1.79:2379" ];
         };
       };
-      fabricPoolDelivery = "shared-bgp";
+      bExposure = {
+        method = "internal-load-balancer";
+        nodePort = null;
+        replicas = 2;
+        vip4 = "172.16.2.79";
+        dnsName = null;
+        loadBalancerClass = "io.cilium/bgp-control-plane";
+        published = [ "https://172.16.2.79:2379" ];
+      };
     };
+  };
+
+  # --- D60: ClusterMesh rendering across the fake overlay -------------------
+
+  test_clustermeshBundleRendering = {
+    expr = {
+      replicas = fakeApiserverDeploy.spec.replicas;
+      strategy = fakeApiserverDeploy.spec.strategy;
+      requiredAntiAffinity =
+        fakeApiserverDeploy.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution
+        != [ ];
+      svcType = fakeApiserverSvc.spec.type;
+      etp = fakeApiserverSvc.spec.externalTrafficPolicy;
+      class = fakeApiserverSvc.spec.loadBalancerClass;
+      lbipam = fakeApiserverSvc.metadata.annotations."lbipam.cilium.io/ips";
+      users = fakeUsers;
+      peersKeyPresent = fakeClustermeshSecret != null;
+      peersEndpoints = fakeClustermeshSecret.stringData."rke2-b" or null;
+      clustermeshEnable = fakeCiliumConfigData."clustermesh-enable";
+    };
+    expected = {
+      replicas = 2;
+      strategy = {
+        type = "RollingUpdate";
+        rollingUpdate = {
+          maxSurge = 0;
+          maxUnavailable = 1;
+        };
+      };
+      requiredAntiAffinity = true;
+      svcType = "LoadBalancer";
+      etp = "Local";
+      class = "io.cilium/bgp-control-plane";
+      lbipam = "172.16.1.79";
+      users = "users:\n- name: remote-rke2-b\n  role: remote\n";
+      peersKeyPresent = true;
+      peersEndpoints = "endpoints:\n- https://172.16.2.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      clustermeshEnable = "true";
+    };
+  };
+
+  test_clustermeshReverseBundleRendering = {
+    expr =
+      let
+        objs = builtins.fromJSON gammaFake.clan.kubeClusters.rke2-b.bundleJson;
+        secret = lib.findFirst (o: o.kind == "Secret" && o.metadata.name == "cilium-clustermesh") null objs;
+        users =
+          (lib.findFirst (
+            o: o.kind == "ConfigMap" && o.metadata.name == "clustermesh-remote-users"
+          ) null objs).data."users.yaml";
+      in
+      {
+        endpoints = secret.stringData."rke2-a" or null;
+        inherit users;
+      };
+    expected = {
+      endpoints = "endpoints:\n- https://172.16.1.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      users = "users:\n- name: remote-rke2-a\n  role: remote\n";
+    };
+  };
+
+  test_clustermeshSecretsUnit = {
+    expr = {
+      initHasUnit = alphaFake.systemd.services ? rke2-rke2-a-clustermesh-secrets;
+      afterBootstrap =
+        alphaFake.systemd.services.rke2-rke2-a-clustermesh-secrets.after == [
+          "rke2-server.service"
+          "rke2-rke2-a-bootstrap-apply.service"
+        ];
+      nonInitNoUnit = !(gammaFake.systemd.services ? rke2-rke2-a-clustermesh-secrets);
+      caGen =
+        fakeEvaled.config.nixosConfigurations.alpha.config.clan.core.vars.generators
+          ? "rancher-clustermesh-ca-fabric";
+    };
+    expected = {
+      initHasUnit = true;
+      afterBootstrap = true;
+      nonInitNoUnit = true;
+      caGen = true;
+    };
+  };
+
+  test_clustermeshAsymmetricPeersRejected = {
+    expr = !(builtins.tryEval (builtins.deepSeq fakeAsymmetricEvaled.config true)).success;
+    expected = true;
+  };
+
+  test_fakeTransportContradictingOverridesRejected = {
+    expr = !(builtins.tryEval (builtins.deepSeq fakeContradictionEvaled.config true)).success;
+    expected = true;
   };
 }
