@@ -1,6 +1,8 @@
 { inputs, lib, ... }:
 let
-  module = ./default.nix;
+  module = lib.modules.importApply ./default.nix {
+    ifstateOverlay = import ../../lib/ifstate-overlay.nix;
+  };
   clanLib = inputs.clan-core.lib;
 in
 rec {

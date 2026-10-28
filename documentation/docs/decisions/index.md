@@ -1,7 +1,19 @@
-# Decision record (D1–D60)
+# Decision record (D1–D61)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history.
+
+**Round 18 (2026-10-27) — IfState-only static networking.** Added D61;
+revised D44 and D50. IfState 2.5.1 exclusively renders physical and virtual
+links, addresses, WireGuard peers, static/policy routes, rules, and sysctls
+for `netif`, `routed-fabric`, and `wireguard-mesh`. systemd-networkd,
+netdevs, scripted network units, NetworkManager, and parallel
+`networking.interfaces` ownership are removed without shims. NixOS
+activation reconciles changes live without reboot. Per-link hooks own
+DHCP clients; kernel RA owns SLAAC; private keys remain runtime includes
+from clan vars. FRR/Zebra owns dynamic routes and Cilium owns its datapath.
+The full netif, fabric, and k3s/RKE2 native/tunnel/selective/external VM
+matrix is green.
 
 **Round 17 (2026-10-25) — generic transport profiles, spine/leaf fabric,
 ClusterMesh placement/exposure.** Revised D9, D11, D12, D33, D44, D47,
@@ -25,11 +37,8 @@ and a four-value exposure enum (`auto`, `internal-load-balancer`,
 `node-port`, `external-load-balancer`) with a pinned internal IPv4 VIP
 from the
 existing `<instance>-fabric` private pool, or an explicit external class +
-DNS name (D60). Round 17 is a docs-only contract lock: everything in it is
-**planned in 5R5** — today's code still consumes the provider-specific
-`routed_fabric` export and the round-16 `member`/`hub` fabric shape. There
-is no implementation or VM evidence for round 17 yet;
-the existing SPEC acceptance baseline stands.
+DNS name (D60). The round-17 contract is implemented and VM-proven; it was
+originally locked as a docs-only target before its 5R5 implementation.
 
 **Amended 2026-10-26 — ClusterMesh control plane is IPv4-only.** The
 pinned Cilium v1.20.3 chart's
@@ -139,13 +148,13 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D41 | revised (r14, r15) | Node IPAM default; BGP class applies to node-bgp and shared-bgp |
 | D42 | active | `distroDefaults`; servicelb permanently off |
 | D43 | revised (r15) | GitOps-neutral standalone/hub/spoke control domains |
-| D44 | revised (r14, r15, r17) | VM surface covers the two contracts plus the round-17 transport/ClusterMesh contract (spine/leaf FRR, generic `node_transport` no-name-branching overlay, D60 exposure suites) |
+| D44 | revised (r14, r15, r17, r18) | VM surface covers the two contracts plus transport/ClusterMesh and IfState live/DHCP convergence |
 | D45 | active | Shared lib is `lib/kube-cluster/` |
 | D46 | revised (2026-10-25) | Uniform clan-rendered CoreDNS with the k3s `coredns-custom` import seam (custom ConfigMap is GitOps day-2) |
 | D47 | revised (r15, r17) | One one-peer WireGuard interface per derived adjacency (spine/leaf fabric, D59); AllowedIPs derive from route policy |
 | D48 | active (r14) | FRR + Zebra owns routing and kernel FIB |
 | D49 | revised (r14, r17) | Native-routed multi-pool Cilium is the routed-fabric profile default (D58); the wireguard-mesh tunnel/VXLAN profile is equally supported — native is not mandatory for every overlay |
-| D50 | revised (r15) | Inventory owns core host networking through multi-instance multi-link `netif` |
+| D50 | revised (r15, r18) | Inventory owns core host networking through multi-instance multi-link `netif`, rendered exclusively by IfState |
 | D51 | revised (r17) | Routed spine/leaf MVP: automatic spine↔spine peering, leaves default to all spines with an explicit subset allowed, eBGP/next-hop-self, two-spine active-active HA with no arbitrary maximum, transit and return-path correctness |
 | D52 | revised (r16, r17) | `routed-fabric` service: leaf/spine topology roles (renamed from member/hub); graph derived symmetrically, no mutual lists; access and border orthogonal; fabric-scoped Node IPAM; `routed_fabric` export schemaVersion 2 |
 | D53 | active (r15) | Multi-instance multi-link `netif`; multiple fabrics segment trust; one fabric membership per host |
@@ -156,6 +165,31 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D58 | active (r17) | Generic neutral `node_transport` export (schemaVersion 2): Linux-name-keyed datapath interfaces + MTU, one directRoutingDevice, datapath.mode native\|tunnel + protocol, native.routeExchange = local-router, internalLoadBalancer/nodePort capabilities; k3s/rke2 consume only node_transport, never branch on service names |
 | D59 | active (r17) | Fabric topology roles renamed leaf/spine; automatic symmetric adjacency graph (every spine pair adjacent, leaves default to all spines, explicit leaf subset allowed, no mutual lists); routed_fabric and networkFacts schemas bump to 2 |
 | D60 | active (r17, amended 2026-10-26) | ClusterMesh placement selectors (voters/workers/all/labels) and exposure enum auto\|internal-load-balancer\|node-port\|external-load-balancer; NodePort pins exactly one apiserver per selected node; internal exposure is ONE pinned IPv4 VIP (host offset `0x79`) from the existing `<instance>-fabric` pool — control plane IPv4-only on Cilium 1.20.3, data plane stays dual-stack; external always wins with explicit non-clan class + DNS name |
+| D61 | active (r18) | IfState 2.5.1 is the exclusive static network renderer; live reconciliation, no networkd/netdev/scripted networking, per-link DHCP hooks, runtime-secret includes, FRR/Cilium ownership boundaries |
+
+## Round 18 decisions in detail
+
+### D61 — IfState-only static networking
+
+`netif`, `routed-fabric`, and `wireguard-mesh` render one composed
+`networking.ifstate.settings` tree. `lib/ifstate-overlay.nix` pins IfState
+2.5.1; `lib/ifstate.nix` supplies the per-machine base, package overlay,
+competing-manager assertions, and Cilium/table-200 ignores. The service
+renderers own only their declared objects: netif links/routes and DHCP
+hooks, fabric loopback/WireGuard/policy/sysctls, or the mesh's one shared
+WireGuard interface. FRR/Zebra and Cilium retain dynamic ownership.
+
+Stage-2 NixOS activation applies settings live through `ifstate.service`;
+routers and Kubernetes nodes do not reboot for network changes. Full
+reconcile means undeclared objects are cleaned up, so ownership boundaries
+and `ifstatecli check` are mandatory. `KillMode=process` preserves hook
+daemons after the oneshot. WireGuard keys use runtime `!include` paths from
+root-owned clan-vars files, never Nix-store text.
+
+Acceptance covers static live apply/check/restore, DHCPv4/default-route and
+SLAAC convergence with one persistent client, real WireGuard handshakes,
+fabric HA, both native data planes, and every dependent ClusterMesh
+profile. No migration renderer or compatibility shim remains.
 
 ## Round 17 decisions in detail
 
@@ -234,9 +268,8 @@ ClusterMesh apiserver exposure becomes an explicit, eval-validated contract:
   `mesh.replicas` (LB only; null default; forbidden for node-port),
   `mesh.nodePort` (default `32379`), and
   `mesh.external.{loadBalancerClass,dnsName,annotations}` (external only).
-  The current tree exports `kube_cluster` schemaVersion 3; the revised
-  datapath/exposure facts ride **schemaVersion 4** (5R5 target) — no
-  compatibility shims:
+  The revised datapath/exposure facts use `kube_cluster` **schemaVersion
+  4** — no compatibility shims:
   - explicit **external** always wins on every overlay, regardless of
     capabilities. It requires an
     explicit non-clan `mesh.external.loadBalancerClass` and a
@@ -324,10 +357,9 @@ existing-flow failover requires a separate state mechanism.
 > **schemaVersion 2** alongside the `routed_fabric` export, and fabric
 > topology facts use the `leaf`/`spine` role names.
 
-ClanServices will expose a **dependency-free, versioned, JSON-serializable,
+ClanServices exposes a **dependency-free, versioned, JSON-serializable,
 non-secret, per-node network-facts NixOS interface** at
-`clan.networkFacts` — the exact option schema is **planned, not
-implemented**; option leaves carry defaults so deep evaluation never
+`clan.networkFacts`; option leaves carry defaults so deep evaluation never
 breaks. It is **producer-owned and actually read-only**: leaves use NixOS
 `readOnly = true`; the service owning each fact populates it from the same
 resolved configuration used for functional networking and exports;
@@ -336,7 +368,7 @@ complements the exports system — there is no second source of truth.
 
 Coverage is the complete build-time-declared topology and policy: node
 identity; `netif` links/interfaces/networks/addresses/gateways/routes/
-policy routes/MTU/DNS/firewall trust; fabric member/hub/access/border,
+policy routes/MTU/DNS/firewall trust; fabric leaf/spine/access/border,
 stable loopbacks, per-adjacency WireGuard links, transfer prefixes, MTU,
 public endpoints, AllowedIPs, ASNs, upstreams, FRR prefix policy, and
 NAT/source-return intent; and k8s cluster identity, node membership,

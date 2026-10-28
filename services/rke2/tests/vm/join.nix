@@ -3,6 +3,7 @@
 # the agent's own mesh address (/etc/hosts), where its haproxy supervisor
 # frontend (8443 = 7442 + cilium.id 1 + 1000) balances to the server's
 # real supervisor (9345) with TLS /readyz healthchecks.
+{ lib, inputs, ... }:
 {
   name = "rke2-join";
 
@@ -10,7 +11,9 @@
     directory = ./.;
     test.useContainers = false;
 
-    modules.wireguard-mesh = ../../../wireguard-mesh/default.nix;
+    modules.wireguard-mesh = lib.modules.importApply ../../../wireguard-mesh/default.nix {
+      ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+    };
     exportInterfaces.node_transport = ../../../../lib/node-transport-interface.nix;
 
     inventory = {
@@ -86,25 +89,38 @@
 
   nodes =
     let
-      commonNode =
-        { pkgs, ... }:
-        {
-          virtualisation = {
-            cores = 2;
-            memorySize = 3584;
-            diskSize = 8192;
-          };
-
-          environment.systemPackages = [
-            pkgs.kubectl
-            pkgs.cilium-cli
-            pkgs.socat
-          ];
+      commonNode = name: { pkgs, ... }: {
+        imports = [
+          (import ../../../../tests/ifstate-vm.nix {
+            ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+            addresses = [
+              "192.168.1.${
+                toString
+                  {
+                    alpha = 1;
+                    beta = 2;
+                  }
+                  .${name}
+              }/24"
+            ];
+          })
+        ];
+        virtualisation = {
+          cores = 2;
+          memorySize = 3584;
+          diskSize = 8192;
         };
+
+        environment.systemPackages = [
+          pkgs.kubectl
+          pkgs.cilium-cli
+          pkgs.socat
+        ];
+      };
     in
     {
-      alpha = commonNode;
-      beta = commonNode;
+      alpha = commonNode "alpha";
+      beta = commonNode "beta";
     };
 
   testScript = ''
@@ -123,7 +139,7 @@
         start_all()
 
         for m in [alpha, beta]:
-            m.wait_for_unit("systemd-networkd.service", timeout=120)
+            m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             m.wait_for_unit("haproxy.service", timeout=240)
 
         # --- Transport (§6.3): full mesh, dual-stack ----------------------

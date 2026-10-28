@@ -18,17 +18,14 @@ never something clan renders.
   agents can use.
 - **Data-plane contract — packets flow correctly.** Cilium-only networking
   (kube-proxy replacement, multi-pool pod IPAM, native or tunnel/VXLAN
-  profile), Node IPAM
-  for classless LoadBalancer Services, LB-IPAM pools with BGP v2 and
-  per-node FRR/Zebra, a private routed fabric on by default
-  (`routed-fabric` — implemented in the round-16 shape; the round-17
-  `leaf`/`spine` + generic `node_transport` surface is the planned target),
-  ClusterMesh with
-  selective peers and explicit exposure profiles, one host WireGuard
-  interface per fabric adjacency, in-cluster
-  CoreDNS (`cluster.local` only; member DNS is day-2), and routed fleet
-  access for Kubernetes and
-  ordinary machines.
+  profile), Node IPAM for classless LoadBalancer Services, LB-IPAM pools
+  with BGP v2 and per-node FRR/Zebra, and a private routed fabric on by
+  default (`routed-fabric` with `leaf`/`spine` topology and generic
+  `node_transport` exports). IfState reconciles the static host network
+  live. ClusterMesh supports selective peers and explicit exposure
+  profiles, with one host WireGuard interface per fabric adjacency,
+  in-cluster CoreDNS (`cluster.local` only; member DNS is day-2), and
+  routed fleet access for Kubernetes and ordinary machines.
 
 ## Day 2 is yours
 
@@ -56,6 +53,6 @@ The engineering version — thin distro services over a shared library, the
 bootstrap bundle and its GitOps handoff, the transport profiles and the
 FRR/native fabric, and the artifact flake — is in
 [Architecture → Overview](architecture/overview.md). Every normative choice
-is recorded in the [decision record](decisions/index.md) (D1–D60), and
+is recorded in the [decision record](decisions/index.md) (D1–D61), and
 [SPEC.md](https://github.com/external-systems/clanServices/blob/main/SPEC.md)
 in the repo root is the agent-facing contract this site renders for humans.

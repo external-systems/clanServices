@@ -1,16 +1,14 @@
 # Networking
 
-The data plane is inventory-owned host networking (`netif`, implemented
-5R1), an encrypted
-routed fabric (`routed-fabric`: per-adjacency WireGuard, FRR/Zebra routing —
-implemented 5R1 in the round-16 shape), and Cilium (native today; two
-validated profiles are the round-17 target). BIRD and
-VXLAN are legacy, not the target. Round 17 (D58–D60, planned in 5R5)
-renames the fabric
-roles **`leaf`/`spine`** (was `member`/`hub`), makes transport a generic
-neutral `node_transport` export consumed by both distros, and keeps
-`wireguard-mesh` as the supported tunnel/VXLAN profile — native routing is
-the routed-fabric default, not a mandate for every overlay.
+The data plane is inventory-owned host networking (`netif`), an encrypted
+routed fabric (`routed-fabric`: per-adjacency WireGuard, FRR/Zebra routing),
+and Cilium with validated native and tunnel/VXLAN profiles. IfState 2.5.1
+owns every static link, address, route, rule, and sysctl and reconciles them
+live; systemd-networkd, netdevs, and scripted networking are gone. The
+fabric uses **`leaf`/`spine`** roles and a generic neutral `node_transport`
+export consumed by both distros. `wireguard-mesh` is the supported
+tunnel/VXLAN profile — native routing is the routed-fabric default, not a
+mandate for every overlay.
 
 ## Host links: `netif`
 
@@ -122,10 +120,8 @@ datapath interfaces keyed by Linux interface name with MTU, one
 daemon-neutral — not
 `local-frr`/`local-bgp`), the independent `internalLoadBalancer` and
 `nodePort` exposure capabilities, and a `port` plus nullable endpoint.
-**Round-17 target (5R5):** k3s/rke2 consume only `node_transport`
-and never branch on service names (a third-party eval overlay proves it);
-today's code still consumes the provider-specific `routed_fabric` export.
-Two validated profiles exist initially:
+k3s/rke2 consume only `node_transport` and never branch on service names
+(a third-party eval overlay proves it). Two validated profiles exist:
 
 - **`routed-fabric` → native**: Cilium native routing + `local-router`
   route exchange + `internalLoadBalancer` and `nodePort` capabilities.

@@ -10,7 +10,9 @@
 let
   rke2Module = module;
   k3sModule = lib.modules.importApply ../../k3s/default.nix { inherit self inputs; };
-  wgModule = ../../wireguard-mesh/default.nix;
+  wgModule = lib.modules.importApply ../../wireguard-mesh/default.nix {
+    ifstateOverlay = import ../../../lib/ifstate-overlay.nix;
+  };
   kube = import ../../../lib/kube-cluster { inherit lib; };
 
   machineConfigs =

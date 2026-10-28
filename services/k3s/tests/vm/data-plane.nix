@@ -355,7 +355,9 @@ in
     directory = ./.;
     test.useContainers = false;
 
-    modules.routed-fabric = ../../../routed-fabric/default.nix;
+    modules.routed-fabric = lib.modules.importApply ../../../routed-fabric/default.nix {
+      ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+    };
     exportInterfaces = {
       routed_fabric = ../../../routed-fabric/routed-fabric-interface.nix;
       node_transport = ../../../../lib/node-transport-interface.nix;
@@ -499,7 +501,16 @@ in
       alpha =
         { ... }:
         {
-          imports = [ commonNode ];
+          imports = [
+            commonNode
+            (import ../../../../tests/ifstate-vm.nix {
+              ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+              addresses = [
+                "192.168.1.1/24"
+                "2001:db8:1::1/64"
+              ];
+            })
+          ];
           environment.sessionVariables.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
           environment.etc."data-plane/probes.json".text = probesJson;
           # Airgap: the workload fixture image (distro + Cilium airgap
@@ -509,7 +520,16 @@ in
       beta =
         { ... }:
         {
-          imports = [ commonNode ];
+          imports = [
+            commonNode
+            (import ../../../../tests/ifstate-vm.nix {
+              ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+              addresses = [
+                "192.168.1.2/24"
+                "2001:db8:1::2/64"
+              ];
+            })
+          ];
           # The httpbin DaemonSet schedules on every node — preload the
           # fixture image here too (hermetic).
           services.k3s.images = [ httpbinImage ];
@@ -520,6 +540,16 @@ in
       router =
         { pkgs, ... }:
         {
+          imports = [
+            (import ../../../../tests/ifstate-vm.nix {
+              ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+              addresses = [
+                "192.168.1.3/24"
+                "2001:db8:1::3/64"
+              ];
+              withBase = true;
+            })
+          ];
           virtualisation = {
             cores = 1;
             memorySize = 1024;
@@ -582,12 +612,12 @@ in
         start_all()
 
         for m in [alpha, beta]:
-            m.wait_for_unit("systemd-networkd.service", timeout=120)
+            m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             m.wait_for_unit("haproxy.service", timeout=240)
             m.wait_for_unit("frr.service", timeout=240)
             m.wait_until_succeeds("wg show interfaces | grep -q '^rf'", timeout=120)
             m.wait_until_succeeds(
-                "wg show all latest-handshakes | awk '$2 > 0 { ok = 1 } END { exit !ok }'",
+                "wg show all latest-handshakes | awk '$3 > 0 { ok = 1 } END { exit !ok }'",
                 timeout=120,
             )
             m.fail("journalctl -u frr --no-pager | grep -E 'Unknown command|processing failure'")
@@ -743,9 +773,10 @@ in
             "ip -j -6 route show fd11:1::80 | jq -e '.[0].nexthops | length == 2' >/dev/null",
             timeout=300,
         )
-        # The internal ClusterMesh apiserver VIPs (D60: offset 79 of the
+        # The internal ClusterMesh apiserver VIP (D60: offset 79 of the
         # fabric pool, internal-load-balancer exposure — auto on this
-        # native transport) are advertised by the replica nodes (2 voters).
+        # native transport) is advertised only by the voter running its
+        # sole replica. Beta is an agent, not a second voter.
         alpha.wait_until_succeeds(
             "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
             timeout=300,
@@ -753,12 +784,18 @@ in
         alpha.succeed(
             "kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.externalTrafficPolicy}' | grep -q '^Local$'"
         )
+        alpha.succeed(
+            "kubectl -n kube-system get deployment clustermesh-apiserver -o jsonpath='{.spec.replicas}' | grep -q '^1$'"
+        )
+        alpha.succeed(
+            "kubectl -n kube-system get pod -l k8s-app=clustermesh-apiserver -o jsonpath='{.items[0].spec.nodeName}' | grep -q '^alpha$'"
+        )
         router.wait_until_succeeds(
-            "ip -j route show 172.16.1.79 | jq -e '.[0].nexthops | length == 2' >/dev/null",
+            "ip -j route show 172.16.1.79 | jq -e '.[0].gateway == \"192.168.1.1\"' >/dev/null",
             timeout=300,
         )
         alpha.succeed(
-            "kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.ipFamilies}' | grep -q '^\\[IPv4\\]$'"
+            "kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.ipFamilies[0]}' | grep -q '^IPv4$'"
         )
         # Round-trip from the router through the fabric.
         router.wait_until_succeeds(

@@ -22,35 +22,26 @@ is a review destination, not a dependency.
   authority (implemented vs planned), optimized for agents. Round 14
   (2026-10-24) makes FRR + per-pair host WireGuard + native-routed
   multi-pool Cilium the data-plane target and puts static host networking
-  in inventory through `netif` (D47–D50). Round 15 adds routed-hub
-  `routed-fabric`, multi-instance multi-link `netif`, selective
-  ClusterMesh, and transport/egress correctness rules (D51–D55). Round 16
-  (2026-10-24) replaces the four-role model with `member`/`hub` topology
-  roles plus orthogonal `access` and `border` settings (D56), and adds a
-  read-only, non-secret `clan.networkFacts` NixOS interface for
-  consumer-owned nix-topology wrappers; clanServices never depends on
-  nix-topology (D57). Round 17 (2026-10-25) is a docs-only contract
-  lock: D58 defines the generic `node_transport` schemaVersion 2
-  OUTSIDE `lib/kube-cluster` as the only transport seam k3s/rke2 will
-  consume from 5R5 (target: native routed-fabric + `local-router` +
-  `internalLoadBalancer`/`nodePort`; tunnel wireguard-mesh/VXLAN +
-  `nodePort`; the current code still prefers `routed_fabric`), D59 renames fabric roles `member`/`hub` → `leaf`/`spine`
-  with a symmetric derived graph (`routed_fabric`/`networkFacts`
-  schemaVersion 2; `access = member|client|admin` unchanged — membership
-  is not topology), and D60 locks ClusterMesh placement/exposure — all
-  planned in 5R5; the implemented fabric is still round-16 member/hub.
-  `wireguard-mesh` is a supported tunnel transport, not pending
-  retirement. Breaking renames ship without migration shims: no external
-  consumers or deployments exist, so there is no compatibility burden.
-  The 5R implementation is a staged complete data-plane overhaul — 5R1
-  and 5R2(1)–(3) landed 2026-10-25 (netif + routed-fabric + native
-  Cilium/pools + pkgs re-inflation + pin update); full/selective
-  ClusterMesh and the round-17 contract remain planned (SPEC.md §8);
-  obsolete code is deleted outright; early cleanup is not runtime proof.
-  Round 13's Bootstrap + Data-plane scope remains: Envoy
-  Gateway, cert-manager, Flux install, external-dns, Sealed Secrets,
-  OpenEBS, KubeVirt, Multus are day-2 GitOps patterns, never clan-rendered
-  (SPEC.md §3.3, D39–D45).
+  in inventory through `netif` (D47–D50). Round 15 adds `routed-fabric`,
+  multi-instance multi-link `netif`, selective ClusterMesh, and
+  transport/egress correctness rules (D51–D55). Round 16 adds orthogonal
+  `access`/`border` settings and the read-only, non-secret
+  `clan.networkFacts` interface (D56–D57). Round 17 implements the generic
+  `node_transport` schemaVersion 2 outside `lib/kube-cluster` (D58), the
+  `leaf`/`spine` symmetric graph (D59), and ClusterMesh placement/exposure
+  (D60). Round 18 (2026-10-27) makes IfState 2.5.1 the exclusive static
+  networking renderer (D61): no systemd-networkd, netdevs, or scripted
+  network units; live reconciliation replaces reboot-based changes.
+  `lib/ifstate.nix` is the shared per-machine base and
+  `lib/ifstate-overlay.nix` pins the package. FRR/Zebra owns dynamic
+  routes; Cilium interfaces and table 200 are ignored by IfState.
+  `wireguard-mesh` is a supported tunnel transport. Breaking changes ship
+  without migration shims: no external consumers or deployments exist.
+  The full netif, routed-fabric, k3s, and RKE2 native/tunnel/selective/
+  external VM matrix is green on the IfState tree. Round 13's Bootstrap +
+  Data-plane scope remains: Envoy Gateway, cert-manager, Flux install,
+  external-dns, Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps
+  patterns, never clan-rendered (SPEC.md §3.3, D39–D45).
 - `documentation/` — MkDocs site + reveal.js slides (human record, built
   via the `external-systems/presenting` flake). **Edit SPEC.md and
   `documentation/` together.** The old `services/rancher-cluster-spec.*`
@@ -74,27 +65,30 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D60) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D61) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
    FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
-   target `routed-fabric` (routed-hub MVP, no iBGP/RR, AllowedIPs as
-   crypto ACL) and made `netif` multi-instance/multi-link; round 16 uses
-   member/hub topology roles plus orthogonal access/border (D56) and the
-   dependency-free `clan.networkFacts` seam (D57); round 17 (docs-only)
-   renames fabric roles `leaf`/`spine` with a symmetric derived graph
-   (D59), locks the generic `node_transport` schemaVersion 2 seam outside
-   `lib/kube-cluster` (D58), and locks ClusterMesh placement/exposure
-   (D60) — `wireguard-mesh` is a supported tunnel transport and breaking
-   changes carry no compatibility burden (no external consumers or
-   deployments, no migration shims). Cilium stays
-   networking-only (D1) and multi-pool; Node IPAM is the classless-LB
-   default (D41); `node-bgp` is owner-only while `shared-bgp` uses ECMP
-   (D8); servicelb is permanently disabled (D42); the control domain is
-   GitOps-neutral (`controlDomain.role`, D43).
+   `routed-fabric` and made `netif` multi-instance/multi-link; round 16
+   added orthogonal access/border and `clan.networkFacts`; round 17
+   implemented `leaf`/`spine`, generic `node_transport`, and ClusterMesh
+   placement/exposure; round 18 made IfState 2.5.1 the only static network
+   renderer (D61). Do not reintroduce systemd-networkd, netdevs, scripted
+   network units, or a second owner for Cilium/FRR objects. `wireguard-mesh`
+   is a supported tunnel transport and breaking changes carry no
+   compatibility burden (no external consumers or deployments, no migration
+   shims). Cilium stays networking-only (D1) and multi-pool; Node IPAM is
+   the classless-LB default (D41); `node-bgp` is owner-only while
+   `shared-bgp` uses ECMP (D8); servicelb is permanently disabled (D42);
+   the control domain is GitOps-neutral (`controlDomain.role`, D43).
 9. DO NOT RUN `nix flake check`, it boots VM tests and will OOM kill the machine!!! Run with `--no-build`.
 
 ## Verified upstream facts the spec depends on
 
+- IfState 2.5.1: `ifstatecli apply` fully reconciles declared objects;
+  `ifstatecli check` is the dry run. Runtime `!include` keeps secrets out
+  of the store. `KillMode=process` preserves hook daemons; global
+  forwarding uses `sysctl_conf`. Package metadata is authoritative even
+  though upstream 2.5.1 prints `ifstatecli 2.5.0`.
 - Cilium 1.20: native routing delegates non-local pod traffic to the
   kernel FIB; off-L2 nodes therefore need FRR-distributed pod-pool routes.
   Multi-pool uses `CiliumPodIPPool` advertisements. ClusterMesh requires

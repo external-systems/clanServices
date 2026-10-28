@@ -1,11 +1,11 @@
 # wireguard-mesh
 
-`wireguard-mesh` is the tunnel-profile transport (round 17, D58): dual-stack
+`wireguard-mesh` is the tunnel-profile transport (D58): dual-stack
 WireGuard transport consumed through the same generic `node_transport`
 export as routed-fabric, paired with Cilium **tunnel mode (VXLAN)** and the
-`nodePort` exposure capability. Its VM suite proves basic pairwise host
-connectivity; the round-17 tunnel NodePort ClusterMesh suite is the
-mesh-level target.
+`nodePort` exposure capability. IfState owns the interface, peers, and
+routes. Its VM suite proves real handshakes and pairwise connectivity;
+all dependent tunnel ClusterMesh suites are also green.
 
 The service retains its existing interface model: **ONE shared full-mesh
 multi-peer WireGuard interface** with one peer per remote machine and
@@ -22,7 +22,6 @@ a **supported profile**, not a retiring service. The legacy
 `services/fleet-routing/` code and the `lib/import-flake/` adapter were
 deleted in the round-17 cleanup.
 
-New inventory should follow the round-17 contract: pick the profile by
-datapath need (native + internal LoadBalancer via `routed-fabric`, or
-tunnel/VXLAN + nodePort via `wireguard-mesh`) and let the generic
-`node_transport` export carry the facts to the distro services.
+Pick the profile by datapath need (native + internal LoadBalancer via
+`routed-fabric`, or tunnel/VXLAN + nodePort via `wireguard-mesh`) and let
+the generic `node_transport` export carry the facts to the distro services.

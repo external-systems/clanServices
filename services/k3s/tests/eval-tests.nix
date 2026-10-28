@@ -3,11 +3,14 @@
   module,
   clanLib,
   exportInterfaces,
+  inputs,
   ...
 }:
 let
   k3sModule = module;
-  wgModule = ../../wireguard-mesh/default.nix;
+  wgModule = lib.modules.importApply ../../wireguard-mesh/default.nix {
+    ifstateOverlay = import ../../../lib/ifstate-overlay.nix;
+  };
   kube = import ../../../lib/kube-cluster { inherit lib; };
 
   machineConfigs =

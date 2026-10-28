@@ -1,8 +1,8 @@
 # wireguard-mesh
 
 `wireguard-mesh` creates a host-level, dual-stack WireGuard full mesh. Every
-member connects directly to every other member through systemd-networkd —
-each machine renders ONE shared multi-peer WireGuard interface
+member connects directly to every other member through IfState — each
+machine renders ONE shared multi-peer WireGuard interface
 (default `wg-<instanceName>`) with exactly one peer per remote member and
 stable `/32` + `/128` mesh addresses (never routed-fabric-style
 per-adjacency interfaces). The
@@ -14,13 +14,12 @@ transport** (SPEC.md D58): Cilium runs tunnel/VXLAN over the mesh, and
 the `nodePort` exposure capability is exported (D58). VXLAN MTU =
 minimum interface MTU minus 50. It is not pending retirement.
 
-Status: the round-17 generic `node_transport` schemaVersion 2 export
-(D58) is implemented on this service — tunnel/VXLAN + `nodePort`, one
-shared multi-peer interface keyed by its Linux name, exactly one
-`directRoutingDevice`. The old per-service transport interface files are
-gone; the shared neutral schema lives at `lib/node-transport-interface.nix`.
-VM suites for the round-17 tree have **not** been re-run; no VM-green
-claim is made here.
+Status: the generic `node_transport` schemaVersion 2 export (D58) is
+implemented — tunnel/VXLAN + `nodePort`, one shared multi-peer interface
+keyed by its Linux name, exactly one `directRoutingDevice`. The shared
+neutral schema lives at `lib/node-transport-interface.nix`. The hermetic
+three-node VM suite passes real dual-stack handshakes, and all dependent
+k3s/RKE2 tunnel suites pass on IfState.
 
 One inventory instance is one independent mesh. Each member receives one `/32`
 IPv4 and one `/128` IPv6 on its WireGuard interface. The default peer

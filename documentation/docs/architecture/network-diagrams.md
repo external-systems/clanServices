@@ -8,11 +8,10 @@ included — is **consumer-owned** and lives outside this flake.
 
 ## The seam: `clan.networkFacts`
 
-ClanServices will expose a **dependency-free, versioned, JSON-serializable,
+ClanServices exposes a **dependency-free, versioned, JSON-serializable,
 non-secret, per-node network-facts NixOS interface** at
-`clan.networkFacts`. The exact option schema is **planned, not
-implemented**; option leaves carry defaults so deep evaluation never
-breaks.
+`clan.networkFacts`. Option leaves carry defaults so deep evaluation never
+breaks, and the current schema is version 2.
 
 The contract:
 

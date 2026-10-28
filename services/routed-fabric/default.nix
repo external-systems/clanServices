@@ -1,3 +1,4 @@
+{ ifstateOverlay }:
 {
   clanLib,
   lib,
@@ -673,71 +674,80 @@ let
                 default = throw "routed-fabric/${instanceName}: missing public key for '${name}' (${generatorName})";
               }
             );
-          unitName = adjacency: "50-routed-fabric-${instanceName}-${adjacency.name}";
-          wireguardNetdevs = lib.listToAttrs (
-            map (adjacency: {
-              name = unitName adjacency;
-              value = {
-                netdevConfig = {
-                  Kind = "wireguard";
-                  Name = adjacency.name;
-                  MTUBytes = adjacency.mtu;
-                };
-                wireguardConfig = {
-                  PrivateKeyFile = privateKeyFile;
-                  ListenPort = adjacency.port;
-                };
-                wireguardPeers = [
-                  (
-                    {
-                      PublicKey = publicKeyOf adjacency.remoteName;
-                      AllowedIPs = adjacency.allowedIPs;
-                      PersistentKeepalive = 25;
-                    }
-                    // lib.optionalAttrs (adjacency.endpoint != null) { Endpoint = adjacency.endpoint; }
-                  )
-                ];
+          ifstateInterfaces = {
+            ${loopbackName} = {
+              addresses = [
+                "${ownAddress.ipv4}/32"
+                "${ownAddress.ipv6}/128"
+              ];
+              link = {
+                kind = "dummy";
+                state = "up";
+                mtu = transportInterfaces.${loopbackName}.mtu;
               };
-            }) adjacencies
-          );
-          wireguardNetworks = lib.listToAttrs (
+            };
+          }
+          // lib.listToAttrs (
             map (adjacency: {
-              name = unitName adjacency;
+              inherit (adjacency) name;
               value = {
-                matchConfig.Name = adjacency.name;
-                networkConfig.LinkLocalAddressing = "no";
-                address = [ "${adjacency.linkLocal}/64" ];
                 addresses = [
                   {
-                    Address = "${adjacency.local.ipv4}/31";
-                    Scope = "link";
+                    address = "${adjacency.local.ipv4}/31";
+                    scope = "link";
                   }
                   {
-                    Address = "${adjacency.local.ipv6}/127";
-                    Scope = "link";
+                    address = "${adjacency.local.ipv6}/127";
+                    scope = "link";
                   }
+                  "${adjacency.linkLocal}/64"
                 ];
-                routes = lib.optionals adjacency.sourceReturn [
-                  {
-                    Destination = "0.0.0.0/0";
-                    Gateway = adjacency.remote.ipv4;
-                    Table = adjacency.table;
+                link = {
+                  kind = "wireguard";
+                  state = "up";
+                  inherit (adjacency) mtu;
+                };
+                wireguard = {
+                  private_key = "!include ${privateKeyFile}";
+                  listen_port = adjacency.port;
+                  peers.${publicKeyOf adjacency.remoteName} = {
+                    allowedips = adjacency.allowedIPs;
+                    persistent_keepalive_interval = 25;
                   }
-                  {
-                    Destination = "::/0";
-                    Gateway = adjacency.remote.ipv6;
-                    Table = adjacency.table;
-                  }
-                ];
-                routingPolicyRules = lib.optionals adjacency.sourceReturn (
-                  map (prefix: {
-                    From = prefix;
-                    Table = adjacency.table;
-                  }) (if border != null then border.ownedPrefixes else [ ])
-                );
+                  // lib.optionalAttrs (adjacency.endpoint != null) {
+                    inherit (adjacency) endpoint;
+                  };
+                };
               };
             }) adjacencies
           );
+          ifstateRoutes = lib.concatMap (
+            adjacency:
+            lib.optionals adjacency.sourceReturn [
+              {
+                to = "0.0.0.0/0";
+                via = adjacency.remote.ipv4;
+                dev = adjacency.name;
+                inherit (adjacency) table;
+              }
+              {
+                to = "::/0";
+                via = adjacency.remote.ipv6;
+                dev = adjacency.name;
+                inherit (adjacency) table;
+              }
+            ]
+          ) adjacencies;
+          ifstateRules = lib.concatMap (
+            adjacency:
+            lib.optionals adjacency.sourceReturn (
+              map (prefix: {
+                from = prefix;
+                inherit (adjacency) table;
+                priority = adjacency.table;
+              }) (if border != null then border.ownedPrefixes else [ ])
+            )
+          ) adjacencies;
         in
         {
           imports = [ ../../lib/kube-cluster/network-facts.nix ];
@@ -800,10 +810,10 @@ let
           clan = {
             core.vars.generators.${generatorName} = {
               files.privatekey = {
-                owner = "systemd-network";
-                group = "systemd-network";
+                owner = "root";
+                group = "root";
                 mode = "0400";
-                restartUnits = [ "systemd-networkd.service" ];
+                restartUnits = [ "ifstate.service" ];
               };
               files.publickey = {
                 secret = false;
@@ -864,9 +874,18 @@ let
             pkgs.wireguard-tools
           ];
           networking = {
-            useNetworkd = true;
+            ifstate.settings = {
+              interfaces = ifstateInterfaces;
+              routing = {
+                routes = ifstateRoutes;
+                rules = ifstateRules;
+              };
+              sysctl_conf = lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) ''
+                net.ipv4.ip_forward = 1
+                net.ipv6.conf.all.forwarding = 1
+              '';
+            };
             nftables.enable = true;
-            networkmanager.unmanaged = [ loopbackName ] ++ interfaceNames;
             firewall = {
               allowedTCPPorts = [ 179 ];
               allowedUDPPorts = lib.optionals ownSettings.firewall.openPort listenPorts ++ [
@@ -881,34 +900,7 @@ let
             bfdd.enable = true;
             config = frrConfig;
           };
-          boot.kernel.sysctl = lib.mkMerge [
-            (lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) {
-              "net.ipv4.ip_forward" = lib.mkDefault true;
-              "net.ipv6.conf.all.forwarding" = lib.mkDefault true;
-            })
-          ];
-          systemd = {
-            network = {
-              enable = true;
-              netdevs = wireguardNetdevs // {
-                "50-routed-fabric-${instanceName}-loopback" = {
-                  netdevConfig = {
-                    Kind = "dummy";
-                    Name = loopbackName;
-                  };
-                };
-              };
-              networks = wireguardNetworks // {
-                "50-routed-fabric-${instanceName}-loopback" = {
-                  matchConfig.Name = loopbackName;
-                  address = [
-                    "${ownAddress.ipv4}/32"
-                    "${ownAddress.ipv6}/128"
-                  ];
-                };
-              };
-            };
-          };
+          systemd.services.frr.after = [ "ifstate.service" ];
           services.ndppd = lib.mkIf (border != null && border.ndpInterfaces != [ ]) {
             enable = true;
             proxies = lib.listToAttrs (
@@ -979,6 +971,8 @@ in
           ) (builtins.attrNames instances);
         in
         {
+          imports = [ (import ../../lib/ifstate.nix { inherit ifstateOverlay; }) ];
+
           assertions = [
             {
               assertion = lib.length memberships <= 1;

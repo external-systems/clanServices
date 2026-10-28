@@ -968,13 +968,10 @@ let
                 config = haproxyConfig;
               };
 
-              # haproxy binds the transport addresses: with a networkd
-              # transport the interface is created and the addresses
-              # assigned moments after boot — order the LB after networkd
-              # and let Restart=always ride out any bind race (no
-              # burst-limit kill).
+              # haproxy binds transport addresses created by IfState;
+              # Restart=always rides out any remaining bind race.
               systemd.services.haproxy = {
-                after = [ "systemd-networkd.service" ];
+                after = [ "ifstate.service" ];
                 unitConfig.StartLimitIntervalSec = 0;
               };
             }

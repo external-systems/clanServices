@@ -19,13 +19,14 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
 go-httpbin is the standard airgapped HTTP workload. Minimal local
 artifacts are mandatory.
 
-## Round-17 suites
+## Current suites
 
-- Existing single/join/HA per distro — these suites currently run on
-  **wireguard-mesh** transport; the Round 17 target asserts the
-  transport-derived tunnel/VXLAN profile there, while the native
-  data-plane suites on the routed-fabric profile remain native. Not every
-  existing suite is native.
+- Existing single/join/HA per distro run on **wireguard-mesh** and assert
+  the transport-derived tunnel/VXLAN profile, while the native data-plane
+  suites on routed-fabric remain native. Not every suite is native.
+- **IfState (D61):** live static reconfiguration with apply/check/restore,
+  real DHCPv4 and SLAAC/default-route convergence, one persistent DHCP
+  client across reapply, and clean `ifstatecli check` output.
 - **Generic transport (D58):** a third-party eval overlay proves k3s/rke2
   consume only the generic `node_transport` export and never branch on
   service names; profile validation accepts the two validated profiles
@@ -131,15 +132,14 @@ Sealed-Secrets suites. Reserved: MCS-API and upstream-kubernetes suites.
 
 ## Status evidence
 
-**VM-proven on the final tree:** k3s and RKE2 external class+DNS exposure on
-native and tunnel profiles; explicit selective ClusterMesh on both profiles;
-and full-peering native/tunnel defaults. The selective proofs include
-symmetric A↔B and B↔C edges, non-transitive A/C global-Service isolation,
-and dual-stack route isolation on non-transit leaves. SPEC.md §7 links the
-final logs and remains the status authority for the other suites.
+**VM-proven on the final IfState tree:** netif live apply/check/restore;
+DHCPv4/default-route and IPv6 SLAAC with one persistent client across live
+reapply; WireGuard handshakes; routed-fabric transport and spine HA;
+k3s/RKE2 single/join/HA and native data planes; and all twelve
+native/tunnel/selective/external ClusterMesh variants. The selective proofs
+include symmetric A↔B and B↔C edges, non-transitive A/C global-Service
+isolation, and dual-stack route isolation on non-transit leaves. SPEC.md §7
+links the final logs and remains the status authority.
 
-The imported baseline recorded green wireguard-mesh and distro single/join/HA
-suites in the source fork; the later BIRD checkpoint `2995ac3` retained
-5 green and 7 red suites. Both are legacy evidence only, not evidence for the
-current round-17 implementation. No full-mesh fabric suite exists or is
-required.
+The imported baseline and BIRD checkpoint `2995ac3` (5 green / 7 red) are
+legacy evidence only. No full-mesh fabric suite exists or is required.

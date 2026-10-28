@@ -20,7 +20,7 @@ Note: Press `S` for the speaker view, `F` for fullscreen.
 
 - **Bootstrap**: distro install/join (rke2, k3s, upstream kubeadm reserved); cluster PKI + rotation runbooks; per-node HAProxy kubeapi HA; one bootstrap bundle applied once
 - **Data plane**: multi-pool Cilium in native or tunnel/VXLAN profile, Node IPAM, five LB delivery modes, per-node FRR/BFD/Zebra, ClusterMesh with selective peers and exposure profiles, one WireGuard interface per fabric adjacency, in-cluster `cluster.local` CoreDNS (member DNS is day-2)
-- **Host network**: `netif` owns links/static routes (multi-instance); `routed-fabric` owns the flat-L3 native fabric (implemented, round-16 shape; round-17 spine/leaf is the planned target); `wireguard-mesh` is the supported tunnel/VXLAN profile
+- **Host network**: IfState 2.5.1 exclusively renders links/static routes and reconciles live without reboot (D61); `routed-fabric` owns the flat-L3 native fabric with leaf/spine topology; `wireguard-mesh` is the supported tunnel/VXLAN profile
 - Airgap-ready: every artifact local at boot; last 3 Kubernetes minors per distro pinned
 
 ---
@@ -67,7 +67,7 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Detail map: every component by layer
 
-- **Hosts**: NixOS; `netif` (multi-instance); per-adjacency WireGuard; per-node FRR/BFD/Zebra; routed-fabric leaf/spine roles + orthogonal access/border switches (D59); generic `node_transport` export both distros consume (D58); `clan.networkFacts` network-facts seam (D57, planned, schema 2)
+- **Hosts**: NixOS + IfState 2.5.1 (D61); `netif` (multi-instance); per-adjacency WireGuard; per-node FRR/BFD/Zebra; routed-fabric leaf/spine roles + orthogonal access/border switches (D59); generic `node_transport` export both distros consume (D58); `clan.networkFacts` schema 2 (D57)
 - **Distro**: k3s / rke2 (CIS default) / kubernetes (reserved); thin clanServices; `distroDefaults` restores stock components; servicelb off
 - **Networking**: multi-pool Cilium native or tunnel/VXLAN, Node IPAM, five pool delivery modes, BGP v2, ClusterMesh with placement/exposure profiles (D60); no Gateway/Ingress/L7
 - **Day two**: GitOps-owned proxies, cert-manager, external-dns, Sealed Secrets, storage, KubeVirt, CCMs
@@ -78,10 +78,10 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 
 ## Status and roadmap
 
-- **Done**: phases 0–4 bootstrap/base; round-14 contract; round-15 docs (D51–D55); round-16 docs (D56–D57); round-17 docs (D58–D60: generic `node_transport` profiles, leaf/spine auto graph, ClusterMesh placement/exposure); 5R1 + 5R2(1)–(3) implementation (netif + routed-fabric round-16 shape + native Cilium/pools + pkgs re-inflation + pin update — suites registered, not green-claimed)
-- **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence; `fleet-routing` + `lib/import-flake` + BIRD remnants deleted in the round-17 cleanup
-- **Next**: 5R5 — the round-17 contract (leaf/spine rename, generic `node_transport` seam, D60 ClusterMesh placement/exposure), then full + selective ClusterMesh suites — planned, docs-locked, no implementation or VM evidence yet
-- **Then**: control domain, PKI/GitOps-handoff suites, home migration and borg archival
+- **Done**: bootstrap/base; generic `node_transport` profiles (D58); leaf/spine auto graph (D59); ClusterMesh placement/exposure (D60); `clan.networkFacts` schema 2; IfState-only static networking (D61)
+- **VM-proven**: netif live apply + DHCP/RA; WireGuard; routed-fabric HA; k3s/RKE2 single/join/HA + native data planes; all native/tunnel/selective/external ClusterMesh suites
+- **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence; `fleet-routing` + `lib/import-flake` + BIRD remnants deleted
+- **Next**: control domain, PKI/GitOps-handoff suites, home migration and borg archival
 - **Reserved**: upstream `kubernetes` distro, MCS-API, clan-operator
 
 Note: Full record: SPEC.md + documentation/ in the repo.

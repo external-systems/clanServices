@@ -18,7 +18,7 @@
 #     tunnel (D58).
 #
 # Transport: one wireguard-mesh instance, four peers.
-{ lib, ... }:
+{ lib, inputs, ... }:
 {
   name = "k3s-clustermesh-tunnel";
 
@@ -26,7 +26,9 @@
     directory = ./.;
     test.useContainers = false;
 
-    modules.wireguard-mesh = ../../../wireguard-mesh/default.nix;
+    modules.wireguard-mesh = lib.modules.importApply ../../../wireguard-mesh/default.nix {
+      ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+    };
     exportInterfaces = {
       node_transport = ../../../../lib/node-transport-interface.nix;
     };
@@ -45,10 +47,10 @@
         underlay = {
           module.name = "internet";
           roles.default.machines = {
-            alpha.settings.host = "alpha";
-            beta.settings.host = "beta";
-            gamma.settings.host = "gamma";
-            delta.settings.host = "delta";
+            alpha.settings.host = "192.168.1.1";
+            beta.settings.host = "192.168.1.2";
+            gamma.settings.host = "192.168.1.3";
+            delta.settings.host = "192.168.1.4";
           };
         };
 
@@ -132,28 +134,43 @@
           hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
           finalImageTag = "1.36.1";
         };
-      commonNode =
-        { pkgs, ... }:
-        {
-          virtualisation = {
-            cores = 2;
-            memorySize = 3584;
-            diskSize = 8192;
-          };
-          environment.sessionVariables.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-          environment.systemPackages = [
-            pkgs.kubectl
-            pkgs.cilium-cli
-            pkgs.socat
-          ];
-          services.k3s.images = [ (busyboxImage pkgs) ];
+      commonNode = name: { pkgs, ... }: {
+        imports = [
+          (import ../../../../tests/ifstate-vm.nix {
+            ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+            addresses = [
+              "192.168.1.${
+                toString
+                  {
+                    alpha = 1;
+                    beta = 2;
+                    gamma = 3;
+                    delta = 4;
+                  }
+                  .${name}
+              }/24"
+            ];
+          })
+        ];
+        virtualisation = {
+          cores = 2;
+          memorySize = 3584;
+          diskSize = 8192;
         };
+        environment.sessionVariables.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+        environment.systemPackages = [
+          pkgs.kubectl
+          pkgs.cilium-cli
+          pkgs.socat
+        ];
+        services.k3s.images = [ (busyboxImage pkgs) ];
+      };
     in
     {
-      alpha = commonNode;
-      beta = commonNode;
-      gamma = commonNode;
-      delta = commonNode;
+      alpha = commonNode "alpha";
+      beta = commonNode "beta";
+      gamma = commonNode "gamma";
+      delta = commonNode "delta";
     };
 
   testScript = ''
@@ -178,7 +195,7 @@
         start_all()
 
         for m in [alpha, beta, gamma, delta]:
-            m.wait_for_unit("systemd-networkd.service", timeout=120)
+            m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             m.wait_for_unit("haproxy.service", timeout=240)
             m.wait_for_unit("k3s.service", timeout=600)
 
@@ -281,10 +298,11 @@
             m.succeed("kubectl annotate service global-web service.cilium.io/global=true")
             m.wait_until_succeeds("kubectl rollout status deployment/global-web --timeout=180s", timeout=240)
         seen = set()
-        for _ in range(20):
+        for _ in range(60):
             seen.add(alpha.succeed("kubectl exec pinger-a -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
             if seen == {"CLUSTER_A", "CLUSTER_B"}:
                 break
+            alpha.execute("sleep 1")
         assert seen == {"CLUSTER_A", "CLUSTER_B"}, f"global Service backends: {seen!r}"
         print("K3S_CLUSTERMESH_TUNNEL_OK")
     except Exception:

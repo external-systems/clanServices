@@ -30,9 +30,13 @@ One term per concept. Mirrors SPEC.md §10.
   EndpointSlice exposing a cluster's kube-apiserver.
 - **Bootstrap plane** — clan vars custody for cluster CAs, tokens,
   kubeconfigs, ClusterMesh material, HAProxy checks, and gitops identities.
+- **IfState** — the exclusive static network renderer (D61), pinned to
+  2.5.1. It reconciles links, addresses, WireGuard, static/policy routes,
+  rules, and sysctls live without reboot; no systemd-networkd, netdevs, or
+  scripted network units. FRR/Zebra and Cilium retain dynamic ownership.
 - **netif** — inventory-owned, multi-instance/multi-link host attachments:
   physical/VLAN/bond/bridge links, addressing, routes, MTU, DNS, firewall
-  trust, and endpoint/deploy-target exports.
+  trust, and endpoint/deploy-target exports, rendered through IfState.
 - **Fabric adjacency** — a derived leaf↔spine, spine↔spine, or
   border↔upstream relationship; exactly one point-to-point WireGuard
   interface per adjacency, carrying API traffic, native pods, BGP, and BFD.
@@ -60,7 +64,7 @@ One term per concept. Mirrors SPEC.md §10.
   leaves with `next-hop-self`. Two spines are the HA default with no
   arbitrary maximum; leaves never provide transit.
 - **node_transport** — the generic shared neutral transport export
-  (schemaVersion 2, D58, round-17 target) consumed by both distro services: stable
+  (schemaVersion 2, D58) consumed by both distro services: stable
   dual-stack node addresses/instance/endpoint, datapath interfaces keyed
   by Linux name with MTU, one `directRoutingDevice`,
   `datapath.mode` (`native`|`tunnel`) with sibling `datapath.tunnelProtocol`,
@@ -86,13 +90,12 @@ One term per concept. Mirrors SPEC.md §10.
   voters (default)/workers/all/labels.
 - **AllowedIPs / crypto ACL** — WireGuard's outbound peer selection, which
   is also the inbound source ACL; must include authorized transit prefixes.
-- **Network facts** — the planned per-node `clan.networkFacts` NixOS
-  interface (D57): versioned, JSON-serializable, non-secret, producer-owned
+- **Network facts** — the per-node `clan.networkFacts` NixOS interface
+  (D57): versioned, JSON-serializable, non-secret, producer-owned
   build-time topology facts (underlay/fabric/ClusterMesh/control-domain
   graphs) populated through `readOnly = true` options by the service
   owning each fact; read by consumer-owned diagram wrappers and
-  complementary to exports. Schema bumps to version 2 in round 17 (D59);
-  exact schema planned, not implemented.
+  complementary to exports. The schema is version 2 (D59).
 - **Alternative overlays** — official mycelium/yggdrasil/wireguard meshes;
   overlays, never underlays; the standard `peer` export set is the seam.
 - **Pool scope** — per-machine with one owner, or cluster-global.

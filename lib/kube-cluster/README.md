@@ -18,14 +18,12 @@ The library covers the bootstrap + data-plane contracts (SPEC.md §3) only.
 Day-2 in-cluster software (ingress/Gateway proxies, cert-manager, Sealed
 Secrets, storage, GitOps controllers) is never rendered here (SPEC.md §3.3).
 
-ROUND-17 TARGET (5R5): both distro services consume the generic
-`node_transport` schemaVersion 2
+Both distro services consume the generic `node_transport` schemaVersion 2
 (SPEC.md D58) — stable dual-stack node addresses, per-interface MTU keyed
 by Linux name, one `directRoutingDevice`, `datapath.mode native|tunnel`
 (+ protocol), native `routeExchange = local-router`, and the
-`internalLoadBalancer`/`nodePort` exposure capabilities — and never
-branch on provider service names; the current code still prefers
-`routed_fabric`. The schema itself is declared by the transport
+`internalLoadBalancer`/`nodePort` exposure capabilities — and never branch
+on provider service names. The schema is declared by the transport
 services, not by this library. The Cilium profile (mode, protocol,
 devices, MTU) derives from the transport; admin overrides cannot
 contradict the derived values. Shared fabric/FRR/facts helpers

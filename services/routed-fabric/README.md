@@ -12,15 +12,14 @@ routing, `local-router` route exchange (daemon-neutral — never
 exposure capabilities. Native-mode Cilium MTU = the minimum interface
 MTU.
 
-Status: the round-17 `leaf`/`spine` contract (D59) is implemented —
+Status: the `leaf`/`spine` contract (D59) is implemented —
 `roles.leaf`/`roles.spine`, the symmetric derived graph (automatic
 spine↔spine pairs, default all-spine leaf attachment, explicit
 `settings.spines` subset), and `routed_fabric`/`networkFacts`
-schemaVersion 2. Breaking round-16 `member`/`hub` shapes were removed
-without shims; no migration is provided. VM evidence: eval suites are
-green; the NixOS VM suite is updated to the two-spine/three-leaf HA
-shape but has **not** been re-run on the round-17 tree — no VM-green
-claim is made here.
+schemaVersion 2. IfState owns the loopback, per-adjacency WireGuard
+links, static policy routes/rules, and forwarding sysctls; FRR/Zebra owns
+dynamic routes. The hermetic two-spine/three-leaf VM suite passes
+transport, RIB/FIB, MTU, and spine HA failure/restore checks.
 
 ## Inventory
 
@@ -71,6 +70,6 @@ deploy only to their owner.
 ## Tests
 
 ```console
-nix build .#checks.x86_64-linux.routed-fabric   # eval suites
+nix build .#checks.x86_64-linux.routed-fabric   # hermetic VM suite
 nix build .#checks.x86_64-linux.coverage
 ```

@@ -97,19 +97,16 @@ endpoints.
 
 ## Status
 
-**Implemented (5R1, 2026-10-25) in the round-16 shape** — `member`/`hub`
-topology roles with service-specific transport facts. The round-17 surface
-on this page — the `leaf`/`spine` rename (D59), the generic `node_transport`
-schemaVersion 2 (D58), and the D60 ClusterMesh contract — is **planned in
-5R5: docs-locked, not yet implemented**, with no VM evidence. The implementation
-was delivered as a one-session complete overhaul from
+The `leaf`/`spine` topology (D59), generic `node_transport` schemaVersion 2
+(D58), and D60 ClusterMesh contract are implemented and VM-proven. IfState
+owns the loopback, per-adjacency WireGuard links, static routes/rules, and
+forwarding sysctls; FRR/Zebra owns dynamic routes. The hermetic
+two-spine/three-leaf suite passes handshakes, RIB/FIB, MTU, and HA
+failure/restore. The native data-plane and ClusterMesh matrices pass for
+both distros. The earlier implementation was delivered from
 [the implementation prompt](../guides/routed-fabric-mvp-prompt.md)
 (historical: written for the round-16 `member`/`hub` role names, renamed
-`leaf`/`spine` by D59): multi-instance `netif`, `routed-fabric`,
-native Cilium and pools on both distros, full and selective ClusterMesh,
-the `external-systems/pkgs` native Cilium base re-inflation, and the
-clanServices pin update. Inventory examples in these docs that show
-`leaf`/`spine` are **Round 17 target, not current config**.
+`leaf`/`spine` by D59).
 
 The legacy `services/fleet-routing/` tree and its BIRD/VXLAN checkpoint at
 `2995ac3` (5 green / 7 red suites) were never accepted as this service's

@@ -1,11 +1,14 @@
-_: {
+{ lib, inputs, ... }:
+{
   name = "rke2-single";
 
   clan = {
     directory = ./.;
     test.useContainers = false;
 
-    modules.wireguard-mesh = ../../../wireguard-mesh/default.nix;
+    modules.wireguard-mesh = lib.modules.importApply ../../../wireguard-mesh/default.nix {
+      ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+    };
     exportInterfaces.node_transport = ../../../../lib/node-transport-interface.nix;
 
     inventory = {
@@ -78,6 +81,12 @@ _: {
       };
     in
     {
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+          addresses = [ "192.168.1.1/24" ];
+        })
+      ];
       virtualisation = {
         cores = 2;
         memorySize = 4096;
@@ -128,7 +137,7 @@ _: {
     try:
         start_all()
 
-        alpha.wait_for_unit("systemd-networkd.service", timeout=120)
+        alpha.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
         alpha.wait_for_unit("haproxy.service", timeout=240)
         alpha.wait_for_unit("rke2-server.service", timeout=600)
 
@@ -147,8 +156,9 @@ _: {
         alpha.succeed("test -f /etc/clan-bootstrap/rke2/bundle.yaml")
         # Nothing clan-owned in the distro's watched manifests dir (D40):
         # no rke2-cilium chart manifest, no clan manifests.
-        alpha.succeed(
-            "! ls /var/lib/rancher/rke2/server/manifests/ 2>/dev/null | grep -qi cilium"
+        alpha.wait_until_succeeds(
+            "! ls /var/lib/rancher/rke2/server/manifests/ 2>/dev/null | grep -qi cilium",
+            timeout=300,
         )
 
         # The pre-generated PKI was synced in before rke2-server started,

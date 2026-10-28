@@ -12,11 +12,10 @@ consumption (member-facing DNS is day-2, D22 amended 2026-10-25). Round 17
 round-14 full-mesh target are superseded; the legacy
 `services/fleet-routing/` tree was deleted in the round-17 cleanup.
 
-> **Status.** `netif` and `routed-fabric` are **implemented** (5R1,
-> 2026-10-25) in their round-16 form — `member`/`hub` topology roles,
-> service-specific transport facts. The `leaf`/`spine` rename, the generic
-> `node_transport` schema, and the D60 ClusterMesh contract on this page are
-> the **round-17 target: planned in 5R5, docs-locked, not yet implemented**.
+> **Status.** The `leaf`/`spine` graph, generic `node_transport` schema,
+> and D60 ClusterMesh contract are implemented and VM-proven. IfState
+> exclusively renders the static host configuration and applies changes
+> live; FRR/Zebra retains dynamic route ownership (D61).
 
 ## Two topology roles, orthogonal access and border
 
@@ -226,12 +225,10 @@ default-on). None of them is clan-rendered in the MVP.
 
 ## The native Cilium profile (D58)
 
-As the native profile provider (**round-17 target, 5R5**), routed-fabric
-publishes the generic
-`node_transport` export (schemaVersion 2) for both distro services to
-consume — today's code still consumes the provider-specific `routed_fabric`
-export: stable dual-stack node addresses/instance/endpoint, datapath
-interfaces keyed by Linux name with MTU, one `directRoutingDevice`,
+As the native profile provider, routed-fabric publishes the generic
+`node_transport` export (schemaVersion 2) for both distro services:
+stable dual-stack node addresses/instance/endpoint, datapath interfaces
+keyed by Linux name with MTU, one `directRoutingDevice`,
 `datapath.mode = native` with sibling `datapath.tunnelProtocol`,
 `native.routeExchange = local-router`
 (daemon-neutral), and the `internalLoadBalancer` + `nodePort` exposure
@@ -255,10 +252,6 @@ is the standard `peer` export set; that is what alternative overlays would
 have to speak.
 
 ## Inventory example
-
-> **Round 17 target — not current config.** The implemented routed-fabric
-> (5R1) still exposes the round-16 `member`/`hub` shape; the example below
-> shows the locked round-17 `leaf`/`spine` surface.
 
 ```nix
 inventory.instances.fabric = {
@@ -319,13 +312,11 @@ access/border policy, self-exclusion, spine reachability (≥1 reachable
 spine per leaf), NAT viability through spines, leaf-non-transit filtering,
 and collision detection.
 
-Hermetic VMs must prove real handshakes, FRR sessions and BFD on both
-sides, RIB-to-FIB installation, spine readvertisement, native pod round
-trips, shared-VIP dual-stack ECMP and withdrawal across two spines,
+Hermetic VMs prove real handshakes, FRR sessions and BFD on both sides,
+RIB-to-FIB installation, spine readvertisement, native pod round trips,
+shared-VIP dual-stack ECMP and withdrawal across two spines,
 **spine/leaf HA ECMP failure and restore**, **FRR reload/restart with a
 stable RIB/FIB**, node-bgp owner-only advertisement, client VIP-only
 isolation, admin pod/Service route access, no member-facing cluster DNS in
-the MVP, border upstream filtering, spine/border/access
-orthogonality (a border that is not a spine, a spine that is not a border),
-and the kamrui-h1 dual-shape. All of this is **planned** — there is no
-implementation or VM evidence for the round-17 shape yet.
+the MVP, border upstream filtering, and spine/border/access orthogonality.
+The IfState base also proves live convergence without reboot (D61).

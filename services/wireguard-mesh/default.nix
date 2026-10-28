@@ -1,3 +1,4 @@
+{ ifstateOverlay }:
 {
   clanLib,
   config,
@@ -325,7 +326,6 @@ in
           }:
           let
             privateKeyFile = config.clan.core.vars.generators.${generatorName}.files.privatekey.path;
-            netdevName = "40-wireguard-mesh-${instanceName}";
 
             publicKeyOf =
               name:
@@ -339,29 +339,39 @@ in
                 }
               );
 
-            wireguardPeers = map (
-              peer:
-              {
-                PublicKey = publicKeyOf peer.name;
-                AllowedIPs = [
-                  "${peer.ipv4}/32"
-                  "${peer.ipv6}/128"
-                ]
-                ++ peer.extraAllowedIPs;
-              }
-              // lib.optionalAttrs (peer.endpoint != null) { Endpoint = peer.endpoint; }
-              // lib.optionalAttrs (peer.persistentKeepalive != null) {
-                PersistentKeepalive = peer.persistentKeepalive;
-              }
-            ) peerEntries;
+            wireguardPeers = lib.listToAttrs (
+              map (peer: {
+                name = publicKeyOf peer.name;
+                value = {
+                  allowedips = [
+                    "${peer.ipv4}/32"
+                    "${peer.ipv6}/128"
+                  ]
+                  ++ peer.extraAllowedIPs;
+                }
+                // lib.optionalAttrs (peer.endpoint != null) { inherit (peer) endpoint; }
+                // lib.optionalAttrs (peer.persistentKeepalive != null) {
+                  persistent_keepalive_interval = peer.persistentKeepalive;
+                };
+              }) peerEntries
+            );
 
             peerRoutes = lib.concatMap (
               peer:
               [
-                { Destination = "${peer.ipv4}/32"; }
-                { Destination = "${peer.ipv6}/128"; }
+                {
+                  to = "${peer.ipv4}/32";
+                  dev = interface;
+                }
+                {
+                  to = "${peer.ipv6}/128";
+                  dev = interface;
+                }
               ]
-              ++ map (prefix: { Destination = prefix; }) peer.extraAllowedIPs
+              ++ map (prefix: {
+                to = prefix;
+                dev = interface;
+              }) peer.extraAllowedIPs
             ) peerEntries;
 
             allV4s = map (name: (resolvedAddr name).ipv4) (lib.attrNames allMembers);
@@ -406,21 +416,38 @@ in
             ];
 
             networking = {
-              useNetworkd = true;
+              ifstate.settings = {
+                interfaces.${interface} = {
+                  addresses = [
+                    "${ownAddr.ipv4}/32"
+                    "${ownAddr.ipv6}/128"
+                  ];
+                  link = {
+                    kind = "wireguard";
+                    state = "up";
+                    inherit (settings) mtu;
+                  };
+                  wireguard = {
+                    private_key = "!include ${privateKeyFile}";
+                    listen_port = settings.port;
+                    peers = wireguardPeers;
+                  };
+                };
+                routing.routes = peerRoutes;
+              };
               firewall = {
                 allowedUDPPorts = lib.optionals settings.firewall.openPort [ settings.port ];
                 trustedInterfaces = lib.optionals settings.firewall.trust [ interface ];
               };
-              networkmanager.unmanaged = [ interface ];
               extraHosts = hostEntries;
             };
 
             clan.core.vars.generators.${generatorName} = {
               files.privatekey = {
-                owner = "systemd-network";
-                group = "systemd-network";
+                owner = "root";
+                group = "root";
                 mode = "0400";
-                restartUnits = [ "systemd-networkd.service" ];
+                restartUnits = [ "ifstate.service" ];
               };
               files.publickey = {
                 secret = false;
@@ -434,30 +461,6 @@ in
             };
 
             environment.systemPackages = [ pkgs.wireguard-tools ];
-
-            systemd.network = {
-              enable = true;
-              netdevs.${netdevName} = {
-                netdevConfig = {
-                  Kind = "wireguard";
-                  Name = interface;
-                  MTUBytes = settings.mtu;
-                };
-                wireguardConfig = {
-                  PrivateKeyFile = privateKeyFile;
-                  ListenPort = settings.port;
-                };
-                inherit wireguardPeers;
-              };
-              networks.${netdevName} = {
-                matchConfig.Name = interface;
-                address = [
-                  "${ownAddr.ipv4}/32"
-                  "${ownAddr.ipv6}/128"
-                ];
-                routes = peerRoutes;
-              };
-            };
           };
       };
   };
@@ -479,6 +482,8 @@ in
           ports = map (member: member.settings.port) members;
         in
         {
+          imports = [ (import ../../lib/ifstate.nix { inherit ifstateOverlay; }) ];
+
           assertions = [
             {
               assertion = lib.length (lib.unique interfaces) == lib.length interfaces;

@@ -46,12 +46,11 @@ Set `settings.network.fabric` to a transport instance — a
 to consume its `node_transport` export, or set `network.fabric = null`
 and provide explicit
 `network.ipv4`/`network.ipv6` per machine. D58 changes the exported
-`node_transport` schema only, never this option. Round-17 target (5R5):
-the service consumes only the generic `node_transport` schemaVersion 2
-and never branches on provider service names (SPEC.md D58); the current
-code still prefers `routed_fabric`. The posture is all-or-none
-(SPEC.md §6.3): mixing transport-provided and manual member addresses
-is an eval error.
+`node_transport` schema only, never this option. The service consumes only
+the generic `node_transport` schemaVersion 2 and never branches on
+provider service names (SPEC.md D58). The posture is all-or-none
+(SPEC.md §6.3): mixing transport-provided and manual member addresses is
+an eval error.
 
 ## Exports
 
@@ -168,7 +167,9 @@ a custom airgap set.
 
 ## Tests
 
-All suites run on the `wireguard-mesh` transport and are exposed as
+Single/join/HA suites run on `wireguard-mesh`; the data-plane and native
+ClusterMesh suites run on `routed-fabric`. Additional tunnel, selective,
+and external-LB suites cover both profiles. All are exposed as
 `clan.nixosTests`:
 
 ```bash

@@ -65,9 +65,9 @@ let
 
   evaled = mkEvaled baseInventory;
   alpha = evaled.config.nixosConfigurations.alpha.config;
-  alphaNetdev = alpha.systemd.network.netdevs."40-wireguard-mesh-mesh";
-  alphaNetwork = alpha.systemd.network.networks."40-wireguard-mesh-mesh";
-  alphaPeers = alphaNetdev.wireguardPeers;
+  alphaIfstate = alpha.networking.ifstate.settings;
+  alphaInterface = alphaIfstate.interfaces.wg-mesh;
+  alphaPeers = lib.attrValues alphaInterface.wireguard.peers;
 
   memberExport =
     machineName:
@@ -147,21 +147,31 @@ let
 in
 {
   rendering = {
-    test_derivedInterface = {
-      expr = alphaNetdev.netdevConfig.Name;
-      expected = "wg-mesh";
-    };
-    test_netdevKindAndMtu = {
+    test_ifstateOnly = {
       expr = {
-        inherit (alphaNetdev.netdevConfig) Kind MTUBytes;
+        enabled = alpha.networking.ifstate.enable;
+        version = alpha.networking.ifstate.package.version;
+        networkd = alpha.systemd.network.enable;
+        useNetworkd = alpha.networking.useNetworkd;
       };
       expected = {
-        Kind = "wireguard";
-        MTUBytes = 1420;
+        enabled = true;
+        version = "2.5.1";
+        networkd = false;
+        useNetworkd = false;
+      };
+    };
+    test_interfaceKindAndMtu = {
+      expr = {
+        inherit (alphaInterface.link) kind mtu;
+      };
+      expected = {
+        kind = "wireguard";
+        mtu = 1420;
       };
     };
     test_dualStackHostAddresses = {
-      expr = alphaNetwork.address;
+      expr = alphaInterface.addresses;
       expected = [
         "10.42.0.1/32"
         "fd10:42::1/128"
@@ -172,14 +182,14 @@ in
       expected = 2;
     };
     test_endpointSourcesAndPerPeerPort = {
-      expr = map (peer: peer.Endpoint) alphaPeers;
+      expr = map (peer: peer.endpoint) alphaPeers;
       expected = [
         "[2001:db8::2]:51821"
         "gamma.example.net:51820"
       ];
     };
     test_allowedIPs = {
-      expr = map (peer: peer.AllowedIPs) alphaPeers;
+      expr = map (peer: peer.allowedips) alphaPeers;
       expected = [
         [
           "192.168.77.2/32"
@@ -193,7 +203,7 @@ in
       ];
     };
     test_peerRoutes = {
-      expr = map (route: route.Destination) alphaNetwork.routes;
+      expr = map (route: route.to) alphaIfstate.routing.routes;
       expected = [
         "192.168.77.2/32"
         "fd00:77::2/128"
@@ -203,14 +213,14 @@ in
       ];
     };
     test_persistentKeepalive = {
-      expr = map (peer: peer.PersistentKeepalive) alphaPeers;
+      expr = map (peer: peer.persistent_keepalive_interval) alphaPeers;
       expected = [
         25
         25
       ];
     };
     test_publicKeysAreTrimmed = {
-      expr = map (peer: peer.PublicKey) alphaPeers;
+      expr = builtins.attrNames alphaInterface.wireguard.peers;
       expected = [
         "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
         "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC="
@@ -235,16 +245,14 @@ in
     # §6.3: mesh addresses derive deterministically from the mesh
     # instance + machine name when unset (pinned hash contract).
     test_derivedMeshAddresses = {
-      expr = alphaDerived.systemd.network.networks."40-wireguard-mesh-mesh".address;
+      expr = alphaDerived.networking.ifstate.settings.interfaces.wg-mesh.addresses;
       expected = [
         "192.168.49.19/32"
         "fd77:3131:676a:8ad7::516b/128"
       ];
     };
     test_derivedMeshPeerRoutes = {
-      expr = map (
-        route: route.Destination
-      ) alphaDerived.systemd.network.networks."40-wireguard-mesh-mesh".routes;
+      expr = map (route: route.to) alphaDerived.networking.ifstate.settings.routing.routes;
       expected = [
         "192.168.32.0/32"
         "fd77:2003:1148:a2fe::7e93/128"
@@ -332,8 +340,8 @@ in
           inherit (generator.files.privatekey) owner group mode;
         };
         expected = {
-          owner = "systemd-network";
-          group = "systemd-network";
+          owner = "root";
+          group = "root";
           mode = "0400";
         };
       };

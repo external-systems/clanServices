@@ -1,5 +1,6 @@
 {
   lib,
+  inputs,
   distro,
   profile,
 }:
@@ -72,6 +73,12 @@ let
     };
   };
   mkNode = name: { pkgs, ... }: {
+    imports = [
+      (import ../../../../tests/ifstate-vm.nix {
+        ifstateOverlay = import ../../../ifstate-overlay.nix;
+        addresses = [ "${underlayIp name}/24" ];
+      })
+    ];
     virtualisation = {
       cores = 2;
       memorySize = 3584;
@@ -84,15 +91,7 @@ let
       pkgs.openssl
       pkgs.socat
     ];
-    networking = {
-      nameservers = [ dnsServerIp ];
-      interfaces.eth1.ipv4.addresses = lib.mkForce [
-        {
-          address = underlayIp name;
-          prefixLength = 24;
-        }
-      ];
-    };
+    networking.nameservers = lib.mkForce [ dnsServerIp ];
     services.resolved.enable = false;
     systemd.services = lib.optionalAttrs (name == "alpha" || name == "gamma") (
       let
@@ -142,10 +141,14 @@ in
 
     modules =
       lib.optionalAttrs native {
-        routed-fabric = ../../../../services/routed-fabric/default.nix;
+        routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
+          ifstateOverlay = import ../../../ifstate-overlay.nix;
+        };
       }
       // lib.optionalAttrs (!native) {
-        wireguard-mesh = ../../../../services/wireguard-mesh/default.nix;
+        wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
+          ifstateOverlay = import ../../../ifstate-overlay.nix;
+        };
       };
     exportInterfaces = {
       node_transport = ../../../../lib/node-transport-interface.nix;
@@ -240,8 +243,26 @@ in
 
   nodes = (lib.genAttrs [ "alpha" "beta" "gamma" "delta" ] mkNode) // {
     dns = {
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = import ../../../ifstate-overlay.nix;
+          addresses = [ "${underlayIp "dns"}/24" ];
+          routes = [
+            {
+              to = "10.1.0.0/16";
+              via = underlayIp "alpha";
+              dev = "eth1";
+            }
+            {
+              to = "10.3.0.0/16";
+              via = underlayIp "gamma";
+              dev = "eth1";
+            }
+          ];
+        })
+      ];
       networking = {
-        nameservers = [ dnsServerIp ];
+        nameservers = lib.mkForce [ dnsServerIp ];
         firewall = {
           allowedTCPPorts = [ 53 ];
           allowedUDPPorts = [ 53 ];
@@ -249,20 +270,6 @@ in
       };
       # The DNS VM is outside both clusters, so tunnel-profile pod return
       # traffic uses each cluster's init node. Native admin routes also exist.
-      systemd.network.networks."10-dns" = {
-        matchConfig.Name = "eth1";
-        address = [ "${underlayIp "dns"}/24" ];
-        routes = [
-          {
-            Destination = "10.1.0.0/16";
-            Gateway = underlayIp "alpha";
-          }
-          {
-            Destination = "10.3.0.0/16";
-            Gateway = underlayIp "gamma";
-          }
-        ];
-      };
       services.dnsmasq = {
         enable = true;
         settings = {
@@ -304,7 +311,7 @@ in
         dns.wait_for_unit("dnsmasq.service", timeout=120)
         machines = [alpha, beta, gamma, delta]
         for m in machines:
-            m.wait_for_unit("systemd-networkd.service", timeout=120)
+            m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             m.wait_until_succeeds(
                 "wg show all latest-handshakes | awk 'NF > 0 {n++; if ($3 == 0) bad=1} END {exit !(n > 0 && !bad)}'",
                 timeout=120,

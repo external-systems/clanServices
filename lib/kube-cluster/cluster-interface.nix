@@ -277,8 +277,8 @@
       '';
     };
 
-    # D60 normalized ClusterMesh settings (round-17 target shape; replaces
-    # the old flat meshPeers knob — breaking, no migration shims).
+    # D60 normalized ClusterMesh settings (replaces the old flat meshPeers
+    # knob — breaking, no migration shims).
     mesh = {
       # D54: full peering within one fabric instance is the default (null);
       # an explicit list names selective peers (symmetric, non-transitive;

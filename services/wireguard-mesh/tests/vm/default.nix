@@ -1,4 +1,5 @@
-_: {
+{ lib, ... }:
+{
   name = "wireguard-mesh";
 
   clan = {
@@ -52,7 +53,24 @@ _: {
     };
   };
 
-  nodes = { };
+  nodes = lib.genAttrs [ "alpha" "beta" "gamma" ] (name: {
+    imports = [
+      (import ../../../../tests/ifstate-vm.nix {
+        ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+        addresses = [
+          "192.168.1.${
+            toString
+              {
+                alpha = 1;
+                beta = 2;
+                gamma = 3;
+              }
+              .${name}
+          }/24"
+        ];
+      })
+    ];
+  });
 
   testScript = ''
     machines = [alpha, beta, gamma]
@@ -69,8 +87,8 @@ _: {
             "ip route show",
             "ip -6 route show",
             "wg show wg-mesh",
-            "systemctl status systemd-networkd --no-pager -l | tail -30",
-            "journalctl -u systemd-networkd --no-pager | tail -60",
+            "systemctl status ifstate.service --no-pager -l | tail -30",
+            "journalctl -u ifstate.service --no-pager | tail -60",
         ]:
             machine.execute(command + " >&2")
 
@@ -79,7 +97,7 @@ _: {
         start_all()
 
         for machine in machines:
-            machine.wait_for_unit("systemd-networkd.service", timeout=120)
+            machine.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             machine.wait_until_succeeds("ip link show wg-mesh", timeout=60)
             ipv4, ipv6 = addresses[machine.name]
             machine.succeed(f"ip -br addr show wg-mesh | grep -q '{ipv4}/32'")

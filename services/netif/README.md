@@ -43,8 +43,8 @@ A machine may join several netif instances. Eval rejects: the same
 interface owned by more than one instance, more than one default route
 per address family (DHCP lease defaults count), and DNS nameserver sets
 that overlap while differing between instances (identical or disjoint
-sets are allowed). Every rendered unit is instance-namespaced
-(`10-netif-<instance>-<link>`).
+sets are allowed). DHCP hook names are instance- and link-namespaced
+(`netif-dhcp-<instance>-<link>`).
 
 ## Exports
 
@@ -60,9 +60,12 @@ sets are allowed). Every rendered unit is instance-namespaced
 - `networking` (standard): instance priority 1100 (direct underlay,
   before VPN overlays).
 
-Everything renders with systemd-networkd and normal NixOS options — no
-IFD, no parallel option namespace. `targetHost = true` exports the
-machine as its own clan deploy target
+Everything renders to `networking.ifstate.settings` for IfState 2.5.1 —
+no systemd-networkd, netdevs, scripted network units, or IFD. Applying a
+new generation reconciles links, addresses, routes, rules, and sysctls live
+through `ifstate.service`; no reboot is needed. DHCPv4/DHCPv6 clients run
+in per-link IfState hooks, while IPv6 SLAAC uses the kernel's RA settings.
+`targetHost = true` exports the machine as its own clan deploy target
 (`clan.core.networking.targetHost`), resolved from the endpoint.
 
 ## Inventory example

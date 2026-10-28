@@ -1,5 +1,6 @@
 {
   lib,
+  inputs,
   distro,
   profile ? "native",
 }:
@@ -65,17 +66,17 @@ let
       finalImageTag = "1.36.1";
     };
   commonNode = name: { pkgs, ... }: {
+    imports = [
+      (import ../../../../tests/ifstate-vm.nix {
+        ifstateOverlay = import ../../../ifstate-overlay.nix;
+        addresses = [ "${underlayIp name}/24" ];
+      })
+    ];
     virtualisation = {
       cores = 2;
       memorySize = 3584;
       diskSize = 8192;
     };
-    networking.interfaces.eth1.ipv4.addresses = lib.mkForce [
-      {
-        address = underlayIp name;
-        prefixLength = 24;
-      }
-    ];
     environment.sessionVariables.KUBECONFIG = "/etc/rancher/${distro}/${distro}.yaml";
     environment.systemPackages = [
       pkgs.kubectl
@@ -93,10 +94,14 @@ in
     test.useContainers = false;
     modules =
       lib.optionalAttrs native {
-        routed-fabric = ../../../../services/routed-fabric/default.nix;
+        routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
+          ifstateOverlay = import ../../../ifstate-overlay.nix;
+        };
       }
       // lib.optionalAttrs (!native) {
-        wireguard-mesh = ../../../../services/wireguard-mesh/default.nix;
+        wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
+          ifstateOverlay = import ../../../ifstate-overlay.nix;
+        };
       };
     exportInterfaces = {
       node_transport = ../../../../lib/node-transport-interface.nix;
@@ -206,7 +211,7 @@ in
         start_all()
         machines = [alpha, beta, gamma]
         for m in machines${lib.optionalString native " + [delta]"}:
-            m.wait_for_unit("systemd-networkd.service", timeout=120)
+            m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
         for m in machines:
             m.wait_for_unit("haproxy.service", timeout=240)
             m.wait_for_unit("${runtimeUnit}", timeout=600)

@@ -39,13 +39,10 @@ relationship to anyone.
 
 **One fabric = one mesh group** (D54): a cluster joins by referencing the
 routed-fabric instance in `settings.network.fabric`, and consumes that
-fabric's `node_transport` exports (round-17 target; today the distros
-consume the provider-specific `routed_fabric` export). Cross-cluster
-traffic uses the
+fabric's `node_transport` exports. Cross-cluster traffic uses the
 fabric's per-adjacency WireGuard and FRR routes. Clusters referencing
 different fabric instances never mesh; that is the trust-domain boundary.
-**Round-17 target (5R5):** distro services consume **only** the generic
-`node_transport` export
+Distro services consume **only** the generic `node_transport` export
 (schemaVersion 2) — stable dual-stack node addresses/instance/endpoint,
 datapath interfaces keyed by Linux name with MTU, one
 `directRoutingDevice`, datapath mode + tunnel protocol, route exchange,
@@ -232,9 +229,8 @@ reserved (disabled initially).
 Both distro services publish a `kube_cluster` export per cluster member
 machine (identical content on every member; SPEC.md §6.2). It carries:
 
-- `schemaVersion` — **3** in the current tree; the round-17 target moves
-  to **4** in 5R5 for the revised datapath/exposure facts — breaking
-  schema changes ship without compatibility shims;
+- `schemaVersion` — **4**, carrying the revised datapath/exposure facts;
+  breaking schema changes ship without compatibility shims;
 - cluster identity: `name` (= instance name), the resolved `ciliumId`, and
   the resolved dual-stack `network.{podCIDRv4,podCIDRv6,serviceCIDRv4,serviceCIDRv6,clusterDNS}`;
 - `network.fabric` — the consumed routed-fabric `{service, instance}`
@@ -276,17 +272,16 @@ consumer clan with
 clan and the eval-test clans already do). No secrets ever appear in
 exports. The same resolved facts — underlay, fabric, ClusterMesh, and
 control-domain graphs — are what each owning service publishes to the
-per-node `clan.networkFacts` interface (D57, planned), the neutral seam
+per-node `clan.networkFacts` interface (D57), the neutral seam
 consumer-owned diagram tooling reads; see
 [Network diagrams](network-diagrams.md).
 
 ## Inventory example
 
-> **Round 17 target — not current config.** The cluster option stays
-> `network.fabric`; `mesh.*` below is the normalized round-17 ClusterMesh
-> surface. Every cluster references its fabric; selective peers are
-> explicit and symmetric. This gives A↔B and B↔C **without** A↔C —
-> peering state is non-transitive:
+The cluster option stays `network.fabric`; `mesh.*` below is the normalized
+ClusterMesh surface. Every cluster references its fabric; selective peers
+are explicit and symmetric. This gives A↔B and B↔C **without** A↔C —
+peering state is non-transitive:
 
 ```nix
 inventory.instances = {

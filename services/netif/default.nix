@@ -1,3 +1,4 @@
+{ ifstateOverlay }:
 {
   clanLib,
   config,
@@ -222,8 +223,8 @@ let
         default = null;
         description = ''
           Logical name of the parent link in this instance (a physical,
-          bond, or bridge link). The child attaches to the parent's
-          .network via a drop-in.
+          bond, or bridge link). IfState attaches the VLAN child to that
+          parent's resolved Linux interface.
         '';
       };
     };
@@ -232,8 +233,8 @@ let
         type = types.nullOr types.str;
         default = null;
         description = ''
-          Bond mode (networkd bondConfig.Mode); defaults to 802.3ad when
-          the link is a bond. Setting a mode without members is an error.
+          Bond mode (IfState bond_mode); defaults to 802.3ad when the
+          link is a bond. Setting a mode without members is an error.
         '';
         example = "active-backup";
       };
@@ -287,7 +288,7 @@ let
     ra = mkOption {
       type = types.bool;
       default = true;
-      description = "Accept IPv6 router advertisements on this link (networkd IPv6AcceptRA).";
+      description = "Accept IPv6 router advertisements on this link (IfState ipv6.accept_ra/autoconf).";
     };
     gateway = {
       ipv4 = mkOption {
@@ -312,7 +313,7 @@ let
         default = false;
         description = ''
           The gateway is not on any connected subnet of this link
-          (rendered with GatewayOnLink=yes, e.g. a /32 on an L3-only
+          (rendered with onlink = true, e.g. a /32 on an L3-only
           segment).
         '';
       };
@@ -326,8 +327,8 @@ let
       type = types.listOf types.str;
       default = [ ];
       description = ''
-        DNS servers for this link (networkd DNS=). When empty, the
-        segment default 'nameservers' apply.
+        DNS servers for this link (networking.nameservers). When empty,
+        the segment default 'nameservers' apply.
       '';
     };
     routes = mkOption {
@@ -347,7 +348,7 @@ let
             onLink = mkOption {
               type = types.bool;
               default = false;
-              description = "Render the route gateway with GatewayOnLink=yes.";
+              description = "Render the route gateway with onlink = true.";
             };
           };
         }
@@ -541,7 +542,7 @@ in
   _class = "clan.service";
   manifest = {
     name = "netif";
-    description = "Inventory-owned core host networking: multi-link, multi-instance segments rendered with systemd-networkd";
+    description = "Inventory-owned core host networking: multi-link, multi-instance segments rendered with IfState";
     categories = [ "Network" ];
     readme = builtins.readFile ./README.md;
     exports = {
@@ -758,168 +759,112 @@ in
           else
             builtins.foldl' (acc: m: if m < acc then m else acc) (builtins.head mtus) mtus;
 
-        stem = logical: "10-netif-${instanceName}-${logical}";
+        dhcpHookName = logical: "netif-dhcp-${instanceName}-${logical}";
 
-        linkNetwork =
-          r:
-          let
-            hasPolicy = r.policy.table != null;
-            dhcpValue =
-              if r.dhcp4 && r.dhcp6 then
-                "yes"
-              else if r.dhcp4 then
-                "ipv4"
-              else if r.dhcp6 then
-                "ipv6"
-              else
-                "no";
-            # Main-table non-on-link gateways use the [Network] shortcut;
-            # on-link and policy-table gateways are rendered as [Route].
-            mainGateways =
-              lib.optionals (!hasPolicy && !r.dhcp4 && r.gateway4 != null && !r.onLink) [ r.gateway4 ]
-              ++ lib.optionals (!hasPolicy && r.gateway6 != null && !r.onLink && (!r.dhcp6 || r.static6 != [ ])) [
-                r.gateway6
-              ];
-            policyRoutes =
-              lib.optionals (hasPolicy && !r.dhcp4 && r.gateway4 != null) [
-                (
-                  {
-                    Gateway = r.gateway4;
-                    Table = r.policy.table;
-                  }
-                  // lib.optionalAttrs r.onLink { GatewayOnLink = true; }
-                )
-              ]
-              ++ lib.optionals (hasPolicy && r.gateway6 != null) [
-                (
-                  {
-                    Gateway = r.gateway6;
-                    Table = r.policy.table;
-                  }
-                  // lib.optionalAttrs r.onLink { GatewayOnLink = true; }
-                )
-              ];
-            onLinkRoutes =
-              lib.optionals (!hasPolicy && !r.dhcp4 && r.gateway4 != null && r.onLink) [
-                {
-                  Gateway = r.gateway4;
-                  GatewayOnLink = true;
-                }
-              ]
-              ++ lib.optionals (!hasPolicy && r.gateway6 != null && r.onLink && (!r.dhcp6 || r.static6 != [ ])) [
-                {
-                  Gateway = r.gateway6;
-                  GatewayOnLink = true;
-                }
-              ];
-            staticRoutes = map (
-              route:
-              {
-                Destination = route.destination;
+        ifstateInterfaces = lib.mapAttrs' (
+          logical: r:
+          lib.nameValuePair r.interface (
+            let
+              link = settings.links.${logical};
+            in
+            {
+              addresses = r.static4 ++ r.static6;
+              link = {
+                inherit (r) kind;
+                state = "up";
               }
-              // lib.optionalAttrs (route.gateway != null) { Gateway = route.gateway; }
-              // lib.optionalAttrs (route.gateway != null && (route.onLink || r.onLink)) {
-                GatewayOnLink = true;
+              // lib.optionalAttrs (r.mtu != null) { inherit (r) mtu; }
+              // lib.optionalAttrs (r.memberOf != null) {
+                master = resolved.${r.memberOf}.interface;
               }
-            ) r.routes;
-          in
-          {
-            matchConfig.Name = r.interface;
-            networkConfig = {
-              DHCP = dhcpValue;
-              IPv6AcceptRA = r.ra;
-              ConfigureWithoutCarrier = r.kind == "bridge";
-            };
-            address = r.static4 ++ r.static6;
-            gateway = mainGateways;
-            dns = r.nameservers;
-            linkConfig = lib.optionalAttrs (r.mtu != null) { MTUBytes = r.mtu; };
-            routingPolicyRules = lib.optionals hasPolicy (
+              // lib.optionalAttrs (r.kind == "vlan") {
+                link = resolved.${link.vlan.parent}.interface;
+                vlan_id = link.vlan.id;
+              }
+              // lib.optionalAttrs (r.kind == "bond") {
+                bond_mode = if link.bond.mode != null then link.bond.mode else "802.3ad";
+                bond_miimon = 100;
+              };
+              sysctl.ipv6 = {
+                accept_ra = if r.ra then 1 else 0;
+                autoconf = if r.ra then 1 else 0;
+              };
+              hooks = lib.optional (r.dhcp4 || r.dhcp6) {
+                name = dhcpHookName logical;
+                args = {
+                  ipv4 = if r.dhcp4 then "true" else "false";
+                  ipv6 = if r.dhcp6 then "true" else "false";
+                };
+                timeout = 15;
+              };
+            }
+          )
+        ) resolved;
+
+        ifstateRoutes = lib.concatLists (
+          lib.mapAttrsToList (
+            _: r:
+            let
+              hasPolicy = r.policy.table != null;
+              gatewayRoutes =
+                lib.optionals (!r.dhcp4 && r.gateway4 != null) [
+                  (
+                    {
+                      to = "0.0.0.0/0";
+                      via = r.gateway4;
+                      dev = r.interface;
+                    }
+                    // lib.optionalAttrs hasPolicy { table = r.policy.table; }
+                    // lib.optionalAttrs r.onLink { onlink = true; }
+                  )
+                ]
+                ++ lib.optionals (r.gateway6 != null && (!r.dhcp6 || r.static6 != [ ])) [
+                  (
+                    {
+                      to = "::/0";
+                      via = r.gateway6;
+                      dev = r.interface;
+                    }
+                    // lib.optionalAttrs hasPolicy { table = r.policy.table; }
+                    // lib.optionalAttrs r.onLink { onlink = true; }
+                  )
+                ];
+              staticRoutes = map (
+                route:
+                {
+                  to = route.destination;
+                  dev = r.interface;
+                }
+                // lib.optionalAttrs (route.gateway != null) { via = route.gateway; }
+                // lib.optionalAttrs (route.gateway != null && (route.onLink || r.onLink)) {
+                  onlink = true;
+                }
+              ) r.routes;
+            in
+            gatewayRoutes ++ staticRoutes
+          ) resolved
+        );
+
+        ifstateRules = lib.concatLists (
+          lib.mapAttrsToList (
+            _: r:
+            lib.optionals (r.policy.table != null) (
               (lib.imap0 (i: cidr: {
-                Family = if isV6 cidr then "ipv6" else "ipv4";
-                From = cidr;
-                Table = r.policy.table;
-                Priority = r.policy.priority + i;
+                from = cidr;
+                table = r.policy.table;
+                priority = r.policy.priority + i;
               }) r.policy.from)
               ++ (lib.imap0 (i: cidr: {
-                Family = if isV6 cidr then "ipv6" else "ipv4";
-                To = cidr;
-                Table = r.policy.table;
-                Priority = r.policy.priority + 50 + i;
+                to = cidr;
+                table = r.policy.table;
+                priority = r.policy.priority + 50 + i;
               }) r.policy.to)
-            );
-            routes = policyRoutes ++ onLinkRoutes ++ staticRoutes;
-          };
+            )
+          ) resolved
+        );
 
-        memberNetwork = r: owner: {
-          matchConfig.Name = r.interface;
-          networkConfig =
-            if owner.kind == "bond" then { Bond = owner.interface; } else { Bridge = owner.interface; };
-        };
-
-        vlanDropIns = lib.concatMapAttrs (
-          logical: r:
-          let
-            link = settings.links.${logical};
-          in
-          # Malformed parents (missing/foreign) are reported by the
-          # assertions; do not render a drop-in for them.
-          lib.optionalAttrs
-            (r.kind == "vlan" && link.vlan.parent != null && settings.links ? ${link.vlan.parent})
-            {
-              "systemd/network/${stem link.vlan.parent}.network.d/50-vlan-${logical}.conf".text = ''
-                [Network]
-                VLAN=${r.interface}
-              '';
-            }
-        ) resolved;
-
-        netdevs = lib.concatMapAttrs (
-          logical: r:
-          let
-            link = settings.links.${logical};
-          in
-          lib.optionalAttrs (r.kind == "vlan") {
-            ${stem logical} = {
-              netdevConfig = {
-                Kind = "vlan";
-                Name = r.interface;
-              };
-              vlanConfig.Id = link.vlan.id;
-            };
-          }
-          // lib.optionalAttrs (r.kind == "bond") {
-            ${stem logical} = {
-              netdevConfig = {
-                Kind = "bond";
-                Name = r.interface;
-              };
-              bondConfig.Mode = if link.bond.mode != null then link.bond.mode else "802.3ad";
-            };
-          }
-          // lib.optionalAttrs (r.kind == "bridge") {
-            ${stem logical} = {
-              netdevConfig = {
-                Kind = "bridge";
-                Name = r.interface;
-              };
-            };
-          }
-        ) resolved;
-
-        networks = lib.concatMapAttrs (
-          logical: r:
-          if r.memberOf != null then
-            {
-              ${stem logical} = memberNetwork r resolved.${r.memberOf};
-            }
-          else
-            {
-              ${stem logical} = linkNetwork r;
-            }
-        ) resolved;
-
-        allInterfaces = lib.catAttrs "interface" (lib.attrValues resolved);
+        dhcpLinks = lib.filterAttrs (_: r: r.dhcp4 || r.dhcp6) resolved;
+        nameservers = lib.unique (lib.concatLists (lib.mapAttrsToList (_: r: r.nameservers) resolved));
         trustedInterfaces = lib.catAttrs "interface" (
           lib.attrValues (lib.filterAttrs (_: r: r.trust) resolved)
         );
@@ -953,7 +898,52 @@ in
         };
 
         nixosModule =
-          { lib, ... }:
+          { lib, pkgs, ... }:
+          let
+            dhcpHookScript = pkgs.writeScript "netif-dhcp-hook" ''
+              running() {
+                ${lib.getExe' pkgs.procps "pgrep"} -f "dhcpcd.* ''${IFS_IFNAME}( |$)" >/dev/null
+              }
+
+              case "$1" in
+                start)
+                  if running; then
+                    exit "$IFS_RC_OK"
+                  fi
+                  families=""
+                  if [ "$IFS_ARG_IPV4" = "true" ] && [ "$IFS_ARG_IPV6" != "true" ]; then
+                    families="-4"
+                  elif [ "$IFS_ARG_IPV6" = "true" ] && [ "$IFS_ARG_IPV4" != "true" ]; then
+                    families="-6"
+                  fi
+                  ${lib.getExe pkgs.dhcpcd} -b $families "$IFS_IFNAME" || exit "$IFS_RC_ERROR"
+                  exit "$IFS_RC_STARTED"
+                  ;;
+                check-start)
+                  if running; then
+                    exit "$IFS_RC_OK"
+                  fi
+                  exit "$IFS_RC_STARTED"
+                  ;;
+                stop)
+                  if running; then
+                    ${lib.getExe pkgs.dhcpcd} -x "$IFS_IFNAME" >/dev/null 2>&1 || exit "$IFS_RC_ERROR"
+                    exit "$IFS_RC_STOPPED"
+                  fi
+                  exit "$IFS_RC_OK"
+                  ;;
+                check-stop)
+                  if running; then
+                    exit "$IFS_RC_STOPPED"
+                  fi
+                  exit "$IFS_RC_OK"
+                  ;;
+                *)
+                  exit "$IFS_RC_ERROR"
+                  ;;
+              esac
+            '';
+          in
           {
             imports = [ ../../lib/kube-cluster/network-facts.nix ];
 
@@ -966,18 +956,29 @@ in
             ++ linkAssertions instanceName machine.name settings.links resolved;
 
             networking = {
+              ifstate.settings = {
+                interfaces = ifstateInterfaces;
+                routing = {
+                  routes = ifstateRoutes;
+                  rules = ifstateRules;
+                };
+                parameters = {
+                  hooks = lib.mapAttrs' (
+                    logical: _:
+                    lib.nameValuePair (dhcpHookName logical) {
+                      script = "${dhcpHookScript}";
+                    }
+                  ) dhcpLinks;
+                  ignore.routes = lib.mapAttrsToList (_: r: {
+                    dev = r.interface;
+                    proto = 4;
+                  }) dhcpLinks;
+                };
+              };
+              inherit nameservers;
               nftables.enable = lib.mkDefault true;
-              useNetworkd = true;
               firewall.trustedInterfaces = trustedInterfaces;
-              networkmanager.unmanaged = allInterfaces;
             };
-
-            systemd.network = {
-              enable = true;
-              inherit netdevs networks;
-            };
-
-            environment.etc = vlanDropIns;
 
             clan = {
               core.networking.targetHost = lib.mkIf (settings.targetHost && targetHostValue != null) (
@@ -1086,6 +1087,8 @@ in
     in
     {
       nixosModule = _: {
+        imports = [ (import ../../lib/ifstate.nix { inherit ifstateOverlay; }) ];
+
         assertions = [
           {
             assertion = interfaceDuplicates == [ ];

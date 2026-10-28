@@ -82,21 +82,27 @@
   };
 
   nodes =
-    let
-      resources = {
+    lib.mapAttrs
+      (name: address: { pkgs, ... }: {
+        environment.systemPackages = [ pkgs.tcpdump ];
+        imports = [
+          (import ../../../../tests/ifstate-vm.nix {
+            ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+            addresses = [ "${address}/24" ];
+          })
+        ];
         virtualisation = {
           cores = 1;
           memorySize = 1536;
         };
+      })
+      {
+        spine-a = "192.168.1.4";
+        spine-b = "192.168.1.5";
+        alpha = "192.168.1.1";
+        beta = "192.168.1.2";
+        gamma = "192.168.1.3";
       };
-    in
-    {
-      spine-a = resources;
-      spine-b = resources;
-      alpha = resources;
-      beta = resources;
-      gamma = resources;
-    };
 
   testScript = ''
     machines = [spine_a, spine_b, alpha, beta, gamma]
@@ -125,6 +131,10 @@
             "ip rule >&2",
             "ip route get 192.168.77.3 from 192.168.77.4 >&2 || true",
             "ip -6 route get fd77::3 from fd77::4 >&2 || true",
+            "ip route get 192.168.77.5 from 192.168.77.2 >&2 || true",
+            "ip route get 192.168.77.2 from 192.168.77.5 >&2 || true",
+            "ifstatecli check >&2 || true",
+            "cat /tmp/ping.cap >&2 || true",
             "sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding >&2",
             "nft list ruleset >&2",
             "wg show >&2",
@@ -132,7 +142,7 @@
             "vtysh -c 'show bfd peers brief' >&2",
             "vtysh -c 'show ip route' >&2; vtysh -c 'show ipv6 route' >&2",
             "journalctl -u frr --no-pager -l | tail -n 100 >&2",
-            "journalctl -u systemd-networkd --no-pager -l | tail -n 80 >&2",
+            "journalctl -u ifstate.service --no-pager -l | tail -n 80 >&2",
         ]:
             machine.execute(command)
 
@@ -146,7 +156,7 @@
     try:
         start_all()
         for machine in machines:
-            machine.wait_for_unit("systemd-networkd.service", timeout=120)
+            machine.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             machine.wait_for_unit("frr.service", timeout=180)
             expected = adjacency_counts[machine.name]
             machine.wait_until_succeeds(
@@ -167,6 +177,8 @@
                 timeout=240,
             )
 
+        for machine in [spine_b, spine_a, gamma]:
+            machine.execute("tcpdump -ni any 'host 192.168.77.2 or host 192.168.77.5' > /tmp/ping.cap 2>&1 &")
         for source in machines:
             for target in machines:
                 if source.name == target.name:
@@ -174,6 +186,8 @@
                 ipv4, ipv6 = stable[target.name]
                 source.wait_until_succeeds(f"ping -c 2 -W 2 {ipv4}", timeout=120)
                 source.wait_until_succeeds(f"ping -6 -c 2 -W 2 {ipv6}", timeout=120)
+        for machine in [spine_b, spine_a, gamma]:
+            machine.execute("pkill tcpdump || true")
 
         for machine in machines:
             handshakes = machine.succeed("wg show all latest-handshakes").strip().splitlines()

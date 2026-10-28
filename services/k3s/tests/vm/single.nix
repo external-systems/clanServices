@@ -1,11 +1,14 @@
-_: {
+{ lib, inputs, ... }:
+{
   name = "k3s-single";
 
   clan = {
     directory = ./.;
     test.useContainers = false;
 
-    modules.wireguard-mesh = ../../../wireguard-mesh/default.nix;
+    modules.wireguard-mesh = lib.modules.importApply ../../../wireguard-mesh/default.nix {
+      ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+    };
     exportInterfaces.node_transport = ../../../../lib/node-transport-interface.nix;
 
     inventory = {
@@ -78,6 +81,12 @@ _: {
       };
     in
     {
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+          addresses = [ "192.168.1.1/24" ];
+        })
+      ];
       virtualisation = {
         cores = 2;
         memorySize = 4096;
@@ -124,7 +133,7 @@ _: {
     try:
         start_all()
 
-        alpha.wait_for_unit("systemd-networkd.service", timeout=120)
+        alpha.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
         alpha.wait_for_unit("haproxy.service", timeout=240)
         alpha.wait_for_unit("k3s.service", timeout=600)
 
@@ -141,7 +150,10 @@ _: {
             timeout=900,
         )
         alpha.succeed("test -f /etc/clan-bootstrap/k3s/bundle.yaml")
-        alpha.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.metadata.labels.clan\.lol/cluster}' | grep -q '^k3s$'")
+        alpha.wait_until_succeeds(
+            "kubectl get configmap -n kube-system cilium-config -o jsonpath='{.metadata.labels.clan\.lol/cluster}' | grep -q '^k3s$'",
+            timeout=300,
+        )
 
         # The initial server seeded the pre-generated PKI before k3s started,
         # and the per-node haproxy LB is bound on the mesh address.

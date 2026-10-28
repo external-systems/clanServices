@@ -895,7 +895,7 @@ let
               };
 
               systemd.services.haproxy = {
-                after = [ "systemd-networkd.service" ];
+                after = [ "ifstate.service" ];
                 unitConfig.StartLimitIntervalSec = 0;
               };
             }

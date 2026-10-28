@@ -61,6 +61,94 @@ hard way.
   pings, both AFs and BFD, RIB/FIB, and MTU checks
   (`ROUTED_FABRIC_TRANSPORT_OK`).
 
+## IfState 2.5.1 migration probes (2026-10-27)
+
+- Pin the package with `overridePythonAttrs`, not a version-only
+  `overrideAttrs`: 2.5 moved to the `src/` layout and `uv_build`. The pure
+  pyroute2 variant built successfully. Package metadata is authoritative:
+  upstream 2.5.1 still prints `ifstatecli 2.5.0`.
+- Import the shared IfState base once per machine, not once per service
+  instance. Set `nixpkgs.overlays` instead of assigning
+  `networking.ifstate.package`; overlays compose across netif,
+  routed-fabric, and wireguard-mesh while package options are unique.
+  `perInstance` is the right place for links/routes, `perMachine` for the
+  base and cross-instance checks.
+- IfState settings must be keyed by actual Linux interface names, not netif
+  logical labels. Also stringify hook derivations (`"${script}"`): placing a
+  derivation directly in the YAML settings tree recurses during
+  serialization. `lib/ifstate.nix`, `lib/ifstate-overlay.nix`, and
+  `tests/ifstate-vm.nix` are the current composition points.
+- IfState is a full reconcile, so VM proof must include a changed candidate,
+  `ifstatecli check`, and restoration, not just initial boot. The netif VM
+  changed an address live with no reboot, preserved the other links, and
+  restored the original (`NETIF_IFSTATE_LIVE_OK`, log
+  `.baton-pass/vm-logs/ifstate-netif-live-17.log`). Candidate YAML copied
+  from the Nix store must be made writable. The packaged `yq` is the Python
+  variant and requires `-y` with `-i`; `yq -i` alone is rejected.
+- Global forwarding belongs in `sysctl_conf`. The structured global IPv4
+  lookup failed with `reading sysctl ipv4/ip_forward failed: No such file or
+  directory`, leaving `net.ipv4.ip_forward = 0` and dropping transit at a
+  spine. Rendering
+  `net.ipv4.ip_forward = 1` and `net.ipv6.conf.all.forwarding = 1` through
+  `sysctl_conf` fixed it. Failure evidence:
+  `.baton-pass/vm-logs/ifstate-routed-fabric-23.log`; passing transport and
+  spine-HA evidence: `.baton-pass/vm-logs/ifstate-routed-fabric-24.log`.
+  Packet capture before the fix showed the frame arriving at the spine with
+  no forwarding, despite correct RIB/FIB and WireGuard ACLs.
+- WireGuard private keys use a runtime `!include` string and root-owned
+  `0400` vars files with `restartUnits = [ "ifstate.service" ]`. Do not put
+  keys in settings or store text. IfState creates transfer addresses and
+  peers correctly; the mesh suite passed real dual-stack handshakes
+  (`.baton-pass/vm-logs/ifstate-wireguard-mesh-20.log`).
+- The shared base ignores Cilium interface names and table 200 so live apply
+  does not delete Cilium-owned links or policy rules. FRR BGP routes need no
+  duplicate IfState routes: Zebra owns them. k3s and RKE2 single-node tunnel
+  suites subsequently passed API, Cilium health, Service, and DNS probes
+  (`.baton-pass/vm-logs/ifstate-k3s-single-28.log` and
+  `.baton-pass/vm-logs/ifstate-rke2-single-30.log`).
+- Test underlays need the same dual-stack addresses as the inventory's BGP
+  peers. Replacing the test driver's addresses with IPv4-only left the
+  `2001:db8:1::/64` upstream session `Active`; restore both families before
+  diagnosing FRR. Static VM underlays also need a deterministic resolver:
+  CoreDNS otherwise exits with `plugin/forward: no valid upstream addresses
+  found`. The external-DNS suites must still use their dedicated DNS VM, not
+  the placeholder, to avoid a `plugin/loop`.
+- A oneshot's `Result=success` can be observed while it is still activating.
+  Wait for the actual resource or inactive state before asserting bundle or
+  manifest contents. k3s's ConfigMap appeared after the first premature
+  query, and RKE2's deployer removed `rke2-cilium.yaml` after the first
+  premature query.
+- A per-interface hook's `name` must exactly match its key under
+  `parameters.hooks`: keying the definition by the logical link while the
+  reference used the namespaced hook name produced `Hook ... is unknown!`
+  and no client. The eval suite now checks that registration/reference
+  parity. Failure: `.baton-pass/vm-logs/ifstate-netif-dhcp-39.log`.
+- systemd's default `KillMode=control-group` kills hook-started DHCP
+  clients when the IfState oneshot deactivates. Set
+  `systemd.services.ifstate.serviceConfig.KillMode = "process"` so
+  persistent hook daemons survive. The DHCP suite re-applies IfState,
+  requires exactly one client, preserves DHCPv4/default-route and SLAAC,
+  and finishes with a clean check. Evidence:
+  `.baton-pass/vm-logs/ifstate-netif-dhcp-final-48.log`.
+  `dhcpcd -p` did not yield a usable pidfile record here; per-interface
+  process detection made start/check actions idempotent instead.
+- `wg show all latest-handshakes` fields are interface, peer public key,
+  timestamp: check `$3`, never `$2`. Four-node endpoint fixtures should
+  export literal underlay IPs, not VM hostnames whose default gamma/delta
+  mappings can contradict forced addresses. Wrong endpoints repeatedly
+  failed `/cacerts` with EOF before Kubernetes started; literal IPs fixed
+  it. Both fixes are in the native/tunnel data-plane and ClusterMesh
+  fixtures.
+- Default ClusterMesh `placement = "voters"` selects server nodes only.
+  A one-server/one-agent fixture has one apiserver replica and one
+  advertiser, not two. Assert desired replicas and placement before
+  checking its route; do not invent ECMP for an agent with no backend.
+- Global-Service backends are eventually consistent. Twenty immediate
+  requests can see only the local backend even with healthy peering. Use a
+  bounded poll that still requires both backends. The final IfState
+  native/tunnel/selective/external ClusterMesh matrix and both native
+  data-plane suites pass with these assertions.
+
 ## systemd-networkd and netif
 
 - NixOS VM networking renders generic `40-ethN.network` units. Netif units

@@ -132,7 +132,9 @@ let
       inherit exportInterfaces;
       modules = {
         routed-fabric = module;
-        netif = ../../netif/default.nix;
+        netif = lib.modules.importApply ../../netif/default.nix {
+          ifstateOverlay = import ../../../lib/ifstate-overlay.nix;
+        };
         k3s = clusterModule;
       };
       machines = machineConfigs;
@@ -150,15 +152,15 @@ let
   failedAssertion =
     config: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) config.assertions;
-  netdevsFor =
+  interfacesFor =
     config:
     lib.filterAttrs (
-      name: _: lib.hasPrefix "50-routed-fabric-fleet-rf" name
-    ) config.systemd.network.netdevs;
+      name: _: lib.hasPrefix "rf" name && !lib.hasPrefix "rflo" name
+    ) config.networking.ifstate.settings.interfaces;
   allowedFor =
     config:
-    map (netdev: (builtins.head netdev.wireguardPeers).AllowedIPs) (
-      builtins.attrValues (netdevsFor config)
+    map (interface: (builtins.head (lib.attrValues interface.wireguard.peers)).allowedips) (
+      builtins.attrValues (interfacesFor config)
     );
 
   withoutSpines = mkEvaled (
@@ -348,22 +350,22 @@ let
   endpointSpineB = endpointSourcesEval.config.nixosConfigurations.spine-b.config;
   endpointClient = endpointSourcesEval.config.nixosConfigurations.client.config;
   spineSpineKey = fabric.adjacencyKey "fleet" "spine-a" "spine-b";
-  spineSpineUnit = "50-routed-fabric-fleet-${fabric.adjacencyName spineSpineKey}";
+  spineSpineInterface = fabric.adjacencyName spineSpineKey;
   peerEndpoint =
-    config: unit:
+    config: interfaceName:
     let
-      netdev = config.systemd.network.netdevs.${unit};
+      interface = config.networking.ifstate.settings.interfaces.${interfaceName};
     in
-    (builtins.head netdev.wireguardPeers).Endpoint or null;
+    (builtins.head (lib.attrValues interface.wireguard.peers)).endpoint or null;
 in
 {
   rendering = {
     test_oneInterfacePerAdjacency = {
       expr = {
-        dualHomedLeaf = builtins.length (builtins.attrNames (netdevsFor client));
-        singleHomedLeaf = builtins.length (builtins.attrNames (netdevsFor admin));
-        spineA = builtins.length (builtins.attrNames (netdevsFor spine));
-        spineB = builtins.length (builtins.attrNames (netdevsFor spineB));
+        dualHomedLeaf = builtins.length (builtins.attrNames (interfacesFor client));
+        singleHomedLeaf = builtins.length (builtins.attrNames (interfacesFor admin));
+        spineA = builtins.length (builtins.attrNames (interfacesFor spine));
+        spineB = builtins.length (builtins.attrNames (interfacesFor spineB));
       };
       expected = {
         dualHomedLeaf = 2;
@@ -414,34 +416,34 @@ in
       };
     };
     test_namesPortsAndMtu = {
-      expr = lib.sortOn (entry: entry.ListenPort) (
-        map (
-          netdev:
+      expr = lib.sortOn (entry: entry.listenPort) (
+        lib.mapAttrsToList (
+          name: interface:
           let
-            peer = builtins.head netdev.wireguardPeers;
+            peer = builtins.head (lib.attrValues interface.wireguard.peers);
           in
           {
-            nameLength = lib.stringLength netdev.netdevConfig.Name;
-            peerCount = builtins.length netdev.wireguardPeers;
-            inherit (netdev.netdevConfig) MTUBytes;
-            inherit (netdev.wireguardConfig) ListenPort;
-            allowedDefaultAclOnly = !(lib.hasInfix "0.0.0.0/0" (builtins.toJSON peer.AllowedIPs));
+            nameLength = lib.stringLength name;
+            peerCount = builtins.length (lib.attrValues interface.wireguard.peers);
+            inherit (interface.link) mtu;
+            listenPort = interface.wireguard.listen_port;
+            allowedDefaultAclOnly = !(lib.hasInfix "0.0.0.0/0" (builtins.toJSON peer.allowedips));
           }
-        ) (builtins.attrValues (netdevsFor client))
+        ) (interfacesFor client)
       );
       expected = [
         {
           nameLength = 15;
           peerCount = 1;
-          MTUBytes = 1404;
-          ListenPort = 52679;
+          mtu = 1404;
+          listenPort = 52679;
           allowedDefaultAclOnly = true;
         }
         {
           nameLength = 15;
           peerCount = 1;
-          MTUBytes = 1404;
-          ListenPort = 54843;
+          mtu = 1404;
+          listenPort = 54843;
           allowedDefaultAclOnly = true;
         }
       ];
@@ -450,9 +452,9 @@ in
       expr =
         let
           key = fabric.adjacencyKey "fleet" "client" "spine-a";
-          unit = "50-routed-fabric-fleet-${fabric.adjacencyName key}";
+          interfaceName = fabric.adjacencyName key;
         in
-        map (config: config.systemd.network.netdevs.${unit}.wireguardConfig.ListenPort) [
+        map (config: config.networking.ifstate.settings.interfaces.${interfaceName}.wireguard.listen_port) [
           portClient
           portSpine
         ];
@@ -462,28 +464,40 @@ in
       ];
     };
     test_netifExportMtuDerivation = {
-      expr = map (netdev: netdev.netdevConfig.MTUBytes) (builtins.attrValues (netdevsFor mtuClient));
+      expr = map (interface: interface.link.mtu) (builtins.attrValues (interfacesFor mtuClient));
       expected = [
         1304
         1304
       ];
     };
+    test_netifAndFabricShareIfstateBase = {
+      expr = {
+        version = mtuClient.networking.ifstate.package.version;
+        networkd = mtuClient.systemd.network.enable;
+        useNetworkd = mtuClient.networking.useNetworkd;
+      };
+      expected = {
+        version = "2.5.1";
+        networkd = false;
+        useNetworkd = false;
+      };
+    };
     test_endpointSourcesResolution = {
       expr =
         let
-          leafUnits = lib.filterAttrs (
-            n: _: lib.hasPrefix "50-routed-fabric-fleet-rf" n && n != spineSpineUnit
-          ) endpointSpineA.systemd.network.netdevs;
+          leafInterfaces = lib.filterAttrs (
+            n: _: lib.hasPrefix "rf" n && !lib.hasPrefix "rflo" n && n != spineSpineInterface
+          ) endpointSpineA.networking.ifstate.settings.interfaces;
         in
         {
-          spinePairOnA = peerEndpoint endpointSpineA spineSpineUnit;
-          spinePairOnB = peerEndpoint endpointSpineB spineSpineUnit;
+          spinePairOnA = peerEndpoint endpointSpineA spineSpineInterface;
+          spinePairOnB = peerEndpoint endpointSpineB spineSpineInterface;
           leafPeersOnSpineHaveNoEndpoint = lib.all (
-            netdev: (builtins.head netdev.wireguardPeers).Endpoint or null == null
-          ) (builtins.attrValues leafUnits);
+            interface: (builtins.head (lib.attrValues interface.wireguard.peers)).endpoint or null == null
+          ) (builtins.attrValues leafInterfaces);
           dualHomedLeafDialsBothSpines =
-            (peerEndpoint endpointClient "50-routed-fabric-fleet-rfd0d91d1f47a84" == "192.168.1.4:52679")
-            && (peerEndpoint endpointClient "50-routed-fabric-fleet-rfaa5538a64228d" == "192.168.1.5:54843");
+            (peerEndpoint endpointClient "rfd0d91d1f47a84" == "192.168.1.4:52679")
+            && (peerEndpoint endpointClient "rfaa5538a64228d" == "192.168.1.5:54843");
         };
       expected = {
         spinePairOnA = "192.168.1.5:55962";
@@ -495,20 +509,19 @@ in
     test_wireguardLinkLocalAddressing = {
       expr =
         let
-          networks = builtins.attrValues (
-            lib.filterAttrs (
-              name: _: lib.hasPrefix "50-routed-fabric-fleet-rf" name && name != "50-routed-fabric-fleet-loopback"
-            ) spine.systemd.network.networks
-          );
+          interfaces = builtins.attrValues (interfacesFor spine);
         in
         {
           linkLocal = lib.all (
-            network:
-            lib.any (address: lib.hasPrefix "fe80::" address && lib.hasSuffix "/64" address) network.address
-          ) networks;
+            interface:
+            lib.any (
+              address: builtins.isString address && lib.hasPrefix "fe80::" address && lib.hasSuffix "/64" address
+            ) interface.addresses
+          ) interfaces;
           transferScope = lib.all (
-            network: lib.all (address: address.Scope == "link") network.addresses
-          ) networks;
+            interface:
+            lib.all (address: address.scope == "link") (builtins.filter builtins.isAttrs interface.addresses)
+          ) interfaces;
         };
       expected = {
         linkLocal = true;
@@ -517,7 +530,8 @@ in
     };
     test_loopbackAndIntegratedFrr = {
       expr = {
-        addresses = spine.systemd.network.networks."50-routed-fabric-fleet-loopback".address;
+        addresses =
+          spine.networking.ifstate.settings.interfaces.${spine.clan.networkFacts.fabric.fleet.loopback}.addresses;
         bgpd = spine.services.frr.bgpd.enable;
         bfdd = spine.services.frr.bfdd.enable;
         bfd = lib.hasInfix "bfd" spine.services.frr.config;
@@ -630,23 +644,16 @@ in
     test_borderCryptoAclAndSourceReturn = {
       expr =
         let
-          sourceNetworks = lib.filterAttrs (
-            _: network: network.routingPolicyRules != [ ]
-          ) borderSpine.systemd.network.networks;
-          sourceRoutes = lib.concatMap (network: network.routes) (builtins.attrValues sourceNetworks);
+          sourceRoutes = borderSpine.networking.ifstate.settings.routing.routes;
         in
         {
           spineDefaultAcl = lib.hasInfix "0.0.0.0/0" (builtins.toJSON (allowedFor borderSpine));
           peerDefaultAcl = lib.hasInfix "::/0" (builtins.toJSON (allowedFor borderClient));
           upstream = lib.hasInfix "neighbor 203.0.113.1 remote-as 64500" borderSpine.services.frr.config;
-          policyTables = lib.unique (map (route: route.Table) sourceRoutes);
+          policyTables = lib.unique (map (route: route.table) sourceRoutes);
           mainTables = lib.unique (
-            map (route: route.Table or 254) (
-              lib.concatMap (network: network.routes) (
-                builtins.attrValues (
-                  lib.filterAttrs (_: network: network.routingPolicyRules == [ ]) borderSpine.systemd.network.networks
-                )
-              )
+            map (route: route.table or "main") (
+              builtins.filter (route: (route.table or "main") == "main") sourceRoutes
             )
           );
         };

@@ -14,14 +14,13 @@ the Cilium chart. Clan never installs a GitOps controller.
 ## The layers
 
 **Machines and transport.** Machines are NixOS clan machines. `netif` owns
-inventory-declared links and static routes, multi-instance and multi-link
-(implemented, 5R1). `routed-fabric` provides the native tested overlay:
-dual-stack, encrypted flat L3 with one WireGuard interface per adjacency
-and FRR/BFD/Zebra on every fabric machine (implemented 5R1 in the
-round-16 `member`/`hub` shape; the round-17 `leaf`/`spine` rename is the
-planned 5R5 target).
-`wireguard-mesh` is the supported tunnel/VXLAN profile over the same
-generic `node_transport` export.
+inventory-declared links and static routes, multi-instance and multi-link.
+All static networking renders through IfState 2.5.1 and reconciles live;
+there is no systemd-networkd, netdev, or scripted network renderer.
+`routed-fabric` provides the native overlay: dual-stack, encrypted flat L3
+with `leaf`/`spine` topology, one WireGuard interface per adjacency, and
+FRR/BFD/Zebra on every fabric machine. `wireguard-mesh` is the supported
+tunnel/VXLAN profile over the same generic `node_transport` export.
 
 **Distro runtime.** `rke2` and `k3s` are thin services: they own bootstrap,
 TLS directory, and join semantics. Everything shared — interfaces,

@@ -1,6 +1,6 @@
-{ lib, ... }:
+{ lib, inputs, ... }:
 import ../../../../lib/kube-cluster/tests/vm/selective.nix {
-  inherit lib;
+  inherit lib inputs;
   distro = "rke2";
   profile = "tunnel";
 }

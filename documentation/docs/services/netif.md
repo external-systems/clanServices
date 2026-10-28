@@ -1,10 +1,10 @@
 # netif
 
 `netif` is the inventory-facing clanService for core host network
-configuration (round 15, D53), **implemented in 5R1 (2026-10-25)**. It
-replaces static IP ownership by home's
+configuration (D53/D61). It replaces static IP ownership by home's
 `hostSpec.networking` and `machines.json`; borg's `lan` service is the
-behavioral reference.
+behavioral reference. IfState 2.5.1 is the only renderer and applies
+changes live without reboot.
 
 ## Contract
 
@@ -37,18 +37,19 @@ owns fabric policy routing — `netif` never renders fabric rules — and
 `netif` links never become a shared-L2 Kubernetes datapath. Within one
 instance, a VLAN child names its parent link, and bonds/bridges name
 physical member links; a physical link consumed as a member carries no
-addressing of its own. Every rendered unit is instance-namespaced
-(`10-netif-<instance>-<link>`).
+addressing of its own. Every DHCP hook is instance-namespaced
+(`netif-dhcp-<instance>-<link>`).
 
 Static core addresses and routes live in `inventory.nix`. A public fleet
 repo may obtain sensitive public-topology values from its
 `secrets`/`not-secret` input; those values are public on the deployed NixOS
 machine and are not clan vars.
 
-Supporting NixOS modules may configure Wi-Fi association, NetworkManager,
-driver quirks, or TCP tuning. They must not become a second owner of the
-static data plane. Provider-MAC attachment for day-2 KubeVirt (for example)
-is `netif` **bridge plumbing**, not a LoadBalancer pool concern.
+Supporting NixOS modules may configure Wi-Fi association, driver quirks,
+or TCP tuning. They must not enable NetworkManager or become a second
+owner of the static data plane. Provider-MAC attachment for day-2 KubeVirt
+(for example) is `netif` **bridge plumbing**, not a LoadBalancer pool
+concern.
 
 ## Exports and consumers
 
@@ -60,11 +61,10 @@ machine's resolved endpoint and the effective underlay MTU.
 (the machine endpoint first, then each `endpoint = true` link's static
 addresses) and derives link MTUs from the export. Consumers use
 `clanLib` export selectors, never raw scope keys. The same resolved
-link/interface/address/gateway/MTU/route configuration is what `netif`
-will publish to the per-node `clan.networkFacts` interface as underlay
-graph facts (D57, planned) — producer-owned, non-secret, and exposed
-through `readOnly = true` options; see
-[Network diagrams](../architecture/network-diagrams.md).
+link/interface/address/gateway/MTU/route configuration is published to the
+per-node `clan.networkFacts` interface as underlay graph facts (D57) —
+producer-owned, non-secret, and exposed through `readOnly = true` options;
+see [Network diagrams](../architecture/network-diagrams.md).
 
 ## Inventory example
 
@@ -118,9 +118,9 @@ route. For example, when `home-net` supplies the default through DHCP, a
 
 ## Status
 
-**Implemented (5R1, 2026-10-25)** — multi-instance, multi-link, with the
-eval and hermetic VM coverage listed below; suites are registered but not
-green-claimed. Coverage: static
-and DHCP/RA rendering, VLAN/bond/bridge links, on-link and policy routes,
-cross-instance ownership/default-route/DNS checks, export defaults, and
-routed-fabric endpoint consumption.
+Multi-instance, multi-link inventory renders exclusively through IfState
+2.5.1 (D61). Live static apply/check/restore and DHCPv4/SLAAC/default-route
+suites are green, including one persistent DHCP client across reapply and
+clean `ifstatecli check` output. Eval and VM coverage includes VLAN/bond/
+bridge links, on-link/policy routes, cross-instance ownership/default-route/
+DNS checks, export defaults, and routed-fabric endpoint consumption.
