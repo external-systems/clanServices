@@ -48,12 +48,12 @@ let
   # Artifact-flake Cilium facts (chart version -> committed manifest path;
   # image set -> airgap tarball packages). Pure: committed source files.
   ciliumVersions = import (inputs.pkgs + "/pkgs/cilium/versions.nix");
-  ciliumManifest = inputs.pkgs + "/manifests/cilium/${ciliumVersions.chartVersion}.yaml";
+  ciliumManifest = inputs.pkgs.lib.cilium.manifest;
 
   # Artifact-flake CoreDNS pin (D46): the uniform clan-rendered
   # cluster.local DNS image. Pure: committed source file.
   corednsVersions = import (inputs.pkgs + "/pkgs/coredns/versions.nix");
-  coreDNSImageRef = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
+  coreDNSImageRef = inputs.pkgs.lib.coredns.imageRef;
 
   roleInterface =
     { lib, ... }:
@@ -520,11 +520,9 @@ let
             mesh = meshResolved;
           };
 
-          effectiveK3sPackage =
-            if settings.packages.k3s != null then
-              settings.packages.k3s
-            else
-              self.inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}.k3s;
+          effectiveK3sPackage = if settings.packages.k3s != null then settings.packages.k3s else pkgs.k3s;
+
+          artifactPackages = inputs.pkgs.packages.${pkgs.stdenv.hostPlatform.system};
 
           imageArchSuffix =
             if pkgs.stdenv.hostPlatform.isx86_64 then
@@ -534,41 +532,11 @@ let
             else
               throw "k3s/${instanceName}: unsupported platform ${pkgs.stdenv.hostPlatform.system}";
 
-          # The artifact flake's digest-pinned Cilium image tarballs match
-          # the bundle's manifest exactly (D26/D40 airgap). The pins come
-          # from the pkgs flake's committed versions.nix; the pullImage
-          # FODs are content-addressed by the same hashes, so they are
-          # byte-identical to pkgs' image-cilium-* / cilium-airgap-images
-          # tarballs. amd64 only (the pkgs airgap set is x86_64-linux);
-          # other systems fall back to registry pulls.
-          ciliumImages = lib.optionals pkgs.stdenv.hostPlatform.isx86_64 (
-            map (
-              img:
-              pkgs.dockerTools.pullImage {
-                inherit (img) sha256;
-                imageName = img.repo;
-                imageDigest = img.digest;
-                finalImageName = img.repo;
-                finalImageTag = img.tag;
-                os = "linux";
-                arch = "amd64";
-              }
-            ) ciliumVersions.images
-          );
+          # The artifact flake publishes the digest-pinned Cilium tarballs
+          # matching the bundle's manifest for each supported system.
+          ciliumImages = map (name: artifactPackages.${name}) inputs.pkgs.lib.cilium.imagePackageNames;
 
-          # The clan CoreDNS image (D46), digest-pinned like the Cilium set
-          # (same content-addressed FOD as the pkgs flake's image-coredns).
-          coreDNSImages = lib.optional pkgs.stdenv.hostPlatform.isx86_64 (
-            pkgs.dockerTools.pullImage {
-              inherit (corednsVersions) sha256;
-              imageName = corednsVersions.repo;
-              imageDigest = corednsVersions.digest;
-              finalImageName = corednsVersions.repo;
-              finalImageTag = corednsVersions.tag;
-              os = "linux";
-              arch = "amd64";
-            }
-          );
+          coreDNSImages = [ artifactPackages.image-coredns ];
 
           defaultImages = [
             effectiveK3sPackage."airgap-images-${imageArchSuffix}-tar-zst"
@@ -728,6 +696,8 @@ let
 
           config = lib.mkMerge [
             {
+              nixpkgs.overlays = lib.mkAfter [ inputs.pkgs.overlays.kubernetes ];
+
               clan.kubeClusters.${instanceName} = {
                 renderedDistroConfig = cleanConfig;
                 bundleJson = lib.mkIf (isInit && settings.bootstrap.apply) bundle.json;

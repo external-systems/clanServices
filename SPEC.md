@@ -4,11 +4,19 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 19 (2026-10-28): **the artifact flake is the packaging and shared-input
+authority (D62).** `external-systems/pkgs` pins nixpkgs and flake-parts, owns
+the IfState/Kubernetes overlays and per-system airgap artifacts, and remains a
+replaceable transitive input. `clanServices` follows those shared inputs,
+re-exports the overlays, and consumes published manifests and images instead
+of rebuilding them. VM suites now live only under
+`legacyPackages.<system>.vmTests`; `checks` is static-only.
+
 Round 18 (2026-10-27): **IfState 2.5.1 is the exclusive static networking
 renderer (D61).** `netif`, `routed-fabric`, and `wireguard-mesh` render
 `networking.ifstate.settings`; systemd-networkd, netdevs, scripted network
 units, and `networking.interfaces` ownership are removed without shims.
-The shared per-machine base pins IfState through `lib/ifstate-overlay.nix`,
+The shared per-machine base applies `inputs.pkgs.overlays.ifstate`,
 disables competing managers, ignores Cilium-owned interfaces/table 200,
 and preserves hook daemons with `KillMode=process`. Inventory remains the
 source of truth for links, addresses, WireGuard peers, static/policy routes,
@@ -211,9 +219,9 @@ any GitOps tool manage spokes from a hub, but installs no GitOps controller
 itself. Day 2 = GitOps takes over: Cilium ownership transfers by adopting
 the identical published manifest set, and all other cluster software is
 installed and owned by GitOps repos. Artifact flake
-(`external-systems/pkgs`) pins distro runtimes, the Cilium chart with its
-committed inflated base manifest, and test fixtures; airgap-ready is the
-tested default. Every networking service also publishes its resolved
+(`external-systems/pkgs`) owns shared inputs, overlays, distro runtimes,
+committed manifests, per-system airgap images, and test fixtures (D62);
+airgap-ready is the tested default. Every networking service also publishes its resolved
 build-time facts through dependency-free `clan.networkFacts` NixOS
 options; a consumer-owned nix-topology wrapper translates those facts to
 buildable diagrams without becoming a clanServices dependency (D57).
@@ -332,7 +340,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D61)
+## 4. Decision record (D1–D62)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1207,8 +1215,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   static and policy routes, rules, and network sysctls for every machine
   managed by these clanServices. `netif`, `routed-fabric`, and
   `wireguard-mesh` compose one shared per-machine base through
-  `lib/ifstate.nix`; `lib/ifstate-overlay.nix` pins the package with the
-  pure-pyroute2 build. systemd-networkd, netdevs, scripted network units,
+  `lib/ifstate.nix`; `inputs.pkgs.overlays.ifstate` supplies the pinned
+  pure-pyroute2 package and the base asserts IfState >= 2.5. systemd-networkd, netdevs, scripted network units,
   NetworkManager, global `networking.useDHCP`, and parallel
   `networking.interfaces` ownership are forbidden — no compatibility
   renderer or migration shim. Changes apply through `ifstate.service`
@@ -1225,6 +1233,23 @@ unless noted) — revoked entries keep one-line reasons for history.
   reconfiguration, DHCPv4/default-route and SLAAC convergence with one
   persistent client, real WireGuard handshakes, fabric HA, and every
   dependent k3s/RKE2 native/tunnel/selective/external suite.
+
+### Round 19 decisions (2026-10-28) — active
+
+- **D62 `pkgs` owns artifacts and shared inputs; VM tests stay out of
+  `checks`.** `external-systems/pkgs` pins nixpkgs and flake-parts;
+  clanServices follows `pkgs/nixpkgs` and `pkgs/flake-parts` so artifact and
+  nixpkgs updates do not require an independent clanServices update. The
+  artifact flake owns the composed/default, Kubernetes, and IfState overlays,
+  the committed Cilium manifest, distro runtime packages, and amd64/arm64
+  airgap outputs for x86_64-linux and aarch64-linux. clanServices re-exports
+  those overlays and consumes the published manifest and per-system image
+  outputs; consumers may replace the transitive `pkgs` input but do not need
+  to declare it. Distro defaults come from the receiving machine's overlaid
+  `pkgs.k3s`/`pkgs.rke2`, with explicit package and image overrides retained.
+  `clan.nixosTests` remains the declaration interface, but the local adapter
+  emits `legacyPackages.<system>.vmTests`; `checks` contains only lightweight
+  static checks. VM derivations must never return to `checks`.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -1326,9 +1351,10 @@ bootstrap/TLS-dir/join semantics and Cilium resources; shared lib
 Cilium owns its datapath; the IfState ignore rules preserve those
 ownership boundaries. The generic `node_transport` schemaVersion 2 is
 declared OUTSIDE `lib/kube-cluster` as the neutral transport seam (D58).
-Artifact flake = only packaging input (distro runtimes, Cilium chart +
-committed inflated base manifest, test fixtures); consumers pin immutable
-revisions. Supporting NixOS modules may implement platform-specific
+Artifact flake = only packaging input and shared nixpkgs/flake-parts
+authority (overlays, distro runtimes, committed manifests, per-system airgap
+images, test fixtures); consumers lock immutable revisions and may replace
+the transitive input. Supporting NixOS modules may implement platform-specific
 association/tuning, never a parallel static data plane. Day-2 software is
 pinned by operator GitOps repos, never here (D39). The shared neutral
 `clan.networkFacts` schema belongs to clanServices; each producer owns its
@@ -1858,8 +1884,9 @@ of inventing addresses or runtime edges.
 
 Seams: pure renderer nix-unit tests (kubenix render determinism
 included); throwaway clans via `clanLib.clan` (inventory boundary);
-`clan.nixosTests` hermetic VM suites (one at a time, sandboxed
-authoritative); artifact source/hash/render gates (incl.
+`clan.nixosTests` hermetic VM suites exposed only through
+`legacyPackages.<system>.vmTests` (one at a time, sandboxed authoritative;
+never `checks`); artifact source/hash/render gates (incl.
 committed-manifest inflation proofs and publish-freshness checks,
 D26/D40). Standard internal HTTP test workload: **go-httpbin** (pinned,
 airgap-carried as a test-fixture artifact). Rules: hermetic/offline;
@@ -2169,8 +2196,9 @@ such as external-dns).
   private shared library; not Rancher Manager.
 - **Shared lib** — `lib/kube-cluster/` (renamed from
   `lib/rancher-cluster/`, D45): interfaces, renderers, vars, assertions.
-- **Artifact flake** — external-systems/pkgs; distro runtimes (last 3
-  minors, D34), Cilium chart + committed base manifest, test fixtures.
+- **Artifact flake** — external-systems/pkgs; nixpkgs/flake-parts authority,
+  overlays, distro runtimes (last 3 minors, D34), committed manifests,
+  per-system airgap images, test fixtures (D62).
 - **Distro** — the Kubernetes distribution a cluster instance runs:
   `rke2` | `k3s` | `kubernetes` (upstream, kubeadm-based, D23).
 - **distroDefaults** — per-distro-service knob; `true` on rke2/k3s

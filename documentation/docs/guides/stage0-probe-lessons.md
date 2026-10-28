@@ -76,8 +76,9 @@ hard way.
 - IfState settings must be keyed by actual Linux interface names, not netif
   logical labels. Also stringify hook derivations (`"${script}"`): placing a
   derivation directly in the YAML settings tree recurses during
-  serialization. `lib/ifstate.nix`, `lib/ifstate-overlay.nix`, and
-  `tests/ifstate-vm.nix` are the current composition points.
+  serialization. `lib/ifstate.nix`, `inputs.pkgs.overlays.ifstate`, and
+  `tests/ifstate-vm.nix` are the current composition points; the package
+  overlay itself lives in the external-systems/pkgs artifact repo.
 - IfState is a full reconcile, so VM proof must include a changed candidate,
   `ifstatecli check`, and restoration, not just initial boot. The netif VM
   changed an address live with no reboot, preserved the other links, and
@@ -424,5 +425,5 @@ hard way.
   extracting the lesson so they cannot leak into a final commit.
 - A dirty-tree VM run can invalidate clan-core `merged-test-dir-*` IFD
   products. Materialize every check with `nix eval
-  .#checks.x86_64-linux.<name>.drvPath` before `nix flake check --no-build`
+  .#legacyPackages.x86_64-linux.vmTests.<name>.drvPath` before a VM build
   when the store is cold.

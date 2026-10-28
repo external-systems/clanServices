@@ -12,8 +12,9 @@ One term per concept. Mirrors SPEC.md §10.
   the clusterInit node.
 - **Shared lib** — `lib/kube-cluster/`: interfaces, renderers, vars, and
   assertions shared by distro services.
-- **Artifact flake** — `external-systems/pkgs`: distro runtimes, Cilium
-  chart + committed base manifest, and test fixtures.
+- **Artifact flake** — `external-systems/pkgs`: nixpkgs/flake-parts
+  authority, distro and IfState overlays, runtime packages, committed
+  manifests, per-system airgap images, and test fixtures (D62).
 - **Distro** — `rke2`, `k3s`, or reserved upstream `kubernetes`.
 - **distroDefaults** — opt-in stock rke2/k3s packaged components;
   servicelb remains off.

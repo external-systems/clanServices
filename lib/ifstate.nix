@@ -10,6 +10,10 @@
       assertion = !config.networking.useDHCP;
       message = "clanServices networking is IfState-only; use per-link IfState DHCP hooks instead of networking.useDHCP";
     }
+    {
+      assertion = lib.versionAtLeast config.networking.ifstate.package.version "2.5";
+      message = "clanServices requires IfState >= 2.5; apply inputs.pkgs.overlays.ifstate or provide an equivalent newer package";
+    }
   ];
 
   nixpkgs.overlays = lib.mkAfter [ ifstateOverlay ];

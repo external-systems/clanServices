@@ -149,13 +149,13 @@ tarballs (matching the bundle's manifest exactly). Override
 Single/join/HA suites run on `wireguard-mesh`; the data-plane and native
 ClusterMesh suites run on `routed-fabric`. Additional tunnel, selective,
 and external-LB suites cover both profiles. All are exposed as
-`clan.nixosTests`:
+`clan.nixosTests`, exposed under `legacyPackages.x86_64-linux.vmTests`:
 
 ```bash
-nix build .#checks.x86_64-linux.rke2-single
-nix build .#checks.x86_64-linux.rke2-join
-nix build .#checks.x86_64-linux.rke2-ha
-nix build .#checks.x86_64-linux.rke2-data-plane
+nix build .#legacyPackages.x86_64-linux.vmTests.rke2-single
+nix build .#legacyPackages.x86_64-linux.vmTests.rke2-join
+nix build .#legacyPackages.x86_64-linux.vmTests.rke2-ha
+nix build .#legacyPackages.x86_64-linux.vmTests.rke2-data-plane
 ```
 
 - `rke2-single` — one server: PKI sync, haproxy LB, admin kubeconfig through

@@ -1,6 +1,6 @@
-_:
+{ inputs, ... }:
 let
-  ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+  ifstateOverlay = inputs.pkgs.overlays.ifstate;
 in
 {
   name = "netif-dhcp";

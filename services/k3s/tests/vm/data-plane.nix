@@ -356,7 +356,7 @@ in
     test.useContainers = false;
 
     modules.routed-fabric = lib.modules.importApply ../../../routed-fabric/default.nix {
-      ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+      ifstateOverlay = inputs.pkgs.overlays.ifstate;
     };
     exportInterfaces = {
       routed_fabric = ../../../routed-fabric/routed-fabric-interface.nix;
@@ -504,7 +504,7 @@ in
           imports = [
             commonNode
             (import ../../../../tests/ifstate-vm.nix {
-              ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+              ifstateOverlay = inputs.pkgs.overlays.ifstate;
               addresses = [
                 "192.168.1.1/24"
                 "2001:db8:1::1/64"
@@ -523,7 +523,7 @@ in
           imports = [
             commonNode
             (import ../../../../tests/ifstate-vm.nix {
-              ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+              ifstateOverlay = inputs.pkgs.overlays.ifstate;
               addresses = [
                 "192.168.1.2/24"
                 "2001:db8:1::2/64"
@@ -542,7 +542,7 @@ in
         {
           imports = [
             (import ../../../../tests/ifstate-vm.nix {
-              ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+              ifstateOverlay = inputs.pkgs.overlays.ifstate;
               addresses = [
                 "192.168.1.3/24"
                 "2001:db8:1::3/64"
@@ -837,8 +837,8 @@ in
             timeout=240,
         )
         beta.succeed("ip addr add 192.0.2.100/32 dev lo")
-        alpha.succeed("ip route add 192.0.2.100/32 via 192.168.1.2")
-        alpha.wait_until_succeeds(
+        router.succeed("ip route add 192.0.2.100/32 via 192.168.1.2")
+        router.wait_until_succeeds(
             "curl -sf --max-time 5 http://192.0.2.100:82/get | grep -q '\"url\"'",
             timeout=120,
         )
@@ -881,7 +881,7 @@ in
         router.fail("curl -sf --max-time 5 http://192.0.2.130/get")
         # The floating VIP blackholes: no controller re-homes it. This
         # assertion DOCUMENTS the window (D8) — it must keep failing.
-        alpha.fail("curl -sf --max-time 5 http://192.0.2.100:82/get")
+        router.fail("curl -sf --max-time 5 http://192.0.2.100:82/get")
         print("K3S_DATA_PLANE_OK")
     except Exception:
         safe_dump(alpha)

@@ -1,7 +1,11 @@
-# Decision record (D1–D61)
+# Decision record (D1–D62)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history.
+
+**Round 19 (2026-10-28) — artifact authority and static-only checks.** Added
+D62: `pkgs` owns shared inputs, overlays, packages, and airgap artifacts; VM
+suites moved to `legacyPackages.<system>.vmTests`.
 
 **Round 18 (2026-10-27) — IfState-only static networking.** Added D61;
 revised D44 and D50. IfState 2.5.1 exclusively renders physical and virtual
@@ -166,15 +170,32 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D59 | active (r17) | Fabric topology roles renamed leaf/spine; automatic symmetric adjacency graph (every spine pair adjacent, leaves default to all spines, explicit leaf subset allowed, no mutual lists); routed_fabric and networkFacts schemas bump to 2 |
 | D60 | active (r17, amended 2026-10-26) | ClusterMesh placement selectors (voters/workers/all/labels) and exposure enum auto\|internal-load-balancer\|node-port\|external-load-balancer; NodePort pins exactly one apiserver per selected node; internal exposure is ONE pinned IPv4 VIP (host offset `0x79`) from the existing `<instance>-fabric` pool — control plane IPv4-only on Cilium 1.20.3, data plane stays dual-stack; external always wins with explicit non-clan class + DNS name |
 | D61 | active (r18) | IfState 2.5.1 is the exclusive static network renderer; live reconciliation, no networkd/netdev/scripted networking, per-link DHCP hooks, runtime-secret includes, FRR/Cilium ownership boundaries |
+| D62 | active (r19) | `pkgs` owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
+
+## Round 19 decisions in detail
+
+### D62 — Artifact authority and static-only checks
+
+`external-systems/pkgs` pins nixpkgs and flake-parts and owns the IfState and
+Kubernetes overlays, distro packages, committed manifests, and per-system
+airgap outputs. clanServices follows those shared inputs, re-exports the
+overlays, and consumes published artifacts instead of rebuilding them. The
+`pkgs` input remains replaceable by downstream users, but consumers do not
+need to declare it directly.
+
+`clan.nixosTests` is still the declaration interface. The local output adapter
+places every suite under `legacyPackages.<system>.vmTests`; `checks` contains
+only lightweight static checks. VM derivations must never return to `checks`.
 
 ## Round 18 decisions in detail
 
 ### D61 — IfState-only static networking
 
 `netif`, `routed-fabric`, and `wireguard-mesh` render one composed
-`networking.ifstate.settings` tree. `lib/ifstate-overlay.nix` pins IfState
-2.5.1; `lib/ifstate.nix` supplies the per-machine base, package overlay,
-competing-manager assertions, and Cilium/table-200 ignores. The service
+`networking.ifstate.settings` tree. `inputs.pkgs.overlays.ifstate` supplies
+IfState 2.5.1; `lib/ifstate.nix` supplies the per-machine base, package
+overlay, version assertion, competing-manager assertions, and
+Cilium/table-200 ignores. The service
 renderers own only their declared objects: netif links/routes and DHCP
 hooks, fabric loopback/WireGuard/policy/sysctls, or the mesh's one shared
 WireGuard interface. FRR/Zebra and Cilium retain dynamic ownership.

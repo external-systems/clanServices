@@ -70,11 +70,13 @@ URL and agent kubeconfigs point at it, so server loss never strands
 machines. This is control-plane HA only — there is no edge proxy in the
 contract.
 
-**Artifact flake** (`external-systems/pkgs`). Pins the distro runtimes (last
-three Kubernetes minors each, D34), the Cilium chart with its committed
-inflated base manifest, and the go-httpbin test fixture. Rendering is
-two-layer: the chart is helm-inflated at update time and committed as source
-(zero IFD downstream); clanServices applies per-cluster variation by kubenix
+**Artifact flake** (`external-systems/pkgs`). Authoritative for nixpkgs and
+flake-parts, the IfState/Kubernetes overlays, distro runtimes (last three
+Kubernetes minors each, D34), the committed Cilium base manifest, per-system
+Cilium/CoreDNS airgap images, and the go-httpbin test fixture (D62).
+Rendering is two-layer: the chart is helm-inflated at update time and
+committed as source (zero IFD downstream); clanServices follows the shared
+inputs, re-exports the overlays, and applies per-cluster variation by kubenix
 module merging over the typed resource tree (D26). Hermetic and airgap-ready
 by default.
 
@@ -90,7 +92,7 @@ GitOps-owned. See [Secrets](../guides/secrets.md).
 | --- | --- |
 | Bootstrap, TLS dir, join semantics | thin distro service (`rke2` / `k3s`) |
 | Interfaces, renderers, vars, assertions | shared library (`lib/kube-cluster/`) |
-| Distro runtimes, Cilium chart + base manifest, test fixtures | artifact flake (pinned) |
+| Shared inputs, overlays, distro runtimes, manifests, airgap images, test fixtures | artifact flake (pinned) |
 | Bootstrap bundle delivery (SSA, once) | clan (`clusterInit` oneshot) |
 | Everything else in-cluster: proxies, certs, DNS automation, storage, GitOps | your GitOps repos (day 2) |
 

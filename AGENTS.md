@@ -16,8 +16,10 @@ is a review destination, not a dependency.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
-- `tests/` — eval-test wiring; every `clan.modules` entry must have a
-  nix-unit test (enforced by `checks.coverage`).
+- `tests/` — eval-test wiring and the VM output adapter; every
+  `clan.modules` entry must have a nix-unit test (enforced by
+  `checks.coverage`). `clan.nixosTests` definitions are emitted under
+  `legacyPackages.<system>.vmTests`, never `checks`.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Round 14
   (2026-10-24) makes FRR + per-pair host WireGuard + native-routed
@@ -32,13 +34,17 @@ is a review destination, not a dependency.
   (D60). Round 18 (2026-10-27) makes IfState 2.5.1 the exclusive static
   networking renderer (D61): no systemd-networkd, netdevs, or scripted
   network units; live reconciliation replaces reboot-based changes.
-  `lib/ifstate.nix` is the shared per-machine base and
-  `lib/ifstate-overlay.nix` pins the package. FRR/Zebra owns dynamic
-  routes; Cilium interfaces and table 200 are ignored by IfState.
-  `wireguard-mesh` is a supported tunnel transport. Breaking changes ship
-  without migration shims: no external consumers or deployments exist.
-  The full netif, routed-fabric, k3s, and RKE2 native/tunnel/selective/
-  external VM matrix is green on the IfState tree. Round 13's Bootstrap +
+  `lib/ifstate.nix` is the shared per-machine base; the artifact flake
+  `external-systems/pkgs` owns the IfState and Kubernetes overlays and
+  per-system airgap artifacts. FRR/Zebra owns dynamic routes; Cilium
+  interfaces and table 200 are ignored by IfState. `wireguard-mesh` is a
+  supported tunnel transport. Breaking changes ship without migration
+  shims: no external consumers or deployments exist. Round 19
+  (2026-10-28, D62) makes `pkgs` the nixpkgs/flake-parts and artifact
+  authority and moves every VM suite from `checks` to
+  `legacyPackages.<system>.vmTests`. The full netif, routed-fabric, k3s,
+  and RKE2 native/tunnel/selective/external VM matrix is green on the
+  IfState tree. Round 13's Bootstrap +
   Data-plane scope remains: Envoy Gateway, cert-manager, Flux install,
   external-dns, Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps
   patterns, never clan-rendered (SPEC.md §3.3, D39–D45).
@@ -65,22 +71,28 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D61) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D62) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
    FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
    `routed-fabric` and made `netif` multi-instance/multi-link; round 16
    added orthogonal access/border and `clan.networkFacts`; round 17
    implemented `leaf`/`spine`, generic `node_transport`, and ClusterMesh
    placement/exposure; round 18 made IfState 2.5.1 the only static network
-   renderer (D61). Do not reintroduce systemd-networkd, netdevs, scripted
-   network units, or a second owner for Cilium/FRR objects. `wireguard-mesh`
-   is a supported tunnel transport and breaking changes carry no
-   compatibility burden (no external consumers or deployments, no migration
-   shims). Cilium stays networking-only (D1) and multi-pool; Node IPAM is
-   the classless-LB default (D41); `node-bgp` is owner-only while
-   `shared-bgp` uses ECMP (D8); servicelb is permanently disabled (D42);
-   the control domain is GitOps-neutral (`controlDomain.role`, D43).
-9. DO NOT RUN `nix flake check`, it boots VM tests and will OOM kill the machine!!! Run with `--no-build`.
+   renderer (D61); round 19 made `pkgs` the artifact/shared-input authority
+   and moved VM suites out of `checks` (D62). Do not reintroduce
+   systemd-networkd, netdevs, scripted network units, or a second owner for
+   Cilium/FRR objects. `wireguard-mesh` is a supported tunnel transport and
+   breaking changes carry no compatibility burden (no external consumers or
+   deployments, no migration shims). Cilium stays networking-only (D1) and
+   multi-pool; Node IPAM is the classless-LB default (D41); `node-bgp` is
+   owner-only while `shared-bgp` uses ECMP (D8); servicelb is permanently
+   disabled (D42); the control domain is GitOps-neutral
+   (`controlDomain.role`, D43).
+9. VM suites must NEVER enter `checks`; they live under
+   `legacyPackages.<system>.vmTests`. DO NOT RUN plain `nix flake check`.
+   Use `nix flake check --no-build --show-trace` only after confirming
+   `checks` contains no VM derivation; if one appears there, fix the output
+   boundary instead of running the check.
 
 ## Verified upstream facts the spec depends on
 

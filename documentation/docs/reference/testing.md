@@ -7,9 +7,11 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
 
 - Pure renderer nix-unit tests, including kubenix determinism.
 - Throwaway clans through `clanLib.clan` for the inventory boundary.
-- Hermetic `clan.nixosTests`, one at a time; sandboxed runs are
-  authoritative (interactive/driver mode is debug-only, and every
-  driver-mode fix is re-proven with a sandboxed rerun). VM logs live
+- Hermetic `clan.nixosTests`, exposed as
+  `legacyPackages.<system>.vmTests` and run one at a time; sandboxed runs
+  are authoritative (interactive/driver mode is debug-only, and every
+  driver-mode fix is re-proven with a sandboxed rerun). VM suites never
+  enter `checks`, which remains a lightweight static gate. VM logs live
   under `.baton-pass/vm-logs/`, one per suite.
 - Artifact source/hash/render and publish-freshness gates.
 - Offline execution, deterministic addresses, dual-stack in every boot

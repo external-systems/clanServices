@@ -14,12 +14,15 @@ narrowed in round 13 to the two contracts (D44):
   rendered with the canonical fleet profile at **update time** and committed
   as source next to the version pins (D26), plus the Cilium image airgap
   set.
+- **CoreDNS and IfState** — the uniform DNS image and host-networking package
+  overlay. Cilium and CoreDNS images have matching amd64/arm64 outputs for
+  x86_64-linux and aarch64-linux (D62).
 - **Test fixtures** — go-httpbin, pinned and airgap-carried.
 
-Consumers read committed files, so clanServices evaluation never fetches and
-never uses import-from-derivation. A clean-public-fetch proof and the
-publish-freshness gate (published manifest ≡ fresh render, D40) are part of
-the artifact checks.
+Consumers read committed files and published per-system outputs, so
+clanServices evaluation never fetches and never uses import-from-derivation.
+A clean-public-fetch proof and the publish-freshness gate (published manifest
+≡ fresh render, D40) are part of the artifact checks.
 
 Day-2 software — Envoy Gateway, cert-manager, Flux, external-dns, Sealed
 Secrets, CCMs — is **not** in the artifact flake. Pin and carry it in your

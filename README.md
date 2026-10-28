@@ -25,6 +25,8 @@ data-plane target and puts static host networking in inventory through `netif`. 
 ClusterMesh. Round 16 adds orthogonal access/border settings and dependency-free network facts.
 Round 17 adds the generic `node_transport` schemaVersion 2, `leaf`/`spine` topology, and
 ClusterMesh placement/exposure; it is implemented and VM-proven.
+Round 19 (2026-10-28) makes `external-systems/pkgs` the shared-input and
+artifact authority and moves VM suites to `legacyPackages.<system>.vmTests`.
 Round 18 (2026-10-27) replaces all systemd-networkd/netdev and scripted networking with
 IfState 2.5.1. Static host links, WireGuard, routes, rules, and sysctls reconcile live without
 reboot; FRR/Zebra and Cilium retain their dynamic ownership boundaries. The full netif, fabric,
@@ -47,6 +49,13 @@ Add this repository as a flake input and use the same `clan-core` instance:
 }
 ```
 
+The locked transitive `external-systems/pkgs` input supplies nixpkgs,
+flake-parts, runtime packages, overlays, and airgap artifacts; consumers do
+not need to declare it. Its overlays are re-exported as
+`clanServices.overlays.{default,kubernetes,ifstate}`. To use a different
+artifact repository, declare your own input and set
+`clanServices.inputs.pkgs.follows = "pkgs";`.
+
 Instantiate a service in the clan inventory:
 
 ```nix
@@ -68,4 +77,7 @@ nix fmt .
 nix flake check --no-build --show-trace
 ```
 
-Hermetic NixOS VM suites and the delivery roadmap are documented in SPEC.md. The pinned artifact flake is `external-systems/pkgs` — distro runtimes (last three Kubernetes minors each), the Cilium chart with its committed inflated base manifest, and the test fixtures — already consumed by this flake at its lock pin.
+Hermetic NixOS VM suites are documented in SPEC.md and built from
+`legacyPackages.x86_64-linux.vmTests.<suite>`, one at a time. The pinned
+artifact flake supplies distro runtimes, IfState, the committed Cilium
+manifest, per-system Cilium/CoreDNS airgap images, and test fixtures.

@@ -2,7 +2,8 @@
   description = "External Systems custom clan services";
 
   inputs = {
-    nixpkgs.follows = "clan-core/nixpkgs";
+    nixpkgs.follows = "pkgs/nixpkgs";
+    flake-parts.follows = "pkgs/flake-parts";
     data-mesher.follows = "clan-core/data-mesher";
     disko.follows = "clan-core/disko";
     nix-darwin.follows = "clan-core/nix-darwin";
@@ -13,14 +14,10 @@
     clan-core = {
       url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz";
       inputs = {
+        nixpkgs.follows = "nixpkgs";
         treefmt-nix.follows = "treefmt-nix";
         flake-parts.follows = "flake-parts";
       };
-    };
-
-    flake-parts = {
-      url = "github:hercules-ci/flake-parts";
-      inputs.nixpkgs-lib.follows = "nixpkgs";
     };
 
     treefmt-nix = {
@@ -28,16 +25,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Artifact flake: distro runtimes, the Cilium chart + committed inflated
-    # base manifest (manifests/cilium/<version>.yaml, D26 layer 1), and the
-    # digest-pinned Cilium airgap image tarballs for hermetic VM tests.
-    pkgs = {
-      url = "github:external-systems/pkgs/41b9486bcef705130d980b96a193733ce93b13f3";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        flake-parts.follows = "flake-parts";
-      };
-    };
+    # Artifact and shared-input authority: distro runtimes, IfState, the
+    # committed Cilium base manifest, and per-system airgap image tarballs.
+    pkgs.url = "github:external-systems/pkgs";
 
     # Kubenix renders the bootstrap bundle (D26 layer 2): the committed base
     # manifest is imported as source (pure Nix YAML subset parser, zero IFD)
@@ -76,31 +66,18 @@
   };
 
   outputs =
-    inputs@{
-      self,
-      flake-parts,
-      ...
-    }:
+    inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "aarch64-darwin"
       ];
-
-      debug = true;
 
       imports = [
         inputs.nix-unit.modules.flake.default
-        (
-          { lib, ... }:
-          {
-            # For debugging the flake
-            flake.options.flake = lib.mkOption { default = self; };
-          }
-        )
         inputs.clan-core.flakeModules.default
-        inputs.clan-core.flakeModules.testModule
+        ./tests/clan-nixos-test.nix
+        ./overlays.nix
         ./formatter.nix
         ./services/flake-module.nix
         ./lib/kube-cluster/flake-module.nix
@@ -142,7 +119,9 @@
           nix-unit.inputs = inputs // {
             "pkgs/nixpkgs" = inputs.nixpkgs;
             "pkgs/flake-parts" = inputs.flake-parts;
+            "pkgs/flake-parts/nixpkgs-lib" = inputs.nixpkgs;
             "pkgs/import-tree" = pkgsImportTree;
+            "flake-parts/nixpkgs-lib" = inputs.nixpkgs;
             "presenting/mkdocs-flake" = presentingMkdocsFlake;
             "presenting/reveal-js" = presentingRevealJs;
             "presenting/import-tree" = presentingImportTree;

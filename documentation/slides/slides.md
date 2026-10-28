@@ -72,13 +72,13 @@ Note: Bottom layers are the two clan contracts — host links/transport, distro,
 - **Networking**: multi-pool Cilium native or tunnel/VXLAN, Node IPAM, five pool delivery modes, BGP v2, ClusterMesh with placement/exposure profiles (D60); no Gateway/Ingress/L7
 - **Day two**: GitOps-owned proxies, cert-manager, external-dns, Sealed Secrets, storage, KubeVirt, CCMs
 - **Secrets**: clan vars = bootstrap plane only; application credentials GitOps-owned
-- **Packaging**: pinned distro runtimes, Cilium chart + committed base manifest, airgap default
+- **Packaging**: `pkgs` owns shared inputs, distro runtimes, overlays, committed manifests, and per-system airgap artifacts (D62)
 
 ---
 
 ## Status and roadmap
 
-- **Done**: bootstrap/base; generic `node_transport` profiles (D58); leaf/spine auto graph (D59); ClusterMesh placement/exposure (D60); `clan.networkFacts` schema 2; IfState-only static networking (D61)
+- **Done**: bootstrap/base; generic `node_transport` profiles (D58); leaf/spine auto graph (D59); ClusterMesh placement/exposure (D60); `clan.networkFacts` schema 2; IfState-only static networking (D61); artifact authority + static-only checks (D62)
 - **VM-proven**: netif live apply + DHCP/RA; WireGuard; routed-fabric HA; k3s/RKE2 single/join/HA + native data planes; all native/tunnel/selective/external ClusterMesh suites
 - **Legacy**: BIRD/VXLAN checkpoint `2995ac3`, 5 green / 7 red — superseded, not acceptance evidence; `fleet-routing` + `lib/import-flake` + BIRD remnants deleted
 - **Next**: control domain, PKI/GitOps-handoff suites, home migration and borg archival

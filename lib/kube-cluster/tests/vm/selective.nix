@@ -68,7 +68,7 @@ let
   commonNode = name: { pkgs, ... }: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
-        ifstateOverlay = import ../../../ifstate-overlay.nix;
+        ifstateOverlay = inputs.pkgs.overlays.ifstate;
         addresses = [ "${underlayIp name}/24" ];
       })
     ];
@@ -81,6 +81,7 @@ let
     environment.systemPackages = [
       pkgs.kubectl
       pkgs.cilium-cli
+      pkgs.jq
       pkgs.socat
     ];
     services.${distro}.images = [ (busyboxImage pkgs) ];
@@ -95,12 +96,12 @@ in
     modules =
       lib.optionalAttrs native {
         routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
-          ifstateOverlay = import ../../../ifstate-overlay.nix;
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
         };
       }
       // lib.optionalAttrs (!native) {
         wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
-          ifstateOverlay = import ../../../ifstate-overlay.nix;
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
         };
       };
     exportInterfaces = {
@@ -198,6 +199,10 @@ in
             "kubectl describe pod -n kube-system -l k8s-app=clustermesh-apiserver --request-timeout=10s >&2 || true",
             "timeout 20 cilium status >&2 || true",
             "timeout 20 cilium clustermesh status >&2 || true",
+            "kubectl -n kube-system exec ds/cilium -- cilium-dbg service list >&2 || true",
+            "kubectl get endpointslice -A -o wide >&2 || true",
+            "kubectl -n kube-system exec ds/cilium -- cilium-dbg troubleshoot clustermesh >&2 || true",
+            "kubectl -n kube-system exec deploy/clustermesh-apiserver -c kvstoremesh -- clustermesh-apiserver kvstoremesh-dbg troubleshoot ${clusterB} >&2 || true",
             "timeout 20 cilium bgp peers >&2 || true",
             "kubectl get ciliumbgpclusterconfig,ciliumbgppeerconfig,ciliumbgpadvertisement -o yaml >&2 || true",
             "kubectl logs -n kube-system -l k8s-app=cilium --all-containers=true --tail=80 >&2 || true",
@@ -285,6 +290,7 @@ in
             m.succeed("kubectl run probe --image=busybox:1.36.1 --restart=Never --command -- sleep 3600")
             m.wait_until_succeeds("kubectl get pod probe -o jsonpath='{.status.phase}' | grep -q Running", timeout=120)
 
+        alpha.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [2]' >/dev/null", timeout=600)
         seen_a = set()
         for _ in range(20):
             seen_a.add(alpha.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
@@ -292,6 +298,7 @@ in
                 break
         assert seen_a == {"CLUSTER_A", "CLUSTER_B"}, f"A selective peers: {seen_a!r}"
 
+        beta.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [3]' >/dev/null", timeout=600)
         seen_b = set()
         for _ in range(30):
             seen_b.add(beta.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
@@ -299,6 +306,7 @@ in
                 break
         assert seen_b == {"CLUSTER_A", "CLUSTER_B", "CLUSTER_C"}, f"B selective peers: {seen_b!r}"
 
+        gamma.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [2]' >/dev/null", timeout=600)
         seen_c = set()
         for _ in range(20):
             seen_c.add(gamma.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())

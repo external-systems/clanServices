@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, inputs, ... }:
 {
   name = "wireguard-mesh";
 
@@ -56,7 +56,7 @@
   nodes = lib.genAttrs [ "alpha" "beta" "gamma" ] (name: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
-        ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+        ifstateOverlay = inputs.pkgs.overlays.ifstate;
         addresses = [
           "192.168.1.${
             toString

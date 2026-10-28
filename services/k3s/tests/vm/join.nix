@@ -12,7 +12,7 @@
     test.useContainers = false;
 
     modules.wireguard-mesh = lib.modules.importApply ../../../wireguard-mesh/default.nix {
-      ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+      ifstateOverlay = inputs.pkgs.overlays.ifstate;
     };
     exportInterfaces.node_transport = ../../../../lib/node-transport-interface.nix;
 
@@ -92,7 +92,7 @@
       commonNode = name: { pkgs, ... }: {
         imports = [
           (import ../../../../tests/ifstate-vm.nix {
-            ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+            ifstateOverlay = inputs.pkgs.overlays.ifstate;
             addresses = [
               "192.168.1.${
                 toString

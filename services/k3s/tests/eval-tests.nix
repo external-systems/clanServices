@@ -9,7 +9,7 @@
 let
   k3sModule = module;
   wgModule = lib.modules.importApply ../../wireguard-mesh/default.nix {
-    ifstateOverlay = import ../../../lib/ifstate-overlay.nix;
+    ifstateOverlay = inputs.pkgs.overlays.ifstate;
   };
   kube = import ../../../lib/kube-cluster { inherit lib; };
 

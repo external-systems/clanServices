@@ -133,7 +133,7 @@ let
       modules = {
         routed-fabric = module;
         netif = lib.modules.importApply ../../netif/default.nix {
-          ifstateOverlay = import ../../../lib/ifstate-overlay.nix;
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
         };
         k3s = clusterModule;
       };

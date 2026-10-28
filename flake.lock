@@ -9,7 +9,9 @@
         ],
         "nix-darwin": "nix-darwin",
         "nix-select": "nix-select",
-        "nixpkgs": "nixpkgs",
+        "nixpkgs": [
+          "nixpkgs"
+        ],
         "sops-nix": "sops-nix",
         "systems": "systems",
         "treefmt-nix": [
@@ -116,6 +118,7 @@
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
+          "pkgs",
           "nixpkgs"
         ]
       },
@@ -380,39 +383,37 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1791966044,
-        "narHash": "sha256-UwKRZKua8BOagYl0cou05BHtu7F6XV62FD2Hb+f0QYs=",
-        "rev": "319e4cebef10cbb636c6ea392137b52ad105336a",
-        "type": "tarball",
-        "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1092129.319e4cebef10/nixexprs.tar.xz"
+        "lastModified": 1793110635,
+        "narHash": "sha256-dhoW6VgFWlaodSY5jrBn+CF2FLmaUvDVgM7+C7T2+NM=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "31ecbaca1bdefa45dffc409f0250bd8039ea0010",
+        "type": "github"
       },
       "original": {
-        "type": "tarball",
-        "url": "https://nixos.org/channels/nixpkgs-unstable/nixexprs.tar.xz"
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
       }
     },
     "pkgs": {
       "inputs": {
-        "flake-parts": [
-          "flake-parts"
-        ],
+        "flake-parts": "flake-parts",
         "import-tree": "import-tree_2",
-        "nixpkgs": [
-          "nixpkgs"
-        ]
+        "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1792895226,
-        "narHash": "sha256-+8pQe130iLqOioNY6q88LDcJ2947cicZLIVf5Q7OrQM=",
+        "lastModified": 1793201675,
+        "narHash": "sha256-RnqS6DXV6uz9AJcRv8SEAJcSJamiuwgp1yvH+jNn2Z8=",
         "owner": "external-systems",
         "repo": "pkgs",
-        "rev": "41b9486bcef705130d980b96a193733ce93b13f3",
+        "rev": "9d3976c938b15d68aa3df625519459a3cafcaf59",
         "type": "github"
       },
       "original": {
         "owner": "external-systems",
         "repo": "pkgs",
-        "rev": "41b9486bcef705130d980b96a193733ce93b13f3",
         "type": "github"
       }
     },
@@ -550,7 +551,10 @@
           "clan-core",
           "disko"
         ],
-        "flake-parts": "flake-parts",
+        "flake-parts": [
+          "pkgs",
+          "flake-parts"
+        ],
         "kubenix": "kubenix",
         "nix-darwin": [
           "clan-core",
@@ -563,7 +567,7 @@
         ],
         "nix-unit": "nix-unit",
         "nixpkgs": [
-          "clan-core",
+          "pkgs",
           "nixpkgs"
         ],
         "pkgs": "pkgs",

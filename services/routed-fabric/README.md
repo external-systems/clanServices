@@ -70,6 +70,6 @@ deploy only to their owner.
 ## Tests
 
 ```console
-nix build .#checks.x86_64-linux.routed-fabric   # hermetic VM suite
+nix build .#legacyPackages.x86_64-linux.vmTests.routed-fabric   # hermetic VM suite
 nix build .#checks.x86_64-linux.coverage
 ```

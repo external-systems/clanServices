@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, inputs, ... }:
 {
   name = "routed-fabric";
 
@@ -87,7 +87,7 @@
         environment.systemPackages = [ pkgs.tcpdump ];
         imports = [
           (import ../../../../tests/ifstate-vm.nix {
-            ifstateOverlay = import ../../../../lib/ifstate-overlay.nix;
+            ifstateOverlay = inputs.pkgs.overlays.ifstate;
             addresses = [ "${address}/24" ];
           })
         ];
