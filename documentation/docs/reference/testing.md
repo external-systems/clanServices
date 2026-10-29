@@ -136,12 +136,16 @@ Sealed-Secrets suites. Reserved: MCS-API and upstream-kubernetes suites.
 
 **VM-proven on the final IfState tree:** netif live apply/check/restore;
 DHCPv4/default-route and IPv6 SLAAC with one persistent client across live
-reapply; WireGuard handshakes; routed-fabric transport and spine HA;
+reapply; WireGuard handshakes; routed-fabric transport and spine HA on a
+flat underlay (NAT sites, external transit, Internet source/return and
+route-filter negatives are planned, see
+[Data-plane hardening](../plans/data-plane-hardening.md));
 k3s/RKE2 single/join/HA and native data planes; and all twelve
 native/tunnel/selective/external ClusterMesh variants. The selective proofs
 include symmetric A↔B and B↔C edges, non-transitive A/C global-Service
 isolation, and dual-stack route isolation on non-transit leaves. SPEC.md §7
-links the final logs and remains the status authority.
+links the final logs and remains the status authority. A VM-proven status
+names its test file and a unique `*_OK` marker that the test prints.
 
 The imported baseline and BIRD checkpoint `2995ac3` (5 green / 7 red) are
 legacy evidence only. No full-mesh fabric suite exists or is required.
