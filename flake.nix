@@ -55,6 +55,7 @@
         inputs.flake-parts.flakeModules.partitions
         inputs.clan-core.flakeModules.default
         ./tests/clan-nixos-test.nix
+        ./tests/nix-unit-output.nix
         ./overlays.nix
         ./services/flake-module.nix
         ./lib/kube-cluster/flake-module.nix
@@ -66,7 +67,6 @@
         devShells = "dev";
         formatter = "dev";
         packages = "dev";
-        tests = "dev";
       };
 
       partitions.dev =

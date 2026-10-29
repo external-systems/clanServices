@@ -23,6 +23,9 @@ shell outputs live in a flake-parts `dev` partition so consumers do not lock
 `nix-unit` or `presenting`. `apps.<system>.vm-test` builds one suite from
 `legacyPackages.<system>.vmTests` and allocates the next numbered build log
 under `.baton-pass/vm-logs/<suite>/`; VM suites remain outside `checks`.
+Phase-1 verification passed: full `nix flake check --show-trace`, a throwaway
+consumer `nix flake metadata`/lock inspection with no development inputs, and
+`nix run .#vm-test -- wireguard-mesh` (exit 0; test script finished in 38.54s).
 
 Round 19 (2026-10-28): **the artifact flake is the packaging and shared-input
 authority (D62).** `external-systems/pkgs` pins nixpkgs and flake-parts, owns

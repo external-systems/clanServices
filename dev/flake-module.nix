@@ -4,9 +4,9 @@
   ...
 }: {
   imports = [
-    inputs.nix-unit.modules.flake.default
     ../formatter.nix
     ../tests/flake-module.nix
+    ../tests/vm-test-app.nix
     ../documentation/module.nix
   ];
 
@@ -73,19 +73,19 @@
     };
     forClanServices = attrs:
       lib.mapAttrs' (name: value: lib.nameValuePair "clanServices/${name}" value) attrs;
-  in {
-    nix-unit.inputs =
+    nixUnitInputs =
       inputs
       // nestedInputs
       // {clanServices = self;}
       // forClanServices clanServicesInputs
       // forClanServices nestedInputs;
-
+  in {
     # Re-evaluate through a dev-only wrapper whose direct inputs include the
     # partition inputs. The stock runner can then override every input in its
     # network-less sandbox without resolving the development subflake again.
-    checks.nix-unit = lib.mkForce (pkgs.runCommand "nix-unit-check" {
-        nativeBuildInputs = [config.nix-unit.package];
+    checks.nix-unit =
+      pkgs.runCommand "nix-unit-check" {
+        nativeBuildInputs = [inputs.nix-unit.packages.${pkgs.stdenv.hostPlatform.system}.default];
       } ''
         export HOME="$(realpath .)"
         unset NIX_STORE
@@ -95,10 +95,10 @@
           --show-trace \
           --extra-experimental-features "flakes pipe-operators" \
           --accept-flake-config \
-          ${lib.concatStringsSep "\\\n  " (lib.mapAttrsToList overrideArg config.nix-unit.inputs)} \
+          ${lib.concatStringsSep "\\\n  " (lib.mapAttrsToList overrideArg nixUnitInputs)} \
           --flake ${./nix-unit}#tests.systems.${pkgs.stdenv.hostPlatform.system}
         touch $out
-      '');
+      '';
 
     devShells.default = pkgs.mkShell {
       # bash/jq/git are what scripts/update-pins.sh needs; the CI runner

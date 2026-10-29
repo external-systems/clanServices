@@ -1,8 +1,10 @@
 # Data-plane hardening plan
 
-Status: **planned** (phase 0, docs only). Nothing in this file is
-implemented or VM-proven yet; SPEC.md stays the status authority, and each
-phase below amends SPEC.md before it changes code (AGENTS.md rule 3).
+Status: **phase 1 complete** (2026-10-29); later phases planned. Phase 1
+passed `nix flake check --show-trace`, consumer lock/metadata inspection with
+no development inputs, and `nix run .#vm-test -- wireguard-mesh` (exit 0).
+SPEC.md stays the status authority, and each phase below amends SPEC.md before
+it changes code (AGENTS.md rule 3).
 
 Goal: make the Data-plane contract (SPEC.md §3.2) enforceable and stable on
 any underlay — bare metal, Proxmox, Hetzner, GCP, later AWS and Azure — by
