@@ -16,19 +16,12 @@
     pkgs,
     ...
   }: let
-    # The nix-unit check re-evaluates this flake in a network-less sandbox
-    # with each direct input overridden to its store path. Nested overrides
-    # keep those evaluations on the already-fetched locked inputs.
+    # Re-evaluate the root tests output in a network-less sandbox with every
+    # direct input overridden to its store path. Nested overrides keep the
+    # already-fetched locked inputs reachable without a wrapper flake.
     rootLock = builtins.fromJSON (builtins.readFile ../flake.lock);
-    devLock = builtins.fromJSON (builtins.readFile ./flake.lock);
     overrideArg = name: value: "--override-input ${lib.escapeShellArg name} ${lib.escapeShellArg "${value}"}";
     pkgsImportTree = builtins.fetchTree rootLock.nodes.${rootLock.nodes.pkgs.inputs."import-tree"}.locked;
-    presentingMkdocsFlake =
-      builtins.fetchTree devLock.nodes.${devLock.nodes.presenting.inputs."mkdocs-flake"}.locked;
-    presentingRevealJs =
-      builtins.fetchTree devLock.nodes.${devLock.nodes.presenting.inputs."reveal-js"}.locked;
-    presentingImportTree =
-      builtins.fetchTree devLock.nodes.${devLock.nodes.presenting.inputs."import-tree"}.locked;
     kubenixImportTree =
       builtins.fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."import-tree"}.locked;
     kubenixDevshell =
@@ -37,52 +30,37 @@
       builtins.fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."flake-compat"}.locked;
     kubenixSystems =
       builtins.fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."systems"}.locked;
-    nestedInputs = {
-      "clan-core/nixpkgs" = inputs.nixpkgs;
-      "clan-core/flake-parts" = inputs.flake-parts;
-      "clan-core/treefmt-nix" = inputs.treefmt-nix;
-      "pkgs/nixpkgs" = inputs.nixpkgs;
-      "pkgs/flake-parts" = inputs.flake-parts;
-      "pkgs/flake-parts/nixpkgs-lib" = inputs.nixpkgs;
-      "pkgs/import-tree" = pkgsImportTree;
-      "flake-parts/nixpkgs-lib" = inputs.nixpkgs;
-      "presenting/mkdocs-flake" = presentingMkdocsFlake;
-      "presenting/reveal-js" = presentingRevealJs;
-      "presenting/import-tree" = presentingImportTree;
-      "kubenix/import-tree" = kubenixImportTree;
-      "kubenix/devshell" = kubenixDevshell;
-      "kubenix/flake-compat" = kubenixFlakeCompat;
-      "kubenix/systems" = kubenixSystems;
-    };
-    clanServicesInputs = {
-      inherit
-        (inputs)
-        clan-core
-        data-mesher
-        disko
-        flake-parts
-        kubenix
-        nix-darwin
-        nix-select
-        nixpkgs
-        pkgs
-        sops-nix
-        systems
-        treefmt-nix
-        ;
-    };
-    forClanServices = attrs:
-      lib.mapAttrs' (name: value: lib.nameValuePair "clanServices/${name}" value) attrs;
     nixUnitInputs =
+      lib.getAttrs [
+        "clan-core"
+        "flake-parts"
+        "kubenix"
+        "nixpkgs"
+        "pkgs"
+        "treefmt-nix"
+      ]
       inputs
-      // nestedInputs
-      // {clanServices = self;}
-      // forClanServices clanServicesInputs
-      // forClanServices nestedInputs;
+      // {
+        "clan-core/data-mesher" = inputs.clan-core.inputs.data-mesher;
+        "clan-core/disko" = inputs.clan-core.inputs.disko;
+        "clan-core/nix-darwin" = inputs.clan-core.inputs.nix-darwin;
+        "clan-core/nix-select" = inputs.clan-core.inputs.nix-select;
+        "clan-core/sops-nix" = inputs.clan-core.inputs.sops-nix;
+        "clan-core/systems" = inputs.clan-core.inputs.systems;
+        "clan-core/nixpkgs" = inputs.nixpkgs;
+        "clan-core/flake-parts" = inputs.flake-parts;
+        "clan-core/treefmt-nix" = inputs.treefmt-nix;
+        "pkgs/nixpkgs" = inputs.nixpkgs;
+        "pkgs/flake-parts" = inputs.flake-parts;
+        "pkgs/flake-parts/nixpkgs-lib" = inputs.nixpkgs;
+        "pkgs/import-tree" = pkgsImportTree;
+        "flake-parts/nixpkgs-lib" = inputs.nixpkgs;
+        "kubenix/import-tree" = kubenixImportTree;
+        "kubenix/devshell" = kubenixDevshell;
+        "kubenix/flake-compat" = kubenixFlakeCompat;
+        "kubenix/systems" = kubenixSystems;
+      };
   in {
-    # Re-evaluate through a dev-only wrapper whose direct inputs include the
-    # partition inputs. The stock runner can then override every input in its
-    # network-less sandbox without resolving the development subflake again.
     checks.nix-unit =
       pkgs.runCommand "nix-unit-check" {
         nativeBuildInputs = [inputs.nix-unit.packages.${pkgs.stdenv.hostPlatform.system}.default];
@@ -96,13 +74,12 @@
           --extra-experimental-features "flakes pipe-operators" \
           --accept-flake-config \
           ${lib.concatStringsSep "\\\n  " (lib.mapAttrsToList overrideArg nixUnitInputs)} \
-          --flake ${./nix-unit}#tests.systems.${pkgs.stdenv.hostPlatform.system}
+          --flake ${self}#tests.systems.${pkgs.stdenv.hostPlatform.system}
         touch $out
       '';
 
     devShells.default = pkgs.mkShell {
-      # bash/jq/git are what scripts/update-pins.sh needs; the CI runner
-      # image is a bare nix container that provides none of them.
+      # Support update scripts and CI runners whose images provide no tools.
       packages = [
         config.treefmt.build.wrapper
         pkgs.bash

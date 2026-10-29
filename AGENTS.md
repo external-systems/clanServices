@@ -19,7 +19,13 @@ is a review destination, not a dependency.
 - `tests/` — eval-test wiring and the VM output adapter; every
   `clan.modules` entry must have a nix-unit test (enforced by
   `checks.coverage`). `clan.nixosTests` definitions are emitted under
-  `legacyPackages.<system>.vmTests`, never `checks`.
+  `legacyPackages.<system>.vmTests`, never `checks`. Run one with
+  `nix run .#vm-test -- <suite>` (`--list` enumerates suites; `--rebuild`
+  forces a fresh run).
+- `dev/` — development-only flake inputs and their lock, plus the
+  flake-parts partition module for checks, formatting, documentation, slides,
+  the dev shell, and apps. The root and dev locks are the only lockfiles;
+  nix-unit evaluates the root `tests.systems` output directly.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Round 14
   (2026-10-24) makes FRR + per-pair host WireGuard + native-routed
@@ -60,8 +66,8 @@ is a review destination, not a dependency.
    --show-trace`. `checks` is static-only since round 19 (eval tests,
    coverage, formatting), so a full `nix flake check` is part of every
    verification; keep statix/deadnix clean and fix all eval warnings.
-   Formatting is alejandra, always (`formatter.nix` switches from nixfmt
-   in hardening phase 1, see `documentation/docs/plans/`).
+   Formatting is alejandra, always; `formatter.nix` also enables statix,
+   deadnix, shellcheck, and sizelint through treefmt-nix.
 3. No spec-implementation drift: amend the spec BEFORE implementing when a
    test disproves an assumption; never weaken a test to fit code.
 4. Distro-specific config lives in the thin `rke2`/`k3s` services; shared

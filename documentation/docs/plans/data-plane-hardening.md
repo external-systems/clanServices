@@ -1,10 +1,8 @@
 # Data-plane hardening plan
 
-Status: **phase 1 complete** (2026-10-29); later phases planned. Phase 1
-passed `nix flake check --show-trace`, consumer lock/metadata inspection with
-no development inputs, and `nix run .#vm-test -- wireguard-mesh` (exit 0).
-SPEC.md stays the status authority, and each phase below amends SPEC.md before
-it changes code (AGENTS.md rule 3).
+Status: **phase 1 implemented on PR #2, pending merge** (2026-10-29); later
+phases planned. SPEC.md stays the status authority, and each phase below
+amends SPEC.md before it changes code (AGENTS.md rule 3).
 
 Goal: make the Data-plane contract (SPEC.md §3.2) enforceable and stable on
 any underlay — bare metal, Proxmox, Hetzner, GCP, later AWS and Azure — by
@@ -294,38 +292,43 @@ every generated env, and a few typed wrapper options for the fields we
 actually use.
 
 How to wire it: a `tf` flake-parts partition (see
-[Flake inputs](#flake-inputs)) adds the `terranix` input with
-`nixpkgs`, `flake-parts` and `systems` following ours, and exposes
-`packages.<system>.tf-<env>` (via `terranix.lib.terranixConfiguration`)
-plus an `apps.<system>.tf-run` wrapper that writes `config.tf.json` into the
-throwaway run directory and calls `tofu`. Recommendation: adopt it in phase
-8; it costs one dev-only input and removes the `plan.json` step.
+[Flake inputs](#flake-inputs)) gets its own `tf/flake.nix` and lock with
+explicit `terranix`, `nixpkgs`, `flake-parts` and `systems` inputs. A subflake
+cannot use `follows` to inherit the parent flake's inputs. The partition
+exposes `packages.<system>.tf-<env>` (via
+`terranix.lib.terranixConfiguration`) plus an `apps.<system>.tf-run` wrapper
+that writes `config.tf.json` into the throwaway run directory and calls
+`tofu`. Recommendation: adopt it in phase 8; it costs one dev-only input and
+removes the `plan.json` step.
 
 ## Flake inputs
 
-What each input does today, and the proposed change (phase 1):
+Phase 1 leaves this input layout:
 
-| Input | Role today | Proposal |
-| --- | --- | --- |
-| `pkgs` | artifact and shared-input authority (D62) | keep |
-| `nixpkgs`, `flake-parts` | follow `pkgs` | keep |
-| `clan-core` | clanServices framework, inventory, vars, test harness | keep |
-| `kubenix` | renders the bootstrap bundle | keep |
-| `data-mesher`, `disko`, `nix-darwin`, `nix-select`, `sops-nix`, `systems` | follow `clan-core`; exist only so nix-unit's sandbox can override every transitive input | keep while nix-unit needs them; drop with the partition move below if possible |
-| `treefmt-nix` | `nix fmt` (nixfmt, shellcheck, sizelint) and `checks.treefmt`; also the follow target that dedupes the copies `clan-core`, `kubenix` and `nix-unit` would each lock | keep; switch nixfmt to alejandra and add statix and deadnix |
-| `nix-unit` | eval tests in `checks` | keep; dev-only |
-| `nix-github-actions` | **unused**: nothing imports it and the repo has no workflows | remove |
-| `presenting` | MkDocs site and reveal.js deck | keep; dev-only |
-| `terranix` (proposed) | generates tf JSON | add in phase 8; dev-only |
+| Input | Role and location |
+| --- | --- |
+| `pkgs` | root; artifact and shared-input authority (D62) |
+| `nixpkgs`, `flake-parts` | root; follow `pkgs` |
+| `clan-core` | root; clanServices framework, inventory, vars, test harness |
+| `kubenix` | root; renders the bootstrap bundle |
+| `treefmt-nix` | root; shared follow target and the alejandra/statix/deadnix/shellcheck/sizelint wrapper |
+| `nix-unit` | `dev/flake.nix`; eval tests in partitioned `checks` |
+| `presenting` | `dev/flake.nix`; MkDocs site and reveal.js deck in partitioned `packages` |
+| `terranix` (proposed) | separate `tf` partition and lock in phase 8 |
 
-Reduce bloat by moving dev-only inputs (`nix-unit`, `presenting`,
-`terranix`) into flake-parts
-[partitions](https://flake.parts/options/flake-parts-partitions.html) with
-their own `dev/flake.nix` lock, so consumers of this flake (the home clan)
-never lock or fetch them. `nix fmt`, `checks`, `documentation`, `slides` and
-`tf-*` are routed to the partition with `partitionedAttrs`. The devShell's
-`pkgs.treefmt` is replaced by the treefmt-nix wrapper so `treefmt` uses the
-same config as `nix fmt`.
+The six former test-only root follows (`data-mesher`, `disko`, `nix-darwin`,
+`nix-select`, `sops-nix`, `systems`) and unused `nix-github-actions` are
+removed. Development inputs moved into flake-parts
+[partitions](https://flake.parts/options/flake-parts-partitions.html), so
+consumers never lock or fetch them. `apps`, `checks`, `devShells`,
+`formatter`, and `packages` (documentation and slides) use
+`partitionedAttrs`; the unpartitioned root `tests.systems` output lets
+nix-unit run directly without a wrapper flake or third lockfile. Removing the
+wrapper exposed two malformed fleet-check diagnostic messages; only their
+attribute-set/list rendering changed, not the assertions. The devShell uses
+`config.treefmt.build.wrapper`. Development URLs are not revision-pinned
+in `dev/flake.nix`: `dev/flake.lock` pins them and `nix flake update` can
+advance them.
 
 ## Phases
 

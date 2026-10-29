@@ -270,40 +270,16 @@
     "root": {
       "inputs": {
         "clan-core": "clan-core",
-        "data-mesher": [
-          "clan-core",
-          "data-mesher"
-        ],
-        "disko": [
-          "clan-core",
-          "disko"
-        ],
         "flake-parts": [
           "pkgs",
           "flake-parts"
         ],
         "kubenix": "kubenix",
-        "nix-darwin": [
-          "clan-core",
-          "nix-darwin"
-        ],
-        "nix-select": [
-          "clan-core",
-          "nix-select"
-        ],
         "nixpkgs": [
           "pkgs",
           "nixpkgs"
         ],
         "pkgs": "pkgs",
-        "sops-nix": [
-          "clan-core",
-          "sops-nix"
-        ],
-        "systems": [
-          "clan-core",
-          "systems"
-        ],
         "treefmt-nix": "treefmt-nix"
       }
     },

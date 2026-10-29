@@ -10,7 +10,6 @@
       runtimeInputs = [
         pkgs.coreutils
         pkgs.git
-        pkgs.nix
       ];
       text = ''
         suites=(${lib.escapeShellArgs (builtins.attrNames config.legacyPackages.vmTests)})
@@ -20,8 +19,13 @@
           exit 0
         fi
 
+        rebuild=0
+        if [[ $# -eq 2 && $1 == --rebuild ]]; then
+          rebuild=1
+          shift
+        fi
         if [[ $# -ne 1 ]]; then
-          printf 'usage: vm-test [--list | <suite>]\n' >&2
+          printf 'usage: vm-test [--list | [--rebuild] <suite>]\n' >&2
           exit 2
         fi
 
@@ -43,13 +47,20 @@
         log_dir=".baton-pass/vm-logs/$suite"
         mkdir -p "$log_dir"
         n=0
-        while [[ -e "$log_dir/logs-$n" ]]; do
-          ((n += 1))
-        done
         log="$log_dir/logs-$n"
+        set -o noclobber
+        while ! : 2>/dev/null > "$log"; do
+          ((n += 1))
+          log="$log_dir/logs-$n"
+        done
+        set +o noclobber
 
+        build_args=(".#legacyPackages.${pkgs.stdenv.hostPlatform.system}.vmTests.$suite" --no-link -L --print-out-paths)
+        if [[ $rebuild -eq 1 ]]; then
+          build_args+=(--rebuild)
+        fi
         set +e
-        nix build ".#legacyPackages.${pkgs.stdenv.hostPlatform.system}.vmTests.$suite" --no-link -L 2>&1 | tee "$log"
+        nix build "''${build_args[@]}" 2>&1 | tee -a "$log"
         status=''${PIPESTATUS[0]}
         set -e
         printf 'VM build log: %s\n' "$log"

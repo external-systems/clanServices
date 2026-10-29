@@ -4,12 +4,6 @@
   inputs = {
     nixpkgs.follows = "pkgs/nixpkgs";
     flake-parts.follows = "pkgs/flake-parts";
-    data-mesher.follows = "clan-core/data-mesher";
-    disko.follows = "clan-core/disko";
-    nix-darwin.follows = "clan-core/nix-darwin";
-    nix-select.follows = "clan-core/nix-select";
-    sops-nix.follows = "clan-core/sops-nix";
-    systems.follows = "clan-core/systems";
 
     clan-core = {
       url = "https://git.clan.lol/clan/clan-core/archive/main.tar.gz";
@@ -69,24 +63,9 @@
         packages = "dev";
       };
 
-      partitions.dev =
-        {module = ./dev/flake-module.nix;}
-        // (
-          if inputs ? nix-unit
-          then {
-            # The offline nix-unit wrapper supplies dev inputs directly.
-            extraInputs = {
-              inherit
-                (inputs)
-                dev-flake-parts
-                dev-nixpkgs
-                dev-treefmt-nix
-                nix-unit
-                presenting
-                ;
-            };
-          }
-          else {extraInputsFlake = ./dev;}
-        );
+      partitions.dev = {
+        module = ./dev/flake-module.nix;
+        extraInputsFlake = ./dev;
+      };
     };
 }

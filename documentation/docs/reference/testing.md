@@ -12,11 +12,13 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   are authoritative (interactive/driver mode is debug-only, and every
   driver-mode fix is re-proven with a sandboxed rerun). VM suites never
   enter `checks`, which remains a lightweight static gate. Run a suite with
-  `nix run .#vm-test -- <suite>`; use `--list` to list suite names. The app
-  writes the complete build log to the first unused
-  `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0, 1, …), prints the log path,
-  and returns the build's exit status. `.baton-pass/` is gitignored and never
-  committed.
+  `nix run .#vm-test -- <suite>`; use `--list` to list suite names and
+  `nix run .#vm-test -- --rebuild <suite>` to force a fresh run. The app
+  atomically claims the first unused
+  `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0, 1, …), writes the complete
+  build log there, prints the log path, and returns the build's exit status.
+  Cached builds record their output path instead of leaving an empty log.
+  `.baton-pass/` is gitignored and never committed.
 - Artifact source/hash/render and publish-freshness gates.
 - Offline execution, deterministic addresses, dual-stack in every boot
   test, round trips and failure behavior, negative assertions,

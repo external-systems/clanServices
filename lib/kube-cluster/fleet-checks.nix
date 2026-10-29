@@ -408,20 +408,24 @@ in rec {
     kube-cluster-mesh-nodeport-collisions = {
       assertion = nodePortCollisions == {};
       message = "kube-cluster fleet check: duplicate ClusterMesh NodePort on one machine (D60): ${
-        lib.concatMapStringsSep "; " (
-          k: _xs: "${k} claimed by ${lib.concatMapStringsSep ", " (x: x.cluster)}"
+        lib.concatStringsSep "; " (
+          lib.mapAttrsToList (
+            k: xs: "${k} claimed by ${lib.concatMapStringsSep ", " (x: x.cluster) xs}"
+          )
+          nodePortCollisions
         )
-        nodePortCollisions
       }";
     };
 
     kube-cluster-mesh-vip-collisions = {
       assertion = vipCollisions == {};
       message = "kube-cluster fleet check: pinned internal ClusterMesh VIP collision (offset 79, D60): ${
-        lib.concatMapStringsSep "; " (
-          k: _xs: "${k} claimed by ${lib.concatMapStringsSep ", " (x: x.cluster)}"
+        lib.concatStringsSep "; " (
+          lib.mapAttrsToList (
+            k: xs: "${k} claimed by ${lib.concatMapStringsSep ", " (x: x.cluster) xs}"
+          )
+          vipCollisions
         )
-        vipCollisions
       }";
     };
   };

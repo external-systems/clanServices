@@ -9,7 +9,7 @@ Repo: external-systems/clanServices. Read documentation/docs/plans/data-plane-ha
 Goal: deploy a synthetic clan to Hetzner and GCP and prove it with the VM probes, without ever committing run output.
 
 Do:
-1. Add terranix as a dev-only input in a `tf` flake-parts partition (nixpkgs, flake-parts and systems follow ours).
+1. Add terranix as a dev-only input in a `tf` flake-parts partition with its own `tf/flake.nix` and lock. Declare the partition's nixpkgs, flake-parts and systems inputs explicitly; a subflake cannot use `follows` to inherit the parent flake's inputs.
 2. terranix modules tf/modules/hcloud-node.nix and tf/modules/gcp-node.nix (x86_64 default, aarch64 selectable), each emitting the shared facts output; env modules that read the clan's evaluated inventory and allocated vars directly (machines, sites, sizes, arch, WireGuard ports and firewall rules). Expose packages.<system>.tf-triad and tf-arm-mix (config.tf.json) and run `tofu validate` on each in checks.
 3. Pin providers with opentofu.withPlugins (hcloud, google); tofu init must not download anything.
 4. A run app that works in a throwaway directory outside the git tree: copy tests/clans/<name>, point it at the local clanServices checkout, create a per-run age key, clan vars generate -> config.tf.json -> tofu apply -> tofu output -json -> facts.json (schema-validated) -> materialize -> clan machines install (targetHost = the public underlay address) -> smoke probes from expected.json -> tofu destroy. Nothing is written back to the repo.
