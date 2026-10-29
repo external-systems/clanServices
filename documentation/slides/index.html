@@ -4,19 +4,18 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-		<title>External Systems — Kubernetes cluster clanServices</title>
+		<title>Kubernetes cluster clanServices</title>
 
 		<!-- reveal.js core styles. `reveal/` is added by the Nix build
-		     (flake-parts/slides.nix); it is not in this folder. -->
+		     (the presenting flake); it is not in this folder. -->
 		<link rel="stylesheet" href="reveal/reset.css" />
 		<link rel="stylesheet" href="reveal/reveal.css" />
 
-		<!-- Theme: swap black.css for white, league, moon, dracula, ...
-		     (see reveal/theme/ in the built output) -->
+		<!-- Base theme (dark); custom.css recolours it with Claude's palette. -->
 		<link rel="stylesheet" href="reveal/theme/black.css" />
 
-		<!-- Colours for highlighted code blocks -->
-		<link rel="stylesheet" href="reveal/plugin/highlight/monokai.css" />
+		<!-- Claude colours, icons, layers and hand-drawn diagrams -->
+		<link rel="stylesheet" href="custom.css" />
 	</head>
 	<body>
 		<div class="reveal">
@@ -37,15 +36,23 @@
 
 		<script src="reveal/reveal.js"></script>
 		<script src="reveal/plugin/markdown.js"></script>
-		<script src="reveal/plugin/highlight.js"></script>
 		<script src="reveal/plugin/notes.js"></script>
+		<script src="speaker-sync.js"></script>
+		<!-- Hand-drawn diagrams: rough.js (MIT) + sketch.js -->
+		<script src="vendor/rough.js"></script>
+		<script src="sketch.js"></script>
 		<script>
 			// All options: https://revealjs.com/config/
 			Reveal.initialize({
 				hash: true, // keep the slide number in the URL, so refresh stays put
-				slideNumber: true,
-				plugins: [RevealMarkdown, RevealHighlight, RevealNotes],
-			});
+				slideNumber: "h.v",
+				progress: true,
+				transition: "slide",
+				backgroundTransition: "fade",
+				width: 1280,
+				height: 720,
+				plugins: [RevealMarkdown, RevealNotes],
+			}).then(sketchDiagrams); // draw the <svg class="sketch"> diagrams
 		</script>
 	</body>
 </html>

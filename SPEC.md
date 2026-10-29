@@ -4,6 +4,18 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 20 (2026-10-29): **status corrections only; no behavior change.** A
+review found routed-fabric and netif claims that the code or VM suites do
+not yet meet. Those claims stay in the target contract and are now marked
+*(planned)* where they appear; the work to close them is phased in
+`documentation/docs/plans/data-plane-hardening.md`, with one hand-off
+prompt per phase under `documentation/docs/plans/phase-*/`. From this
+round, a *VM-proven* status names its test file and a unique `*_OK` marker
+the test prints; VM logs live in `.baton-pass/vm-logs/<suite>/logs-<n>`
+(never committed). Verification is a full `nix flake check` (`checks` is
+static-only), formatting is alejandra, breaking changes need no shims, and
+`targetHost` stays on the underlay (AGENTS.md rules 2 and 10–12).
+
 Round 19 (2026-10-28): **the artifact flake is the packaging and shared-input
 authority (D62).** `external-systems/pkgs` pins nixpkgs and flake-parts, owns
 the IfState/Kubernetes overlays and per-system airgap artifacts, and remains a
@@ -764,7 +776,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   infra-controllers → …) move to the day-2 docs as examples.
 - **D44 Test-surface reduction.** (REVISED rounds 14–17; suite list
   updated for composable roles, network-facts parity, and the round-17
-  transport/ClusterMesh contract.) VM suites kept: single/join/HA per distro; netif
+  transport/ClusterMesh contract. Round 20: the routed-fabric NAT-site,
+  source/return and filter-negative items are target scope; §7 holds
+  their status.) VM suites kept: single/join/HA per distro; netif
   (multi-NIC, VLAN/bond/bridge, multi-instance on one host,
   static/DHCP/RA, exports, cross-instance conflict negatives);
   routed-fabric transport/FRR (two spines + leaves, one WG interface per
@@ -1325,7 +1339,9 @@ unless noted) — revoked entries keep one-line reasons for history.
 21. WireGuard MTU derives per link from the underlay minus WireGuard
     overhead with a 1280 floor; Cilium MTU = the minimum interface MTU in
     native mode and minimum minus 50 under VXLAN; VMs assert path MTU
-    (D51/D58).
+    (D51/D58). *(Partially implemented: wireguard-mesh uses a fixed 1420
+    and routed-fabric assumes a 1500 underlay when netif exports no MTU,
+    as on every DHCP link; see the hardening plan, phase 4.)*
 22. `clan.networkFacts` is versioned (schemaVersion 2), non-secret,
     deep-evaluable, and
     identical in meaning to the functional configuration and exports;
@@ -1736,6 +1752,11 @@ GitOps owns all lifecycle post-bootstrap; base upgrades preserve
 operator CRDs.
 
 ### 6.12 Assertions and firewall
+*Status (round 20): the leaf-transit, asymmetric source/return, HA-profile
+and duplicate-ASN rejections below are planned, not implemented, and
+BGP/BFD ports are currently opened on every interface. See the hardening
+plan, phase 2.*
+
 Eval rejects: multiple bootstraps; duplicate ids/CIDRs/ports/ASNs/
 interface names/transfer prefixes; missing dual-stack or topology facts;
 pool overlap; scope⇒mode violations; floating without candidates;
@@ -1767,7 +1788,7 @@ or write verbs (D38). Firewall: nftables-only — Cilium's required
 KPR/BPF-masquerade rules use iptables-nft; legacy iptables and
 kube-proxy rules are forbidden (D55); API on transport only; public
 ports only where exposed; WireGuard only on configured underlays;
-BGP/BFD only on loopback and expected WG/upstream peers; mirror Services
+BGP/BFD only on loopback and expected WG/upstream peers *(planned)*; mirror Services
 restricted to GitOps namespaces. VMs assert positive AND negative
 exposure, the nft backend, Cilium datapath rules, and no kube-proxy rules.
 
@@ -1804,7 +1825,9 @@ Node duality uses the same FRR, never a second stack. Members get
 routes only — their name resolution is a day-2 concern (external-dns-
 style automation), never a fabric render.
 
-Acceptance: eval proves deterministic names/transfer prefixes,
+Acceptance (target; round 20 status: the NAT-site, Internet source/return,
+border-filter and route-filter-negative items are not yet VM-proven, see
+the hardening plan, phase 6): eval proves deterministic names/transfer prefixes,
 adjacency/AllowedIP/filter equivalence, self-exclusion, topology/access/
 border checks, spine references and reachability (every leaf reaches ≥1
 spine; HA = 2, no arbitrary maximum), symmetric graph derivation, and
@@ -1908,11 +1931,13 @@ Current registered VM suites:
 - **wireguard-mesh**: real dual-stack handshakes and pairwise connectivity.
 - **routed-fabric transport/FRR**: two spines + leaves with derived
   adjacencies (D59), one IfState-owned WG interface per pair, real
-  handshakes, NAT/outbound-only keepalive, no `(none)` AllowedIPs,
+  handshakes, no `(none)` AllowedIPs, FRR/BFD, RIB-vs-kernel FIB,
+  next-hop-self, spine readvertise/leaf no-transit, MTU, and spine HA
+  failure/restore, on one flat underlay where every node has an endpoint.
+  *Planned (not yet VM-proven):* NAT/outbound-only keepalive,
   external-transit crypto ACL without an IP default route, Internet
-  source/return path, FRR/BFD, RIB-vs-kernel FIB, next-hop-self,
-  spine readvertise/leaf no-transit, route-filter/default-route negatives,
-  MTU, and spine HA failure/restore.
+  source/return path, and route-filter/default-route negatives (hardening
+  plan, phase 6).
 - artifact matrix (3-minor version pins eval, D34);
 - **native data-plane suite per distro** on `routed-fabric`: native
   pod-to-pod without VXLAN, multi-pool remote routes, pool allocation,

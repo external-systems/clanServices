@@ -57,8 +57,11 @@ is a review destination, not a dependency.
 
 1. `git add` new files BEFORE any nix eval — Nix reads the git tree.
 2. Static gates before commit: `nix fmt .` then `nix flake check
-   --no-build --show-trace` (rule 9: never without `--no-build`); keep
-   statix/deadnix clean. Fix all eval warnings.
+   --show-trace`. `checks` is static-only since round 19 (eval tests,
+   coverage, formatting), so a full `nix flake check` is part of every
+   verification; keep statix/deadnix clean and fix all eval warnings.
+   Formatting is alejandra, always (`formatter.nix` switches from nixfmt
+   in hardening phase 1, see `documentation/docs/plans/`).
 3. No spec-implementation drift: amend the spec BEFORE implementing when a
    test disproves an assumption; never weaken a test to fit code.
 4. Distro-specific config lives in the thin `rke2`/`k3s` services; shared
@@ -89,10 +92,19 @@ is a review destination, not a dependency.
    disabled (D42); the control domain is GitOps-neutral
    (`controlDomain.role`, D43).
 9. VM suites must NEVER enter `checks`; they live under
-   `legacyPackages.<system>.vmTests`. DO NOT RUN plain `nix flake check`.
-   Use `nix flake check --no-build --show-trace` only after confirming
-   `checks` contains no VM derivation; if one appears there, fix the output
-   boundary instead of running the check.
+   `legacyPackages.<system>.vmTests`. If a VM derivation ever appears in
+   `checks`, fix the output boundary; never work around it with
+   `--no-build`.
+10. VM test logs go to `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0, 1,
+    … per run). `.baton-pass/` is gitignored and never committed; SPEC.md
+    cites the suite and its `*_OK` marker, not a log file in git.
+11. Breaking changes carry no compatibility burden: there are no external
+    consumers or deployments and no real machines use these flakes, so
+    never add migration shims, deprecation aliases, or renamed-option
+    warnings.
+12. Keep the deploy target (`clan.core.networking.targetHost`) on the
+    underlay address, never a fabric or tunnel address, so a fabric change
+    cannot lock out its own deployment.
 
 ## Verified upstream facts the spec depends on
 
@@ -122,4 +134,4 @@ is a review destination, not a dependency.
   `kubectl apply --server-side` avoids CSA→SSA field-ownership friction;
   `cilium install` (CLI) auto-detects hidden values and skews cert
   generation — rejected as the bootstrap mechanism.
-- `nix fmt` uses the repo `formatter.nix`.
+- `nix fmt` uses the repo `formatter.nix` (alejandra; see rule 2).

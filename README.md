@@ -73,9 +73,12 @@ Each service lives under `services/<name>/` with its module, flake-parts registr
 Run the standard static gates before committing:
 
 ```bash
-nix fmt .
-nix flake check --no-build --show-trace
+nix fmt .            # alejandra
+nix flake check --show-trace
 ```
+
+`checks` is static-only (eval tests, coverage, formatting), so a full
+`nix flake check` is safe and required.
 
 Hermetic NixOS VM suites are documented in SPEC.md and built from
 `legacyPackages.x86_64-linux.vmTests.<suite>`, one at a time. The pinned

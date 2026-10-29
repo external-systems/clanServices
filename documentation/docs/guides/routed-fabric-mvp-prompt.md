@@ -57,9 +57,9 @@ report blockers with evidence.
 - Load these skills and follow them over your own defaults: frr, cilium,
   rancher-kubernetes, clan-core, clanservices, vm-tests, nix-style.
 - `git add` BEFORE every Nix eval (Nix reads the git tree) — in both repos.
-- NEVER run plain `nix flake check` in clanServices. VM suites belong only
-  under `legacyPackages.<system>.vmTests`, never `checks`; the static gate
-  is `nix flake check --no-build --show-trace`. (pkgs has no VM suites; its
+- VM suites belong only under `legacyPackages.<system>.vmTests`, never
+  `checks`; `checks` is static-only, so the gate is a full
+  `nix flake check --show-trace`. (pkgs has no VM suites; its
   own `nix flake check` is its lint/freshness gate and is safe to run there.)
 - Never weaken, skip, or delete a test or assertion to fit code. If
   reality disproves a spec assumption, amend SPEC.md FIRST and
@@ -94,7 +94,7 @@ report blockers with evidence.
      must pass before you touch anything)
    - clanServices: `nix fmt .` ;
      `nix build .#checks.x86_64-linux.treefmt` ;
-     `nix flake check --no-build --show-trace` (zero warnings, but harmless warning are fine) ;
+     `nix flake check --show-trace` (zero warnings, but harmless warning are fine) ;
      `nix build .#checks.x86_64-linux.nix-unit -L` (record the count)
 4. Existing clanServices VM suites at baseline (each built individually,
    one at a time, `nix build --no-link .#legacyPackages.x86_64-linux.vmTests.<suite>`):
@@ -385,7 +385,7 @@ clanServices:
 1. `git add -A` (new files staged before eval).
 2. `nix fmt .`; restage anything it rewrote.
 3. `nix build .#checks.x86_64-linux.treefmt`.
-4. `nix flake check --no-build --show-trace` — read the output; zero
+4. `nix flake check --show-trace` — read the output; zero
    eval warnings (including zero NEW deprecation warnings, harmless warnings are fine).
 5. `nix build .#checks.x86_64-linux.nix-unit -L` — record the count.
 6. Every VM suite, one at a time, sandboxed, log teed to
