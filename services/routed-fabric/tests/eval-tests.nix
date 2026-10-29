@@ -5,11 +5,10 @@
   inputs,
   exportInterfaces,
   ...
-}:
-let
-  fabric = import ../../../lib/kube-cluster/fabric.nix { inherit lib; };
+}: let
+  fabric = import ../../../lib/kube-cluster/fabric.nix {inherit lib;};
 
-  machineConfigs = lib.genAttrs [ "spine-a" "spine-b" "client" "admin" "node-a" ] (_: {
+  machineConfigs = lib.genAttrs ["spine-a" "spine-b" "client" "admin" "node-a"] (_: {
     nixpkgs.hostPlatform = "x86_64-linux";
   });
 
@@ -19,55 +18,94 @@ let
       name = "k3s";
       description = "Eval-only cluster export fixture";
       readme = "Cluster export fixture for routed-fabric tests.";
-      exports.out = [ "kube_cluster" ];
+      exports.out = ["kube_cluster"];
     };
     roles.default = {
       description = "Publish one cluster's non-secret facts";
-      perInstance =
-        { instanceName, mkExports, ... }:
-        let
-          second = instanceName == "cluster-b";
-          member = if second then "spine-b" else "node-a";
-        in
-        {
-          exports = mkExports {
-            kube_cluster = {
-              schemaVersion = 3;
-              name = instanceName;
-              ciliumId = if second then 2 else 1;
-              network = {
-                podCIDRv4 = if second then "10.3.0.0/16" else "10.1.0.0/16";
-                podCIDRv6 = if second then "fd10:3::/56" else "fd10:1::/56";
-                serviceCIDRv4 = if second then "10.4.0.0/16" else "10.2.0.0/16";
-                serviceCIDRv6 = if second then "fd10:4::/112" else "fd10:2::/112";
-                clusterDNS = if second then "10.4.0.10" else "10.2.0.10";
-                fabric = {
-                  service = "routed-fabric";
-                  instance = "fleet";
-                };
+      perInstance = {
+        instanceName,
+        mkExports,
+        ...
+      }: let
+        second = instanceName == "cluster-b";
+        member =
+          if second
+          then "spine-b"
+          else "node-a";
+      in {
+        exports = mkExports {
+          kube_cluster = {
+            schemaVersion = 3;
+            name = instanceName;
+            ciliumId =
+              if second
+              then 2
+              else 1;
+            network = {
+              podCIDRv4 =
+                if second
+                then "10.3.0.0/16"
+                else "10.1.0.0/16";
+              podCIDRv6 =
+                if second
+                then "fd10:3::/56"
+                else "fd10:1::/56";
+              serviceCIDRv4 =
+                if second
+                then "10.4.0.0/16"
+                else "10.2.0.0/16";
+              serviceCIDRv6 =
+                if second
+                then "fd10:4::/112"
+                else "fd10:2::/112";
+              clusterDNS =
+                if second
+                then "10.4.0.10"
+                else "10.2.0.10";
+              fabric = {
+                service = "routed-fabric";
+                instance = "fleet";
               };
-              members.${member} = {
-                role = "server";
-                ipv4 = if second then "192.168.77.2" else "192.168.77.4";
-                ipv6 = if second then "fd77::2" else "fd77::4";
-              };
-              pools.fabric = {
-                scope = "cluster-global";
-                delivery = "shared-bgp";
-                blocks = [
-                  (if second then "172.16.2.0/24" else "172.16.1.0/24")
-                  (if second then "fd11:2::/64" else "fd11:1::/64")
-                ];
-              };
-              bgp = {
-                enabled = true;
-                ciliumAsn = if second then 4200000002 else 4200000001;
-                hostAsn = fabric.nodeAsn "fleet" member;
-                advertiseClusterIPs = true;
-              };
+            };
+            members.${member} = {
+              role = "server";
+              ipv4 =
+                if second
+                then "192.168.77.2"
+                else "192.168.77.4";
+              ipv6 =
+                if second
+                then "fd77::2"
+                else "fd77::4";
+            };
+            pools.fabric = {
+              scope = "cluster-global";
+              delivery = "shared-bgp";
+              blocks = [
+                (
+                  if second
+                  then "172.16.2.0/24"
+                  else "172.16.1.0/24"
+                )
+                (
+                  if second
+                  then "fd11:2::/64"
+                  else "fd11:1::/64"
+                )
+              ];
+            };
+            bgp = {
+              enabled = true;
+              ciliumAsn =
+                if second
+                then 4200000002
+                else 4200000001;
+              hostAsn = fabric.nodeAsn "fleet" member;
+              advertiseClusterIPs = true;
             };
           };
         };
+      };
     };
   };
 
@@ -102,7 +140,7 @@ let
               ipv6 = "fd77::11";
               access = "admin";
               endpoint = "admin.test";
-              spines = [ "spine-a" ];
+              spines = ["spine-a"];
             };
             node-a.settings = {
               ipv4 = "192.168.77.4";
@@ -114,20 +152,19 @@ let
       cluster-a = {
         module.name = "k3s";
         module.input = "self";
-        roles.default.machines.node-a = { };
+        roles.default.machines.node-a = {};
       };
       cluster-b = {
         module.name = "k3s";
         module.input = "self";
-        roles.default.machines.spine-b = { };
+        roles.default.machines.spine-b = {};
       };
     };
   };
 
-  mkEvaled =
-    inventory:
+  mkEvaled = inventory:
     clanLib.clan {
-      self = { };
+      self = {};
       directory = ./fixtures;
       inherit exportInterfaces;
       modules = {
@@ -149,16 +186,14 @@ let
   spineB = configs.spine-b.config;
   node = configs.node-a.config;
 
-  failedAssertion =
-    config: needle:
+  failedAssertion = config: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) config.assertions;
-  interfacesFor =
-    config:
+  interfacesFor = config:
     lib.filterAttrs (
       name: _: lib.hasPrefix "rf" name && !lib.hasPrefix "rflo" name
-    ) config.networking.ifstate.settings.interfaces;
-  allowedFor =
-    config:
+    )
+    config.networking.ifstate.settings.interfaces;
+  allowedFor = config:
     map (interface: (builtins.head (lib.attrValues interface.wireguard.peers)).allowedips) (
       builtins.attrValues (interfacesFor config)
     );
@@ -166,23 +201,29 @@ let
   withoutSpines = mkEvaled (
     baseInventory
     // {
-      instances = baseInventory.instances // {
-        fleet = baseInventory.instances.fleet // {
-          roles = baseInventory.instances.fleet.roles // {
-            spine.machines = { };
-          };
+      instances =
+        baseInventory.instances
+        // {
+          fleet =
+            baseInventory.instances.fleet
+            // {
+              roles =
+                baseInventory.instances.fleet.roles
+                // {
+                  spine.machines = {};
+                };
+            };
         };
-      };
     }
   );
   badSpine = mkEvaled (
     lib.recursiveUpdate baseInventory {
-      instances.fleet.roles.leaf.machines.client.settings.spines = [ "admin" ];
+      instances.fleet.roles.leaf.machines.client.settings.spines = ["admin"];
     }
   );
   spineDeclaresSpines = mkEvaled (
     lib.recursiveUpdate baseInventory {
-      instances.fleet.roles.spine.machines.spine-a.settings.spines = [ "spine-b" ];
+      instances.fleet.roles.spine.machines.spine-a.settings.spines = ["spine-b"];
     }
   );
   portEval = mkEvaled (
@@ -205,7 +246,7 @@ let
               links.wan = {
                 interface = "enp1s0f0np0";
                 mtu = 1400;
-                static.ipv4 = [ "203.0.113.2/30" ];
+                static.ipv4 = ["203.0.113.2/30"];
                 endpoint = true;
               };
             };
@@ -214,7 +255,7 @@ let
               links.wan = {
                 interface = "enp1s0f1np1";
                 mtu = 1400;
-                static.ipv4 = [ "198.51.100.2/30" ];
+                static.ipv4 = ["198.51.100.2/30"];
                 endpoint = true;
               };
             };
@@ -271,7 +312,7 @@ let
         module.input = "self";
         roles = {
           spine.machines.spine-a.settings.endpoint = "spine-a.test";
-          leaf.machines.client.settings = { };
+          leaf.machines.client.settings = {};
         };
       };
     }
@@ -281,7 +322,7 @@ let
   # underlay): spines dial each other's underlay hosts; leaves stay
   # outbound-only, so spine-side leaf peers render no Endpoint.
   endpointSourcesEval = clanLib.clan {
-    self = { };
+    self = {};
     directory = ./fixtures;
     inherit exportInterfaces;
     modules = {
@@ -302,47 +343,49 @@ let
             node-a.settings.host = "192.168.1.12";
           };
         };
-        fleet = baseInventory.instances.fleet // {
-          roles = {
-            spine.machines = {
-              spine-a.settings = {
-                ipv4 = "192.168.77.1";
-                ipv6 = "fd77::1";
-                endpointSources = [
-                  {
-                    service = "clan-core/internet";
-                    instance = "underlay";
-                  }
-                ];
+        fleet =
+          baseInventory.instances.fleet
+          // {
+            roles = {
+              spine.machines = {
+                spine-a.settings = {
+                  ipv4 = "192.168.77.1";
+                  ipv6 = "fd77::1";
+                  endpointSources = [
+                    {
+                      service = "clan-core/internet";
+                      instance = "underlay";
+                    }
+                  ];
+                };
+                spine-b.settings = {
+                  ipv4 = "192.168.77.2";
+                  ipv6 = "fd77::2";
+                  endpointSources = [
+                    {
+                      service = "clan-core/internet";
+                      instance = "underlay";
+                    }
+                  ];
+                };
               };
-              spine-b.settings = {
-                ipv4 = "192.168.77.2";
-                ipv6 = "fd77::2";
-                endpointSources = [
-                  {
-                    service = "clan-core/internet";
-                    instance = "underlay";
-                  }
-                ];
-              };
-            };
-            leaf.machines = {
-              client.settings = {
-                ipv4 = "192.168.77.10";
-                ipv6 = "fd77::10";
-              };
-              admin.settings = {
-                ipv4 = "192.168.77.11";
-                ipv6 = "fd77::11";
-                spines = [ "spine-a" ];
-              };
-              node-a.settings = {
-                ipv4 = "192.168.77.4";
-                ipv6 = "fd77::4";
+              leaf.machines = {
+                client.settings = {
+                  ipv4 = "192.168.77.10";
+                  ipv6 = "fd77::10";
+                };
+                admin.settings = {
+                  ipv4 = "192.168.77.11";
+                  ipv6 = "fd77::11";
+                  spines = ["spine-a"];
+                };
+                node-a.settings = {
+                  ipv4 = "192.168.77.4";
+                  ipv6 = "fd77::4";
+                };
               };
             };
           };
-        };
       };
     };
   };
@@ -351,14 +394,11 @@ let
   endpointClient = endpointSourcesEval.config.nixosConfigurations.client.config;
   spineSpineKey = fabric.adjacencyKey "fleet" "spine-a" "spine-b";
   spineSpineInterface = fabric.adjacencyName spineSpineKey;
-  peerEndpoint =
-    config: interfaceName:
-    let
-      interface = config.networking.ifstate.settings.interfaces.${interfaceName};
-    in
+  peerEndpoint = config: interfaceName: let
+    interface = config.networking.ifstate.settings.interfaces.${interfaceName};
+  in
     (builtins.head (lib.attrValues interface.wireguard.peers)).endpoint or null;
-in
-{
+in {
   rendering = {
     test_oneInterfacePerAdjacency = {
       expr = {
@@ -375,40 +415,41 @@ in
       };
     };
     test_derivedSpinePairAdjacency = {
-      expr =
-        let
-          remoteNames =
+      expr = let
+        remoteNames =
+          builtins.attrNames
+          (clanLib.getExport {
+              serviceName = "routed-fabric";
+              instanceName = "fleet";
+              roleName = "spine";
+              machineName = "spine-a";
+            }
+            evaled.config.exports).routed_fabric.adjacencies;
+      in {
+        # The spine<->spine adjacency exists with no settings on either side.
+        spinePairOnA = builtins.elem "spine-b" remoteNames;
+        spinePairOnB = builtins.elem "spine-a" (
+          builtins.attrNames
+          (clanLib.getExport {
+              serviceName = "routed-fabric";
+              instanceName = "fleet";
+              roleName = "spine";
+              machineName = "spine-b";
+            }
+            evaled.config.exports).routed_fabric.adjacencies
+        );
+        noLeafLeaf =
+          !(builtins.elem "client" (
             builtins.attrNames
-              (clanLib.getExport {
+            (clanLib.getExport {
                 serviceName = "routed-fabric";
                 instanceName = "fleet";
-                roleName = "spine";
-                machineName = "spine-a";
-              } evaled.config.exports).routed_fabric.adjacencies;
-        in
-        {
-          # The spine<->spine adjacency exists with no settings on either side.
-          spinePairOnA = builtins.elem "spine-b" remoteNames;
-          spinePairOnB = builtins.elem "spine-a" (
-            builtins.attrNames
-              (clanLib.getExport {
-                serviceName = "routed-fabric";
-                instanceName = "fleet";
-                roleName = "spine";
-                machineName = "spine-b";
-              } evaled.config.exports).routed_fabric.adjacencies
-          );
-          noLeafLeaf =
-            !(builtins.elem "client" (
-              builtins.attrNames
-                (clanLib.getExport {
-                  serviceName = "routed-fabric";
-                  instanceName = "fleet";
-                  roleName = "leaf";
-                  machineName = "admin";
-                } evaled.config.exports).routed_fabric.adjacencies
-            ));
-        };
+                roleName = "leaf";
+                machineName = "admin";
+              }
+              evaled.config.exports).routed_fabric.adjacencies
+          ));
+      };
       expected = {
         spinePairOnA = true;
         spinePairOnB = true;
@@ -418,11 +459,9 @@ in
     test_namesPortsAndMtu = {
       expr = lib.sortOn (entry: entry.listenPort) (
         lib.mapAttrsToList (
-          name: interface:
-          let
+          name: interface: let
             peer = builtins.head (lib.attrValues interface.wireguard.peers);
-          in
-          {
+          in {
             nameLength = lib.stringLength name;
             peerCount = builtins.length (lib.attrValues interface.wireguard.peers);
             inherit (interface.link) mtu;
@@ -449,11 +488,10 @@ in
       ];
     };
     test_adjacencyPortOverride = {
-      expr =
-        let
-          key = fabric.adjacencyKey "fleet" "client" "spine-a";
-          interfaceName = fabric.adjacencyName key;
-        in
+      expr = let
+        key = fabric.adjacencyKey "fleet" "client" "spine-a";
+        interfaceName = fabric.adjacencyName key;
+      in
         map (config: config.networking.ifstate.settings.interfaces.${interfaceName}.wireguard.listen_port) [
           portClient
           portSpine
@@ -483,22 +521,22 @@ in
       };
     };
     test_endpointSourcesResolution = {
-      expr =
-        let
-          leafInterfaces = lib.filterAttrs (
+      expr = let
+        leafInterfaces =
+          lib.filterAttrs (
             n: _: lib.hasPrefix "rf" n && !lib.hasPrefix "rflo" n && n != spineSpineInterface
-          ) endpointSpineA.networking.ifstate.settings.interfaces;
-        in
-        {
-          spinePairOnA = peerEndpoint endpointSpineA spineSpineInterface;
-          spinePairOnB = peerEndpoint endpointSpineB spineSpineInterface;
-          leafPeersOnSpineHaveNoEndpoint = lib.all (
-            interface: (builtins.head (lib.attrValues interface.wireguard.peers)).endpoint or null == null
-          ) (builtins.attrValues leafInterfaces);
-          dualHomedLeafDialsBothSpines =
-            (peerEndpoint endpointClient "rfd0d91d1f47a84" == "192.168.1.4:52679")
-            && (peerEndpoint endpointClient "rfaa5538a64228d" == "192.168.1.5:54843");
-        };
+          )
+          endpointSpineA.networking.ifstate.settings.interfaces;
+      in {
+        spinePairOnA = peerEndpoint endpointSpineA spineSpineInterface;
+        spinePairOnB = peerEndpoint endpointSpineB spineSpineInterface;
+        leafPeersOnSpineHaveNoEndpoint = lib.all (
+          interface: (builtins.head (lib.attrValues interface.wireguard.peers)).endpoint or null == null
+        ) (builtins.attrValues leafInterfaces);
+        dualHomedLeafDialsBothSpines =
+          (peerEndpoint endpointClient "rfd0d91d1f47a84" == "192.168.1.4:52679")
+          && (peerEndpoint endpointClient "rfaa5538a64228d" == "192.168.1.5:54843");
+      };
       expected = {
         spinePairOnA = "192.168.1.5:55962";
         spinePairOnB = "192.168.1.4:55962";
@@ -507,22 +545,25 @@ in
       };
     };
     test_wireguardLinkLocalAddressing = {
-      expr =
-        let
-          interfaces = builtins.attrValues (interfacesFor spine);
-        in
-        {
-          linkLocal = lib.all (
+      expr = let
+        interfaces = builtins.attrValues (interfacesFor spine);
+      in {
+        linkLocal =
+          lib.all (
             interface:
-            lib.any (
-              address: builtins.isString address && lib.hasPrefix "fe80::" address && lib.hasSuffix "/64" address
-            ) interface.addresses
-          ) interfaces;
-          transferScope = lib.all (
+              lib.any (
+                address: builtins.isString address && lib.hasPrefix "fe80::" address && lib.hasSuffix "/64" address
+              )
+              interface.addresses
+          )
+          interfaces;
+        transferScope =
+          lib.all (
             interface:
-            lib.all (address: address.scope == "link") (builtins.filter builtins.isAttrs interface.addresses)
-          ) interfaces;
-        };
+              lib.all (address: address.scope == "link") (builtins.filter builtins.isAttrs interface.addresses)
+          )
+          interfaces;
+      };
       expected = {
         linkLocal = true;
         transferScope = true;
@@ -602,28 +643,24 @@ in
       };
     };
     test_adminPodsAndServices = {
-      expr =
-        let
-          text = builtins.toJSON (allowedFor admin);
-        in
-        {
-          pods = lib.hasInfix "10.1.0.0/16" text;
-          services = lib.hasInfix "10.2.0.0/16" text;
-        };
+      expr = let
+        text = builtins.toJSON (allowedFor admin);
+      in {
+        pods = lib.hasInfix "10.1.0.0/16" text;
+        services = lib.hasInfix "10.2.0.0/16" text;
+      };
       expected = {
         pods = true;
         services = true;
       };
     };
     test_kubernetesLocalAdvertisements = {
-      expr =
-        let
-          text = builtins.toJSON (allowedFor node);
-        in
-        {
-          pods = lib.hasInfix "10.1.0.0/16" text;
-          services = lib.hasInfix "10.2.0.0/16" text;
-        };
+      expr = let
+        text = builtins.toJSON (allowedFor node);
+      in {
+        pods = lib.hasInfix "10.1.0.0/16" text;
+        services = lib.hasInfix "10.2.0.0/16" text;
+      };
       expected = {
         pods = true;
         services = true;
@@ -642,27 +679,25 @@ in
       };
     };
     test_borderCryptoAclAndSourceReturn = {
-      expr =
-        let
-          sourceRoutes = borderSpine.networking.ifstate.settings.routing.routes;
-        in
-        {
-          spineDefaultAcl = lib.hasInfix "0.0.0.0/0" (builtins.toJSON (allowedFor borderSpine));
-          peerDefaultAcl = lib.hasInfix "::/0" (builtins.toJSON (allowedFor borderClient));
-          upstream = lib.hasInfix "neighbor 203.0.113.1 remote-as 64500" borderSpine.services.frr.config;
-          policyTables = lib.unique (map (route: route.table) sourceRoutes);
-          mainTables = lib.unique (
-            map (route: route.table or "main") (
-              builtins.filter (route: (route.table or "main") == "main") sourceRoutes
-            )
-          );
-        };
+      expr = let
+        sourceRoutes = borderSpine.networking.ifstate.settings.routing.routes;
+      in {
+        spineDefaultAcl = lib.hasInfix "0.0.0.0/0" (builtins.toJSON (allowedFor borderSpine));
+        peerDefaultAcl = lib.hasInfix "::/0" (builtins.toJSON (allowedFor borderClient));
+        upstream = lib.hasInfix "neighbor 203.0.113.1 remote-as 64500" borderSpine.services.frr.config;
+        policyTables = lib.unique (map (route: route.table) sourceRoutes);
+        mainTables = lib.unique (
+          map (route: route.table or "main") (
+            builtins.filter (route: (route.table or "main") == "main") sourceRoutes
+          )
+        );
+      };
       expected = {
         spineDefaultAcl = true;
         peerDefaultAcl = true;
         upstream = true;
-        policyTables = [ 39681 ];
-        mainTables = [ ];
+        policyTables = [39681];
+        mainTables = [];
       };
     };
   };
@@ -673,39 +708,39 @@ in
       expected = true;
     };
     test_nodeTransportNativeProfile = {
-      expr =
-        let
-          exported = clanLib.getExport {
+      expr = let
+        exported =
+          clanLib.getExport {
             serviceName = "routed-fabric";
             instanceName = "fleet";
             roleName = "leaf";
             machineName = "client";
-          } evaled.config.exports;
-          transport = exported.node_transport;
-        in
-        {
-          transportVersion = transport.schemaVersion;
-          fabricVersion = exported.routed_fabric.schemaVersion;
-          role = exported.routed_fabric.topology;
-          access = exported.routed_fabric.access;
-          adjacencyCount = builtins.length (builtins.attrNames exported.routed_fabric.adjacencies);
-          mode = transport.datapath.mode;
-          tunnelProtocol = transport.datapath.tunnelProtocol;
-          routeExchange = transport.native.routeExchange;
-          inherit (transport) internalLoadBalancer nodePort;
-          interfacesKeyedByLinuxName = lib.all (
-            name:
+          }
+          evaled.config.exports;
+        transport = exported.node_transport;
+      in {
+        transportVersion = transport.schemaVersion;
+        fabricVersion = exported.routed_fabric.schemaVersion;
+        role = exported.routed_fabric.topology;
+        access = exported.routed_fabric.access;
+        adjacencyCount = builtins.length (builtins.attrNames exported.routed_fabric.adjacencies);
+        mode = transport.datapath.mode;
+        tunnelProtocol = transport.datapath.tunnelProtocol;
+        routeExchange = transport.native.routeExchange;
+        inherit (transport) internalLoadBalancer nodePort;
+        interfacesKeyedByLinuxName = lib.all (
+          name:
             name == exported.routed_fabric.loopback || (lib.hasPrefix "rf" name && lib.stringLength name == 15)
-          ) (builtins.attrNames transport.interfaces);
-          directRoutingDeviceNamesInterface = builtins.elem transport.directRoutingDevice (
-            builtins.attrNames transport.interfaces
-          );
-          directRoutingDeviceIsStableLoopback =
-            transport.directRoutingDevice == exported.routed_fabric.loopback;
-          everyInterfaceHasMtu = lib.all (iface: iface.mtu == 1404) (
-            builtins.attrValues transport.interfaces
-          );
-        };
+        ) (builtins.attrNames transport.interfaces);
+        directRoutingDeviceNamesInterface = builtins.elem transport.directRoutingDevice (
+          builtins.attrNames transport.interfaces
+        );
+        directRoutingDeviceIsStableLoopback =
+          transport.directRoutingDevice == exported.routed_fabric.loopback;
+        everyInterfaceHasMtu = lib.all (iface: iface.mtu == 1404) (
+          builtins.attrValues transport.interfaces
+        );
+      };
       expected = {
         transportVersion = 2;
         fabricVersion = 2;

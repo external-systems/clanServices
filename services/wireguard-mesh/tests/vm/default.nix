@@ -1,5 +1,8 @@
-{ lib, inputs, ... }:
 {
+  lib,
+  inputs,
+  ...
+}: {
   name = "wireguard-mesh";
 
   clan = {
@@ -8,9 +11,9 @@
 
     inventory = {
       machines = {
-        alpha = { };
-        beta = { };
-        gamma = { };
+        alpha = {};
+        beta = {};
+        gamma = {};
       };
 
       instances = {
@@ -53,19 +56,21 @@
     };
   };
 
-  nodes = lib.genAttrs [ "alpha" "beta" "gamma" ] (name: {
+  nodes = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
         ifstateOverlay = inputs.pkgs.overlays.ifstate;
         addresses = [
           "192.168.1.${
             toString
-              {
-                alpha = 1;
-                beta = 2;
-                gamma = 3;
-              }
-              .${name}
+            {
+              alpha = 1;
+              beta = 2;
+              gamma = 3;
+            }
+              .${
+              name
+            }
           }/24"
         ];
       })

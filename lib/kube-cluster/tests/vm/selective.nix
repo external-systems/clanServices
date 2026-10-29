@@ -3,52 +3,57 @@
   inputs,
   distro,
   profile ? "native",
-}:
-let
+}: let
   clusterA = "${distro}-a";
   clusterB = "${distro}-b";
   clusterC = "${distro}-c";
   k3s = distro == "k3s";
   native = profile == "native";
-  transportModule = if native then "routed-fabric" else "wireguard-mesh";
-  runtimeUnit = if k3s then "k3s.service" else "rke2-server.service";
+  transportModule =
+    if native
+    then "routed-fabric"
+    else "wireguard-mesh";
+  runtimeUnit =
+    if k3s
+    then "k3s.service"
+    else "rke2-server.service";
   marker = "${distro}-clustermesh-selective-${profile}-ok";
-  underlayIp =
-    name:
-    "192.168.1.${
-      toString
-        {
-          alpha = 1;
-          beta = 2;
-          gamma = 3;
-          delta = 4;
-        }
-        .${name}
-    }";
-  stableIp =
-    name:
-    "192.168.77.${
-      toString
-        {
-          alpha = 1;
-          beta = 2;
-          gamma = 3;
-          delta = 4;
-        }
-        .${name}
-    }";
-  stableIp6 =
-    name:
-    "fd77::${
-      toString
-        {
-          alpha = 1;
-          beta = 2;
-          gamma = 3;
-          delta = 4;
-        }
-        .${name}
-    }";
+  underlayIp = name: "192.168.1.${
+    toString
+    {
+      alpha = 1;
+      beta = 2;
+      gamma = 3;
+      delta = 4;
+    }
+        .${
+      name
+    }
+  }";
+  stableIp = name: "192.168.77.${
+    toString
+    {
+      alpha = 1;
+      beta = 2;
+      gamma = 3;
+      delta = 4;
+    }
+        .${
+      name
+    }
+  }";
+  stableIp6 = name: "fd77::${
+    toString
+    {
+      alpha = 1;
+      beta = 2;
+      gamma = 3;
+      delta = 4;
+    }
+        .${
+      name
+    }
+  }";
   clusterSettings = id: peers: {
     network.fabric = {
       service = transportModule;
@@ -57,19 +62,18 @@ let
     cilium.id = id;
     mesh.peers = peers;
   };
-  busyboxImage =
-    pkgs:
+  busyboxImage = pkgs:
     pkgs.dockerTools.pullImage {
       imageName = "busybox";
       imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
       hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
       finalImageTag = "1.36.1";
     };
-  commonNode = name: { pkgs, ... }: {
+  commonNode = name: {pkgs, ...}: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
         ifstateOverlay = inputs.pkgs.overlays.ifstate;
-        addresses = [ "${underlayIp name}/24" ];
+        addresses = ["${underlayIp name}/24"];
       })
     ];
     virtualisation = {
@@ -84,10 +88,9 @@ let
       pkgs.jq
       pkgs.socat
     ];
-    services.${distro}.images = [ (busyboxImage pkgs) ];
+    services.${distro}.images = [(busyboxImage pkgs)];
   };
-in
-{
+in {
   name = "${distro}-clustermesh-selective${lib.optionalString (!native) "-${profile}"}";
 
   clan = {
@@ -104,56 +107,56 @@ in
           ifstateOverlay = inputs.pkgs.overlays.ifstate;
         };
       };
-    exportInterfaces = {
-      node_transport = ../../../../lib/node-transport-interface.nix;
-    }
-    // lib.optionalAttrs native {
-      routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
-    };
+    exportInterfaces =
+      {
+        node_transport = ../../../../lib/node-transport-interface.nix;
+      }
+      // lib.optionalAttrs native {
+        routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
+      };
     inventory = {
       meta.domain = "test.clan";
       machines = {
-        alpha = { };
-        beta = { };
-        gamma = { };
-        delta = { };
+        alpha = {};
+        beta = {};
+        gamma = {};
+        delta = {};
       };
       instances = {
         mesh = {
           module.name = transportModule;
           module.input = "self";
           roles =
-            if native then
-              {
-                spine.machines.delta.settings = {
-                  ipv4 = stableIp "delta";
-                  ipv6 = stableIp6 "delta";
-                  endpoint = underlayIp "delta";
-                };
-                leaf.machines = lib.genAttrs [ "alpha" "beta" "gamma" ] (name: {
-                  settings = {
-                    ipv4 = stableIp name;
-                    ipv6 = stableIp6 name;
-                    endpoint = underlayIp name;
-                  };
-                });
-              }
-            else
-              {
-                peer.machines = lib.genAttrs [ "alpha" "beta" "gamma" ] (name: {
-                  settings = {
-                    ipv4 = stableIp name;
-                    ipv6 = stableIp6 name;
-                    endpoint = underlayIp name;
-                  };
-                });
+            if native
+            then {
+              spine.machines.delta.settings = {
+                ipv4 = stableIp "delta";
+                ipv6 = stableIp6 "delta";
+                endpoint = underlayIp "delta";
               };
+              leaf.machines = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
+                settings = {
+                  ipv4 = stableIp name;
+                  ipv6 = stableIp6 name;
+                  endpoint = underlayIp name;
+                };
+              });
+            }
+            else {
+              peer.machines = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
+                settings = {
+                  ipv4 = stableIp name;
+                  ipv6 = stableIp6 name;
+                  endpoint = underlayIp name;
+                };
+              });
+            };
         };
         ${clusterA} = {
           module.name = distro;
           module.input = "self";
           roles.server = {
-            settings = clusterSettings 1 [ clusterB ];
+            settings = clusterSettings 1 [clusterB];
             machines.alpha.settings.clusterInit = true;
           };
         };
@@ -172,7 +175,7 @@ in
           module.name = distro;
           module.input = "self";
           roles.server = {
-            settings = clusterSettings 3 [ clusterB ];
+            settings = clusterSettings 3 [clusterB];
             machines.gamma.settings.clusterInit = true;
           };
         };
@@ -180,14 +183,15 @@ in
     };
   };
 
-  nodes = {
-    alpha = commonNode "alpha";
-    beta = commonNode "beta";
-    gamma = commonNode "gamma";
-  }
-  // lib.optionalAttrs native {
-    delta = commonNode "delta";
-  };
+  nodes =
+    {
+      alpha = commonNode "alpha";
+      beta = commonNode "beta";
+      gamma = commonNode "gamma";
+    }
+    // lib.optionalAttrs native {
+      delta = commonNode "delta";
+    };
 
   testScript = ''
     def fail_dump(m):
@@ -235,13 +239,21 @@ in
                 "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
                 timeout=300,
             )
-            if ${if native then "True" else "False"}:
+            if ${
+      if native
+      then "True"
+      else "False"
+    }:
                 m.wait_until_succeeds("test $(kubectl get ciliumbgpclusterconfig --no-headers | wc -l) -eq 1", timeout=180)
                 m.wait_until_succeeds("test $(kubectl get ciliumbgppeerconfig --no-headers | wc -l) -eq 1", timeout=180)
                 m.wait_until_succeeds("test $(kubectl get ciliumbgpadvertisement --no-headers | wc -l) -eq 2", timeout=180)
                 m.wait_until_succeeds("test $(cilium bgp peers | grep -c established) -eq 1", timeout=240)
 
-        if ${if native then "True" else "False"}:
+        if ${
+      if native
+      then "True"
+      else "False"
+    }:
             # Prove the exposed apiserver path independently of peering state.
             for m in machines:
                 m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
@@ -260,7 +272,11 @@ in
         gamma.wait_until_succeeds("cilium clustermesh status | grep -q '${clusterB}'", timeout=300)
         gamma.fail("cilium clustermesh status | grep -q '${clusterA}'")
 
-        if ${if native then "True" else "False"}:
+        if ${
+      if native
+      then "True"
+      else "False"
+    }:
             # Native peering also bounds remote pod-route policy. Cilium
             # advertises per-node /24 + /64 allocations, not the whole pool.
             for m in machines:

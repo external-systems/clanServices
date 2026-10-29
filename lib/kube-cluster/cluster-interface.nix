@@ -1,5 +1,4 @@
-{ lib, ... }:
-{
+{lib, ...}: {
   options = {
     domain = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -94,7 +93,7 @@
       };
       helmValues = lib.mkOption {
         type = lib.types.attrs;
-        default = { };
+        default = {};
         description = ''
           Admin override hatch for the canonical Cilium profile (§6.4).
           Merged post-profile and translated into bundle patches
@@ -161,7 +160,7 @@
             };
             candidates = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              default = [ ];
+              default = [];
               description = ''
                 Machine names a floating pool's runtime controller may move
                 addresses to. floating ⇒ must cover the full candidate set
@@ -171,7 +170,7 @@
           };
         }
       );
-      default = { };
+      default = {};
       description = ''
         Cluster-global CiliumLoadBalancerIPPool definitions (D8). Explicit
         pool draws pin io.cilium/bgp-control-plane; classless Services go
@@ -313,7 +312,7 @@
 
       placementLabels = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
-        default = { };
+        default = {};
         description = ''
           Label selector for placement = labels. Only clan-declared
           (nodeLabels) or generated (role/machine/cluster/topology) labels
@@ -399,7 +398,7 @@
         };
         annotations = lib.mkOption {
           type = lib.types.attrsOf lib.types.str;
-          default = { };
+          default = {};
           description = ''
             External exposure ONLY: provider Service annotations
             (external-dns is day-2 and never clan-rendered).
@@ -444,7 +443,7 @@
     coredns = {
       rewrites = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [ ];
+        default = [];
         description = ''
           CoreDNS rewrite directives — the argument part of a CoreDNS
           rewrite directive, one entry per line. Rendered into the bundle
@@ -455,7 +454,7 @@
       };
       helmValues = lib.mkOption {
         type = lib.types.attrs;
-        default = { };
+        default = {};
         description = ''
           Unsupported: clan never renders chart values for the distro's
           CoreDNS (the HelmChartConfig machinery was removed in phase 3).
@@ -477,7 +476,7 @@
       };
       images = lib.mkOption {
         type = lib.types.listOf lib.types.anything;
-        default = [ ];
+        default = [];
         description = ''
           Airgap image tarballs / packages. Empty = the service default:
           the distro runtime airgap images plus the artifact flake's

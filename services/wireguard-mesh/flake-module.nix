@@ -1,11 +1,13 @@
-{ inputs, lib, ... }:
-let
+{
+  inputs,
+  lib,
+  ...
+}: let
   module = lib.modules.importApply ./default.nix {
     ifstateOverlay = inputs.pkgs.overlays.ifstate;
   };
   clanLib = inputs.clan-core.lib;
-in
-rec {
+in rec {
   clan = {
     modules.wireguard-mesh = module;
     exportInterfaces.node_transport = ../../lib/node-transport-interface.nix;
@@ -17,7 +19,7 @@ rec {
       inherit (clan) exportInterfaces;
     };
     clan.nixosTests.wireguard-mesh = {
-      imports = [ ./tests/vm/default.nix ];
+      imports = [./tests/vm/default.nix];
       inherit clan;
     };
   };

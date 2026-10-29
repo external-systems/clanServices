@@ -1,5 +1,4 @@
-{ lib, ... }:
-{
+{lib, ...}: {
   options = {
     clusterInit = lib.mkOption {
       type = lib.types.bool;
@@ -12,7 +11,7 @@
 
     nodeLabels = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = { };
+      default = {};
       description = ''
         Extra Kubernetes node labels for this machine, rendered as
         key=value strings.
@@ -68,7 +67,7 @@
     kubelet = {
       extraArgs = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [ ];
+        default = [];
         description = ''
           Extra kubelet command-line flags for this machine.
         '';
@@ -81,7 +80,7 @@
     # primary/extra blocks). Always node-fate-bound.
     poolBlocks = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ ];
+      default = [];
       description = ''
         Additional CIDR blocks for the node-named LB pool of this machine
         (pool name = machine name, serviceSelector label

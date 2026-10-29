@@ -3,8 +3,11 @@
 # the agent's own mesh address (/etc/hosts), where its haproxy supervisor
 # frontend (8443 = 7442 + cilium.id 1 + 1000) balances to the server's
 # real supervisor (9345) with TLS /readyz healthchecks.
-{ lib, inputs, ... }:
 {
+  lib,
+  inputs,
+  ...
+}: {
   name = "rke2-join";
 
   clan = {
@@ -20,8 +23,8 @@
       meta.domain = "test.clan";
 
       machines = {
-        alpha = { };
-        beta = { };
+        alpha = {};
+        beta = {};
       };
 
       instances = {
@@ -80,48 +83,48 @@
               };
               cilium.id = 1;
             };
-            machines.beta = { };
+            machines.beta = {};
           };
         };
       };
     };
   };
 
-  nodes =
-    let
-      commonNode = name: { pkgs, ... }: {
-        imports = [
-          (import ../../../../tests/ifstate-vm.nix {
-            ifstateOverlay = inputs.pkgs.overlays.ifstate;
-            addresses = [
-              "192.168.1.${
-                toString
-                  {
-                    alpha = 1;
-                    beta = 2;
-                  }
-                  .${name}
-              }/24"
-            ];
-          })
-        ];
-        virtualisation = {
-          cores = 2;
-          memorySize = 3584;
-          diskSize = 8192;
-        };
-
-        environment.systemPackages = [
-          pkgs.kubectl
-          pkgs.cilium-cli
-          pkgs.socat
-        ];
+  nodes = let
+    commonNode = name: {pkgs, ...}: {
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          addresses = [
+            "192.168.1.${
+              toString
+              {
+                alpha = 1;
+                beta = 2;
+              }
+                  .${
+                name
+              }
+            }/24"
+          ];
+        })
+      ];
+      virtualisation = {
+        cores = 2;
+        memorySize = 3584;
+        diskSize = 8192;
       };
-    in
-    {
-      alpha = commonNode "alpha";
-      beta = commonNode "beta";
+
+      environment.systemPackages = [
+        pkgs.kubectl
+        pkgs.cilium-cli
+        pkgs.socat
+      ];
     };
+  in {
+    alpha = commonNode "alpha";
+    beta = commonNode "beta";
+  };
 
   testScript = ''
     def fail_dump(m):

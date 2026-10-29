@@ -3,14 +3,12 @@
   lib,
   self,
   ...
-}:
-let
+}: let
   module = lib.modules.importApply ./default.nix {
     ifstateOverlay = inputs.pkgs.overlays.ifstate;
   };
   clanLib = inputs.clan-core.lib;
-in
-rec {
+in rec {
   clan = {
     modules.routed-fabric = module;
     exportInterfaces = {
@@ -33,7 +31,7 @@ rec {
       inherit (clan) exportInterfaces;
     };
     clan.nixosTests.routed-fabric = {
-      imports = [ ./tests/vm/default.nix ];
+      imports = [./tests/vm/default.nix];
       inherit clan;
     };
   };

@@ -65,9 +65,8 @@
     };
   };
 
-  outputs =
-    inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
+  outputs = inputs @ {flake-parts, ...}:
+    flake-parts.lib.mkFlake {inherit inputs;} {
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -85,38 +84,37 @@
         ./documentation/module.nix
       ];
 
-      perSystem =
-        { pkgs, ... }:
-        let
-          # The nix-unit check re-evaluates this flake in a network-less
-          # sandbox with each direct input overridden to its store path.
-          # Overriding `pkgs` to a path makes Nix re-resolve the pkgs
-          # flake's OWN lock transitively (its nixpkgs/flake-parts/
-          # import-tree), so those get explicit nested overrides pointing
-          # at our already-fetched equivalents (identical revisions).
-          # Same for `presenting` (mkdocs-flake/reveal-js/import-tree).
-          lock = builtins.fromJSON (builtins.readFile ./flake.lock);
-          # Resolve the pkgs flake's import-tree through the flattened lock
-          # (node name via pkgs' inputs map, so lock renumbering is safe).
-          pkgsImportTree = builtins.fetchTree lock.nodes.${lock.nodes.pkgs.inputs."import-tree"}.locked;
-          presentingMkdocsFlake =
-            builtins.fetchTree
-              lock.nodes.${lock.nodes.presenting.inputs."mkdocs-flake"}.locked;
-          presentingRevealJs =
-            builtins.fetchTree
-              lock.nodes.${lock.nodes.presenting.inputs."reveal-js"}.locked;
-          presentingImportTree =
-            builtins.fetchTree
-              lock.nodes.${lock.nodes.presenting.inputs."import-tree"}.locked;
-          kubenixImportTree = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."import-tree"}.locked;
-          kubenixDevshell = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."devshell"}.locked;
-          kubenixFlakeCompat =
-            builtins.fetchTree
-              lock.nodes.${lock.nodes.kubenix.inputs."flake-compat"}.locked;
-          kubenixSystems = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."systems"}.locked;
-        in
-        {
-          nix-unit.inputs = inputs // {
+      perSystem = {pkgs, ...}: let
+        # The nix-unit check re-evaluates this flake in a network-less
+        # sandbox with each direct input overridden to its store path.
+        # Overriding `pkgs` to a path makes Nix re-resolve the pkgs
+        # flake's OWN lock transitively (its nixpkgs/flake-parts/
+        # import-tree), so those get explicit nested overrides pointing
+        # at our already-fetched equivalents (identical revisions).
+        # Same for `presenting` (mkdocs-flake/reveal-js/import-tree).
+        lock = builtins.fromJSON (builtins.readFile ./flake.lock);
+        # Resolve the pkgs flake's import-tree through the flattened lock
+        # (node name via pkgs' inputs map, so lock renumbering is safe).
+        pkgsImportTree = builtins.fetchTree lock.nodes.${lock.nodes.pkgs.inputs."import-tree"}.locked;
+        presentingMkdocsFlake =
+          builtins.fetchTree
+          lock.nodes.${lock.nodes.presenting.inputs."mkdocs-flake"}.locked;
+        presentingRevealJs =
+          builtins.fetchTree
+          lock.nodes.${lock.nodes.presenting.inputs."reveal-js"}.locked;
+        presentingImportTree =
+          builtins.fetchTree
+          lock.nodes.${lock.nodes.presenting.inputs."import-tree"}.locked;
+        kubenixImportTree = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."import-tree"}.locked;
+        kubenixDevshell = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."devshell"}.locked;
+        kubenixFlakeCompat =
+          builtins.fetchTree
+          lock.nodes.${lock.nodes.kubenix.inputs."flake-compat"}.locked;
+        kubenixSystems = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."systems"}.locked;
+      in {
+        nix-unit.inputs =
+          inputs
+          // {
             "pkgs/nixpkgs" = inputs.nixpkgs;
             "pkgs/flake-parts" = inputs.flake-parts;
             "pkgs/flake-parts/nixpkgs-lib" = inputs.nixpkgs;
@@ -131,16 +129,16 @@
             "kubenix/systems" = kubenixSystems;
           };
 
-          devShells.default = pkgs.mkShell {
-            # bash/jq/git are what scripts/update-pins.sh needs; the CI runner
-            # image is a bare nix container that provides none of them.
-            packages = [
-              pkgs.treefmt
-              pkgs.bash
-              pkgs.jq
-              pkgs.git
-            ];
-          };
+        devShells.default = pkgs.mkShell {
+          # bash/jq/git are what scripts/update-pins.sh needs; the CI runner
+          # image is a bare nix container that provides none of them.
+          packages = [
+            pkgs.treefmt
+            pkgs.bash
+            pkgs.jq
+            pkgs.git
+          ];
         };
+      };
     };
 }

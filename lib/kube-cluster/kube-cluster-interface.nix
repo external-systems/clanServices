@@ -9,11 +9,9 @@
 # tree during `clan machines install/update` — an undefined leaf explodes
 # mid-deploy). No secrets: only facts derivable from the inventory and
 # the consumed node_transport exports.
-{ lib, ... }:
-let
+{lib, ...}: let
   t = lib.types;
-in
-{
+in {
   options = {
     schemaVersion = lib.mkOption {
       type = t.ints.positive;
@@ -176,7 +174,7 @@ in
         };
         published = lib.mkOption {
           type = t.listOf t.str;
-          default = [ ];
+          default = [];
           description = ''
             This cluster's published clustermesh endpoints (what peers
             dial): the internal IPv4 VIP, every selected node's stable IPv4
@@ -201,18 +199,18 @@ in
         description = "The transport-derived Cilium datapath mode (routing-mode).";
       };
       tunnelProtocol = lib.mkOption {
-        type = t.nullOr (t.enum [ "vxlan" ]);
+        type = t.nullOr (t.enum ["vxlan"]);
         default = null;
         description = "The tunnel protocol (tunnel mode only; vxlan is the only supported profile).";
       };
       routeExchange = lib.mkOption {
-        type = t.nullOr (t.enum [ "local-router" ]);
+        type = t.nullOr (t.enum ["local-router"]);
         default = null;
         description = "The daemon-neutral route-exchange profile (native only: local-router; null on tunnels).";
       };
       devices = lib.mkOption {
         type = t.listOf t.str;
-        default = [ ];
+        default = [];
         description = "The union of the cluster's datapath interface names (Cilium devices).";
       };
       directRoutingDevice = lib.mkOption {
@@ -285,7 +283,7 @@ in
             };
             interfaces = lib.mkOption {
               type = t.listOf t.str;
-              default = [ ];
+              default = [];
               description = "The member's fabric adjacency interface names (one per declared adjacency, D51); empty for manual-address clusters.";
             };
             mtu = lib.mkOption {
@@ -313,7 +311,7 @@ in
           };
         }
       );
-      default = { };
+      default = {};
       description = "Mesh endpoints + effective topology per cluster member machine.";
     };
 
@@ -350,18 +348,18 @@ in
             };
             blocks = lib.mkOption {
               type = t.listOf t.str;
-              default = [ ];
+              default = [];
               description = "Address inventory: CIDR blocks served by this pool.";
             };
             serviceSelector = lib.mkOption {
               type = t.attrsOf t.str;
-              default = { };
+              default = {};
               description = "matchLabels of the pool's serviceSelector.";
             };
           };
         }
       );
-      default = { };
+      default = {};
       description = "Resolved LB-IPAM pool handoff facts (phase-3 pools resolution) for routed-fabric.";
     };
 

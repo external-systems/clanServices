@@ -5,35 +5,33 @@
   exportInterfaces,
   inputs,
   ...
-}:
-let
+}: let
   k3sModule = module;
   wgModule = lib.modules.importApply ../../wireguard-mesh/default.nix {
     ifstateOverlay = inputs.pkgs.overlays.ifstate;
   };
-  kube = import ../../../lib/kube-cluster { inherit lib; };
+  kube = import ../../../lib/kube-cluster {inherit lib;};
 
   machineConfigs =
     lib.genAttrs
-      [
-        "alpha"
-        "beta"
-        "gamma"
-        "delta"
-      ]
-      (_: {
-        nixpkgs.hostPlatform = "x86_64-linux";
-      });
+    [
+      "alpha"
+      "beta"
+      "gamma"
+      "delta"
+    ]
+    (_: {
+      nixpkgs.hostPlatform = "x86_64-linux";
+    });
 
-  mkEvaled =
-    inventory:
+  mkEvaled = inventory:
     clanLib.clan {
-      self = { };
+      self = {};
       directory = ./fixtures;
       inherit exportInterfaces;
       # Fleet-wide kube-cluster assertions (§6.2) as clan.checks — enforced
       # by clanLib.clan's checkConfig.
-      imports = [ kube.fleetChecksModule ];
+      imports = [kube.fleetChecksModule];
       modules = {
         wireguard-mesh = wgModule;
         fake-transport = fakeTransportModule;
@@ -85,7 +83,7 @@ let
         module.name = "wireguard-mesh";
         module.input = "self";
         roles.peer = {
-          settings.endpointSources = [ ];
+          settings.endpointSources = [];
           machines = {
             alpha.settings = {
               ipv4 = "10.42.0.1";
@@ -133,7 +131,7 @@ let
             };
             cilium.id = 1;
           };
-          machines.gamma = { };
+          machines.gamma = {};
         };
       };
     };
@@ -152,8 +150,7 @@ let
   stockEvaled = mkEvaled stockInventory;
   alphaStock = stockEvaled.config.nixosConfigurations.alpha.config;
 
-  failedAssertion =
-    machineConfig: needle:
+  failedAssertion = machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
 
   # The rendered bootstrap bundle on the clusterInit node (D40).
@@ -161,10 +158,11 @@ let
   findObj = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null bundleObjs;
   ciliumConfigData = (findObj "ConfigMap" "cilium-config").data;
   agentEnv =
-    (lib.findFirst (c: c.name == "cilium-agent") null
+    (
+      lib.findFirst (c: c.name == "cilium-agent") null
       (findObj "DaemonSet" "cilium").spec.template.spec.containers
     ).env;
-  envValue = name: (lib.findFirst (e: e.name == name) { value = null; } agentEnv).value;
+  envValue = name: (lib.findFirst (e: e.name == name) {value = null;} agentEnv).value;
 
   # The rendered config.yaml (via the environment.etc source derivation is
   # not directly inspectable; the service mirrors it into the internal
@@ -187,23 +185,30 @@ let
   # scope; identical content on every member).
   kubeClusterExport =
     (clanLib.getExport {
-      serviceName = "k3s";
-      instanceName = "k3s";
-      roleName = "server";
-      machineName = "alpha";
-    } transportEvaled.config.exports).kube_cluster;
+        serviceName = "k3s";
+        instanceName = "k3s";
+        roleName = "server";
+        machineName = "alpha";
+      }
+      transportEvaled.config.exports).kube_cluster;
 
   # All-or-none posture (§6.3): gamma is a cluster member but not a mesh
   # member — the cluster mixes transport-provided and manual addresses.
-  postureInventory = transportInventory // {
-    instances = transportInventory.instances // {
-      mesh = transportInventory.instances.mesh // {
-        roles.peer.machines = {
-          inherit (transportInventory.instances.mesh.roles.peer.machines) alpha beta;
+  postureInventory =
+    transportInventory
+    // {
+      instances =
+        transportInventory.instances
+        // {
+          mesh =
+            transportInventory.instances.mesh
+            // {
+              roles.peer.machines = {
+                inherit (transportInventory.instances.mesh.roles.peer.machines) alpha beta;
+              };
+            };
         };
-      };
     };
-  };
   postureEvaled = mkEvaled postureInventory;
 
   # D16 within one service: a second k3s instance claims alpha, which the
@@ -238,79 +243,73 @@ let
     manifest = {
       name = "fake-transport";
       description = "Third-party fake overlay transport (D58 eval fixture)";
-      categories = [ "System" ];
+      categories = ["System"];
       readme = "Eval fixture only: a native node_transport provider.";
       exports = {
-        inputs = [ ];
-        out = [ "node_transport" ];
+        inputs = [];
+        out = ["node_transport"];
       };
     };
     roles.node = {
       description = "Fake transport node.";
-      interface =
-        { lib, ... }:
-        {
-          options = {
-            ipv4 = lib.mkOption {
-              type = lib.types.str;
-              description = "Node IPv4 on the fake overlay.";
-            };
-            ipv6 = lib.mkOption {
-              type = lib.types.str;
-              description = "Node IPv6 on the fake overlay.";
-            };
-            mtu = lib.mkOption {
-              type = lib.types.ints.positive;
-              default = 1500;
-              description = "Underlay MTU of the fake link.";
-            };
+      interface = {lib, ...}: {
+        options = {
+          ipv4 = lib.mkOption {
+            type = lib.types.str;
+            description = "Node IPv4 on the fake overlay.";
+          };
+          ipv6 = lib.mkOption {
+            type = lib.types.str;
+            description = "Node IPv6 on the fake overlay.";
+          };
+          mtu = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 1500;
+            description = "Underlay MTU of the fake link.";
           };
         };
-      perInstance =
-        {
-          instanceName,
-          settings,
-          machine,
-          roles,
-          mkExports,
-          ...
-        }:
-        let
-          allMembers = roles.node.machines;
-          own = allMembers.${machine.name}.settings;
-          ifaces = [
-            "fk-${machine.name}-1"
-            "fk-${machine.name}-2"
-          ];
-        in
-        {
-          exports = mkExports {
-            node_transport = {
-              schemaVersion = 2;
-              inherit (own) ipv4 ipv6;
-              instance = instanceName;
-              endpoint = null;
-              port = 59999;
-              interfaces = {
-                ${builtins.head ifaces} = {
-                  mtu = own.mtu - 100;
-                };
-                ${builtins.elemAt ifaces 1} = {
-                  inherit (own) mtu;
-                };
+      };
+      perInstance = {
+        instanceName,
+        machine,
+        roles,
+        mkExports,
+        ...
+      }: let
+        allMembers = roles.node.machines;
+        own = allMembers.${machine.name}.settings;
+        ifaces = [
+          "fk-${machine.name}-1"
+          "fk-${machine.name}-2"
+        ];
+      in {
+        exports = mkExports {
+          node_transport = {
+            schemaVersion = 2;
+            inherit (own) ipv4 ipv6;
+            instance = instanceName;
+            endpoint = null;
+            port = 59999;
+            interfaces = {
+              ${builtins.head ifaces} = {
+                mtu = own.mtu - 100;
               };
-              directRoutingDevice = builtins.head ifaces;
-              datapath = {
-                mode = "native";
-                tunnelProtocol = null;
+              ${builtins.elemAt ifaces 1} = {
+                inherit (own) mtu;
               };
-              native.routeExchange = "local-router";
-              internalLoadBalancer = true;
-              nodePort = true;
             };
+            directRoutingDevice = builtins.head ifaces;
+            datapath = {
+              mode = "native";
+              tunnelProtocol = null;
+            };
+            native.routeExchange = "local-router";
+            internalLoadBalancer = true;
+            nodePort = true;
           };
-          nixosModule = _: { };
         };
+        nixosModule = _: {};
+      };
     };
   };
 
@@ -385,22 +384,24 @@ let
   gammaFake = fakeEvaled.config.nixosConfigurations.gamma.config;
 
   fakeBundleObjs = builtins.fromJSON alphaFake.clan.kubeClusters.k3s-a.bundleJson;
-  fakeFindObj =
-    kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
+  fakeFindObj = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
   fakeCiliumConfigData = (fakeFindObj "ConfigMap" "cilium-config").data;
   fakeUsers = (fakeFindObj "ConfigMap" "clustermesh-remote-users").data."users.yaml";
   fakeApiserverDeploy = fakeFindObj "Deployment" "clustermesh-apiserver";
   fakeApiserverSvc = fakeFindObj "Service" "clustermesh-apiserver";
   fakeClustermeshSecret = fakeFindObj "Secret" "cilium-clustermesh";
 
-  fakeExportOf =
-    instanceName:
+  fakeExportOf = instanceName:
     (clanLib.getExport {
-      serviceName = "k3s";
-      inherit instanceName;
-      roleName = "server";
-      machineName = if instanceName == "k3s-a" then "alpha" else "gamma";
-    } fakeEvaled.config.exports).kube_cluster;
+        serviceName = "k3s";
+        inherit instanceName;
+        roleName = "server";
+        machineName =
+          if instanceName == "k3s-a"
+          then "alpha"
+          else "gamma";
+      }
+      fakeEvaled.config.exports).kube_cluster;
 
   # The same fake fleet with one-directional selective peers: the symmetry
   # fleet check must throw at clan eval.
@@ -438,7 +439,7 @@ let
               instance = "fabric";
             };
             cilium.id = 1;
-            mesh.peers = [ "k3s-b" ];
+            mesh.peers = ["k3s-b"];
           };
           machines = {
             alpha.settings.clusterInit = true;
@@ -504,8 +505,7 @@ let
       };
     };
   };
-in
-{
+in {
   test_serviceEnabled = {
     expr = alphaExplicit.services.k3s.enable;
     expected = true;
@@ -617,17 +617,15 @@ in
   };
 
   test_ciliumValuesClusterCidrs = {
-    expr =
-      let
-        pool = findObj "CiliumPodIPPool" "default";
-      in
-      {
-        v4 = pool.spec.ipv4.cidrs;
-        v6 = pool.spec.ipv6.cidrs;
-      };
+    expr = let
+      pool = findObj "CiliumPodIPPool" "default";
+    in {
+      v4 = pool.spec.ipv4.cidrs;
+      v6 = pool.spec.ipv6.cidrs;
+    };
     expected = {
-      v4 = [ "10.1.0.0/16" ];
-      v6 = [ "fd10:1::/56" ];
+      v4 = ["10.1.0.0/16"];
+      v6 = ["fd10:1::/56"];
     };
   };
 
@@ -638,16 +636,16 @@ in
     expr = {
       bundleEtc = alphaTransport.environment.etc ? "clan-bootstrap/k3s/bundle.yaml";
       applyUnit = alphaTransport.systemd.services ? k3s-k3s-bootstrap-apply;
-      oneshotRetries =
-        let
-          u = alphaTransport.systemd.services.k3s-k3s-bootstrap-apply;
-        in
-        u.serviceConfig.Type == "oneshot"
+      oneshotRetries = let
+        u = alphaTransport.systemd.services.k3s-k3s-bootstrap-apply;
+      in
+        u.serviceConfig.Type
+        == "oneshot"
         && u.serviceConfig.Restart == "on-failure"
         && u.unitConfig.StartLimitIntervalSec == 0
-        && u.after == [ "k3s.service" ];
-      noManifests = alphaTransport.services.k3s.manifests == { };
-      noCharts = alphaTransport.services.k3s.charts == { };
+        && u.after == ["k3s.service"];
+      noManifests = alphaTransport.services.k3s.manifests == {};
+      noCharts = alphaTransport.services.k3s.charts == {};
       agentNoBundle = !(gammaTransport.environment.etc ? "clan-bootstrap/k3s/bundle.yaml");
       agentNoUnit = !(gammaTransport.systemd.services ? k3s-k3s-bootstrap-apply);
       nonInitServerNoUnit = !(betaTransport.systemd.services ? k3s-k3s-bootstrap-apply);
@@ -669,20 +667,20 @@ in
   # tags each pinned image under its name@digest alias for offline CRI
   # resolution.
   test_imageDigestAliasWiring = {
-    expr =
-      let
-        unit = alphaTransport.systemd.services.kube-cluster-k3s-image-digest-aliases or null;
-        aliases =
-          if unit == null then [ { alias = ""; } ] else unit.serviceConfig.ExecStart.passthru.aliases;
-      in
-      {
-        serverHasUnit = unit != null;
-        agentHasUnit = gammaTransport.systemd.services ? kube-cluster-k3s-image-digest-aliases;
-        # 4 Cilium images + 1 clan CoreDNS, every alias in name@digest form
-        aliasesPinnedDigests =
-          builtins.length aliases == 5 && lib.all (a: lib.hasInfix "@sha256:" a.alias) aliases;
-        afterRuntime = unit == null || unit.after == [ "k3s.service" ];
-      };
+    expr = let
+      unit = alphaTransport.systemd.services.kube-cluster-k3s-image-digest-aliases or null;
+      aliases =
+        if unit == null
+        then [{alias = "";}]
+        else unit.serviceConfig.ExecStart.passthru.aliases;
+    in {
+      serverHasUnit = unit != null;
+      agentHasUnit = gammaTransport.systemd.services ? kube-cluster-k3s-image-digest-aliases;
+      # 4 Cilium images + 1 clan CoreDNS, every alias in name@digest form
+      aliasesPinnedDigests =
+        builtins.length aliases == 5 && lib.all (a: lib.hasInfix "@sha256:" a.alias) aliases;
+      afterRuntime = unit == null || unit.after == ["k3s.service"];
+    };
     expected = {
       serverHasUnit = true;
       agentHasUnit = true;
@@ -693,19 +691,17 @@ in
 
   # bootstrap.apply = false removes the oneshot (day-2 off-ramp).
   test_bootstrapApplyOffRamp = {
-    expr =
-      let
-        off = mkEvaled (
-          lib.recursiveUpdate explicitInventory {
-            instances.k3s.roles.server.settings.bootstrap.apply = false;
-          }
-        );
-        alphaOff = off.config.nixosConfigurations.alpha.config;
-      in
-      {
-        noUnit = !(alphaOff.systemd.services ? k3s-k3s-bootstrap-apply);
-        noEtc = !(alphaOff.environment.etc ? "clan-bootstrap/k3s/bundle.yaml");
-      };
+    expr = let
+      off = mkEvaled (
+        lib.recursiveUpdate explicitInventory {
+          instances.k3s.roles.server.settings.bootstrap.apply = false;
+        }
+      );
+      alphaOff = off.config.nixosConfigurations.alpha.config;
+    in {
+      noUnit = !(alphaOff.systemd.services ? k3s-k3s-bootstrap-apply);
+      noEtc = !(alphaOff.environment.etc ? "clan-bootstrap/k3s/bundle.yaml");
+    };
     expected = {
       noUnit = true;
       noEtc = true;
@@ -731,7 +727,7 @@ in
         "metrics-server"
       ];
       stockKeeps = true;
-      stockAddons = [ "servicelb" ];
+      stockAddons = ["servicelb"];
     };
   };
 
@@ -871,28 +867,27 @@ in
   };
 
   test_missingExplicitAddressAssertion = {
-    expr =
-      let
-        bad = mkEvaled {
-          instances.k3s = {
-            module.name = "k3s";
-            module.input = "self";
-            roles.server = {
-              settings = {
-                network.fabric = null;
-                cilium.id = 1;
-              };
-              machines.alpha.settings = {
-                clusterInit = true;
-                network = {
-                  ipv4 = null;
-                  ipv6 = "fd00::1";
-                };
+    expr = let
+      bad = mkEvaled {
+        instances.k3s = {
+          module.name = "k3s";
+          module.input = "self";
+          roles.server = {
+            settings = {
+              network.fabric = null;
+              cilium.id = 1;
+            };
+            machines.alpha.settings = {
+              clusterInit = true;
+              network = {
+                ipv4 = null;
+                ipv6 = "fd00::1";
               };
             };
           };
         };
-      in
+      };
+    in
       failedAssertion bad.config.nixosConfigurations.alpha.config "network.fabric is null";
     expected = true;
   };
@@ -901,7 +896,8 @@ in
 
   test_kubeClusterExport = {
     expr = {
-      inherit (kubeClusterExport)
+      inherit
+        (kubeClusterExport)
         schemaVersion
         name
         ciliumId
@@ -944,7 +940,7 @@ in
         mode = "tunnel";
         tunnelProtocol = "vxlan";
         routeExchange = null;
-        devices = [ "wg-mesh" ];
+        devices = ["wg-mesh"];
         directRoutingDevice = "wg-mesh";
         mtu = 1370;
         internalLoadBalancer = false;
@@ -972,7 +968,7 @@ in
         ipv4 = "10.42.0.1";
         ipv6 = "fd10:42::1";
         endpoint = "alpha:51820";
-        interfaces = [ "wg-mesh" ];
+        interfaces = ["wg-mesh"];
         mtu = 1370;
         port = 51820;
         topology = {
@@ -1048,36 +1044,34 @@ in
 
   # The native third-party transport renders the BGP v2 resource set.
   test_bgpResourcesInBundle = {
-    expr =
-      let
-        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
-        ccAlpha = find "CiliumBGPClusterConfig" "k3s-a-alpha";
-        ccBeta = find "CiliumBGPClusterConfig" "k3s-a-beta";
-        ccGamma = find "CiliumBGPClusterConfig" "k3s-a-gamma";
-        pc = find "CiliumBGPPeerConfig" "k3s-a-alpha-frr";
-        adv = find "CiliumBGPAdvertisement" "k3s-a-alpha-service-vips";
-        podAdv = find "CiliumBGPAdvertisement" "k3s-a-alpha-pod-pools";
-        instance = builtins.head ccAlpha.spec.bgpInstances;
-        fabricPool = find "CiliumLoadBalancerIPPool" "k3s-a-fabric";
-      in
-      {
-        perNode = ccAlpha != null && ccBeta != null && ccGamma == null;
-        selector = ccAlpha.spec.nodeSelector.matchLabels."kubernetes.io/hostname";
-        asns = {
-          local = instance.localASN;
-          peer = (builtins.head instance.peers).peerASN;
-        };
-        dialOut = (builtins.head instance.peers).peerAddress;
-        noListener = !(instance ? localPort);
-        podAdvType = (builtins.head podAdv.spec.advertisements).advertisementType;
-        podAdvSelector = (builtins.head podAdv.spec.advertisements).selector.matchLabels;
-        timers = pc.spec.timers;
-        advPools = (builtins.head adv.spec.advertisements).selector.matchExpressions;
-        fabricBlocks = fabricPool.spec.blocks;
-        # D13 default off for ClusterIPs; pod-pool advertisement is
-        # always on (native routing, D49).
-        noClusterIpAdvert = find "CiliumBGPAdvertisement" "k3s-a-alpha-cluster-ips" == null;
+    expr = let
+      find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
+      ccAlpha = find "CiliumBGPClusterConfig" "k3s-a-alpha";
+      ccBeta = find "CiliumBGPClusterConfig" "k3s-a-beta";
+      ccGamma = find "CiliumBGPClusterConfig" "k3s-a-gamma";
+      pc = find "CiliumBGPPeerConfig" "k3s-a-alpha-frr";
+      adv = find "CiliumBGPAdvertisement" "k3s-a-alpha-service-vips";
+      podAdv = find "CiliumBGPAdvertisement" "k3s-a-alpha-pod-pools";
+      instance = builtins.head ccAlpha.spec.bgpInstances;
+      fabricPool = find "CiliumLoadBalancerIPPool" "k3s-a-fabric";
+    in {
+      perNode = ccAlpha != null && ccBeta != null && ccGamma == null;
+      selector = ccAlpha.spec.nodeSelector.matchLabels."kubernetes.io/hostname";
+      asns = {
+        local = instance.localASN;
+        peer = (builtins.head instance.peers).peerASN;
       };
+      dialOut = (builtins.head instance.peers).peerAddress;
+      noListener = !(instance ? localPort);
+      podAdvType = (builtins.head podAdv.spec.advertisements).advertisementType;
+      podAdvSelector = (builtins.head podAdv.spec.advertisements).selector.matchLabels;
+      timers = pc.spec.timers;
+      advPools = (builtins.head adv.spec.advertisements).selector.matchExpressions;
+      fabricBlocks = fabricPool.spec.blocks;
+      # D13 default off for ClusterIPs; pod-pool advertisement is
+      # always on (native routing, D49).
+      noClusterIpAdvert = find "CiliumBGPAdvertisement" "k3s-a-alpha-cluster-ips" == null;
+    };
     expected = {
       perNode = true;
       selector = "alpha";
@@ -1098,12 +1092,12 @@ in
         {
           key = "clan.lol/pool";
           operator = "In";
-          values = [ "k3s-a-fabric" ];
+          values = ["k3s-a-fabric"];
         }
       ];
       fabricBlocks = [
-        { cidr = "172.16.1.0/24"; }
-        { cidr = "fd11:1::/64"; }
+        {cidr = "172.16.1.0/24";}
+        {cidr = "fd11:1::/64";}
       ];
       noClusterIpAdvert = true;
     };
@@ -1127,14 +1121,13 @@ in
 
   # §6.12: disabling the fabric while leaving bgp.enable on is an eval error.
   test_bgpCouplingServiceAssertion = {
-    expr =
-      let
-        bad = mkEvaled (
-          lib.recursiveUpdate fakeInventory {
-            instances.k3s-a.roles.server.settings.fabric.enable = false;
-          }
-        );
-      in
+    expr = let
+      bad = mkEvaled (
+        lib.recursiveUpdate fakeInventory {
+          instances.k3s-a.roles.server.settings.fabric.enable = false;
+        }
+      );
+    in
       failedAssertion bad.config.nixosConfigurations.alpha.config "BGP only for node-bgp/shared-bgp pools";
     expected = true;
   };
@@ -1143,20 +1136,18 @@ in
   # dual-AF session (no localPort) — the rendered bundle carries no
   # Cilium-to-Cilium peering and no per-cluster listener port.
   test_localFrrSessionShape = {
-    expr =
-      let
-        find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
-        instance = builtins.head (find "CiliumBGPClusterConfig" "k3s-a-alpha").spec.bgpInstances;
-        peer = builtins.head instance.peers;
-        pc = find "CiliumBGPPeerConfig" "k3s-a-alpha-frr";
-      in
-      {
-        inherit (peer) peerASN peerAddress;
-        noLocalPort = !(instance ? localPort);
-        peerRef = peer.peerConfigRef.name;
-        bothFamilies = map (f: f.afi) pc.spec.families;
-        timers = pc.spec.timers;
-      };
+    expr = let
+      find = kind: name: lib.findFirst (o: o.kind == kind && o.metadata.name == name) null fakeBundleObjs;
+      instance = builtins.head (find "CiliumBGPClusterConfig" "k3s-a-alpha").spec.bgpInstances;
+      peer = builtins.head instance.peers;
+      pc = find "CiliumBGPPeerConfig" "k3s-a-alpha-frr";
+    in {
+      inherit (peer) peerASN peerAddress;
+      noLocalPort = !(instance ? localPort);
+      peerRef = peer.peerConfigRef.name;
+      bothFamilies = map (f: f.afi) pc.spec.families;
+      timers = pc.spec.timers;
+    };
     expected = {
       peerASN = 4258224172;
       peerAddress = "::1";
@@ -1177,7 +1168,8 @@ in
   # Tunnel transports render no pod-route BGP plane or private fabric pool.
   test_kubeClusterExportBgpFabric = {
     expr = {
-      inherit (kubeClusterExport.bgp)
+      inherit
+        (kubeClusterExport.bgp)
         enabled
         ciliumAsn
         hostAsn
@@ -1264,7 +1256,7 @@ in
           vip4 = "172.16.1.79";
           dnsName = null;
           loadBalancerClass = "io.cilium/bgp-control-plane";
-          published = [ "https://172.16.1.79:2379" ];
+          published = ["https://172.16.1.79:2379"];
         };
       };
       bExposure = {
@@ -1274,7 +1266,7 @@ in
         vip4 = "172.16.2.79";
         dnsName = null;
         loadBalancerClass = "io.cilium/bgp-control-plane";
-        published = [ "https://172.16.2.79:2379" ];
+        published = ["https://172.16.2.79:2379"];
       };
     };
   };
@@ -1287,7 +1279,7 @@ in
       strategy = fakeApiserverDeploy.spec.strategy;
       requiredAntiAffinity =
         fakeApiserverDeploy.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution
-        != [ ];
+        != [];
       svcType = fakeApiserverSvc.spec.type;
       etp = fakeApiserverSvc.spec.externalTrafficPolicy;
       class = fakeApiserverSvc.spec.loadBalancerClass;
@@ -1320,19 +1312,19 @@ in
 
   # The reverse direction: cluster b's bundle points at a's VIP.
   test_clustermeshReverseBundleRendering = {
-    expr =
-      let
-        objs = builtins.fromJSON gammaFake.clan.kubeClusters.k3s-b.bundleJson;
-        secret = lib.findFirst (o: o.kind == "Secret" && o.metadata.name == "cilium-clustermesh") null objs;
-        users =
-          (lib.findFirst (
+    expr = let
+      objs = builtins.fromJSON gammaFake.clan.kubeClusters.k3s-b.bundleJson;
+      secret = lib.findFirst (o: o.kind == "Secret" && o.metadata.name == "cilium-clustermesh") null objs;
+      users =
+        (lib.findFirst (
             o: o.kind == "ConfigMap" && o.metadata.name == "clustermesh-remote-users"
-          ) null objs).data."users.yaml";
-      in
-      {
-        endpoints = secret.stringData."k3s-a" or null;
-        inherit users;
-      };
+          )
+          null
+          objs).data."users.yaml";
+    in {
+      endpoints = secret.stringData."k3s-a" or null;
+      inherit users;
+    };
     expected = {
       endpoints = "endpoints:\n- https://172.16.1.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
       users = "users:\n- name: remote-k3s-a\n  role: remote\n";
@@ -1345,7 +1337,8 @@ in
     expr = {
       initHasUnit = alphaFake.systemd.services ? k3s-k3s-a-clustermesh-secrets;
       afterBootstrap =
-        alphaFake.systemd.services.k3s-k3s-a-clustermesh-secrets.after == [
+        alphaFake.systemd.services.k3s-k3s-a-clustermesh-secrets.after
+        == [
           "k3s.service"
           "k3s-k3s-a-bootstrap-apply.service"
         ];

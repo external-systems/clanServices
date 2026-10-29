@@ -4,9 +4,8 @@
   exportInterfaces,
   lib,
   ...
-}:
-let
-  machineConfigs = lib.genAttrs [ "alpha" "beta" "gamma" ] (_: {
+}: let
+  machineConfigs = lib.genAttrs ["alpha" "beta" "gamma"] (_: {
     nixpkgs.hostPlatform = "x86_64-linux";
   });
 
@@ -40,7 +39,7 @@ let
               ipv4 = "192.168.77.2";
               ipv6 = "fd00:77::2";
               port = 51821;
-              extraAllowedIPs = [ "10.77.10.0/24" ];
+              extraAllowedIPs = ["10.77.10.0/24"];
             };
             gamma.settings = {
               ipv4 = "192.168.77.3";
@@ -52,10 +51,9 @@ let
     };
   };
 
-  mkEvaled =
-    inventory:
+  mkEvaled = inventory:
     clanLib.clan {
-      self = { };
+      self = {};
       directory = ./fixtures;
       inherit exportInterfaces;
       modules.wireguard-mesh = module;
@@ -69,24 +67,24 @@ let
   alphaInterface = alphaIfstate.interfaces.wg-mesh;
   alphaPeers = lib.attrValues alphaInterface.wireguard.peers;
 
-  memberExport =
-    machineName:
+  memberExport = machineName:
     clanLib.getExport {
       serviceName = "wireguard-mesh";
       instanceName = "mesh";
       roleName = "peer";
       inherit machineName;
-    } evaled.config.exports;
+    }
+    evaled.config.exports;
 
   instanceExports = lib.attrValues (
     clanLib.selectExports (
       scope:
-      scope.serviceName == "wireguard-mesh" && scope.instanceName == "mesh" && scope.machineName == ""
-    ) evaled.config.exports
+        scope.serviceName == "wireguard-mesh" && scope.instanceName == "mesh" && scope.machineName == ""
+    )
+    evaled.config.exports
   );
 
-  failedAssertion =
-    machineConfig: needle:
+  failedAssertion = machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
 
   duplicateEval = mkEvaled (
@@ -97,7 +95,7 @@ let
 
   noEndpointEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
-      instances.mesh.roles.peer.settings.endpointSources = [ ];
+      instances.mesh.roles.peer.settings.endpointSources = [];
     }
   );
 
@@ -133,19 +131,24 @@ let
 
   # Derived mesh addresses (§6.3): no explicit ipv4/ipv6 — deterministic
   # from the mesh instance + machine name.
-  derivedInventory = baseInventory // {
-    instances = baseInventory.instances // {
-      mesh = baseInventory.instances.mesh // {
-        roles.peer.machines = lib.genAttrs [ "alpha" "beta" "gamma" ] (_: {
-          settings = { };
-        });
-      };
+  derivedInventory =
+    baseInventory
+    // {
+      instances =
+        baseInventory.instances
+        // {
+          mesh =
+            baseInventory.instances.mesh
+            // {
+              roles.peer.machines = lib.genAttrs ["alpha" "beta" "gamma"] (_: {
+                settings = {};
+              });
+            };
+        };
     };
-  };
   derivedEval = mkEvaled derivedInventory;
   alphaDerived = derivedEval.config.nixosConfigurations.alpha.config;
-in
-{
+in {
   rendering = {
     test_ifstateOnly = {
       expr = {
@@ -263,11 +266,12 @@ in
     test_derivedMeshExport = {
       expr =
         (clanLib.getExport {
-          serviceName = "wireguard-mesh";
-          instanceName = "mesh";
-          roleName = "peer";
-          machineName = "alpha";
-        } derivedEval.config.exports).node_transport.ipv6;
+            serviceName = "wireguard-mesh";
+            instanceName = "mesh";
+            roleName = "peer";
+            machineName = "alpha";
+          }
+          derivedEval.config.exports).node_transport.ipv6;
       expected = "fd77:3131:676a:8ad7::516b";
     };
   };
@@ -299,7 +303,7 @@ in
     };
     test_standardPeer = {
       expr = (memberExport "alpha").peer.hosts;
-      expected = [ { plain = "alpha.mesh"; } ];
+      expected = [{plain = "alpha.mesh";}];
     };
     test_standardPeerPortIsNotWireGuard = {
       expr = (memberExport "alpha").peer.port;
@@ -311,41 +315,39 @@ in
     };
   };
 
-  vars =
-    let
-      generator = alpha.clan.core.vars.generators."wireguard-mesh-mesh";
-    in
-    {
-      test_files = {
-        expr = builtins.attrNames generator.files;
-        expected = [
-          "privatekey"
-          "publickey"
-        ];
+  vars = let
+    generator = alpha.clan.core.vars.generators."wireguard-mesh-mesh";
+  in {
+    test_files = {
+      expr = builtins.attrNames generator.files;
+      expected = [
+        "privatekey"
+        "publickey"
+      ];
+    };
+    test_secretAndDeployment = {
+      expr = {
+        privateSecret = generator.files.privatekey.secret;
+        publicSecret = generator.files.publickey.secret;
+        publicDeploy = generator.files.publickey.deploy;
       };
-      test_secretAndDeployment = {
-        expr = {
-          privateSecret = generator.files.privatekey.secret;
-          publicSecret = generator.files.publickey.secret;
-          publicDeploy = generator.files.publickey.deploy;
-        };
-        expected = {
-          privateSecret = true;
-          publicSecret = false;
-          publicDeploy = false;
-        };
-      };
-      test_privateKeyOwnership = {
-        expr = {
-          inherit (generator.files.privatekey) owner group mode;
-        };
-        expected = {
-          owner = "root";
-          group = "root";
-          mode = "0400";
-        };
+      expected = {
+        privateSecret = true;
+        publicSecret = false;
+        publicDeploy = false;
       };
     };
+    test_privateKeyOwnership = {
+      expr = {
+        inherit (generator.files.privatekey) owner group mode;
+      };
+      expected = {
+        owner = "root";
+        group = "root";
+        mode = "0400";
+      };
+    };
+  };
 
   validation = {
     test_duplicateAddressesRejected = {

@@ -8,11 +8,9 @@
 # Every leaf has a safe default: the clan CLI deep-evaluates exports
 # during `clan machines install/update`, and an undefined leaf would fail
 # there with "accessed but has no value defined".
-{ lib, ... }:
-let
+{lib, ...}: let
   inherit (lib) mkOption types;
-in
-{
+in {
   options = {
     schemaVersion = mkOption {
       type = types.int;
@@ -59,7 +57,7 @@ in
             };
             addresses = mkOption {
               type = types.listOf types.str;
-              default = [ ];
+              default = [];
               description = "Static addresses with prefix lengths (IPv4 then IPv6 as declared).";
             };
             dhcp4 = mkOption {
@@ -99,7 +97,7 @@ in
             };
             nameservers = mkOption {
               type = types.listOf types.str;
-              default = [ ];
+              default = [];
               description = "Effective DNS servers for this link (segment default merged).";
             };
             routes = mkOption {
@@ -124,7 +122,7 @@ in
                   };
                 }
               );
-              default = [ ];
+              default = [];
               description = "Static routes rendered on this link.";
             };
             endpoint = mkOption {
@@ -135,7 +133,7 @@ in
           };
         }
       );
-      default = { };
+      default = {};
       description = "Resolved links keyed by their logical per-machine name.";
     };
   };

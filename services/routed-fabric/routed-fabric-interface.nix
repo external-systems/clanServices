@@ -1,8 +1,6 @@
-{ lib, ... }:
-let
+{lib, ...}: let
   t = lib.types;
-in
-{
+in {
   options = {
     schemaVersion = lib.mkOption {
       type = t.ints.positive;
@@ -50,7 +48,7 @@ in
       };
       ownedPrefixes = lib.mkOption {
         type = t.listOf t.str;
-        default = [ ];
+        default = [];
         description = "Prefixes authorized for external transit.";
       };
     };
@@ -95,7 +93,7 @@ in
             };
             allowedIPs = lib.mkOption {
               type = t.listOf t.str;
-              default = [ ];
+              default = [];
               description = "WireGuard crypto ACL derived from route policy.";
             };
             prefixes = {
@@ -113,7 +111,7 @@ in
           };
         }
       );
-      default = { };
+      default = {};
       description = "Resolved per-remote adjacency facts keyed by remote machine.";
     };
   };

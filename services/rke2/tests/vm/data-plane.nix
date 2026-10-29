@@ -20,14 +20,12 @@
 # Underlay addressing is the test driver's deterministic assignment
 # (alphabetical node order): alpha=192.168.1.1/2001:db8:1::1,
 # beta=192.168.1.2/2001:db8:1::2, router=192.168.1.3/2001:db8:1::3.
-{ inputs }:
-{ lib, ... }:
-let
-  kube = import ../../../../lib/kube-cluster { inherit lib; };
-  fabric = import ../../../../lib/kube-cluster/fabric.nix { inherit lib; };
+{inputs}: {lib, ...}: let
+  kube = import ../../../../lib/kube-cluster {inherit lib;};
+  fabric = import ../../../../lib/kube-cluster/fabric.nix {inherit lib;};
   fabricLink = fabric.adjacencyName (fabric.adjacencyKey "mesh" "alpha" "beta");
   fabricLoopback = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" "mesh")}";
-  nodeAsns = lib.genAttrs [ "alpha" "beta" ] (fabric.nodeAsn "mesh");
+  nodeAsns = lib.genAttrs ["alpha" "beta"] (fabric.nodeAsn "mesh");
 
   httpbinVersions = import (inputs.pkgs + "/pkgs/go-httpbin/versions.nix");
   httpbinImageRef = "go-httpbin:v${httpbinVersions.version}";
@@ -39,27 +37,25 @@ let
     component = "data-plane-test";
   };
 
-  routerNeighbor =
-    {
-      address,
-      node,
-      family,
-    }:
-    ''
-      router bgp 65001
-       neighbor ${address} remote-as ${toString nodeAsns.${node}}
-       neighbor ${address} description ${node}-ipv${toString family}
-       neighbor ${address} bfd
-       neighbor ${address} timers 3 9
-       neighbor ${address} timers connect 5
-       address-family ipv${toString family} unicast
-        neighbor ${address} activate
-        neighbor ${address} route-map cluster_in${toString family} in
-        neighbor ${address} route-map cluster_out${toString family} out
-        neighbor ${address} maximum-prefix 100
-        maximum-paths 8
-       exit-address-family
-    '';
+  routerNeighbor = {
+    address,
+    node,
+    family,
+  }: ''
+    router bgp 65001
+     neighbor ${address} remote-as ${toString nodeAsns.${node}}
+     neighbor ${address} description ${node}-ipv${toString family}
+     neighbor ${address} bfd
+     neighbor ${address} timers 3 9
+     neighbor ${address} timers connect 5
+     address-family ipv${toString family} unicast
+      neighbor ${address} activate
+      neighbor ${address} route-map cluster_in${toString family} in
+      neighbor ${address} route-map cluster_out${toString family} out
+      neighbor ${address} maximum-prefix 100
+      maximum-paths 8
+     exit-address-family
+  '';
 
   routerFrrConf = ''
     frr defaults datacenter
@@ -347,8 +343,7 @@ let
       classlessService
     ];
   };
-in
-{
+in {
   name = "rke2-data-plane";
 
   clan = {
@@ -367,11 +362,11 @@ in
       meta.domain = "test.clan";
 
       machines = {
-        alpha = { };
-        beta = { };
+        alpha = {};
+        beta = {};
         # The foreign router joins NO service instance; inventory
         # membership only gives the test node the clan machine base.
-        router = { };
+        router = {};
       };
 
       instances = {
@@ -467,116 +462,106 @@ in
 
           roles.agent = {
             settings = clusterSettings;
-            machines.beta = { };
+            machines.beta = {};
           };
         };
       };
     };
   };
 
-  nodes =
-    let
-      commonNode =
-        { pkgs, ... }:
-        {
-          virtualisation = {
-            cores = 2;
-            memorySize = 4096;
-            diskSize = 8192;
-          };
+  nodes = let
+    commonNode = {pkgs, ...}: {
+      virtualisation = {
+        cores = 2;
+        memorySize = 4096;
+        diskSize = 8192;
+      };
 
-          environment.systemPackages = [
-            pkgs.kubectl
-            pkgs.cilium-cli
-            pkgs.cri-tools
-            pkgs.iptables
-            pkgs.socat
-            pkgs.tcpdump
-            pkgs.curl
-            pkgs.jq
-          ];
-        };
-    in
-    {
-      alpha =
-        { ... }:
-        {
-          imports = [
-            commonNode
-            (import ../../../../tests/ifstate-vm.nix {
-              ifstateOverlay = inputs.pkgs.overlays.ifstate;
-              addresses = [
-                "192.168.1.1/24"
-                "2001:db8:1::1/64"
-              ];
-            })
-          ];
-          environment.sessionVariables.KUBECONFIG = "/etc/rancher/rke2/rke2.yaml";
-          environment.etc."data-plane/probes.json".text = probesJson;
-          # Airgap: the workload fixture image (distro + Cilium airgap
-          # images come from the service's defaults). RKE2's runtime-image
-          # loader scans the top level of the images dir, so add the
-          # top-level symlink (same pattern as rke2-single).
-          services.rke2.images = [ httpbinImage ];
-          systemd.tmpfiles.rules = [
-            "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf httpbinImage)} - - - - ${httpbinImage}"
-          ];
-        };
-      beta =
-        { ... }:
-        {
-          imports = [
-            commonNode
-            (import ../../../../tests/ifstate-vm.nix {
-              ifstateOverlay = inputs.pkgs.overlays.ifstate;
-              addresses = [
-                "192.168.1.2/24"
-                "2001:db8:1::2/64"
-              ];
-            })
-          ];
-          # The httpbin DaemonSet schedules on every node — preload the
-          # fixture image here too (hermetic).
-          services.rke2.images = [ httpbinImage ];
-          systemd.tmpfiles.rules = [
-            "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf httpbinImage)} - - - - ${httpbinImage}"
-          ];
-        };
-
-      # The foreign router (D9 contract fixture): FRR with strict exact-VIP
-      # import policy, not part of the fabric or cluster inventory.
-      router =
-        { pkgs, ... }:
-        {
-          imports = [
-            (import ../../../../tests/ifstate-vm.nix {
-              ifstateOverlay = inputs.pkgs.overlays.ifstate;
-              addresses = [
-                "192.168.1.3/24"
-                "2001:db8:1::3/64"
-              ];
-              withBase = true;
-            })
-          ];
-          virtualisation = {
-            cores = 1;
-            memorySize = 1024;
-          };
-          environment.systemPackages = [
-            pkgs.jq
-            pkgs.curl
-            pkgs.dnsutils
-          ];
-          services.frr = {
-            bgpd.enable = true;
-            bfdd.enable = true;
-            config = routerFrrConf;
-          };
-          # The router is a host here (it curls the VIPs itself); forwarding
-          # is not part of the fixture.
-          networking.firewall.enable = false;
-        };
+      environment.systemPackages = [
+        pkgs.kubectl
+        pkgs.cilium-cli
+        pkgs.cri-tools
+        pkgs.iptables
+        pkgs.socat
+        pkgs.tcpdump
+        pkgs.curl
+        pkgs.jq
+      ];
     };
+  in {
+    alpha = {...}: {
+      imports = [
+        commonNode
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          addresses = [
+            "192.168.1.1/24"
+            "2001:db8:1::1/64"
+          ];
+        })
+      ];
+      environment.sessionVariables.KUBECONFIG = "/etc/rancher/rke2/rke2.yaml";
+      environment.etc."data-plane/probes.json".text = probesJson;
+      # Airgap: the workload fixture image (distro + Cilium airgap
+      # images come from the service's defaults). RKE2's runtime-image
+      # loader scans the top level of the images dir, so add the
+      # top-level symlink (same pattern as rke2-single).
+      services.rke2.images = [httpbinImage];
+      systemd.tmpfiles.rules = [
+        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf httpbinImage)} - - - - ${httpbinImage}"
+      ];
+    };
+    beta = {...}: {
+      imports = [
+        commonNode
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          addresses = [
+            "192.168.1.2/24"
+            "2001:db8:1::2/64"
+          ];
+        })
+      ];
+      # The httpbin DaemonSet schedules on every node — preload the
+      # fixture image here too (hermetic).
+      services.rke2.images = [httpbinImage];
+      systemd.tmpfiles.rules = [
+        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf httpbinImage)} - - - - ${httpbinImage}"
+      ];
+    };
+
+    # The foreign router (D9 contract fixture): FRR with strict exact-VIP
+    # import policy, not part of the fabric or cluster inventory.
+    router = {pkgs, ...}: {
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          addresses = [
+            "192.168.1.3/24"
+            "2001:db8:1::3/64"
+          ];
+          withBase = true;
+        })
+      ];
+      virtualisation = {
+        cores = 1;
+        memorySize = 1024;
+      };
+      environment.systemPackages = [
+        pkgs.jq
+        pkgs.curl
+        pkgs.dnsutils
+      ];
+      services.frr = {
+        bgpd.enable = true;
+        bfdd.enable = true;
+        config = routerFrrConf;
+      };
+      # The router is a host here (it curls the VIPs itself); forwarding
+      # is not part of the fixture.
+      networking.firewall.enable = false;
+    };
+  };
 
   testScript = ''
     def fail_dump(m):

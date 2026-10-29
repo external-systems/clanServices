@@ -6,8 +6,11 @@
 # the survivors keep serving through their own haproxy (healthchecks mark
 # the dead manager DOWN), fresh etcd writes succeed with 2/3 quorum, and
 # new pods still schedule.
-{ lib, inputs, ... }:
 {
+  lib,
+  inputs,
+  ...
+}: {
   name = "rke2-ha";
 
   clan = {
@@ -23,9 +26,9 @@
       meta.domain = "test.clan";
 
       machines = {
-        alpha = { };
-        beta = { };
-        gamma = { };
+        alpha = {};
+        beta = {};
+        gamma = {};
       };
 
       instances = {
@@ -89,60 +92,56 @@
     };
   };
 
-  nodes =
-    let
-      commonNode =
-        name:
-        { pkgs, ... }:
-        let
-          busyboxImage = pkgs.dockerTools.pullImage {
-            imageName = "busybox";
-            imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
-            hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
-            finalImageTag = "1.36.1";
-          };
-        in
-        {
-          imports = [
-            (import ../../../../tests/ifstate-vm.nix {
-              ifstateOverlay = inputs.pkgs.overlays.ifstate;
-              addresses = [
-                "192.168.1.${
-                  toString
-                    {
-                      alpha = 1;
-                      beta = 2;
-                      gamma = 3;
-                    }
-                    .${name}
-                }/24"
-              ];
-            })
+  nodes = let
+    commonNode = name: {pkgs, ...}: let
+      busyboxImage = pkgs.dockerTools.pullImage {
+        imageName = "busybox";
+        imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
+        hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
+        finalImageTag = "1.36.1";
+      };
+    in {
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          addresses = [
+            "192.168.1.${
+              toString
+              {
+                alpha = 1;
+                beta = 2;
+                gamma = 3;
+              }
+                    .${
+                name
+              }
+            }/24"
           ];
-          virtualisation = {
-            cores = 2;
-            memorySize = 3584;
-            diskSize = 8192;
-          };
+        })
+      ];
+      virtualisation = {
+        cores = 2;
+        memorySize = 3584;
+        diskSize = 8192;
+      };
 
-          environment.systemPackages = [
-            pkgs.kubectl
-            pkgs.cilium-cli
-            pkgs.socat
-          ];
-          environment.sessionVariables.KUBECONFIG = "/etc/rancher/rke2/rke2.yaml";
+      environment.systemPackages = [
+        pkgs.kubectl
+        pkgs.cilium-cli
+        pkgs.socat
+      ];
+      environment.sessionVariables.KUBECONFIG = "/etc/rancher/rke2/rke2.yaml";
 
-          services.rke2.images = [ busyboxImage ];
-          systemd.tmpfiles.rules = [
-            "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf busyboxImage)} - - - - ${busyboxImage}"
-          ];
-        };
-    in
-    {
-      alpha = commonNode "alpha";
-      beta = commonNode "beta";
-      gamma = commonNode "gamma";
+      services.rke2.images = [busyboxImage];
+      systemd.tmpfiles.rules = [
+        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf busyboxImage)} - - - - ${busyboxImage}"
+      ];
     };
+  in {
+    alpha = commonNode "alpha";
+    beta = commonNode "beta";
+    gamma = commonNode "gamma";
+  };
 
   testScript = ''
     machines = [alpha, beta, gamma]

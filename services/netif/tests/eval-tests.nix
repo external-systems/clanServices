@@ -4,18 +4,17 @@
   exportInterfaces,
   lib,
   ...
-}:
-let
+}: let
   machineConfigs =
     lib.genAttrs
-      [
-        "edge-1"
-        "kamrui-h1"
-        "nas"
-      ]
-      (_: {
-        nixpkgs.hostPlatform = "x86_64-linux";
-      });
+    [
+      "edge-1"
+      "kamrui-h1"
+      "nas"
+    ]
+    (_: {
+      nixpkgs.hostPlatform = "x86_64-linux";
+    });
 
   baseInventory = {
     instances = {
@@ -26,7 +25,7 @@ let
         roles.default = {
           settings = {
             mtu = 1500;
-            nameservers = [ "192.168.10.1" ];
+            nameservers = ["192.168.10.1"];
           };
           machines = {
             kamrui-h1.settings = {
@@ -39,8 +38,8 @@ let
                 eth = {
                   interface = "enp3s0";
                   static = {
-                    ipv4 = [ "192.168.10.10/24" ];
-                    ipv6 = [ "2001:db8:10::10/64" ];
+                    ipv4 = ["192.168.10.10/24"];
+                    ipv6 = ["2001:db8:10::10/64"];
                   };
                   endpoint = true;
                 };
@@ -61,7 +60,7 @@ let
         module.input = "self";
         roles.default.machines.edge-1.settings.links.sfp0 = {
           interface = "enp1s0f0np0";
-          static.ipv4 = [ "203.0.113.2/30" ];
+          static.ipv4 = ["203.0.113.2/30"];
           gateway.ipv4 = "203.0.113.1";
           endpoint = true;
           routes = [
@@ -78,7 +77,7 @@ let
         roles.default.settings.mtu = 9000; # segment-wide default
         roles.default.machines.edge-1.settings.links.sfp1 = {
           interface = "enp1s0f1np1";
-          static.ipv4 = [ "198.51.100.2/30" ]; # no gateway: cross-instance check
+          static.ipv4 = ["198.51.100.2/30"]; # no gateway: cross-instance check
         };
       };
 
@@ -96,7 +95,7 @@ let
           ];
           links.mgmt0 = {
             interface = "enp6s0";
-            static.ipv4 = [ "10.99.0.2/24" ];
+            static.ipv4 = ["10.99.0.2/24"];
           };
         };
       };
@@ -115,7 +114,7 @@ let
               id = 10;
               parent = "trunk";
             };
-            static.ipv4 = [ "10.10.10.1/24" ];
+            static.ipv4 = ["10.10.10.1/24"];
           };
           nic0 = {
             interface = "enp4s0";
@@ -128,24 +127,24 @@ let
               "nic0"
               "nic1"
             ];
-            static.ipv4 = [ "10.20.0.1/24" ];
+            static.ipv4 = ["10.20.0.1/24"];
           };
           virbr0 = {
             kind = "bridge";
-            static.ipv4 = [ "10.30.0.1/24" ];
+            static.ipv4 = ["10.30.0.1/24"];
           };
           # Underlay policy routing (D53: netif owns underlay policy):
           # /32 on an L3-only segment, gateway on-link in table 201.
           vswitch = {
             interface = "enp7s0";
-            static.ipv4 = [ "192.0.2.10/32" ];
+            static.ipv4 = ["192.0.2.10/32"];
             gateway = {
               ipv4 = "192.0.2.1";
               onLink = true;
             };
             routingPolicy = {
               table = 201;
-              from = [ "192.0.2.10/32" ];
+              from = ["192.0.2.10/32"];
             };
           };
         };
@@ -153,10 +152,9 @@ let
     };
   };
 
-  mkEvaled =
-    inventory:
+  mkEvaled = inventory:
     clanLib.clan {
-      self = { };
+      self = {};
       directory = ./.;
       inherit exportInterfaces;
       modules.netif = module;
@@ -173,25 +171,24 @@ let
   kamInterfaces = kamIfstate.interfaces;
   edgeInterfaces = edgeIfstate.interfaces;
 
-  memberExport =
-    machineName: instanceName:
+  memberExport = machineName: instanceName:
     clanLib.getExport {
       serviceName = "netif";
       inherit instanceName;
       roleName = "default";
       inherit machineName;
-    } evaled.config.exports;
+    }
+    evaled.config.exports;
 
-  instanceExports =
-    instanceName:
+  instanceExports = instanceName:
     lib.attrValues (
       clanLib.selectExports (
         scope: scope.serviceName == "netif" && scope.instanceName == instanceName && scope.machineName == ""
-      ) evaled.config.exports
+      )
+      evaled.config.exports
     );
 
-  failedAssertion =
-    machineConfig: needle:
+  failedAssertion = machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
 
   explicitEndpointEval = mkEvaled (
@@ -199,12 +196,14 @@ let
       instances.mgmt.roles.default.machines.kamrui-h1.settings.endpoint = "mgmt.test";
     }
   );
-  explicitEndpointExport = clanLib.getExport {
-    serviceName = "netif";
-    instanceName = "mgmt";
-    roleName = "default";
-    machineName = "kamrui-h1";
-  } explicitEndpointEval.config.exports;
+  explicitEndpointExport =
+    clanLib.getExport {
+      serviceName = "netif";
+      instanceName = "mgmt";
+      roleName = "default";
+      machineName = "kamrui-h1";
+    }
+    explicitEndpointEval.config.exports;
 
   # --- negatives: cross-instance conflicts (perMachine) ---
   ownershipConflictEval = mkEvaled (
@@ -216,8 +215,7 @@ let
   );
   duplicateDefaultRouteEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
-      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.gateway.ipv4 =
-        "192.168.10.1"; # wifi DHCP already owns the default
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.gateway.ipv4 = "192.168.10.1"; # wifi DHCP already owns the default
     }
   );
   dnsConflictEval = mkEvaled (
@@ -234,14 +232,14 @@ let
     lib.recursiveUpdate baseInventory {
       instances.dmz-net.roles.default.machines.edge-1.settings.links.badvlan = {
         vlan.id = 99;
-        static.ipv4 = [ "10.99.99.1/24" ];
+        static.ipv4 = ["10.99.99.1/24"];
       };
     }
   );
   physicalNoInterfaceEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
       instances.home-net.roles.default.machines.kamrui-h1.settings.links.foo = {
-        static.ipv4 = [ "10.1.1.1/24" ];
+        static.ipv4 = ["10.1.1.1/24"];
       };
     }
   );
@@ -264,8 +262,7 @@ let
       instances.home-net.roles.default.machines.nas.settings.links.eth.endpoint = true;
     }
   );
-in
-{
+in {
   rendering = {
     test_multiNicWifiDhcp = {
       expr = {
@@ -291,12 +288,12 @@ in
           accept_ra = 1;
           autoconf = 1;
         };
-        dns = [ "192.168.10.1" ];
+        dns = ["192.168.10.1"];
       };
     };
     test_dhcpHookRegistrationMatchesLinkReference = {
       expr = lib.attrNames kamIfstate.parameters.hooks;
-      expected = [ "netif-dhcp-home-net-wifi" ];
+      expected = ["netif-dhcp-home-net-wifi"];
     };
     test_multiNicStatic = {
       expr = kamInterfaces.enp3s0.addresses;
@@ -397,7 +394,7 @@ in
       expected = {
         kind = "bridge";
         state = "up";
-        addresses = [ "10.30.0.1/24" ];
+        addresses = ["10.30.0.1/24"];
       };
     };
     test_ifstateOnly = {
@@ -414,7 +411,7 @@ in
         version = "2.5.1";
         networkd = false;
         useNetworkd = false;
-        interfaces = { };
+        interfaces = {};
         killMode = "process";
       };
     };
@@ -474,22 +471,22 @@ in
             kind = "physical";
             interface = "wlp2s0";
             mtu = 1500;
-            nameservers = [ "192.168.10.1" ];
+            nameservers = ["192.168.10.1"];
             endpoint = false;
-            addresses = [ ];
+            addresses = [];
             dhcp4 = true;
             dhcp6 = false;
             ra = true;
             gateway4 = null;
             gateway6 = null;
-            routes = [ ];
+            routes = [];
             gatewayInMain = true; # DHCP lease default
           };
           eth = {
             kind = "physical";
             interface = "enp3s0";
             mtu = 1500;
-            nameservers = [ "192.168.10.1" ];
+            nameservers = ["192.168.10.1"];
             endpoint = true;
             addresses = [
               "192.168.10.10/24"
@@ -500,7 +497,7 @@ in
             ra = true;
             gateway4 = null;
             gateway6 = null;
-            routes = [ ];
+            routes = [];
             gatewayInMain = false;
           };
         };
@@ -526,7 +523,7 @@ in
       };
       expected = {
         endpoint = "mgmt.test";
-        hosts = [ { plain = "mgmt.test"; } ];
+        hosts = [{plain = "mgmt.test";}];
       };
     };
     test_networkFactsDeepEvalAndParity = {
