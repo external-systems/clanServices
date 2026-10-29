@@ -11,8 +11,12 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   `legacyPackages.<system>.vmTests` and run one at a time; sandboxed runs
   are authoritative (interactive/driver mode is debug-only, and every
   driver-mode fix is re-proven with a sandboxed rerun). VM suites never
-  enter `checks`, which remains a lightweight static gate. VM logs live
-  under `.baton-pass/vm-logs/`, one per suite.
+  enter `checks`, which remains a lightweight static gate. Run a suite with
+  `nix run .#vm-test -- <suite>`; use `--list` to list suite names. The app
+  writes the complete build log to the first unused
+  `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0, 1, …), prints the log path,
+  and returns the build's exit status. `.baton-pass/` is gitignored and never
+  committed.
 - Artifact source/hash/render and publish-freshness gates.
 - Offline execution, deterministic addresses, dual-stack in every boot
   test, round trips and failure behavior, negative assertions,

@@ -42,27 +42,6 @@
         treefmt-nix.follows = "treefmt-nix";
       };
     };
-
-    nix-unit = {
-      url = "github:nix-community/nix-unit";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        treefmt-nix.follows = "treefmt-nix";
-      };
-    };
-    nix-github-actions = {
-      url = "github:nix-community/nix-github-actions";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    # MkDocs site + reveal.js slides for the spec/docs (see documentation/).
-    presenting = {
-      url = "github:external-systems/presenting";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        flake-parts.follows = "flake-parts";
-      };
-    };
   };
 
   outputs = inputs @ {flake-parts, ...}:
@@ -73,72 +52,41 @@
       ];
 
       imports = [
-        inputs.nix-unit.modules.flake.default
+        inputs.flake-parts.flakeModules.partitions
         inputs.clan-core.flakeModules.default
         ./tests/clan-nixos-test.nix
         ./overlays.nix
-        ./formatter.nix
         ./services/flake-module.nix
         ./lib/kube-cluster/flake-module.nix
-        ./tests/flake-module.nix
-        ./documentation/module.nix
       ];
 
-      perSystem = {pkgs, ...}: let
-        # The nix-unit check re-evaluates this flake in a network-less
-        # sandbox with each direct input overridden to its store path.
-        # Overriding `pkgs` to a path makes Nix re-resolve the pkgs
-        # flake's OWN lock transitively (its nixpkgs/flake-parts/
-        # import-tree), so those get explicit nested overrides pointing
-        # at our already-fetched equivalents (identical revisions).
-        # Same for `presenting` (mkdocs-flake/reveal-js/import-tree).
-        lock = builtins.fromJSON (builtins.readFile ./flake.lock);
-        # Resolve the pkgs flake's import-tree through the flattened lock
-        # (node name via pkgs' inputs map, so lock renumbering is safe).
-        pkgsImportTree = builtins.fetchTree lock.nodes.${lock.nodes.pkgs.inputs."import-tree"}.locked;
-        presentingMkdocsFlake =
-          builtins.fetchTree
-          lock.nodes.${lock.nodes.presenting.inputs."mkdocs-flake"}.locked;
-        presentingRevealJs =
-          builtins.fetchTree
-          lock.nodes.${lock.nodes.presenting.inputs."reveal-js"}.locked;
-        presentingImportTree =
-          builtins.fetchTree
-          lock.nodes.${lock.nodes.presenting.inputs."import-tree"}.locked;
-        kubenixImportTree = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."import-tree"}.locked;
-        kubenixDevshell = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."devshell"}.locked;
-        kubenixFlakeCompat =
-          builtins.fetchTree
-          lock.nodes.${lock.nodes.kubenix.inputs."flake-compat"}.locked;
-        kubenixSystems = builtins.fetchTree lock.nodes.${lock.nodes.kubenix.inputs."systems"}.locked;
-      in {
-        nix-unit.inputs =
-          inputs
-          // {
-            "pkgs/nixpkgs" = inputs.nixpkgs;
-            "pkgs/flake-parts" = inputs.flake-parts;
-            "pkgs/flake-parts/nixpkgs-lib" = inputs.nixpkgs;
-            "pkgs/import-tree" = pkgsImportTree;
-            "flake-parts/nixpkgs-lib" = inputs.nixpkgs;
-            "presenting/mkdocs-flake" = presentingMkdocsFlake;
-            "presenting/reveal-js" = presentingRevealJs;
-            "presenting/import-tree" = presentingImportTree;
-            "kubenix/import-tree" = kubenixImportTree;
-            "kubenix/devshell" = kubenixDevshell;
-            "kubenix/flake-compat" = kubenixFlakeCompat;
-            "kubenix/systems" = kubenixSystems;
-          };
-
-        devShells.default = pkgs.mkShell {
-          # bash/jq/git are what scripts/update-pins.sh needs; the CI runner
-          # image is a bare nix container that provides none of them.
-          packages = [
-            pkgs.treefmt
-            pkgs.bash
-            pkgs.jq
-            pkgs.git
-          ];
-        };
+      partitionedAttrs = {
+        apps = "dev";
+        checks = "dev";
+        devShells = "dev";
+        formatter = "dev";
+        packages = "dev";
+        tests = "dev";
       };
+
+      partitions.dev =
+        {module = ./dev/flake-module.nix;}
+        // (
+          if inputs ? nix-unit
+          then {
+            # The offline nix-unit wrapper supplies dev inputs directly.
+            extraInputs = {
+              inherit
+                (inputs)
+                dev-flake-parts
+                dev-nixpkgs
+                dev-treefmt-nix
+                nix-unit
+                presenting
+                ;
+            };
+          }
+          else {extraInputsFlake = ./dev;}
+        );
     };
 }
