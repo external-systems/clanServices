@@ -146,6 +146,8 @@ include symmetric A↔B and B↔C edges, non-transitive A/C global-Service
 isolation, and dual-stack route isolation on non-transit leaves. SPEC.md §7
 links the final logs and remains the status authority. A VM-proven status
 names its test file and a unique `*_OK` marker that the test prints.
+Save each VM run's log to `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0,
+1, … per run); `.baton-pass/` is gitignored and never committed.
 
 The imported baseline and BIRD checkpoint `2995ac3` (5 green / 7 red) are
 legacy evidence only. No full-mesh fabric suite exists or is required.

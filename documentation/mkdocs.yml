@@ -12,16 +12,23 @@ theme:
     - navigation.top
     - content.code.copy
   palette:
-    - scheme: default
-      primary: indigo
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
+    # Dark first = the default; the toggle switches to light.
     - scheme: slate
-      primary: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+# Claude colours, shared with the slides (docs/stylesheets/extra.css).
+extra_css:
+  - stylesheets/extra.css
 
 markdown_extensions:
   - admonition
@@ -33,9 +40,12 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.keys
 
 nav:
   - Home: index.md
+  - Presentation: presentation.md
   - Architecture:
       - Overview: architecture/overview.md
       - Networking: architecture/networking.md
@@ -63,6 +73,16 @@ nav:
       - Stage-0 probe lessons: guides/stage0-probe-lessons.md
   - Plans:
       - Data-plane hardening: plans/data-plane-hardening.md
+      - Phase prompts:
+          - "1. Tooling and flake inputs": plans/phase-1-tooling/prompt.md
+          - "2. Correctness and stability": plans/phase-2-correctness/prompt.md
+          - "3. Allocation with clan vars": plans/phase-3-allocation/prompt.md
+          - "4. netif underlay": plans/phase-4-netif-underlay/prompt.md
+          - "5. Facts and synthetic clans": plans/phase-5-facts-and-clans/prompt.md
+          - "6. VM harness": plans/phase-6-vm-harness/prompt.md
+          - "7. Gateway and floating IPs": plans/phase-7-gateway/prompt.md
+          - "8. terranix + OpenTofu": plans/phase-8-opentofu/prompt.md
+          - "9. Proxmox and breadth": plans/phase-9-proxmox-and-breadth/prompt.md
   - Reference:
       - Glossary: reference/glossary.md
       - Testing: reference/testing.md

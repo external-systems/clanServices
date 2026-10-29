@@ -1,0 +1,17 @@
+Third-party files in this folder (icons, rough.js and sketch.js come from
+external-systems/explain-kube-to-me)
+
+icons/ (product logos)
+  Most logos: homarr-labs/dashboard-icons (Apache-2.0),
+    https://github.com/homarr-labs/dashboard-icons
+  redhat.svg, intel.svg: Simple Icons (CC0-1.0), https://simpleicons.org
+  cncf-*.svg, envoy-gateway.svg, cncf.svg: cncf/artwork (Apache-2.0),
+    https://github.com/cncf/artwork
+  dotnet.svg, cloudflare-workers.svg: devicon (MIT), https://github.com/devicons/devicon
+  Logos are trademarks of their owners, used here to name their products.
+
+icons/lucide-*.svg (line icons, recoloured)
+  Lucide (ISC), https://lucide.dev
+
+vendor/rough.js
+  Rough.js 4.6.6 by Preet Shihn (MIT), https://roughjs.com

@@ -1,0 +1,497 @@
+/* Claude-coloured look for slides.md: a warm dark background, cream
+   text and clay-orange accents, plus the building blocks the slides use:
+   route pills, logo tiles, layers and hand-drawn diagrams.
+   Loaded after the reveal.js theme in index.html, so it overrides it. */
+
+:root {
+	--bg: #1f1e1d;
+	--bg-deep: #141413;
+	--surface: #2b2a27;
+	--surface-2: #363430;
+	--cream: #faf9f5;
+	--muted: #b0aea5;
+	--clay: #d97757;
+	--clay-soft: #e8a48a;
+	--blue: #6a9bcc;
+	--green: #8fa876;
+	--sand: #e3c08d;
+	--rose: #c9789a;
+
+	/* reveal.js theme variables */
+	--r-background-color: var(--bg);
+	--r-main-color: var(--cream);
+	--r-heading-color: var(--cream);
+	--r-link-color: var(--clay);
+	--r-link-color-hover: var(--clay-soft);
+	--r-selection-background-color: var(--clay);
+	--r-heading-font: Georgia, "Times New Roman", serif;
+	--r-heading-text-transform: none;
+	--r-heading-font-weight: 500;
+	--r-heading-letter-spacing: -0.01em;
+	--r-main-font-size: 34px;
+}
+
+.reveal .slides section {
+	text-align: center;
+}
+.reveal h1 {
+	font-size: 2.2em;
+}
+.reveal h2 {
+	font-size: 1.45em;
+	margin-bottom: 0.5em;
+}
+.reveal h2::after {
+	/* a short clay underline under every slide title */
+	content: "";
+	display: block;
+	width: 2.2em;
+	height: 4px;
+	margin: 0.25em auto 0;
+	border-radius: 2px;
+	background: var(--clay);
+}
+.reveal strong {
+	color: var(--clay);
+}
+.reveal em {
+	color: var(--sand);
+	font-style: normal;
+}
+.reveal .muted,
+.reveal small {
+	color: var(--muted);
+}
+.reveal .big {
+	font-size: 1.35em;
+	line-height: 1.3;
+}
+.reveal .kicker {
+	color: var(--clay);
+	font-size: 0.6em;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	margin-bottom: 0.3em;
+}
+.reveal .hint {
+	margin-top: 1.2em;
+	color: var(--muted);
+	font-size: 0.5em;
+}
+.reveal table {
+	font-size: 0.72em;
+}
+.reveal table th {
+	color: var(--clay);
+	border-bottom: 2px solid var(--clay);
+}
+.reveal table td {
+	border-bottom: 1px solid var(--surface-2);
+}
+
+/* A short takeaway line. */
+.takeaway {
+	background: var(--surface);
+	border-left: 8px solid var(--clay);
+	border-radius: 0.3em;
+	padding: 0.4em 0.8em;
+	margin: 0.6em auto 0;
+	font-size: 0.78em;
+	text-align: left;
+	width: 88%;
+}
+
+/* HTTP routes: a verb pill and a path whose parts are coloured
+   (group = who added it, namespace = whose folder, resource = the kind). */
+.routes {
+	display: flex;
+	flex-direction: column;
+	gap: 0.22em;
+	margin: 0.4em auto;
+	width: 96%;
+}
+.route {
+	display: flex;
+	align-items: center;
+	gap: 0.6em;
+	background: var(--surface);
+	border-radius: 0.35em;
+	padding: 0.2em 0.55em;
+	font-size: 0.6em;
+	text-align: left;
+	border-left: 6px solid var(--surface-2);
+}
+.route.new {
+	border-left-color: var(--clay);
+	background: var(--surface-2);
+}
+.route.dim {
+	opacity: 0.55;
+}
+.route .path {
+	flex: 1 1 auto;
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+	font-size: 0.92em;
+	white-space: nowrap;
+	color: var(--muted);
+}
+.route .what {
+	flex: 0 0 auto;
+	color: var(--cream);
+	font-size: 0.95em;
+}
+.route .what i {
+	color: var(--muted);
+	font-style: normal;
+}
+.verb {
+	display: inline-block;
+	min-width: 3.4em;
+	border-radius: 0.3em;
+	padding: 0.05em 0.35em;
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+	font-weight: 700;
+	font-size: 0.85em;
+	text-align: center;
+	color: var(--bg-deep);
+	background: var(--green);
+}
+.verb.post {
+	background: var(--clay);
+}
+.verb.watch {
+	background: var(--blue);
+}
+.path .grp {
+	color: var(--blue);
+}
+.path .ns {
+	color: var(--sand);
+}
+.path .res {
+	color: var(--clay);
+	font-weight: 700;
+}
+.path .name {
+	color: var(--green);
+}
+
+/* One big route, split into labelled parts (the anatomy slide). */
+.anatomy {
+	display: flex;
+	justify-content: center;
+	align-items: flex-start;
+	flex-wrap: wrap;
+	row-gap: 0.6em;
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+	font-size: 0.74em;
+	margin: 0.8em 0 0.4em;
+}
+.anatomy > div {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+.anatomy .seg {
+	padding: 0.15em 0.1em;
+	border-bottom: 4px solid currentColor;
+	white-space: nowrap;
+}
+.anatomy .lbl {
+	font-family: "Source Sans Pro", Helvetica, sans-serif;
+	font-size: 0.85em;
+	margin-top: 0.4em;
+	color: var(--cream);
+	max-width: 7em;
+	line-height: 1.2;
+}
+.anatomy .sep {
+	color: var(--muted);
+	padding: 0.15em 0;
+}
+
+/* A stacked layer cake: .layer elements, top to bottom. */
+.layer {
+	display: flex;
+	justify-content: space-between;
+	gap: 1em;
+	margin: 0.18em auto;
+	padding: 0.38em 0.8em;
+	border-radius: 0.35em;
+	background: var(--surface);
+	border-left: 8px solid var(--clay);
+	font-size: 0.68em;
+	text-align: left;
+}
+.layer span:last-child {
+	color: var(--muted);
+	text-align: right;
+}
+
+/* Title and section slides: a deeper background with a clay glow. */
+.reveal .title-slide h1 {
+	font-size: 2.6em;
+	margin-bottom: 0.1em;
+}
+.reveal .title-slide h2::after {
+	display: none;
+}
+
+/* The growing route list: tighter rows so 13 routes fit on one slide. */
+.routes.tight {
+	gap: 0.12em;
+}
+.routes.tight .route {
+	padding: 0.1em 0.55em;
+}
+
+/* Short YAML / pseudocode listings: keys sand, comments muted. */
+.reveal pre.spec {
+	box-sizing: border-box;
+	width: 100%;
+	margin: 0.3em 0;
+	box-shadow: none;
+	background: var(--bg-deep);
+	border: 1px solid var(--surface-2);
+	border-left: 6px solid var(--clay);
+	border-radius: 0.35em;
+	padding: 0.5em 0.8em;
+	font-size: 0.58em;
+	line-height: 1.4;
+	text-align: left;
+	color: var(--cream);
+	white-space: pre;
+}
+.reveal pre.spec .k {
+	color: var(--sand);
+}
+.reveal pre.spec .c {
+	color: var(--muted);
+	font-style: italic;
+}
+.reveal pre.spec .v {
+	color: var(--clay-soft);
+}
+.reveal pre.spec .kw {
+	color: var(--blue);
+	font-weight: 700;
+}
+
+/* A plain checklist (✓ / ✗ rows). */
+.reveal ul.ticks {
+	list-style: none;
+	margin: 0;
+	font-size: 0.74em;
+	line-height: 1.5;
+}
+.reveal ul.ticks li::before {
+	content: "✓ ";
+	color: var(--green);
+	font-weight: 700;
+}
+.reveal ul.ticks.cross li::before {
+	content: "✗ ";
+	color: var(--rose);
+}
+
+/* ------------------------------------------------------------------
+   Icons and hand-drawn diagrams
+   ------------------------------------------------------------------ */
+
+/* <div class="diagram"><svg class="sketch">: see sketch.js */
+.diagram {
+	margin: 0.1em auto 0;
+}
+.diagram svg {
+	display: block;
+	width: 100%;
+	height: auto;
+	overflow: visible;
+}
+svg.sketch text {
+	font-family: "Source Sans Pro", Helvetica, sans-serif;
+	fill: var(--cream);
+}
+svg.sketch text.sans {
+	font-family: "Source Sans Pro", Helvetica, sans-serif;
+}
+svg.sketch text.mono {
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Product logos. */
+.reveal img.icon {
+	display: inline-block;
+	height: 1.15em;
+	width: auto;
+	margin: 0 0.12em;
+	vertical-align: -0.22em;
+}
+.reveal img.hero {
+	height: 2.6em;
+	margin: 0 auto 0.2em;
+}
+
+/* Icon tiles: a logo, a name and a short line. No box around it. */
+.tiles {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 0.5em 1.2em;
+	margin: 0.5em 0;
+}
+.tile {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	width: 6.4em;
+	font-size: 0.62em;
+	line-height: 1.25;
+	text-align: center;
+}
+.reveal .tile img {
+	height: 2.7em;
+	width: auto;
+	max-width: 5.5em;
+	margin: 0 0 0.35em;
+}
+.tile b {
+	font-size: 1.05em;
+}
+.tile span {
+	color: var(--muted);
+}
+
+/* Rows of "kinds of record": logo | kind | in plain words | added by. */
+.kinds {
+	display: flex;
+	flex-direction: column;
+	width: 92%;
+	margin: 0.3em auto;
+	font-size: 0.62em;
+	text-align: left;
+}
+.kind {
+	display: grid;
+	grid-template-columns: 2.6em 10.5em 1fr 9em;
+	align-items: center;
+	gap: 0.8em;
+	padding: 0.22em 0.6em;
+	border-bottom: 1px solid var(--surface-2);
+}
+.reveal .kind img {
+	justify-self: center;
+	height: 1.9em;
+	width: auto;
+	max-width: 2.6em;
+	margin: 0;
+}
+.kind code {
+	color: var(--clay);
+	font-weight: 700;
+}
+.kind .who {
+	color: var(--muted);
+	font-size: 0.9em;
+	text-align: right;
+}
+
+/* Three CNCF levels side by side, an outline instead of a filled box. */
+.levels {
+	display: flex;
+	gap: 1em;
+	margin: 0.4em 0;
+	text-align: left;
+}
+.level {
+	flex: 1 1 0;
+	padding: 0.3em 0.2em 0 0.7em;
+	border-left: 4px solid var(--muted);
+	font-size: 0.66em;
+	line-height: 1.35;
+}
+.reveal .level img {
+	height: 1.8em;
+	margin: 0 0 0.2em;
+}
+.level b {
+	display: block;
+	font-size: 1.3em;
+}
+.level.sand {
+	border-left-color: var(--sand);
+}
+.level.green {
+	border-left-color: var(--green);
+}
+
+/* The logo of whoever added a route's API group, in front of the verb. */
+.reveal .route img.ricon {
+	flex: 0 0 auto;
+	width: 1.5em;
+	height: 1.2em;
+	margin: 0;
+	object-fit: contain;
+}
+
+/* The built-in kinds: two columns of icon, kind, plain-English meaning. */
+.kinds.two {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	column-gap: 1.4em;
+	width: 100%;
+	font-size: 0.58em;
+}
+.kinds.two .kind {
+	grid-template-columns: 2.2em 7.5em 1fr;
+}
+.kinds.two .kicker {
+	margin: 0 0 0.4em;
+	font-size: 1em;
+}
+
+/* ------------------------------------------------------------------
+   Additions for the clanServices deck
+   ------------------------------------------------------------------ */
+
+/* Planned items: an open circle instead of a tick. */
+.reveal ul.ticks.todo li::before {
+	content: "○ ";
+	color: var(--sand);
+}
+
+/* Two columns side by side. */
+.cols {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 1.4em;
+	text-align: left;
+}
+.cols .kicker {
+	margin: 0 0 0.3em;
+}
+
+/* An icon at the start of a layer row. */
+.reveal .layer img {
+	height: 1.5em;
+	width: auto;
+	margin: 0 0.5em 0 0;
+	vertical-align: middle;
+}
+.layer b {
+	color: var(--cream);
+}
+
+/* Level columns with a bullet list inside. */
+.level ul {
+	margin: 0.3em 0 0 1em;
+	padding: 0;
+}
+.level li {
+	margin: 0.15em 0;
+}
+
+/* The scope column of the delivery-mode table. */
+.kinds .kind span:nth-child(3) {
+	color: var(--cream);
+}

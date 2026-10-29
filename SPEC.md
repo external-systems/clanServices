@@ -8,8 +8,13 @@ Round 20 (2026-10-29): **status corrections only; no behavior change.** A
 review found routed-fabric and netif claims that the code or VM suites do
 not yet meet. Those claims stay in the target contract and are now marked
 *(planned)* where they appear; the work to close them is phased in
-`documentation/docs/plans/data-plane-hardening.md`. From this round, a *VM-proven* status names its
-test file and a unique `*_OK` marker the test prints.
+`documentation/docs/plans/data-plane-hardening.md`, with one hand-off
+prompt per phase under `documentation/docs/plans/phase-*/`. From this
+round, a *VM-proven* status names its test file and a unique `*_OK` marker
+the test prints; VM logs live in `.baton-pass/vm-logs/<suite>/logs-<n>`
+(never committed). Verification is a full `nix flake check` (`checks` is
+static-only), formatting is alejandra, breaking changes need no shims, and
+`targetHost` stays on the underlay (AGENTS.md rules 2 and 10–12).
 
 Round 19 (2026-10-28): **the artifact flake is the packaging and shared-input
 authority (D62).** `external-systems/pkgs` pins nixpkgs and flake-parts, owns
@@ -1750,7 +1755,7 @@ operator CRDs.
 *Status (round 20): the leaf-transit, asymmetric source/return, HA-profile
 and duplicate-ASN rejections below are planned, not implemented, and
 BGP/BFD ports are currently opened on every interface. See the hardening
-plan, phases 2 and 3.*
+plan, phase 2.*
 
 Eval rejects: multiple bootstraps; duplicate ids/CIDRs/ports/ASNs/
 interface names/transfer prefixes; missing dual-stack or topology facts;
@@ -1822,7 +1827,7 @@ style automation), never a fabric render.
 
 Acceptance (target; round 20 status: the NAT-site, Internet source/return,
 border-filter and route-filter-negative items are not yet VM-proven, see
-the hardening plan, phase 3): eval proves deterministic names/transfer prefixes,
+the hardening plan, phase 6): eval proves deterministic names/transfer prefixes,
 adjacency/AllowedIP/filter equivalence, self-exclusion, topology/access/
 border checks, spine references and reachability (every leaf reaches ≥1
 spine; HA = 2, no arbitrary maximum), symmetric graph derivation, and
@@ -1932,7 +1937,7 @@ Current registered VM suites:
   *Planned (not yet VM-proven):* NAT/outbound-only keepalive,
   external-transit crypto ACL without an IP default route, Internet
   source/return path, and route-filter/default-route negatives (hardening
-  plan, phase 3).
+  plan, phase 6).
 - artifact matrix (3-minor version pins eval, D34);
 - **native data-plane suite per distro** on `routed-fabric`: native
   pod-to-pod without VXLAN, multi-pool remote routes, pool allocation,
