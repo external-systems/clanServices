@@ -50,13 +50,18 @@
         log="$log_dir/logs-$n"
         set -o noclobber
         while ! : 2>/dev/null > "$log"; do
+          if [[ ! -e $log ]]; then
+            printf 'cannot create VM log: %s\n' "$log" >&2
+            exit 1
+          fi
           ((n += 1))
           log="$log_dir/logs-$n"
         done
         set +o noclobber
 
-        build_args=(".#legacyPackages.${pkgs.stdenv.hostPlatform.system}.vmTests.$suite" --no-link -L --print-out-paths)
-        if [[ $rebuild -eq 1 ]]; then
+        target=.#legacyPackages.${pkgs.stdenv.hostPlatform.system}.vmTests.$suite
+        build_args=("$target" --no-link -L --print-out-paths)
+        if [[ $rebuild -eq 1 ]] && nix path-info "$target" > /dev/null 2>&1; then
           build_args+=(--rebuild)
         fi
         set +e

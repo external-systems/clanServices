@@ -24,11 +24,12 @@ documentation, slides, and development shell outputs live in a flake-parts
 flake has no test-only follows or nix-unit wrapper: the check evaluates the
 root `tests.systems` output directly with offline input overrides. Direct
 evaluation exposed two malformed fleet-check diagnostic renderers; their
-message formatting is corrected without changing any assertion.
-`apps.<system>.vm-test` builds one suite from
+message formatting is corrected without changing any assertion, and eval tests
+cover both collision messages. `apps.<system>.vm-test` builds one suite from
 `legacyPackages.<system>.vmTests`, atomically allocates the next numbered
-build log under `.baton-pass/vm-logs/<suite>/`, records cached output paths,
-and supports `--rebuild` for a fresh run; VM suites remain outside `checks`.
+build log under `.baton-pass/vm-logs/<suite>/`, fails on log-creation errors,
+records cached output paths, and uses a plain build for `--rebuild` when no
+cached output exists; VM suites remain outside `checks`.
 
 Round 19 (2026-10-28): **the artifact flake is the packaging and shared-input
 authority (D62).** `external-systems/pkgs` pins nixpkgs and flake-parts, owns

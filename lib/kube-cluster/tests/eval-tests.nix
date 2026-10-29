@@ -3199,8 +3199,22 @@ in {
       nodePort =
         !(kube.mkFleetChecks clanLib fleetExportsNodePortCollision)
         ."kube-cluster-mesh-nodeport-collisions".assertion;
+      nodePortMessage = let
+        check =
+          (kube.mkFleetChecks clanLib fleetExportsNodePortCollision)
+          ."kube-cluster-mesh-nodeport-collisions";
+      in
+        lib.hasInfix "alpha:32379 claimed by" check.message
+        && lib.hasInfix "rke2/prod" check.message
+        && lib.hasInfix "k3s/prod2" check.message;
       vip =
         !(kube.mkFleetChecks clanLib fleetExportsVipCollision)."kube-cluster-mesh-vip-collisions".assertion;
+      vipMessage = let
+        check = (kube.mkFleetChecks clanLib fleetExportsVipCollision)."kube-cluster-mesh-vip-collisions";
+      in
+        lib.hasInfix "172.16.7.79 claimed by" check.message
+        && lib.hasInfix "rke2/prod" check.message
+        && lib.hasInfix "k3s/staging" check.message;
       distinctOk = let
         checks = kube.mkFleetChecks clanLib fleetExportsOverlap;
       in
@@ -3209,7 +3223,9 @@ in {
     };
     expected = {
       nodePort = true;
+      nodePortMessage = true;
       vip = true;
+      vipMessage = true;
       distinctOk = true;
     };
   };
