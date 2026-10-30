@@ -30,4 +30,4 @@ D63 requires every member pair to have an endpoint on at least one side,
 rejects overlapping `extraAllowedIPs` between peers, and rejects listen-port
 clashes between any WireGuard interfaces on the same host. Every listen port
 is reserved in `net.ipv4.ip_local_reserved_ports`; additional ports or ranges
-can be supplied through `clan.core.networking.reservedPorts`.
+can be supplied through `clanServices.networking.reservedPorts`.

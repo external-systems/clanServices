@@ -5,6 +5,7 @@
   ...
 }: let
   inherit (lib) mkOption types;
+  ip = import ../../lib/ip.nix {inherit lib;};
 
   # ---------------------------------------------------------------------
   # Link resolution (D50/D53): derive kind + interface names and the
@@ -375,10 +376,10 @@
         description = ''
           Underlay policy-routing table for this link (netif owns underlay
           policy routing; routed-fabric owns fabric policy, D53). Null =
-          no policy routing; gateways land in the main table. Must not be
-          200: Cilium flushes table 200 on startup (cilium#38531).
+          no policy routing; gateways land in the main table. Kernel and
+          Cilium tables {0,200,201,253,254,255,2004,2005} are reserved.
         '';
-        example = 201;
+        example = 300;
       };
       from = mkOption {
         type = types.listOf types.str;
@@ -529,8 +530,8 @@
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' resolves to interface name '${r.interface}', which is invalid or exceeds the 15-character kernel limit; set an explicit shorter 'interface'";
           }
           {
-            assertion = r.policy.table == null || r.policy.table != 200;
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' must not use routingPolicy table 200 (Cilium flushes table 200 on startup)";
+            assertion = r.policy.table == null || !(lib.elem r.policy.table ip.reservedPolicyTables);
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' must not use reserved kernel/Cilium routingPolicy table ${toString r.policy.table} (reserved: 0,200,201,253,254,255,2004,2005)";
           }
           {
             assertion = r.policy.table == null || r.policy.from != [] || r.policy.to != [];

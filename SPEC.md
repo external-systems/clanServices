@@ -1312,17 +1312,20 @@ unless noted) — revoked entries keep one-line reasons for history.
   they are allowed on fabric WireGuard interfaces and, for external
   sessions, only from declared literal `border.upstreamPeers` addresses.
   Hostnames, zones, and malformed upstream literals are eval errors. The
-  shared IfState base requires globally unique rendered WireGuard listen
-  ports and reserves them, together with entries from the composable
-  `clan.core.networking.reservedPorts` list, in
+  shared IfState base has a stable module key so repeated service imports
+  deduplicate, requires globally unique rendered WireGuard listen ports, and
+  reserves them, together with entries from the composable clanServices-owned
+  `clanServices.networking.reservedPorts` list, in
   `net.ipv4.ip_local_reserved_ports`.
 
-  Source-return tables never use kernel/Cilium-owned
-  `{0,200,201,253,254,255,2004,2005}`, a same-host netif policy table, or
-  another source-return table. Their independent rule priorities occupy a
-  deterministic band below kernel `main` (32766) and are unique across all
-  source-return and effective netif rules. Netif policy tables and effective
-  rule priorities are unique across instances. Every adjacency with two
+  Source-return and netif policy tables never use the shared kernel/Cilium
+  reserved set `{0,200,201,253,254,255,2004,2005}`. Source-return tables also
+  avoid same-host netif policy tables and other source-return tables. Their
+  independent rule priorities occupy a deterministic band below kernel `main`
+  (32766) and are unique across all source-return and effective netif rules.
+  `sourceReturnTable` and `sourceReturnPriority` pin either derived value.
+  Netif policy tables and effective rule priorities are unique across
+  instances. Every adjacency with two
   declared literal endpoints must share an address family; a hostname
   produces an eval warning because eval does not resolve DNS. This is a
   declared-endpoint check, not the phase-5 per-host underlay reachability

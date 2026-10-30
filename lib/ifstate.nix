@@ -36,7 +36,9 @@
     else ip.normalizeAddress (ip.targetHostAddress targetHost);
   targetHostOnOverlay = targetAddress != null && lib.elem targetAddress overlayAddresses;
 in {
-  options.clan.core.networking.reservedPorts = lib.mkOption {
+  key = "clanServices:lib/ifstate.nix";
+
+  options.clanServices.networking.reservedPorts = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [];
     example = ["30000-32767"];
@@ -70,7 +72,7 @@ in {
     nixpkgs.overlays = lib.mkAfter [ifstateOverlay];
 
     boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," (
-      lib.unique (config.clan.core.networking.reservedPorts ++ map toString wireguardPorts)
+      lib.unique (config.clanServices.networking.reservedPorts ++ map toString wireguardPorts)
     );
 
     networking = {

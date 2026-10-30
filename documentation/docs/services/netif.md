@@ -74,8 +74,12 @@ nodes), so SLAAC default routes survive while forwarding is enabled. The
 final literal `targetHost`, including an explicit override without netif,
 is rejected if it names a fabric loopback, transfer, or tunnel address;
 IPv6 is normalized before comparison and deployment stays on the underlay.
-Additional `clan.core.networking.reservedPorts` strings (ports or ranges) merge
-with every rendered WireGuard listen port in `ip_local_reserved_ports`.
+Additional `clanServices.networking.reservedPorts` strings (ports or ranges)
+merge with every rendered WireGuard listen port in `ip_local_reserved_ports`.
+The option lives in clanServices' own namespace, and the shared IfState
+module's stable key makes repeated imports idempotent. Netif and source-return
+policy tables both reject `{0,200,201,253,254,255,2004,2005}`; netif tables
+and effective rule priorities must also be unique across instances.
 
 ## Inventory example
 

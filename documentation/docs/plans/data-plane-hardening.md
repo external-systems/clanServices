@@ -146,6 +146,15 @@ serialization. An unchanged reload has an empty dry-run diff, preserves peer
 uptimes, and leaves the RIB immediately identical; DelayOpen is not
 permission for a reload to reset sessions.
 
+The phase-2 review follow-up gives the shared IfState module a stable key and
+moves extra port reservations to `clanServices.networking.reservedPorts`, so
+repeated imports cannot duplicate the option or invade clan-core's namespace.
+Netif rejects the same kernel/Cilium policy tables as source-return.
+`sourceReturnPriority` joins `sourceReturnTable` as an explicit collision
+escape. The existing routed-fabric VM derives its loopback fixture from
+network facts and checks a wildcard TCP/179 listener alongside negative
+underlay exposure; no VM suite is added.
+
 ## NAT egress and floating IPs
 
 | Topic | In clanServices | Outside clanServices |

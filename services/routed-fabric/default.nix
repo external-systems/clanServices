@@ -57,6 +57,11 @@
         default = null;
         description = "Override the source-return policy table; reserved kernel/Cilium, netif, and duplicate source-return tables are rejected.";
       };
+      sourceReturnPriority = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.u32;
+        default = null;
+        description = "Override the source-return rule priority; values at or above 32766 and netif or duplicate source-return collisions are rejected.";
+      };
       timerProfile = lib.mkOption {
         type = lib.types.nullOr (
           lib.types.enum [
@@ -552,7 +557,10 @@
         if (localOverride.sourceReturnTable or null) != null
         then localOverride.sourceReturnTable
         else 1000 + lib.mod (fabric.nodeAsn instanceName remoteName) 30000;
-      rulePriority = 10000 + lib.mod (fabric.nodeAsn instanceName remoteName) 20000;
+      rulePriority =
+        if (localOverride.sourceReturnPriority or null) != null
+        then localOverride.sourceReturnPriority
+        else 10000 + lib.mod (fabric.nodeAsn instanceName remoteName) 20000;
     in {
       inherit
         addressFamilyMismatch
@@ -927,7 +935,7 @@
           message = "routed-fabric/${instanceName}: sourceReturn requires border.ownedPrefixes";
         }
         {
-          assertion = lib.all (adjacency: !(lib.elem adjacency.table [0 200 201 253 254 255 2004 2005])) sourceReturns;
+          assertion = lib.all (adjacency: !(lib.elem adjacency.table ip.reservedPolicyTables)) sourceReturns;
           message = "routed-fabric/${instanceName}: source-return tables must never use reserved kernel/Cilium tables {0,200,201,253,254,255,2004,2005}";
         }
         {

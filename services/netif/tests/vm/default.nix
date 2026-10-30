@@ -23,7 +23,7 @@ _: {
               };
               endpoint = true;
               routingPolicy = {
-                table = 201;
+                table = 300;
                 from = ["10.99.0.2/32"];
               };
             };
@@ -90,7 +90,7 @@ _: {
             "ip addr show virbr0 | grep -q '10.30.0.1/24' && "
             "ip addr show eth4.10 | grep -q '10.10.10.1/24' && "
             "ip addr show eth4.10 | grep -q 'fd00:10::1/64' && "
-            "ip rule show | grep -q 'from 10.99.0.2 lookup 201'",
+            "ip rule show | grep -q 'from 10.99.0.2 lookup 300'",
             timeout=120,
         )
         edge_1.succeed("ip addr show eth1 | grep -q '10.99.0.2/24'")
@@ -103,7 +103,7 @@ _: {
         edge_1.succeed("ip addr show virbr0 | grep -q '10.30.0.1/24'")
         edge_1.succeed("ip addr show eth4.10 | grep -q '10.10.10.1/24'")
         edge_1.succeed("ip addr show eth4.10 | grep -q 'fd00:10::1/64'")
-        edge_1.succeed("ip rule show | grep -q 'from 10.99.0.2 lookup 201'")
+        edge_1.succeed("ip rule show | grep -q 'from 10.99.0.2 lookup 300'")
         edge_1.succeed("test -f /etc/ifstate/ifstate.yaml")
         edge_1.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
         edge_1.fail("systemctl is-active systemd-networkd.service")

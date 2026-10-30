@@ -99,7 +99,11 @@
 
   nodes =
     lib.mapAttrs
-    (_name: address: {pkgs, ...}: {
+    (_name: address: {
+      config,
+      pkgs,
+      ...
+    }: {
       environment = {
         systemPackages = [pkgs.tcpdump];
         etc."frr-reload.py" = {
@@ -114,7 +118,7 @@
         })
       ];
       networking.ifstate.settings = {
-        interfaces.rflo5eb2ce291c.addresses = lib.mkIf (_name == "spine-a") (
+        interfaces.${config.clan.networkFacts.fabric.fleet.loopback}.addresses = lib.mkIf (_name == "spine-a") (
           lib.mkAfter [
             "198.51.100.1/32"
             "2001:db8:100::1/128"
@@ -260,6 +264,7 @@
         # default, and BGP is exposed on fabric but not the underlay.
         spine_a.succeed("ip route get 192.0.2.1 from 198.51.100.1 | grep -q 'dev rf'")
         spine_a.succeed("ip -6 route get 2001:db8::1 from 2001:db8:100::1 | grep -q 'dev rf'")
+        spine_a.succeed("ss -ltn | grep -Eq '(\\*|0\\.0\\.0\\.0):179 '")
         beta.succeed("timeout 2 bash -c 'echo > /dev/tcp/100.110.157.52/179'")
         beta.fail("timeout 2 bash -c 'echo > /dev/tcp/192.168.1.4/179'")
         print("ROUTED_FABRIC_TRANSPORT_OK")

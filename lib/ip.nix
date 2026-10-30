@@ -57,6 +57,7 @@
 in rec {
   inherit isIpv4 normalizeIpv6 targetHostAddress;
 
+  reservedPolicyTables = [0 200 201 253 254 255 2004 2005];
   isIpv6 = value: !(lib.hasInfix "%" value) && normalizeIpv6 value != null;
   isLiteral = value: isIpv4 value || isIpv6 value;
   addressFromCIDR = value: builtins.head (lib.splitString "/" value);

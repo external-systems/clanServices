@@ -5,6 +5,8 @@
   lib,
   ...
 }: let
+  ip = import ../../../lib/ip.nix {inherit lib;};
+
   machineConfigs =
     lib.genAttrs
     [
@@ -134,7 +136,7 @@
             static.ipv4 = ["10.30.0.1/24"];
           };
           # Underlay policy routing (D53: netif owns underlay policy):
-          # /32 on an L3-only segment, gateway on-link in table 201.
+          # /32 on an L3-only segment, gateway on-link in table 300.
           vswitch = {
             interface = "enp7s0";
             static.ipv4 = ["192.0.2.10/32"];
@@ -143,7 +145,7 @@
               onLink = true;
             };
             routingPolicy = {
-              table = 201;
+              table = 300;
               from = ["192.0.2.10/32"];
             };
           };
@@ -279,6 +281,14 @@
       };
     }
   );
+  reservedPolicyTableEvals = lib.genAttrs (map toString ip.reservedPolicyTables) (
+    table:
+      mkEvaled (
+        lib.recursiveUpdate baseInventory {
+          instances.dmz-net.roles.default.machines.edge-1.settings.links.vswitch.routingPolicy.table = builtins.fromJSON table;
+        }
+      )
+  );
 
   # --- negatives: malformed links (perInstance) ---
   vlanWithoutParentEval = mkEvaled (
@@ -403,13 +413,13 @@ in {
     test_policyRouting = {
       expr = {
         rules = edgeIfstate.routing.rules;
-        routes = builtins.filter (r: (r.table or null) == 201) edgeIfstate.routing.routes;
+        routes = builtins.filter (r: (r.table or null) == 300) edgeIfstate.routing.routes;
       };
       expected = {
         rules = [
           {
             from = "192.0.2.10/32";
-            table = 201;
+            table = 300;
             priority = 100;
           }
         ];
@@ -418,7 +428,7 @@ in {
             to = "0.0.0.0/0";
             via = "192.0.2.1";
             dev = "enp7s0";
-            table = 201;
+            table = 300;
             onlink = true;
           }
         ];
@@ -656,6 +666,12 @@ in {
     test_disjointPolicyClaimsAccepted = {
       expr = failedAssertion policyDisjointEval.config.nixosConfigurations.kamrui-h1.config "collisions";
       expected = false;
+    };
+    test_reservedPolicyTablesRejected = {
+      expr = lib.all (
+        eval: failedAssertion eval.config.nixosConfigurations.edge-1.config "reserved kernel/Cilium routingPolicy table"
+      ) (builtins.attrValues reservedPolicyTableEvals);
+      expected = true;
     };
     # Malformed per-instance link definitions.
     test_vlanWithoutParentRejected = {

@@ -7,6 +7,7 @@
   ...
 }: let
   fabric = import ../../../lib/kube-cluster/fabric.nix {inherit lib;};
+  ip = import ../../../lib/ip.nix {inherit lib;};
 
   machineConfigs = lib.genAttrs ["spine-a" "spine-b" "client" "admin" "node-a"] (_: {
     nixpkgs.hostPlatform = "x86_64-linux";
@@ -430,7 +431,7 @@
   );
   derivedSourceReturnTable = 1000 + lib.mod (fabric.nodeAsn "fleet" "client") 30000;
   derivedSourceReturnPriority = 10000 + lib.mod (fabric.nodeAsn "fleet" "client") 20000;
-  sourceReturnReservedEvals = lib.genAttrs (map toString [0 200 201 253 254 255 2004 2005]) (
+  sourceReturnReservedEvals = lib.genAttrs (map toString ip.reservedPolicyTables) (
     table:
       mkEvaled (
         lib.recursiveUpdate borderInventory {
@@ -447,6 +448,26 @@
           sourceReturnTable = 40500;
         };
       };
+    }
+  );
+  sourceReturnDuplicatePriorityEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.adjacencies = {
+        client = {
+          sourceReturnTable = 40500;
+          sourceReturnPriority = 12345;
+        };
+        spine-b = {
+          sourceReturn = true;
+          sourceReturnTable = 40501;
+          sourceReturnPriority = 12345;
+        };
+      };
+    }
+  );
+  sourceReturnPriorityRangeEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.client.sourceReturnPriority = 32766;
     }
   );
   sourceReturnNetifPriorityCollisionEval = mkEvaled (
@@ -499,7 +520,10 @@
     baseInventory;
   sourceReturnPinEval = mkEvaled (
     lib.recursiveUpdate borderInventory {
-      instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.client.sourceReturnTable = 40500;
+      instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.client = {
+        sourceReturnTable = 40500;
+        sourceReturnPriority = 12345;
+      };
     }
   );
   sourceReturnNetifCollisionEval = mkEvaled (
@@ -558,14 +582,25 @@
       // {
         client = {
           nixpkgs.hostPlatform = "x86_64-linux";
-          clan.core.networking.reservedPorts = [
+          clanServices.networking.reservedPorts = [
             "30000-32767"
             "51820"
           ];
         };
       }
-    )
-    baseInventory;
+    ) (lib.recursiveUpdate baseInventory {
+      instances = {
+        underlay-netif = {
+          module.name = "netif";
+          module.input = "self";
+          roles.default.machines.client.settings.links.wan = {
+            interface = "enp1s0";
+            static.ipv4 = ["192.0.2.10/32"];
+          };
+        };
+        mesh = meshInstance 51822;
+      };
+    });
   deployInstance = endpoint: {
     module.name = "netif";
     module.input = "self";
@@ -636,9 +671,9 @@ in {
       expr = client.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
       expected = "52679,54843";
     };
-    test_additionalPortsMergeWithWireguardReservations = {
+    test_sharedIfstateModuleDeduplicatesAndMergesReservations = {
       expr = reservedPortsEval.config.nixosConfigurations.client.config.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
-      expected = "30000-32767,51820,52679,54843";
+      expected = "30000-32767,51820,51822,52679,54843";
     };
     test_forwardingNetifAcceptsRouterAdvertisements = {
       expr = forwardingNetifEval.config.nixosConfigurations.spine-a.config.networking.ifstate.settings.interfaces.enp1s0.sysctl.ipv6.accept_ra;
@@ -1119,6 +1154,14 @@ in {
       expr = failedAssertion sourceReturnDuplicateEval.config.nixosConfigurations.spine-a.config "source-return tables must be unique";
       expected = true;
     };
+    test_sourceReturnDuplicatePriorityRejected = {
+      expr = failedAssertion sourceReturnDuplicatePriorityEval.config.nixosConfigurations.spine-a.config "unique across source-return and same-host netif rules";
+      expected = true;
+    };
+    test_sourceReturnPriorityAtMainRejected = {
+      expr = failedAssertion sourceReturnPriorityRangeEval.config.nixosConfigurations.spine-a.config "below 32766";
+      expected = true;
+    };
     test_sourceReturnNetifCollisionRejected = {
       expr = failedAssertion sourceReturnNetifCollisionEval.config.nixosConfigurations.spine-a.config "must not collide with same-host netif";
       expected = true;
@@ -1127,7 +1170,7 @@ in {
       expr = failedAssertion sourceReturnNetifPriorityCollisionEval.config.nixosConfigurations.spine-a.config "unique across source-return and same-host netif rules";
       expected = true;
     };
-    test_sourceReturnPinAccepted = {
+    test_sourceReturnPinsAccepted = {
       expr = let
         config = sourceReturnPinEval.config.nixosConfigurations.spine-a.config;
       in {
@@ -1138,7 +1181,7 @@ in {
       expected = {
         collision = false;
         tables = [40500];
-        priorities = [derivedSourceReturnPriority];
+        priorities = [12345];
       };
     };
     test_nonLiteralUpstreamPeersRejected = {
