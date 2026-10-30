@@ -23,12 +23,35 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   log-creation errors stop the run. `.baton-pass/` is gitignored and never
   committed.
 - Artifact source/hash/render and publish-freshness gates.
-- Offline execution, deterministic addresses, dual-stack in every boot
-  test, round trips and failure behavior, negative assertions,
-  operational postconditions, and fail-fast diagnostics.
+- Offline execution, committed-var or fixture-pinned deterministic addresses,
+  dual-stack in every boot test, round trips and failure behavior, negative
+  assertions, operational postconditions, and fail-fast diagnostics.
 
 go-httpbin is the standard airgapped HTTP workload. Minimal local
 artifacts are mandatory.
+
+## Vars fixtures and VM generation
+
+Eval tests use readable public values committed as plain `value` files under
+`services/<svc>/tests/fixtures/vars/per-machine/<machine>/<generator>/<file>/`
+and `services/<svc>/tests/fixtures/vars/shared/<generator>/<file>/`. Expected
+addresses, ASNs, ports, transfer prefixes, and reserved-port strings come from
+those fixtures, never from recomputed name hashes. D64 allocation tests cover
+missing node and adjacency vars, duplicate loopbacks and ASNs, same-host
+port/transfer collisions, unequal or overlapping pools, explicit overrides,
+and the accepted case of equal transfers on unrelated hosts.
+
+The locked clan-core `clanTest` module uses its Nix vars executor for VM
+suites. It runs shared generators first and per-machine generators afterward,
+encrypts test secrets with the harness's fixed test recipient, and merges the
+result into a temporary directory. `clan.varsDirectory` and each node's
+`clan.core.settings.directory` point at that merged directory, so
+`getPublicValue` reads the newly generated values. The merge removes the
+source suite's `vars/` tree and replaces it with generated vars. Consequently
+`nix run .#vm-test -- <suite>` is sufficient for the suites in this
+repository: do not run a separate `update-vars` command and do not commit new
+VM allocation files. Public keys already present under some VM directories
+are legacy fixtures, not the values used by this harness.
 
 ## Current suites
 

@@ -4,6 +4,16 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 22 (2026-10-30): **allocate fabric and mesh values once with clan vars
+(D64).** Public, non-deployed generators allocate routed-fabric loopbacks,
+node ASNs, adjacency ports and transfer prefixes, and wireguard-mesh node
+addresses. Evaluation reads the committed values instead of recomputing them
+from machine or instance names. Explicit per-machine and per-adjacency pins
+remain collision escapes. Fleet/host collision and pool-disjointness checks
+name the targeted regeneration or settings fix; interface names, FRR symbols,
+link-local addresses, and cluster-level derived identities remain hash-derived
+by design.
+
 Round 21 (2026-10-29): **data-plane correctness and stable convergence
 (D63).** BGP/BFD exposure is limited to fabric WireGuard interfaces and
 source-restricted declared upstream peers; every IfState WireGuard listen
@@ -392,7 +402,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D63)
+## 4. Decision record (D1–D64)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -904,14 +914,14 @@ unless noted) — revoked entries keep one-line reasons for history.
 
 - **D47 Per-adjacency routed WireGuard is the only fabric datapath.**
   (REVISED round 15: per-remote-machine full mesh superseded; round 17:
-  leaf/spine naming, D59; round-14 text retained below for history.)
+  leaf/spine naming, D59; round 22: committed vars allocate transfers, D64.)
   Every fabric machine has a stable
   dual-stack `/32` + `/128` on a fabric loopback/dummy interface and
   exactly one point-to-point WireGuard interface per **fabric
   adjacency** (leaf↔spine attachments; every unordered spine pair
   automatically, D59) — never one per remote
-  machine. Each interface has one peer and deterministic transfer
-  prefixes; identical prefixes across interfaces are valid ECMP, while
+  machine. Each interface has one peer and transfer prefixes allocated once
+  in shared public vars; duplicate prefixes on one host are rejected, while
   overlapping peers on one interface are forbidden. One UDP session per
   adjacency removes the legacy shared-identity roaming collision.
   AllowedIPs is both outbound cryptokey selection and the inbound source
@@ -972,14 +982,15 @@ unless noted) — revoked entries keep one-line reasons for history.
 
 - **D51 Derived spine/leaf is the only MVP transport topology.** (REVISED
   round 16: direct hub role and member attachment; round 17: renamed
-  leaf/spine with a symmetric derived graph, D59.) Exactly one WireGuard
+  leaf/spine with a symmetric derived graph, D59; round 22: node ASNs are
+  allocated public vars, D64.) Exactly one WireGuard
   interface per fabric adjacency — leaf↔spine attachments plus automatic
   spine↔spine pairs (D59) — never one per remote machine; full mesh
   is deferred beyond MVP and leaves the supported and tested surface
   (round-14 per-pair full-mesh text retained historically in D47). Every
   fabric node keeps its stable dual-stack `/32`+`/128` loopback (D47) and
-  runs FRR bgpd+bfdd+Zebra (D48). eBGP per adjacency with deterministic
-  unique private 32-bit node ASNs, one session per address family per
+  runs FRR bgpd+bfdd+Zebra (D48). eBGP per adjacency with committed,
+  fleet-unique private 32-bit node ASNs, one session per address family per
   adjacency interface, BFD on every adjacency, and `next-hop-self` on
   spine
   readvertisement so every distributed next hop is directly resolvable.
@@ -1361,6 +1372,76 @@ unless noted) — revoked entries keep one-line reasons for history.
   immediately identical; DelayOpen must never excuse reload-induced
   recovery. Stability takes precedence over faster reconvergence.
 
+### Round 22 decisions (2026-10-30) — active
+
+- **D64 Fabric and mesh allocations are committed public clan vars.** Every
+  routed-fabric loopback IPv4/IPv6 address, node ASN, per-adjacency UDP port
+  and transfer prefix, and every wireguard-mesh node IPv4/IPv6 address is
+  generated once and read from vars at eval; none is recomputed from a
+  machine or instance name. All allocation files set `secret = false` and
+  `deploy = false`. Generator scripts use Python `ipaddress` and `secrets`,
+  never shell arithmetic. Services receive the module-level `directory`
+  argument and read values with `clanLib.getPublicValue` in `perInstance`;
+  shared reads pass `machine = null`, selecting
+  `vars/shared/<generator>/<file>/value`. Every value is trimmed and every
+  missing value throws the exact `clan vars generate <machine> --generator
+  <generator>` remedy rather than flowing into an address as null.
+
+  `routed-fabric-<inst>-prefixes` is shared and writes `ula48`,
+  `loopback4-pool`, and `transfer4-pool`. The ULA is a random RFC 4193
+  `fdXX:XXXX:XXXX::/48`; the pool defaults are `198.18.0.0/17` and
+  `198.19.0.0/16`. Member settings `loopback4Pool` and `transfer4Pool` feed
+  the generator through string-only `validation` and must be equal on every
+  member. `routed-fabric-<inst>-node` is per machine, depends on the prefix
+  generator, and writes `ipv4` (a random non-network/non-broadcast host in
+  the loopback pool), `ipv6` (a random host in `<ula48>:0::/64`), and `asn`
+  (random in 4200000000..4294967294).
+
+  Each sorted adjacency `<a>`, `<b>` declares a byte-identical shared
+  `routed-fabric-<inst>-adj-<a>-<b>` generator on both endpoints. It depends
+  on the prefix generator and writes `port`, a `/31` `transfer4` from the
+  transfer pool, and a `/127` `transfer6` from `<ula48>:1::/64`. The
+  `portRange` setting defaults to 10000–32767, below the kernel ephemeral
+  range, and is member-uniform. No machine name or machine-local value may
+  differ in a shared generator's script, files, dependencies, or validation.
+
+  `wireguard-mesh-<inst>-prefixes` is shared and writes `ula48` and
+  `ipv4-pool`; its pool defaults to `198.18.128.0/17`, disjoint from the
+  routed-fabric loopback default. Its per-machine
+  `wireguard-mesh-<inst>-node` depends on those prefixes and writes `ipv4`
+  and `ipv6`. Explicit `ipv4`, `ipv6`, and `adjacencies.<remote>.port`
+  settings override vars and remain the collision escape. Source-return
+  table and rule-priority defaults use the allocated remote ASN with their
+  existing formulas and retain all D63 collision assertions.
+
+  Eval rejects missing allocations; fleet-wide duplicate loopback IPv4,
+  loopback IPv6, and ASNs within an instance; per-host adjacency-port
+  collisions with every other rendered WireGuard port; per-host duplicate
+  transfer prefixes; unequal member pools; and allocation-pool overlap with
+  each other, the ULA-derived `/64`s, member netif static underlay prefixes,
+  and member kube-cluster pod/service/fabric-pool CIDRs. Duplicate transfer
+  prefixes on unrelated hosts are valid. Duplicate messages name the other
+  owner and the targeted `clan vars generate <machine> --generator
+  <generator> --regenerate` command; an adjacency command may name either
+  endpoint. Orphaned `vars/shared/routed-fabric-*-adj-*` directories require
+  an operator cleanup check because eval cannot enumerate the vars tree.
+
+  Random collisions are resolved once at generation time and then remain
+  stable. With `k` random picks among `N` slots, the birthday approximation
+  is `P(any collision) ≈ 1 − exp(−k(k−1)/2N)`: 102 loopbacks in a `/17` have
+  about a 15% collision probability; a spine with 100 adjacencies has about
+  20% for ports in 22768 slots and 14% for transfer `/31`s in 32768 slots.
+  A generator cannot enforce cross-machine uniqueness because it sees only
+  declared dependencies; a single whole-instance allocator is forbidden
+  because adding a member would renumber everyone. Renaming a machine creates
+  a new clan identity and new vars; no migration or rename shim exists.
+
+  Hash-derived by design, and therefore outside D64: `adjacencyName`,
+  `rflo<hash>`, FRR symbol names, per-adjacency IPv6 link-local addresses,
+  the kube-cluster Cilium cluster id, Cilium/local-router host ASNs, and
+  pod/service CIDRs. These are names or cluster-level values with separate
+  pins and fleet checks, not per-machine fabric/mesh allocations.
+
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
 1. One declarative fleet: instance declaration ⇒ stable identity,
@@ -1548,27 +1629,32 @@ when it matches any declared fabric or tunnel address.
 
 `routed-fabric` is the native overlay transport (the supported tunnel
 transport is `wireguard-mesh`, D58). Its `leaf`/`spine` symmetric graph is
-implemented and VM-proven (D59). Every fabric
-machine gets stable dual-stack host addresses (existing hash defaults
-into 192.168.0.0/16 + fd77::/16, explicit pins allowed) on a fabric
-loopback/dummy interface. For each fabric adjacency — every leaf↔spine
-attachment (every leaf attaches every spine by default; a leaf may
-declare an explicit spine subset via `settings.spines`) plus every
-unordered spine pair, adjacent automatically — it renders exactly one
-point-to-point WG interface with
-deterministic ≤15-character name, instance/adjacency-derived transfer
-prefixes, one peer, and one UDP session; it never renders one interface
-per remote machine (D51/D59). Spines are declared directly with
-`roles.spine.machines.<name>`; leaves use `roles.leaf`; there is NO
-instance-level `settings.spines` and no mutual spine lists — the graph
-is derived symmetrically (D59).
-The canonical adjacency key is
-`<instance>:<sorted-endpoint-a>:<sorted-endpoint-b>`; its sha256 derives
-a /31 from 100.64.0.0/10 and a /127 from fd76::/16, with the sorted
-endpoints assigned in the same order. Explicit per-adjacency pins are
-the migration/collision escape. Adjacency/name/address collisions are
-eval errors. The node keypair is instance-scoped clan vars; public keys
-are public vars, private keys only deploy to their owner.
+implemented and VM-proven (D59). Every fabric machine gets stable dual-stack
+host addresses on a fabric loopback/dummy interface from its public
+`routed-fabric-<inst>-node` vars (default pool `198.18.0.0/17` plus the shared
+ULA's `:0::/64`; explicit pins win). Wireguard-mesh likewise reads its node
+addresses from public vars (default pool `198.18.128.0/17` plus its own shared
+ULA). For each fabric adjacency — every leaf↔spine attachment (every leaf
+attaches every spine by default; a leaf may declare an explicit spine subset
+via `settings.spines`) plus every unordered spine pair, adjacent automatically
+— it renders exactly one point-to-point WG interface with a deterministic
+≤15-character name, transfer prefixes and a UDP port read from the sorted
+pair's shared public adjacency vars, one peer, and one UDP session; it never
+renders one interface per remote machine (D51/D59/D64). Spines are declared
+directly with `roles.spine.machines.<name>`; leaves use `roles.leaf`; there is
+NO instance-level `settings.spines` and no mutual spine lists — the graph is
+derived symmetrically (D59).
+The canonical adjacency key remains
+`<instance>:<sorted-endpoint-a>:<sorted-endpoint-b>`; the key names the shared
+generator and hash-derived interface, while its transfer `/31` and `/127` come
+from vars (default `198.19.0.0/16` and the shared ULA's `:1::/64`). Sorted
+endpoint order selects the first or second transfer host. Explicit
+per-adjacency port pins are the collision escape. Missing allocations,
+adjacency/name/address collisions, and pool overlap are eval errors with
+targeted remedies. The node keypair is instance-scoped clan vars; public keys
+are public vars, private keys only deploy to their owner. Interface names,
+FRR symbols, and per-adjacency link-local addresses remain hash-derived by
+design (D64).
 
 AllowedIPs carry the remote stable host addresses plus exactly the
 prefixes that adjacency is authorized to transit — AllowedIPs is both
@@ -1950,8 +2036,10 @@ style automation), never a fabric render.
 
 Acceptance (target; round 20 status: the NAT-site, Internet source/return,
 border-filter and route-filter-negative items are not yet VM-proven, see
-the hardening plan, phase 6): eval proves deterministic names/transfer prefixes,
-adjacency/AllowedIP/filter equivalence, self-exclusion, topology/access/
+the hardening plan, phase 6): eval proves deterministic names, committed
+loopback/ASN/port/transfer allocations, explicit overrides, missing-var and
+duplicate/pool negatives (D64), adjacency/AllowedIP/filter equivalence,
+self-exclusion, topology/access/
 border checks, spine references and reachability (every leaf reaches ≥1
 spine; HA = 2, no arbitrary maximum), symmetric graph derivation, and
 export/facts defaults. Hermetic VMs prove
@@ -2036,10 +2124,22 @@ never `checks`); artifact source/hash/render gates (incl.
 committed-manifest inflation proofs and publish-freshness checks,
 D26/D40). Standard internal HTTP test workload: **go-httpbin** (pinned,
 airgap-carried as a test-fixture artifact). Rules: hermetic/offline;
-eval-deterministic addresses; dual-stack asserted in every boot test;
-round-trips + failure behavior (BGP withdrawal keeps VIP via healthy
-nodes); negative assertions; operational postconditions; fail fast.
-Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
+committed-var or fixture-pinned eval-deterministic addresses; dual-stack
+asserted in every boot test; round-trips + failure behavior (BGP withdrawal
+keeps VIP via healthy nodes); negative assertions; operational
+postconditions; fail fast. Minimal airgapped artifacts for hermetic VM tests
+is a hard requirement.
+
+Eval tests commit readable public allocation fixtures under
+`services/<svc>/tests/fixtures/vars/{per-machine,shared}` and never recompute
+hash-derived expectations. Positive and negative tests cover every D64
+collision class and explicit overrides. The locked clan-core `clanTest`
+harness executes VM generators through its Nix vars executor, encrypts test
+secrets with its fixed test recipient, and merges generated `vars/` and
+`secrets/` into a temporary directory used by `getPublicValue`. It replaces
+the suite's source `vars/` tree, so these VM suites need no committed
+allocation files or separate `update-vars` run; committed public keys in VM
+directories are legacy fixtures, not the source of generated values.
 
 Current registered VM suites:
 - **single/join/HA per distro** on `wireguard-mesh`: bootstrap, local

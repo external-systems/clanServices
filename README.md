@@ -66,6 +66,12 @@ clan.inventory.instances.<instance-name> = {
 };
 ```
 
+Run `clan vars generate <machine>` after changing routed-fabric or
+wireguard-mesh membership. Their addresses, ASNs, and adjacency ports are
+committed public allocations, not name-derived values. Renaming a machine
+creates a new clan identity and requires new vars; no migration shim reuses
+the old machine's allocations.
+
 ## Development
 
 Each service lives under `services/<name>/` with its module, flake-parts registration, README, and tests. Shared cluster behavior lives under `lib/kube-cluster/`. Service directories are auto-discovered; there is no central registration list.

@@ -26,6 +26,19 @@ Pick the profile by datapath need (native + internal LoadBalancer via
 `routed-fabric`, or tunnel/VXLAN + nodePort via `wireguard-mesh`) and let
 the generic `node_transport` export carry the facts to the distro services.
 
+## Allocation (D64)
+
+Run `clan vars generate <machine>` after changing membership and before eval.
+A shared public generator records an RFC 4193 ULA /48 and the member-uniform
+`ipv4Pool` (default `198.18.128.0/17`, disjoint from routed-fabric's default
+loopback pool). Each machine's public node generator allocates its IPv4 host
+from that pool and its IPv6 host from the ULA's `:0::/64`. Explicit `ipv4` and
+`ipv6` settings win. Evaluation rejects missing values, duplicate addresses,
+unequal pools, and collisions with other rendered WireGuard configuration;
+duplicate messages name the other machine and the targeted `--regenerate`
+command. Renaming a machine creates a new identity and new vars, with no
+migration shim.
+
 D63 requires every member pair to have an endpoint on at least one side,
 rejects overlapping `extraAllowedIPs` between peers, and rejects listen-port
 clashes between any WireGuard interfaces on the same host. Every listen port

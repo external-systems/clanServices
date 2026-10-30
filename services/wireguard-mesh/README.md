@@ -74,13 +74,21 @@ inventory.instances = {
 };
 ```
 
-Generate the per-machine keys after changing membership:
+Generate per-machine keys and address allocations after changing membership:
 
 ```console
 clan vars generate alpha
 clan vars generate beta
 clan vars generate gamma
 ```
+
+The shared prefix generator allocates an RFC 4193 ULA /48 and records the
+member-uniform `ipv4Pool` (default `198.18.128.0/17`). Each node generator
+allocates IPv4 from that pool and IPv6 from the ULA's `:0::/64`; all are
+public, non-deployed vars read during evaluation. Explicit `ipv4`/`ipv6`
+settings override them. Duplicate messages name the other machine and the
+targeted `--regenerate` command. A machine rename is a new clan identity with
+new vars; there is no migration shim.
 
 The private key is deployed only to its own machine. Peer public keys are
 public vars consumed during evaluation.
@@ -105,8 +113,9 @@ Every listen port is reserved in `net.ipv4.ip_local_reserved_ports`.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `ipv4` | derived | Mesh IPv4 host address, without `/32`. Unique within the instance (eval-asserted). Default: deterministic from the mesh instance + machine name (192.168.0.0/16). |
-| `ipv6` | derived | Mesh IPv6 host address, without `/128`. Unique within the instance (eval-asserted). Default: deterministic from the mesh instance + machine name (fd77::/16). |
+| `ipv4` | allocated | Mesh IPv4 host address, without `/32`. Unique within the instance (eval-asserted). Default: public node var allocated from `ipv4Pool`. |
+| `ipv6` | allocated | Mesh IPv6 host address, without `/128`. Unique within the instance (eval-asserted). Default: public node var allocated from the shared ULA. |
+| `ipv4Pool` | `198.18.128.0/17` | Member-uniform IPv4 allocation pool fed to the shared prefix generator. |
 | `interface` | `null` | Interface name. `null` derives `wg-<instanceName>`; the kernel limit is 15 characters. |
 | `port` | `51820` | UDP listen port for this machine. Peers use each target's own port. |
 | `mtu` | `1420` | WireGuard link MTU. Must be at least 1280 for dual-stack operation. |

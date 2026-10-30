@@ -1,8 +1,7 @@
 # Data-plane hardening plan
 
-Status: **phase 2 implemented** (2026-10-29); phases 1–2 are complete.
-The full static flake check and the netif, netif-dhcp, routed-fabric, and
-k3s-data-plane VM suites pass with their existing `*_OK` markers. SPEC.md
+Status: **phase 3 in progress**; phases 1–2 are complete. D64 locks the
+clan-vars allocation contract before its implementation commits. SPEC.md
 stays the status authority, and each phase below amends SPEC.md before it
 changes code (AGENTS.md rule 3).
 
@@ -22,7 +21,8 @@ Reviewed at `clanServices` `9e704ea` and `pkgs` `9d3976c`.
 | tf runs | ephemeral: nothing is committed back; state in a Hetzner Object Storage (S3) bucket; infrastructure lives at most 24 h |
 | Materialized `inventory.<env>.nix` | build artifact of a run, never committed |
 | Address, ASN and port derivation | allocate-once clan vars instead of name hashing |
-| Default ranges | `198.18.0.0/16` stable loopbacks, `198.19.0.0/16` transfer /31s, one random ULA /48 per clan; overridable per instance; disjointness from the declared underlay is asserted |
+| Default ranges | routed-fabric loopbacks `198.18.0.0/17`, transfer /31s `198.19.0.0/16`, wireguard-mesh `198.18.128.0/17`; one random ULA /48 per service instance; member-uniform overrides; disjointness from the declared underlay and cluster CIDRs is asserted |
+| Adjacency ports | random allocation from the member-uniform `portRange`, default `10000–32767`, below the kernel ephemeral range |
 | Route behavior | stability over failover speed (clause C1) |
 | NAT egress | a single NAT gateway is supported from day one; HA NAT is planned but lives outside clanServices |
 | Floating IPs | supported from day one (Hetzner); clanServices declares and coexists with them, a supporting NixOS module or Kubernetes operator moves them |
@@ -184,22 +184,35 @@ WAN path while iterating.
 
 ## Allocation with clan vars
 
-Each allocated number is generated once, stored as a public var, read at eval
-with `getPublicValue`, and never recomputed from a machine name.
+Each allocated address, ASN, and adjacency port is generated once, committed
+as a public non-deployed var, trimmed and read at eval with `getPublicValue`,
+and never recomputed from a machine or instance name. Scripts use Python
+`ipaddress` and `secrets`. Shared values are read with `machine = null`;
+missing values throw the targeted generation command.
 
 | Generator | Scope | Files (public) | Notes |
 | --- | --- | --- | --- |
-| `routed-fabric-<inst>-prefixes` | shared | `ula48`, `loopback4-pool`, `transfer4-pool` | pools default to `198.18.0.0/16` and `198.19.0.0/16` |
-| `routed-fabric-<inst>-node` | per machine | `ipv4`, `ipv6`, `asn` | random pick inside the pools |
-| `routed-fabric-<inst>-adj-<a>-<b>` | shared, one per adjacency | `port`, `transfer4`, `transfer6` | named by the sorted pair |
-| `wireguard-mesh-<inst>-node` | per machine | `ipv4`, `ipv6` | same scheme for the tunnel profile |
+| `routed-fabric-<inst>-prefixes` | shared | `ula48`, `loopback4-pool`, `transfer4-pool` | random RFC 4193 ULA; pools default to `198.18.0.0/17` and `198.19.0.0/16`; member settings feed string-only validation |
+| `routed-fabric-<inst>-node` | per machine | `ipv4`, `ipv6`, `asn` | depends on prefixes; random host in loopback pool or ULA `:0::/64`; ASN in 4200000000..4294967294 |
+| `routed-fabric-<inst>-adj-<a>-<b>` | shared, one per sorted adjacency | `port`, `transfer4`, `transfer6` | byte-identical on both endpoints; port from `portRange` (default 10000–32767), transfer /31 from the pool and /127 from ULA `:1::/64` |
+| `wireguard-mesh-<inst>-prefixes` | shared | `ula48`, `ipv4-pool` | pool defaults to `198.18.128.0/17`, disjoint from routed-fabric loopbacks |
+| `wireguard-mesh-<inst>-node` | per machine | `ipv4`, `ipv6` | depends on mesh prefixes |
 
-Explicit `ipv4`/`ipv6`/`port` settings remain overrides. Caveats: a
-generator sees only its dependencies, so uniqueness is enforced by eval
+Explicit `ipv4`/`ipv6` and per-adjacency `port` settings remain overrides.
+Interface names, FRR symbols, link-local addresses, Cilium cluster ids,
+Cilium/local-router ASNs, and pod/service CIDRs remain hash-derived by design.
+A generator sees only its dependencies, so uniqueness is enforced by eval
 assertions plus a targeted `--regenerate`; never one allocator per instance
-(membership changes would renumber everyone); vars must exist before eval;
-renaming a machine regenerates its vars; orphaned adjacency vars need a
-cleanup check.
+(membership changes would renumber everyone). Vars must exist before eval, and
+renaming a machine creates a new identity with new vars. Orphaned adjacency
+vars need a cleanup check.
+
+Collisions are resolved once, then committed values stay stable. For `k`
+picks among `N` slots, `P(any collision) ≈ 1 − exp(−k(k−1)/2N)`: 102
+loopbacks in a /17 collide with about 15% probability; 100 adjacencies on one
+spine have about 20% port and 14% transfer-/31 collision probabilities. Eval
+also rejects unequal pools and overlap with member underlay or cluster CIDRs.
+Duplicate transfer prefixes on unrelated hosts are valid.
 
 ## VM test scenarios
 

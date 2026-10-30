@@ -53,7 +53,10 @@ is a review destination, not a dependency.
   IfState tree. Round 21 (2026-10-29, D63) adds phase-2 exposure,
   policy/endpoint/mesh/final-deploy-target assertions, forwarding-safe RA,
   stable FRR timer/recovery behavior, and no-op reload preservation; routes
-  are stable before fast.
+  are stable before fast. Round 22 (2026-10-30, D64) allocates every fabric
+  and mesh address, node ASN, and adjacency port/transfer prefix once in
+  public clan vars; names, link-locals, and cluster-level identities remain
+  hash-derived by design.
   Round 13's Bootstrap +
   Data-plane scope remains: Envoy Gateway, cert-manager, Flux install,
   external-dns, Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps
@@ -86,7 +89,7 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D63) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D64) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
    FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
    `routed-fabric` and made `netif` multi-instance/multi-link; round 16

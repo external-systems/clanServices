@@ -76,6 +76,48 @@ path, and installs accepted routes through Zebra. Cilium peers only with
 local FRR over `::1`; FRR rewrites its next hop before redistribution, and
 native routing forwards remote pod traffic through the kernel FIB.
 
+## Allocation (D64)
+
+Run `clan vars generate <machine>` after adding a machine or adjacency and
+before evaluation or deployment. Public, non-deployed vars allocate each
+machine's loopback IPv4/IPv6 and ASN, and each sorted adjacency's port and
+transfer prefixes. The shared prefix generator creates an RFC 4193 ULA /48
+and records the member-uniform `loopback4Pool` (default `198.18.0.0/17`) and
+`transfer4Pool` (default `198.19.0.0/16`). Loopback IPv6 uses the ULA's
+`:0::/64`; transfer IPv6 uses `:1::/64`. `portRange` defaults to 10000–32767
+and must also be equal on every member.
+
+Explicit `ipv4`, `ipv6`, and `adjacencies.<remote>.port` settings override
+allocated values. Evaluation rejects missing values, fleet-wide duplicate
+loopbacks/ASNs, same-host port/transfer collisions, unequal pools, and overlap
+with member netif underlay or kube-cluster CIDRs. A duplicate message names
+the other owner and the exact targeted command:
+
+```console
+clan vars generate <machine> --generator <generator> --regenerate
+```
+
+For a shared adjacency generator, either endpoint can run that command.
+Collisions are possible at initial random allocation; regeneration fixes them
+once and the committed values then stay stable. Renaming a machine creates a
+new clan identity with new allocations; no migration shim preserves the old
+identity.
+
+Remove orphaned shared adjacency vars after confirming that their sorted pair
+is no longer present in the inventory. This command lists candidate orphan
+names; supply the current expected generator names, one per line, in
+`expected-adjacencies` and review the `comm` output before deleting anything:
+
+```console
+comm -23 \
+  <(find vars/shared -mindepth 1 -maxdepth 1 -type d \
+      -name 'routed-fabric-*-adj-*' -printf '%f\n' | sort) \
+  <(sort expected-adjacencies)
+```
+
+Interface names, FRR symbols, and per-adjacency link-local addresses remain
+hash-derived by design; they are names, not clan-vars allocations.
+
 D63 makes convergence deliberately stable. Equal `settings.site` values use
 the `site` profile (BFD 300 ms x3); different sites use `wan` (BFD 1000 ms
 x5 plus BGP keepalive/hold 10/30 seconds). Set
