@@ -1412,7 +1412,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   and `ipv6`. Explicit `ipv4`, `ipv6`, and `adjacencies.<remote>.port`
   settings override vars and remain the collision escape. Source-return
   table and rule-priority defaults use the allocated remote ASN with their
-  existing formulas and retain all D63 collision assertions.
+  existing formulas and retain all D63 collision assertions. The generic
+  `node_transport` export carries that allocated host ASN for local-router
+  consumers, so k3s/RKE2 never recompute it.
 
   Eval rejects missing allocations; fleet-wide duplicate loopback IPv4,
   loopback IPv6, and ASNs within an instance; per-host adjacency-port
@@ -2306,9 +2308,9 @@ tests together)
   (wired into this flake's own clan and into the eval-test throwaway
   clans; consumers wire `clan.imports = [ fleetChecksModule ]`).
   All-or-none transport posture (§6.3) is a per-instance assertion.
-  Legacy wireguard-mesh addresses are derived by default (stable hash of
-  mesh instance + machine name → 192.168.0.0/16 + fd77::/16); round 14
-  preserves those stable addresses while replacing the interface model.
+  Wireguard-mesh addresses were historically hash-derived; D64 replaces
+  that derivation with committed public node allocations while preserving
+  the one-shared-multi-peer-interface transport model.
 - **5R0 done (docs only)** — round-14 FRR/per-pair-WG/native-Cilium
   contract, inventory-owned netif family, node-bgp delivery, and delivery
   re-plan. No implementation or VM claim. Rounds 15–16 supersede its

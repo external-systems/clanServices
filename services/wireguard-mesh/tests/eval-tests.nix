@@ -5,9 +5,83 @@
   lib,
   ...
 }: let
-  machineConfigs = lib.genAttrs ["alpha" "beta" "gamma"] (_: {
+  machineConfigs = lib.genAttrs ["alpha" "beta" "gamma" "missing"] (_: {
     nixpkgs.hostPlatform = "x86_64-linux";
   });
+
+  netifModule = {
+    _class = "clan.service";
+    manifest = {
+      name = "netif";
+      description = "Eval-only underlay export fixture";
+      readme = "Underlay export fixture.";
+      exports.out = ["netif"];
+    };
+    roles.default = {
+      description = "Publish overlapping underlay prefixes";
+      perInstance = {
+        instanceName,
+        mkExports,
+        ...
+      }: {
+        exports = mkExports {
+          netif.links.wan.addresses =
+            if instanceName == "underlay-v6"
+            then ["fd66:6666:6666::1/64"]
+            else ["198.18.128.1/32"];
+        };
+      };
+    };
+  };
+
+  clusterModule = {
+    _class = "clan.service";
+    manifest = {
+      name = "k3s";
+      description = "Eval-only cluster export fixture";
+      readme = "Cluster export fixture.";
+      exports.out = ["kube_cluster"];
+    };
+    roles.default = {
+      description = "Publish overlapping cluster prefixes";
+      perInstance = {
+        instanceName,
+        mkExports,
+        ...
+      }: {
+        exports = mkExports {
+          kube_cluster = {
+            schemaVersion = 3;
+            name = instanceName;
+            ciliumId = 1;
+            network = {
+              podCIDRv4 = "198.18.128.0/17";
+              podCIDRv6 = "fd10:1::/56";
+              serviceCIDRv4 = "10.2.0.0/16";
+              serviceCIDRv6 = "fd10:2::/112";
+              clusterDNS = "10.2.0.10";
+              fabric = {
+                service = "wireguard-mesh";
+                instance = "mesh";
+              };
+            };
+            members.alpha = {
+              role = "server";
+              ipv4 = "192.168.77.1";
+              ipv6 = "fd00:77::1";
+            };
+            pools = {};
+            bgp = {
+              enabled = false;
+              ciliumAsn = 4200000001;
+              hostAsn = 4200000002;
+              advertiseClusterIPs = false;
+            };
+          };
+        };
+      };
+    };
+  };
 
   baseInventory = {
     instances = {
@@ -55,8 +129,17 @@
     clanLib.clan {
       self = {};
       directory = ./fixtures;
-      inherit exportInterfaces;
-      modules.wireguard-mesh = module;
+      exportInterfaces =
+        exportInterfaces
+        // {
+          netif = ../../netif/netif-interface.nix;
+          kube_cluster = ../../../lib/kube-cluster/kube-cluster-interface.nix;
+        };
+      modules = {
+        wireguard-mesh = module;
+        netif = netifModule;
+        k3s = clusterModule;
+      };
       machines = machineConfigs;
       inherit inventory;
     };
@@ -90,6 +173,57 @@
   duplicateEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
       instances.mesh.roles.peer.machines.beta.settings.ipv4 = "10.42.0.1";
+    }
+  );
+  unequalPoolEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mesh.roles.peer.machines.beta.settings.ipv4Pool = "198.18.64.0/18";
+    }
+  );
+  missingNodeEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mesh.roles.peer.machines.missing.settings = {};
+    }
+  );
+  missingPrefixEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.missing-prefix = {
+        module.name = "wireguard-mesh";
+        module.input = "self";
+        roles.peer.machines.alpha.settings = {
+          ipv4 = "198.18.128.10";
+          ipv6 = "fd66:6666:6666::10";
+          port = 51830;
+          endpoint = "alpha.example.net";
+        };
+      };
+    }
+  );
+  netifPoolOverlapEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.underlay-v4 = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines.alpha = {};
+      };
+    }
+  );
+  ulaPoolOverlapEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.underlay-v6 = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines.alpha = {};
+      };
+    }
+  );
+  kubePoolOverlapEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.cluster = {
+        module.name = "k3s";
+        module.input = "self";
+        roles.default.machines.alpha = {};
+      };
     }
   );
 
@@ -389,7 +523,41 @@ in {
 
   validation = {
     test_duplicateAddressesRejected = {
-      expr = failedAssertion duplicateEval.config.nixosConfigurations.alpha.config "mesh IPv4 addresses must be unique";
+      expr = failedAssertion duplicateEval.config.nixosConfigurations.alpha.config "mesh IPv4 10.42.0.1 on alpha collides with beta; run: clan vars generate alpha --generator wireguard-mesh-mesh-node --regenerate";
+      expected = true;
+    };
+    test_unequalPoolsRejected = {
+      expr = failedAssertion unequalPoolEval.config.nixosConfigurations.alpha.config "ipv4Pool differs on beta; set ipv4Pool identically on every member";
+      expected = true;
+    };
+    test_missingNodeVarRejected = {
+      expr =
+        !(builtins.tryEval (
+          builtins.deepSeq missingNodeEval.config.nixosConfigurations.missing.config.networking.ifstate.settings.interfaces.wg-mesh.addresses true
+        )).success;
+      expected = true;
+    };
+    test_missingSharedPrefixRejected = {
+      expr =
+        !(builtins.tryEval (
+          failedAssertion missingPrefixEval.config.nixosConfigurations.alpha.config "wireguard-mesh/missing-prefix: allocation pools overlap"
+        )).success;
+      expected = true;
+    };
+    test_disjointPoolsAccepted = {
+      expr = failedAssertion alpha "allocation pools overlap";
+      expected = false;
+    };
+    test_netifPoolOverlapRejected = {
+      expr = failedAssertion netifPoolOverlapEval.config.nixosConfigurations.alpha.config "ipv4Pool=198.18.128.0/17 with 198.18.128.1/32";
+      expected = true;
+    };
+    test_ulaPoolOverlapRejected = {
+      expr = failedAssertion ulaPoolOverlapEval.config.nixosConfigurations.alpha.config "loopback6=fd66:6666:6666:0::/64 with fd66:6666:6666::1/64";
+      expected = true;
+    };
+    test_kubePoolOverlapRejected = {
+      expr = failedAssertion kubePoolOverlapEval.config.nixosConfigurations.alpha.config "ipv4Pool=198.18.128.0/17 with 198.18.128.0/17";
       expected = true;
     };
     test_missingEndpointsRejected = {

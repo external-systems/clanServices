@@ -68,9 +68,10 @@ state mechanism (D56).
 
 As the native profile (D58), routed-fabric publishes the generic
 `node_transport` export (schemaVersion 2) with `datapath.mode = native`,
-`native.routeExchange = local-router`, and the `internalLoadBalancer` +
-`nodePort` exposure capabilities; the provider-specific `routed_fabric`
-export carries ASN, topology, adjacencies, ACL, `access`, and `border`.
+`native.routeExchange = local-router`, the allocated host ASN, and the
+`internalLoadBalancer` + `nodePort` exposure capabilities; the
+provider-specific `routed_fabric` export carries ASN, topology, adjacencies,
+ACL, `access`, and `border`.
 FRR exchanges eBGP routes per address family, uses BFD on every fabric
 path, and installs accepted routes through Zebra. Cilium peers only with
 local FRR over `::1`; FRR rewrites its next hop before redistribution, and

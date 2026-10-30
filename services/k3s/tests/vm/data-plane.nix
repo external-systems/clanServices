@@ -20,7 +20,11 @@
 # Underlay addressing is the test driver's deterministic assignment
 # (alphabetical node order): alpha=192.168.1.1/2001:db8:1::1,
 # beta=192.168.1.2/2001:db8:1::2, router=192.168.1.3/2001:db8:1::3.
-{inputs}: {lib, nodes, ...}: let
+{inputs}: {
+  lib,
+  nodes,
+  ...
+}: let
   kube = import ../../../../lib/kube-cluster {inherit lib;};
   fabric = import ../../../../lib/kube-cluster/fabric.nix {inherit lib;};
   fabricLink = fabric.adjacencyName (fabric.adjacencyKey "mesh" "alpha" "beta");

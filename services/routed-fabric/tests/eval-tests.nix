@@ -13,9 +13,34 @@
       lib.trim (builtins.readFile ./fixtures/vars/per-machine/${machine}/routed-fabric-fleet-node/asn/value)
     );
 
-  machineConfigs = lib.genAttrs ["spine-a" "spine-b" "client" "admin" "node-a"] (_: {
-    nixpkgs.hostPlatform = "x86_64-linux";
-  });
+  machineConfigs =
+    lib.genAttrs [
+      "spine-a"
+      "spine-b"
+      "client"
+      "admin"
+      "node-a"
+      "dup4-a"
+      "dup4-b"
+      "dup6-a"
+      "dup6-b"
+      "asn-a"
+      "asn-b"
+      "port-spine"
+      "port-a"
+      "port-b"
+      "transfer-spine"
+      "transfer-a"
+      "transfer-b"
+      "isolated-a"
+      "isolated-b"
+      "missing-node"
+      "missing-adj"
+      "overlap-a"
+      "overlap-b"
+    ] (_: {
+      nixpkgs.hostPlatform = "x86_64-linux";
+    });
 
   clusterModule = {
     _class = "clan.service";
@@ -48,7 +73,9 @@
               else 1;
             network = {
               podCIDRv4 =
-                if second
+                if instanceName == "cluster-overlap"
+                then "198.18.0.0/16"
+                else if second
                 then "10.3.0.0/16"
                 else "10.1.0.0/16";
               podCIDRv6 =
@@ -251,6 +278,142 @@
     }
   );
   allocatedClient = allocatedEval.config.nixosConfigurations.client.config;
+
+  pairInventory = {
+    instanceName ? "fleet",
+    spine ? "spine-a",
+    leaf ? "client",
+    spineSettings ? {},
+    leafSettings ? {},
+    extraInstances ? {},
+  }: {
+    instances =
+      {
+        ${instanceName} = {
+          module.name = "routed-fabric";
+          module.input = "self";
+          roles = {
+            spine.machines.${spine}.settings = {endpoint = "192.0.2.1";} // spineSettings;
+            leaf.machines.${leaf}.settings = leafSettings;
+          };
+        };
+      }
+      // extraInstances;
+  };
+  allocationEval = mkEvaled (pairInventory {});
+  duplicateIpv4Eval = mkEvaled (pairInventory {
+    spine = "dup4-a";
+    leaf = "dup4-b";
+  });
+  duplicateIpv6Eval = mkEvaled (pairInventory {
+    spine = "dup6-a";
+    leaf = "dup6-b";
+  });
+  duplicateAsnEval = mkEvaled (pairInventory {
+    spine = "asn-a";
+    leaf = "asn-b";
+  });
+  duplicatePortInventory = {
+    instances.fleet = {
+      module.name = "routed-fabric";
+      module.input = "self";
+      roles = {
+        spine.machines.port-spine.settings.endpoint = "192.0.2.1";
+        leaf.machines = {
+          port-a = {};
+          port-b = {};
+        };
+      };
+    };
+  };
+  duplicatePortEval = mkEvaled duplicatePortInventory;
+  duplicateTransferInventory = {
+    instances.fleet = {
+      module.name = "routed-fabric";
+      module.input = "self";
+      roles = {
+        spine.machines.transfer-spine.settings.endpoint = "192.0.2.1";
+        leaf.machines = {
+          transfer-a = {};
+          transfer-b = {};
+        };
+      };
+    };
+  };
+  duplicateTransferEval = mkEvaled duplicateTransferInventory;
+  unrelatedTransferEval = mkEvaled {
+    instances.fleet = {
+      module.name = "routed-fabric";
+      module.input = "self";
+      roles = {
+        spine.machines = {
+          spine-a.settings.endpoint = "192.0.2.1";
+          spine-b.settings.endpoint = "192.0.2.2";
+        };
+        leaf.machines = {
+          isolated-a.settings.spines = ["spine-a"];
+          isolated-b.settings.spines = ["spine-b"];
+        };
+      };
+    };
+  };
+  missingNodeEval = mkEvaled (pairInventory {
+    leaf = "missing-node";
+  });
+  missingAdjacencyEval = mkEvaled (pairInventory {
+    leaf = "missing-adj";
+  });
+  unequalPoolEval = mkEvaled (pairInventory {
+    leafSettings.loopback4Pool = "198.18.64.0/18";
+  });
+  unequalPortRangeEval = mkEvaled (pairInventory {
+    leafSettings.portRange.start = 20000;
+  });
+  internalPoolOverlapEval = mkEvaled (pairInventory {
+    instanceName = "overlap";
+    spine = "overlap-a";
+    leaf = "overlap-b";
+  });
+  invalidPortRangeEval = mkEvaled (pairInventory {
+    spineSettings.portRange = {
+      start = 30000;
+      end = 20000;
+    };
+    leafSettings.portRange = {
+      start = 30000;
+      end = 20000;
+    };
+  });
+  netifPoolOverlapEval = mkEvaled (pairInventory {
+    extraInstances.underlay = {
+      module.name = "netif";
+      module.input = "self";
+      roles.default.machines.spine-a.settings.links.wan = {
+        interface = "enp1s0";
+        static.ipv4 = ["198.18.0.1/32"];
+      };
+    };
+  });
+  ulaPoolOverlapEval = mkEvaled (pairInventory {
+    extraInstances.underlay = {
+      module.name = "netif";
+      module.input = "self";
+      roles.default.machines.spine-a.settings.links.wan = {
+        interface = "enp1s0";
+        static.ipv6 = ["fd64:6464:6464::1/64"];
+      };
+    };
+  });
+  kubePoolOverlapEval = mkEvaled (
+    baseInventory
+    // {
+      instances =
+        (removeAttrs baseInventory.instances ["cluster-a"])
+        // {
+          cluster-overlap = baseInventory.instances.cluster-a;
+        };
+    }
+  );
 
   mtuEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
@@ -1271,6 +1434,109 @@ in {
     test_meshRoutedFabricPortCollisionRejected = {
       expr = failedAssertion meshPortCollisionEval.config.nixosConfigurations.client.config "listen-port clashes with routed-fabric: 20001";
       expected = true;
+    };
+    test_allocationPositive = {
+      expr = {
+        collisions = failedAssertion allocationEval.config.nixosConfigurations.spine-a.config "collides with";
+        pools = failedAssertion allocationEval.config.nixosConfigurations.spine-a.config "allocation pools overlap";
+      };
+      expected = {
+        collisions = false;
+        pools = false;
+      };
+    };
+    test_missingNodeVarRejected = {
+      expr =
+        !(builtins.tryEval (
+          builtins.deepSeq missingNodeEval.config.nixosConfigurations.missing-node.config.clan.networkFacts.fabric.fleet.ipv4 true
+        )).success;
+      expected = true;
+    };
+    test_missingAdjacencyVarRejected = {
+      expr =
+        !(builtins.tryEval (
+          builtins.deepSeq missingAdjacencyEval.config.nixosConfigurations.missing-adj.config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.prefix4 true
+        )).success;
+      expected = true;
+    };
+    test_duplicateLoopbackIpv4Rejected = {
+      expr = failedAssertion duplicateIpv4Eval.config.nixosConfigurations.dup4-a.config "loopback IPv4 198.18.0.40 on dup4-a collides with dup4-b; run: clan vars generate dup4-a --generator routed-fabric-fleet-node --regenerate";
+      expected = true;
+    };
+    test_duplicateLoopbackIpv6Rejected = {
+      expr = failedAssertion duplicateIpv6Eval.config.nixosConfigurations.dup6-a.config "loopback IPv6 fd64:6464:6464::50 on dup6-a collides with dup6-b; run: clan vars generate dup6-a --generator routed-fabric-fleet-node --regenerate";
+      expected = true;
+    };
+    test_duplicateAsnRejected = {
+      expr = failedAssertion duplicateAsnEval.config.nixosConfigurations.asn-a.config "ASN 4200000060 on asn-a collides with asn-b; run: clan vars generate asn-a --generator routed-fabric-fleet-node --regenerate";
+      expected = true;
+    };
+    test_duplicatePortOnOneHostRejected = {
+      expr = failedAssertion duplicatePortEval.config.nixosConfigurations.port-spine.config "port 20700 collides with fleet:port-b:port-spine; run: clan vars generate port-spine --generator routed-fabric-fleet-adj-port-a-port-spine --regenerate";
+      expected = true;
+    };
+    test_duplicateTransferOnOneHostRejected = {
+      expr = let
+        config = duplicateTransferEval.config.nixosConfigurations.transfer-spine.config;
+      in {
+        ipv4 = failedAssertion config "transfer4 198.19.8.0/31 on fleet:transfer-a:transfer-spine collides with fleet:transfer-b:transfer-spine; run: clan vars generate transfer-spine --generator routed-fabric-fleet-adj-transfer-a-transfer-spine --regenerate";
+        ipv6 = failedAssertion config "transfer6 fd64:6464:6464:1:800::/127 on fleet:transfer-a:transfer-spine collides with fleet:transfer-b:transfer-spine; run: clan vars generate transfer-spine --generator routed-fabric-fleet-adj-transfer-a-transfer-spine --regenerate";
+      };
+      expected = {
+        ipv4 = true;
+        ipv6 = true;
+      };
+    };
+    test_duplicateTransferOnUnrelatedHostsAccepted = {
+      expr = {
+        ipv4 = failedAssertion unrelatedTransferEval.config.nixosConfigurations.spine-a.config "transfer4";
+        ipv6 = failedAssertion unrelatedTransferEval.config.nixosConfigurations.spine-b.config "transfer6";
+      };
+      expected = {
+        ipv4 = false;
+        ipv6 = false;
+      };
+    };
+    test_unequalPoolsRejected = {
+      expr = failedAssertion unequalPoolEval.config.nixosConfigurations.spine-a.config "allocation settings differ on client; set loopback4Pool, transfer4Pool, and portRange identically on every member";
+      expected = true;
+    };
+    test_unequalPortRangeRejected = {
+      expr = failedAssertion unequalPortRangeEval.config.nixosConfigurations.spine-a.config "allocation settings differ on client; set loopback4Pool, transfer4Pool, and portRange identically on every member";
+      expected = true;
+    };
+    test_internalPoolOverlapRejected = {
+      expr = failedAssertion internalPoolOverlapEval.config.nixosConfigurations.overlap-a.config "allocation pools overlap (loopback4Pool=198.19.0.0/16 with transfer4Pool=198.19.0.0/16); set loopback4Pool and transfer4Pool to disjoint member-uniform values";
+      expected = true;
+    };
+    test_netifPoolOverlapRejected = {
+      expr = failedAssertion netifPoolOverlapEval.config.nixosConfigurations.spine-a.config "loopback4Pool=198.18.0.0/17 with 198.18.0.1/32";
+      expected = true;
+    };
+    test_ulaPoolOverlapRejected = {
+      expr = failedAssertion ulaPoolOverlapEval.config.nixosConfigurations.spine-a.config "loopback6=fd64:6464:6464:0::/64 with fd64:6464:6464::1/64";
+      expected = true;
+    };
+    test_kubePoolOverlapRejected = {
+      expr = failedAssertion kubePoolOverlapEval.config.nixosConfigurations.node-a.config "loopback4Pool=198.18.0.0/17 with 198.18.0.0/16";
+      expected = true;
+    };
+    test_invalidPortRangeRejected = {
+      expr = failedAssertion invalidPortRangeEval.config.nixosConfigurations.spine-a.config "portRange.start must not exceed portRange.end; set an inclusive range such as 10000–32767 on every member";
+      expected = true;
+    };
+    test_explicitOverridesBeatVars = {
+      expr = {
+        inherit (client.clan.networkFacts.fabric.fleet) ipv4 ipv6;
+        port = portClient.clan.networkFacts.fabric.fleet.adjacencies.spine-a.port;
+        collision = failedAssertion portClient "collides with";
+      };
+      expected = {
+        ipv4 = "192.168.77.10";
+        ipv6 = "fd77::10";
+        port = 52820;
+        collision = false;
+      };
     };
   };
 }

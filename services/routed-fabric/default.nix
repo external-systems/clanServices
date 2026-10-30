@@ -9,6 +9,15 @@
   frr = import ../../lib/kube-cluster/frr.nix {inherit lib;};
   ip = import ../../lib/ip.nix {inherit lib;};
 
+  pairs = values:
+    lib.concatMap (
+      i:
+        map (j: {
+          first = builtins.elemAt values i;
+          second = builtins.elemAt values j;
+        }) (lib.range (i + 1) (builtins.length values - 1))
+    ) (lib.range 0 (builtins.length values - 2));
+
   endpointSourceOptions = lib.types.submodule {
     options = {
       service = lib.mkOption {
@@ -424,6 +433,88 @@
     );
     isKubernetes = name: builtins.elem name kubernetesMachines;
 
+    prefixFile = file:
+      allocation {
+        generator = prefixGenerator;
+        inherit file;
+      };
+    ulaBase = builtins.head (lib.splitString "::" (prefixFile "ula48"));
+    allocationPools = [
+      {
+        name = "loopback4Pool";
+        cidr = prefixFile "loopback4-pool";
+      }
+      {
+        name = "transfer4Pool";
+        cidr = prefixFile "transfer4-pool";
+      }
+      {
+        name = "loopback6";
+        cidr = "${ulaBase}:0::/64";
+      }
+      {
+        name = "transfer6";
+        cidr = "${ulaBase}:1::/64";
+      }
+    ];
+    memberNames = builtins.attrNames allMachines;
+    unequalPoolMembers =
+      builtins.filter (
+        name: let
+          memberSettings = allMachines.${name}.settings;
+        in
+          memberSettings.loopback4Pool
+          != ownSettings.loopback4Pool
+          || memberSettings.transfer4Pool != ownSettings.transfer4Pool
+          || memberSettings.portRange != ownSettings.portRange
+      )
+      memberNames;
+    memberNetifExports = lib.attrValues (
+      clanLib.selectExports (
+        scope: scope.serviceName == "netif" && builtins.elem scope.machineName memberNames
+      )
+      exports
+    );
+    underlayCidrs = lib.unique (
+      lib.concatMap (
+        value: lib.concatMap (link: link.addresses) (builtins.attrValues value.netif.links)
+      )
+      memberNetifExports
+    );
+    memberClusterList =
+      builtins.filter (
+        facts: lib.any (name: facts.members ? ${name}) memberNames
+      )
+      clusterList;
+    clusterCidrs = lib.unique (
+      lib.concatMap (
+        facts:
+          [
+            facts.network.podCIDRv4
+            facts.network.podCIDRv6
+            facts.network.serviceCIDRv4
+            facts.network.serviceCIDRv6
+          ]
+          ++ lib.optionals facts.fabric.enabled [
+            facts.fabric.ipv4Block
+            facts.fabric.ipv6Block
+          ]
+      )
+      memberClusterList
+    );
+    externalCidrs = underlayCidrs ++ clusterCidrs;
+    externalPoolOverlaps =
+      lib.concatMap (
+        pool:
+          map (prefix: {inherit pool prefix;}) (
+            builtins.filter (other: cidr.overlap pool.cidr other) externalCidrs
+          )
+      )
+      allocationPools;
+    internalPoolOverlaps = builtins.filter (
+      pair: cidr.overlap pair.first.cidr pair.second.cidr
+    ) (pairs allocationPools);
+
     clusterRoutes = facts: let
       pools =
         lib.filterAttrs (
@@ -729,14 +820,23 @@
         adjacency: adjacency.endpoint == null && endpointOf machine.name == null
       )
       adjacencies;
-    allAddresses = lib.concatMap (
-      name: let
-        address = addressOf name;
-      in [
-        address.ipv4
-        address.ipv6
-      ]
-    ) (builtins.attrNames allMachines);
+    collidingMachines = selector:
+      builtins.filter (
+        name: name != machine.name && selector name == selector machine.name
+      )
+      memberNames;
+    ipv4CollisionMachines = collidingMachines (name: (addressOf name).ipv4);
+    ipv6CollisionMachines = collidingMachines (name: (addressOf name).ipv6);
+    asnCollisionMachines = collidingMachines asnOf;
+    transfer4CollisionPairs = builtins.filter (
+      pair: pair.first.prefixes.ipv4 == pair.second.prefixes.ipv4
+    ) (pairs adjacencies);
+    transfer6CollisionPairs = builtins.filter (
+      pair: pair.first.prefixes.ipv6 == pair.second.prefixes.ipv6
+    ) (pairs adjacencies);
+    portCollisionPairs = builtins.filter (
+      pair: pair.first.port == pair.second.port
+    ) (pairs adjacencies);
     interfaceNames = map (adjacency: adjacency.name) adjacencies;
     listenPorts = map (adjacency: adjacency.port) adjacencies;
     sourceReturns = builtins.filter (adjacency: adjacency.sourceReturn) adjacencies;
@@ -961,6 +1061,27 @@
           ip6 saddr { ${lib.concatStringsSep ", " upstream6} } tcp dport 179 accept
           ip6 saddr { ${lib.concatStringsSep ", " upstream6} } udp dport { 3784, 4784 } accept
         '';
+      otherWireguardPorts =
+        lib.mapAttrsToList (name: interface: {
+          inherit name;
+          port = interface.wireguard.listen_port;
+        }) (
+          lib.filterAttrs (
+            name: interface:
+              !(builtins.elem name interfaceNames)
+              && (interface.link.kind or null) == "wireguard"
+              && (interface.wireguard.listen_port or null) != null
+          )
+          config.networking.ifstate.settings.interfaces
+        );
+      externalPortCollisions =
+        lib.concatMap (
+          adjacency:
+            map (other: {inherit adjacency other;}) (
+              builtins.filter (other: other.port == adjacency.port) otherWireguardPorts
+            )
+        )
+        adjacencies;
     in {
       imports = [../../lib/kube-cluster/network-facts.nix];
 
@@ -990,8 +1111,87 @@
           }";
         }
         {
-          assertion = lib.length (lib.unique allAddresses) == lib.length allAddresses;
-          message = "routed-fabric/${instanceName}: stable host addresses must be unique";
+          assertion = ipv4CollisionMachines == [];
+          message = "routed-fabric/${instanceName}: loopback IPv4 ${ownAddress.ipv4} on ${machine.name} collides with ${
+            lib.concatStringsSep ", " ipv4CollisionMachines
+          }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
+        }
+        {
+          assertion = ipv6CollisionMachines == [];
+          message = "routed-fabric/${instanceName}: loopback IPv6 ${ownAddress.ipv6} on ${machine.name} collides with ${
+            lib.concatStringsSep ", " ipv6CollisionMachines
+          }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
+        }
+        {
+          assertion = asnCollisionMachines == [];
+          message = "routed-fabric/${instanceName}: ASN ${toString ownAsn} on ${machine.name} collides with ${
+            lib.concatStringsSep ", " asnCollisionMachines
+          }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
+        }
+        {
+          assertion = unequalPoolMembers == [];
+          message = "routed-fabric/${instanceName}: allocation settings differ on ${
+            lib.concatStringsSep ", " unequalPoolMembers
+          }; set loopback4Pool, transfer4Pool, and portRange identically on every member";
+        }
+        {
+          assertion = internalPoolOverlaps == [];
+          message = "routed-fabric/${instanceName}: allocation pools overlap (${
+            lib.concatMapStringsSep "; " (
+              pair: "${pair.first.name}=${pair.first.cidr} with ${pair.second.name}=${pair.second.cidr}"
+            )
+            internalPoolOverlaps
+          }); set loopback4Pool and transfer4Pool to disjoint member-uniform values";
+        }
+        {
+          assertion = externalPoolOverlaps == [];
+          message = "routed-fabric/${instanceName}: allocation pools overlap underlay or cluster CIDRs (${
+            lib.concatMapStringsSep "; " (
+              overlap: "${overlap.pool.name}=${overlap.pool.cidr} with ${overlap.prefix}"
+            )
+            externalPoolOverlaps
+          }); move the conflicting prefix or set loopback4Pool/transfer4Pool away from it; for a ULA collision run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate";
+        }
+        {
+          assertion = ownSettings.portRange.start <= ownSettings.portRange.end;
+          message = "routed-fabric/${instanceName}: portRange.start must not exceed portRange.end; set an inclusive range such as 10000–32767 on every member";
+        }
+        {
+          assertion = portCollisionPairs == [] && externalPortCollisions == [];
+          message = "routed-fabric/${instanceName}: ${
+            lib.concatStringsSep "; " (
+              map (
+                pair: "adjacency ${pair.first.key} port ${toString pair.first.port} collides with ${pair.second.key}; run: clan vars generate ${machine.name} --generator ${pair.first.generator} --regenerate"
+              )
+              portCollisionPairs
+              ++ map (
+                collision: "adjacency ${collision.adjacency.key} port ${toString collision.adjacency.port} collides with WireGuard interface ${collision.other.name}; run: clan vars generate ${machine.name} --generator ${collision.adjacency.generator} --regenerate"
+              )
+              externalPortCollisions
+            )
+          }";
+        }
+        {
+          assertion = transfer4CollisionPairs == [];
+          message = "routed-fabric/${instanceName}: ${
+            lib.concatStringsSep "; " (
+              map (
+                pair: "transfer4 ${pair.first.prefixes.ipv4} on ${pair.first.key} collides with ${pair.second.key}; run: clan vars generate ${machine.name} --generator ${pair.first.generator} --regenerate"
+              )
+              transfer4CollisionPairs
+            )
+          }";
+        }
+        {
+          assertion = transfer6CollisionPairs == [];
+          message = "routed-fabric/${instanceName}: ${
+            lib.concatStringsSep "; " (
+              map (
+                pair: "transfer6 ${pair.first.prefixes.ipv6} on ${pair.first.key} collides with ${pair.second.key}; run: clan vars generate ${machine.name} --generator ${pair.first.generator} --regenerate"
+              )
+              transfer6CollisionPairs
+            )
+          }";
         }
         {
           assertion =
@@ -999,10 +1199,6 @@
             == lib.length interfaceNames
             && lib.all (name: lib.stringLength name <= 15) interfaceNames;
           message = "routed-fabric/${instanceName}: adjacency interface names collide or exceed 15 characters";
-        }
-        {
-          assertion = lib.length (lib.unique listenPorts) == lib.length listenPorts;
-          message = "routed-fabric/${instanceName}: adjacency listen ports collide";
         }
         {
           assertion =

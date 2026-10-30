@@ -76,7 +76,11 @@ in {
     categories = ["Network"];
     readme = builtins.readFile ./README.md;
     exports = {
-      inputs = ["peer"];
+      inputs = [
+        "peer"
+        "netif"
+        "kube_cluster"
+      ];
       out = [
         "networking"
         "peer"
@@ -259,6 +263,86 @@ in {
       };
       ownAddr = resolvedAddr machine.name;
 
+      prefixFile = file:
+        allocation {
+          generator = prefixGenerator;
+          inherit file;
+        };
+      ulaBase = builtins.head (lib.splitString "::" (prefixFile "ula48"));
+      allocationPools = [
+        {
+          name = "ipv4Pool";
+          cidr = prefixFile "ipv4-pool";
+        }
+        {
+          name = "loopback6";
+          cidr = "${ulaBase}:0::/64";
+        }
+      ];
+      memberNames = builtins.attrNames allMembers;
+      memberNetifExports = lib.attrValues (
+        clanLib.selectExports (
+          scope: scope.serviceName == "netif" && builtins.elem scope.machineName memberNames
+        )
+        exports
+      );
+      underlayCidrs = lib.unique (
+        lib.concatMap (
+          value: lib.concatMap (link: link.addresses) (builtins.attrValues value.netif.links)
+        )
+        memberNetifExports
+      );
+      clusterList = map (value: value.kube_cluster) (
+        builtins.filter (
+          value: let
+            facts = value.kube_cluster or null;
+            reference =
+              if facts == null
+              then null
+              else facts.network.fabric or facts.transport;
+          in
+            facts
+            != null
+            && reference.service
+            != null
+            && reference.instance != null
+            && reference.service == "wireguard-mesh"
+            && reference.instance == instanceName
+        ) (lib.attrValues (clanLib.selectExports (_: true) exports))
+      );
+      memberClusterList =
+        builtins.filter (
+          facts: lib.any (name: facts.members ? ${name}) memberNames
+        )
+        clusterList;
+      clusterCidrs = lib.unique (
+        lib.concatMap (
+          facts:
+            [
+              facts.network.podCIDRv4
+              facts.network.podCIDRv6
+              facts.network.serviceCIDRv4
+              facts.network.serviceCIDRv6
+            ]
+            ++ lib.optionals facts.fabric.enabled [
+              facts.fabric.ipv4Block
+              facts.fabric.ipv6Block
+            ]
+        )
+        memberClusterList
+      );
+      externalPoolOverlaps =
+        lib.concatMap (
+          pool:
+            map (prefix: {inherit pool prefix;}) (
+              builtins.filter (other: cidr.overlap pool.cidr other) (underlayCidrs ++ clusterCidrs)
+            )
+        )
+        allocationPools;
+      internalPoolOverlaps = builtins.filter (
+        pair: cidr.overlap pair.first.cidr pair.second.cidr
+      ) (pairs allocationPools);
+
       endpointOf = name: let
         memberSettings = allMembers.${name}.settings;
       in
@@ -406,8 +490,15 @@ in {
           )
           peerEntries;
 
-        allV4s = map (name: (resolvedAddr name).ipv4) (lib.attrNames allMembers);
-        allV6s = map (name: (resolvedAddr name).ipv6) (lib.attrNames allMembers);
+        collidingMachines = selector:
+          builtins.filter (
+            name: name != machine.name && selector name == selector machine.name
+          ) (builtins.attrNames allMembers);
+        ipv4CollisionMachines = collidingMachines (name: (resolvedAddr name).ipv4);
+        ipv6CollisionMachines = collidingMachines (name: (resolvedAddr name).ipv6);
+        unequalPoolMembers = builtins.filter (
+          name: allMembers.${name}.settings.ipv4Pool != settings.ipv4Pool
+        ) (builtins.attrNames allMembers);
       in {
         assertions = [
           {
@@ -431,12 +522,40 @@ in {
             message = "wireguard-mesh/${instanceName}: ipv6 must be an IPv6 host address without a prefix length (got '${ownAddr.ipv6}' for machine '${machine.name}')";
           }
           {
-            assertion = lib.length (lib.unique allV4s) == lib.length allV4s;
-            message = "wireguard-mesh/${instanceName}: mesh IPv4 addresses must be unique; got ${lib.concatStringsSep ", " allV4s}";
+            assertion = ipv4CollisionMachines == [];
+            message = "wireguard-mesh/${instanceName}: mesh IPv4 ${ownAddr.ipv4} on ${machine.name} collides with ${
+              lib.concatStringsSep ", " ipv4CollisionMachines
+            }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
           }
           {
-            assertion = lib.length (lib.unique allV6s) == lib.length allV6s;
-            message = "wireguard-mesh/${instanceName}: mesh IPv6 addresses must be unique; got ${lib.concatStringsSep ", " allV6s}";
+            assertion = ipv6CollisionMachines == [];
+            message = "wireguard-mesh/${instanceName}: mesh IPv6 ${ownAddr.ipv6} on ${machine.name} collides with ${
+              lib.concatStringsSep ", " ipv6CollisionMachines
+            }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
+          }
+          {
+            assertion = unequalPoolMembers == [];
+            message = "wireguard-mesh/${instanceName}: ipv4Pool differs on ${
+              lib.concatStringsSep ", " unequalPoolMembers
+            }; set ipv4Pool identically on every member";
+          }
+          {
+            assertion = internalPoolOverlaps == [];
+            message = "wireguard-mesh/${instanceName}: allocation pools overlap (${
+              lib.concatMapStringsSep "; " (
+                pair: "${pair.first.name}=${pair.first.cidr} with ${pair.second.name}=${pair.second.cidr}"
+              )
+              internalPoolOverlaps
+            }); set ipv4Pool to a member-uniform CIDR disjoint from the ULA";
+          }
+          {
+            assertion = externalPoolOverlaps == [];
+            message = "wireguard-mesh/${instanceName}: allocation pools overlap underlay or cluster CIDRs (${
+              lib.concatMapStringsSep "; " (
+                overlap: "${overlap.pool.name}=${overlap.pool.cidr} with ${overlap.prefix}"
+              )
+              externalPoolOverlaps
+            }); move the conflicting prefix or set ipv4Pool away from it; for a ULA collision run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate";
           }
           {
             assertion = unreachablePeers == [];
