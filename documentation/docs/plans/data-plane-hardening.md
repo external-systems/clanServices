@@ -223,7 +223,7 @@ timed probe helper, and a `facts.json` emitter. Routing-only VMs use 1 GiB.
 | 10 | border + upstream + source return | ingress, symmetric return, prefix filtering |
 | 11 | two fabrics on one site | no cross-instance reachability (S2) |
 | 12 | pod to fabric member | masquerade source and return path |
-| 13 | wireguard-mesh NAT matrix | VXLAN via public node; NAT↔NAT rejected |
+| 13 | wireguard-mesh NAT matrix | NAT↔public pairs carry VXLAN; NAT↔NAT rejected at eval (full mesh, no relay) |
 | 14 | underlay renumbering | re-handshake after an endpoint change |
 | 15 | 100-leaf eval (no VMs) | eval time, collisions, FRR config size |
 | 16 | single NAT gateway egress | egress only via the border; no tunnel recursion |
@@ -315,11 +315,12 @@ and errors point at generated JSON. Mitigations: a `tofu validate` check on
 every generated env, and a few typed wrapper options for the fields we
 actually use.
 
-How to wire it: a `tf` flake-parts partition (see
-[Flake inputs](#flake-inputs)) gets its own `tf/flake.nix` and lock with
-explicit `terranix`, `nixpkgs`, `flake-parts` and `systems` inputs. A subflake
-cannot use `follows` to inherit the parent flake's inputs. The partition
-exposes `packages.<system>.tf-<env>` (via
+How to wire it: add `terranix` to the existing `dev` partition's
+`dev/flake.nix` (see [Flake inputs](#flake-inputs)); the tf modules live in
+`tf/` and are imported from `dev/flake-module.nix`. A separate `tf`
+partition does not work while `partitionedAttrs` routes `apps`, `checks`
+and `packages` to `dev`, and a subflake cannot use `follows` to inherit the
+parent flake's inputs. The dev partition exposes `packages.<system>.tf-<env>` (via
 `terranix.lib.terranixConfiguration`) plus an `apps.<system>.tf-run` wrapper
 that writes `config.tf.json` into the throwaway run directory and calls
 `tofu`. Recommendation: adopt it in phase 8; it costs one dev-only input and
@@ -338,7 +339,7 @@ Phase 1 leaves this input layout:
 | `treefmt-nix` | root; shared follow target and the alejandra/statix/deadnix/nixf-diagnose/shellcheck/sizelint wrapper |
 | `nix-unit` | `dev/flake.nix`; eval tests in partitioned `checks` |
 | `presenting` | `dev/flake.nix`; MkDocs site and reveal.js deck in partitioned `packages` |
-| `terranix` (proposed) | separate `tf` partition and lock in phase 8 |
+| `terranix` (proposed) | `dev/flake.nix` in phase 8: `partitionedAttrs` maps `apps`, `checks` and `packages` to one partition (`dev`), so a separate `tf` partition could not expose `tf-*` packages, apps or checks |
 
 The six former test-only root follows (`data-mesher`, `disko`, `nix-darwin`,
 `nix-select`, `sops-nix`, `systems`) and unused `nix-github-actions` are
@@ -356,27 +357,42 @@ advance them.
 
 ## Phases
 
-Each phase has a self-contained hand-off prompt in its own folder under
-`plans/`; paste it into a fresh agent session with
-`external-systems/clanServices`, `external-systems/pkgs` and
-`external-systems/home` checked out.
+Each phase has a hand-off prompt in its own folder under `plans/`; paste
+it into a fresh agent session with `external-systems/clanServices`,
+`external-systems/pkgs` and `external-systems/home` checked out. Every
+prompt first sends the agent to the [agent brief](agent-brief.md), which
+holds the shared commands, skills, repository map, and the pitfalls learned
+in phases 1 and 2. Phases 6, 8 and 9 are split into parts (6a/6b, 8a/8b,
+9a/9b/9c), one PR each, so a single session can finish one.
 
 | Phase | Scope | Done when | Prompt |
 | --- | --- | --- | --- |
 | 0 | this file, the phase prompts, SPEC.md status corrections, AGENTS.md rules, slides and docs theme (docs only) | merged; every VM-proven claim names a marker or is marked planned | — |
 | 1 | alejandra + statix + deadnix, flake input cleanup and partitions, VM log helper | `nix flake check` green; `nix-github-actions` gone; consumers no longer lock dev inputs | [phase-1-tooling/prompt.md](phase-1-tooling/prompt.md) |
 | 2 (implemented) | correctness fixes, eval assertions, stability timers | each finding has a fix or an assertion with positive and negative tests | [phase-2-correctness/prompt.md](phase-2-correctness/prompt.md) |
-| 3 | allocation through clan vars, new ranges | no hash-derived address, ASN or port remains; all suites green | [phase-3-allocation/prompt.md](phase-3-allocation/prompt.md) |
+| 3 | allocation through clan vars, new ranges | no fabric or mesh address, ASN or port is derived from a name (cluster ids and Cilium ASNs stay hash-derived by design); all suites green | [phase-3-allocation/prompt.md](phase-3-allocation/prompt.md) |
 | 4 | netif underlay features | `match.mac`, DHCPv6 + PD, declared path MTU | [phase-4-netif-underlay/prompt.md](phase-4-netif-underlay/prompt.md) |
 | 5 | facts schema, materializer, synthetic inventories | every `tests/clans/` inventory evaluates; materializer round-trips | [phase-5-facts-and-clans/prompt.md](phase-5-facts-and-clans/prompt.md) |
-| 6 | VM harness + priority scenarios | scenarios 1, 2, 4, 6, 8, 9, 13, 19, 22 green with markers | [phase-6-vm-harness/prompt.md](phase-6-vm-harness/prompt.md) |
+| 6 (6a, 6b) | VM harness + priority scenarios | 6a: harness + scenarios 4, 9, 19, 22; 6b: scenarios 1, 2, 6, 8, 13; all green with markers | [phase-6-vm-harness/prompt.md](phase-6-vm-harness/prompt.md) |
 | 7 | gateway service, single NAT egress, floating IP coexistence | scenarios 16, 20, 21 green | [phase-7-gateway/prompt.md](phase-7-gateway/prompt.md) |
-| 8 | terranix + OpenTofu: Hetzner + GCP | `triad` and `arm-mix` pass smoke probes and destroy within budget | [phase-8-opentofu/prompt.md](phase-8-opentofu/prompt.md) |
-| 9 | Proxmox lab, breadth, home fleet rehearsal | `proxmox-lab` passes; 100-leaf eval recorded; home repo rehearsal evaluates | [phase-9-proxmox-and-breadth/prompt.md](phase-9-proxmox-and-breadth/prompt.md) |
+| 8 (8a, 8b) | terranix + OpenTofu: Hetzner + GCP | 8a: envs build and validate offline; 8b: `triad` and `arm-mix` pass smoke probes and destroy within budget | [phase-8-opentofu/prompt.md](phase-8-opentofu/prompt.md) |
+| 9 (9a, 9b, 9c) | Proxmox lab, breadth, home fleet rehearsal | `proxmox-lab` passes; 100-leaf eval recorded; home repo rehearsal evaluates | [phase-9-proxmox-and-breadth/prompt.md](phase-9-proxmox-and-breadth/prompt.md) |
 
 No phase needs a cloud account before phase 8.
 
 ## Later concerns
+
+- Every fabric adjacency runs two BGP sessions (IPv4 over a transfer /31,
+  IPv6 over a /127), each with BFD. One IPv6 session per adjacency with
+  RFC 8950 extended next hop (already used on the node-local Cilium
+  session) would halve sessions and BFD state and remove the IPv4 transfer
+  pool and its collision handling. Decide before phase 5 commits fleet-100
+  vars.
+- The Cilium cluster id (1–127), Cilium/host ASNs and the id-derived pod,
+  Service and fabric-pool CIDRs stay hash-derived after phase 3; with ten
+  clusters the cluster-id birthday collision chance is about 30%. Explicit
+  pins and the fleet collision check are the escape; allocate them with
+  vars if that becomes routine.
 
 - With spines only in Helsinki, Texas traffic to future North American
   cloud machines would hairpin through Europe; add a North American spine

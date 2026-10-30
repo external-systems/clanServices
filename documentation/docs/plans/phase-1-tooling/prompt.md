@@ -1,7 +1,8 @@
 # Phase 1: tooling and flake inputs
 
 Part of the [data-plane hardening plan](../data-plane-hardening.md).
-Paste the block below into a fresh agent session.
+Status: **merged** in PR #2. Kept as the record of what was asked;
+later prompts build on [the agent brief](../agent-brief.md).
 
 ```text
 Repo: external-systems/clanServices. Read AGENTS.md, flake.nix, formatter.nix, tests/flake-module.nix, documentation/module.nix and documentation/docs/plans/data-plane-hardening.md ("Flake inputs"). Load skills: flakeparts, nix-style, vm-tests.

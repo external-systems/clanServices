@@ -1,7 +1,8 @@
 # Phase 2: correctness, assertions and stability
 
 Part of the [data-plane hardening plan](../data-plane-hardening.md).
-Paste the block below into a fresh agent session.
+Status: **merged** in PR #3. Kept as the record of what was asked;
+later prompts build on [the agent brief](../agent-brief.md).
 
 ```text
 Repo: external-systems/clanServices. Read AGENTS.md, SPEC.md (§3.2, §5, §6.3, §6.12, §7, D47–D62) and documentation/docs/plans/data-plane-hardening.md ("Findings", "Proposed contract additions"). Load skills: clanservices, ifstate, frr, nix-style.

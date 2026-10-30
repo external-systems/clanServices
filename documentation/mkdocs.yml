@@ -73,6 +73,7 @@ nav:
       - Stage-0 probe lessons: guides/stage0-probe-lessons.md
   - Plans:
       - Data-plane hardening: plans/data-plane-hardening.md
+      - Agent brief: plans/agent-brief.md
       - Phase prompts:
           - "1. Tooling and flake inputs": plans/phase-1-tooling/prompt.md
           - "2. Correctness and stability": plans/phase-2-correctness/prompt.md
