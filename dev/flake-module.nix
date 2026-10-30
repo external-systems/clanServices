@@ -21,15 +21,15 @@
     # already-fetched locked inputs reachable without a wrapper flake.
     rootLock = builtins.fromJSON (builtins.readFile ../flake.lock);
     overrideArg = name: value: "--override-input ${lib.escapeShellArg name} ${lib.escapeShellArg "${value}"}";
-    pkgsImportTree = builtins.fetchTree rootLock.nodes.${rootLock.nodes.pkgs.inputs."import-tree"}.locked;
+    pkgsImportTree = fetchTree rootLock.nodes.${rootLock.nodes.pkgs.inputs."import-tree"}.locked;
     kubenixImportTree =
-      builtins.fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."import-tree"}.locked;
+      fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."import-tree"}.locked;
     kubenixDevshell =
-      builtins.fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."devshell"}.locked;
+      fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."devshell"}.locked;
     kubenixFlakeCompat =
-      builtins.fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."flake-compat"}.locked;
+      fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."flake-compat"}.locked;
     kubenixSystems =
-      builtins.fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."systems"}.locked;
+      fetchTree rootLock.nodes.${rootLock.nodes.kubenix.inputs."systems"}.locked;
     nixUnitInputs =
       lib.getAttrs [
         "clan-core"

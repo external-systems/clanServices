@@ -18,7 +18,10 @@ breaking changes need no shims, and `targetHost` stays on the underlay
 (AGENTS.md rules 2 and 10–12).
 
 Phase 1 is implemented on PR #2 (pending merge). It uses alejandra, statix,
-and deadnix through treefmt-nix. Development inputs and the checks, formatter,
+deadnix, and nixf-diagnose through treefmt-nix. The nixf-diagnose gate is
+limited to `sema-primop-removed-prefix`, rejecting redundant `builtins.`
+prefixes when the prelude builtin is unshadowed. Development inputs and the
+checks, formatter,
 documentation, slides, and development shell outputs live in a flake-parts
 `dev` partition so consumers do not lock `nix-unit` or `presenting`. The root
 flake has no test-only follows or nix-unit wrapper: the check evaluates the

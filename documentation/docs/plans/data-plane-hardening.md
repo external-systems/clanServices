@@ -311,7 +311,7 @@ Phase 1 leaves this input layout:
 | `nixpkgs`, `flake-parts` | root; follow `pkgs` |
 | `clan-core` | root; clanServices framework, inventory, vars, test harness |
 | `kubenix` | root; renders the bootstrap bundle |
-| `treefmt-nix` | root; shared follow target and the alejandra/statix/deadnix/shellcheck/sizelint wrapper |
+| `treefmt-nix` | root; shared follow target and the alejandra/statix/deadnix/nixf-diagnose/shellcheck/sizelint wrapper |
 | `nix-unit` | `dev/flake.nix`; eval tests in partitioned `checks` |
 | `presenting` | `dev/flake.nix`; MkDocs site and reveal.js deck in partitioned `packages` |
 | `terranix` (proposed) | separate `tf` partition and lock in phase 8 |

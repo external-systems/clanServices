@@ -67,7 +67,9 @@ is a review destination, not a dependency.
    coverage, formatting), so a full `nix flake check` is part of every
    verification; keep statix/deadnix clean and fix all eval warnings.
    Formatting is alejandra, always; `formatter.nix` also enables statix,
-   deadnix, shellcheck, and sizelint through treefmt-nix.
+   deadnix, shellcheck, sizelint, and nixf-diagnose through treefmt-nix.
+   Remove `builtins.` prefixes when the prelude builtin is unshadowed
+   (`sema-primop-removed-prefix`).
 3. No spec-implementation drift: amend the spec BEFORE implementing when a
    test disproves an assumption; never weaken a test to fit code.
 4. Distro-specific config lives in the thin `rke2`/`k3s` services; shared

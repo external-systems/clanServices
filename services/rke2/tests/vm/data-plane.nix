@@ -508,7 +508,7 @@ in {
       # top-level symlink (same pattern as rke2-single).
       services.rke2.images = [httpbinImage];
       systemd.tmpfiles.rules = [
-        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf httpbinImage)} - - - - ${httpbinImage}"
+        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (baseNameOf httpbinImage)} - - - - ${httpbinImage}"
       ];
     };
     beta = {...}: {
@@ -526,7 +526,7 @@ in {
       # fixture image here too (hermetic).
       services.rke2.images = [httpbinImage];
       systemd.tmpfiles.rules = [
-        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf httpbinImage)} - - - - ${httpbinImage}"
+        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (baseNameOf httpbinImage)} - - - - ${httpbinImage}"
       ];
     };
 

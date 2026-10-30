@@ -922,7 +922,7 @@
               }"
             ]
             ++ map (
-              img: "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf img)} - - - - ${toString img}"
+              img: "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (baseNameOf img)} - - - - ${toString img}"
             )
             effectiveImages;
 

@@ -134,7 +134,7 @@
 
       services.rke2.images = [busyboxImage];
       systemd.tmpfiles.rules = [
-        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf busyboxImage)} - - - - ${busyboxImage}"
+        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (baseNameOf busyboxImage)} - - - - ${busyboxImage}"
       ];
     };
   in {
