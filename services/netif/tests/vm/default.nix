@@ -6,7 +6,7 @@ _: {
     test.useContainers = false;
 
     inventory = {
-      machines.edge-1 = { };
+      machines.edge-1 = {};
 
       instances = {
         lan = {
@@ -18,13 +18,13 @@ _: {
               interface = "eth1";
               mtu = 1400;
               static = {
-                ipv4 = [ "10.99.0.2/24" ];
-                ipv6 = [ "fd00:99::2/64" ];
+                ipv4 = ["10.99.0.2/24"];
+                ipv6 = ["fd00:99::2/64"];
               };
               endpoint = true;
               routingPolicy = {
                 table = 201;
-                from = [ "10.99.0.2/32" ];
+                from = ["10.99.0.2/32"];
               };
             };
           };
@@ -41,11 +41,11 @@ _: {
                 "nic0"
                 "nic1"
               ];
-              static.ipv4 = [ "10.20.0.1/24" ];
+              static.ipv4 = ["10.20.0.1/24"];
             };
             virbr0 = {
               kind = "bridge";
-              static.ipv4 = [ "10.30.0.1/24" ];
+              static.ipv4 = ["10.30.0.1/24"];
             };
             trunk.interface = "eth4";
             dmz10 = {
@@ -54,8 +54,8 @@ _: {
                 parent = "trunk";
               };
               static = {
-                ipv4 = [ "10.10.10.1/24" ];
-                ipv6 = [ "fd00:10::1/64" ];
+                ipv4 = ["10.10.10.1/24"];
+                ipv6 = ["fd00:10::1/64"];
               };
             };
           };
@@ -64,8 +64,8 @@ _: {
     };
   };
 
-  nodes.edge-1 = { pkgs, ... }: {
-    environment.systemPackages = [ pkgs.yq ];
+  nodes.edge-1 = {pkgs, ...}: {
+    environment.systemPackages = [pkgs.yq];
     virtualisation = {
       cores = 1;
       memorySize = 1536;

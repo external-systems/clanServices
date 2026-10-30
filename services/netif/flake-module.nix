@@ -1,11 +1,13 @@
-{ inputs, lib, ... }:
-let
+{
+  inputs,
+  lib,
+  ...
+}: let
   module = lib.modules.importApply ./default.nix {
     ifstateOverlay = inputs.pkgs.overlays.ifstate;
   };
   clanLib = inputs.clan-core.lib;
-in
-rec {
+in rec {
   clan = {
     modules.netif = module;
     exportInterfaces.netif = ./netif-interface.nix;
@@ -22,11 +24,11 @@ rec {
     };
     clan.nixosTests = {
       netif = {
-        imports = [ ./tests/vm/default.nix ];
+        imports = [./tests/vm/default.nix];
         inherit clan;
       };
       netif-dhcp = {
-        imports = [ ./tests/vm/dhcp.nix ];
+        imports = [./tests/vm/dhcp.nix];
         inherit clan;
       };
     };

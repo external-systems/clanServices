@@ -1,5 +1,8 @@
-{ lib, inputs, ... }:
 {
+  lib,
+  inputs,
+  ...
+}: {
   name = "rke2-single";
 
   clan = {
@@ -14,7 +17,7 @@
     inventory = {
       meta.domain = "test.clan";
 
-      machines.alpha = { };
+      machines.alpha = {};
 
       instances = {
         underlay = {
@@ -56,7 +59,6 @@
               coredns.rewrites = [
                 "name foo.test.clan kubernetes.default.svc.cluster.local"
               ];
-
             };
             machines.alpha.settings = {
               clusterInit = true;
@@ -67,46 +69,40 @@
     };
   };
 
-  nodes.alpha =
-    {
-      pkgs,
-      ...
-    }:
-    let
-      busyboxImage = pkgs.dockerTools.pullImage {
-        imageName = "busybox";
-        imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
-        hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
-        finalImageTag = "1.36.1";
-      };
-    in
-    {
-      imports = [
-        (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
-          addresses = [ "192.168.1.1/24" ];
-        })
-      ];
-      virtualisation = {
-        cores = 2;
-        memorySize = 4096;
-        diskSize = 8192;
-      };
-
-      environment.systemPackages = [
-        pkgs.kubectl
-        pkgs.cilium-cli
-        pkgs.socat
-      ];
-      environment.sessionVariables.KUBECONFIG = "/etc/rancher/rke2/rke2.yaml";
-
-      # Pre-load busybox for workload pods. Top-level symlink plus the service's
-      # .cache.json marker makes the airgap importer see it.
-      services.rke2.images = [ busyboxImage ];
-      systemd.tmpfiles.rules = [
-        "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (builtins.baseNameOf busyboxImage)} - - - - ${busyboxImage}"
-      ];
+  nodes.alpha = {pkgs, ...}: let
+    busyboxImage = pkgs.dockerTools.pullImage {
+      imageName = "busybox";
+      imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
+      hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
+      finalImageTag = "1.36.1";
     };
+  in {
+    imports = [
+      (import ../../../../tests/ifstate-vm.nix {
+        ifstateOverlay = inputs.pkgs.overlays.ifstate;
+        addresses = ["192.168.1.1/24"];
+      })
+    ];
+    virtualisation = {
+      cores = 2;
+      memorySize = 4096;
+      diskSize = 8192;
+    };
+
+    environment.systemPackages = [
+      pkgs.kubectl
+      pkgs.cilium-cli
+      pkgs.socat
+    ];
+    environment.sessionVariables.KUBECONFIG = "/etc/rancher/rke2/rke2.yaml";
+
+    # Pre-load busybox for workload pods. Top-level symlink plus the service's
+    # .cache.json marker makes the airgap importer see it.
+    services.rke2.images = [busyboxImage];
+    systemd.tmpfiles.rules = [
+      "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (baseNameOf busyboxImage)} - - - - ${busyboxImage}"
+    ];
+  };
 
   testScript = ''
     def fail_dump(m):

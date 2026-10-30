@@ -1,8 +1,6 @@
-{ lib, ... }:
-let
+{lib, ...}: let
   t = lib.types;
-in
-{
+in {
   options = {
     schemaVersion = lib.mkOption {
       type = t.ints.positive;
@@ -46,7 +44,7 @@ in
           };
         }
       );
-      default = { };
+      default = {};
       description = "Every datapath interface keyed by its actual Linux interface name, each with its MTU.";
     };
     directRoutingDevice = lib.mkOption {

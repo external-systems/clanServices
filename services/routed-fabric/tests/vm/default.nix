@@ -1,5 +1,8 @@
-{ lib, inputs, ... }:
 {
+  lib,
+  inputs,
+  ...
+}: {
   name = "routed-fabric";
 
   clan = {
@@ -8,11 +11,11 @@
 
     inventory = {
       machines = {
-        spine-a = { };
-        spine-b = { };
-        alpha = { };
-        beta = { };
-        gamma = { };
+        spine-a = {};
+        spine-b = {};
+        alpha = {};
+        beta = {};
+        gamma = {};
       };
 
       instances = {
@@ -72,7 +75,7 @@
               gamma.settings = {
                 ipv4 = "192.168.77.5";
                 ipv6 = "fd77::5";
-                spines = [ "spine-a" ];
+                spines = ["spine-a"];
               };
             };
           };
@@ -83,26 +86,26 @@
 
   nodes =
     lib.mapAttrs
-      (name: address: { pkgs, ... }: {
-        environment.systemPackages = [ pkgs.tcpdump ];
-        imports = [
-          (import ../../../../tests/ifstate-vm.nix {
-            ifstateOverlay = inputs.pkgs.overlays.ifstate;
-            addresses = [ "${address}/24" ];
-          })
-        ];
-        virtualisation = {
-          cores = 1;
-          memorySize = 1536;
-        };
-      })
-      {
-        spine-a = "192.168.1.4";
-        spine-b = "192.168.1.5";
-        alpha = "192.168.1.1";
-        beta = "192.168.1.2";
-        gamma = "192.168.1.3";
+    (_name: address: {pkgs, ...}: {
+      environment.systemPackages = [pkgs.tcpdump];
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          addresses = ["${address}/24"];
+        })
+      ];
+      virtualisation = {
+        cores = 1;
+        memorySize = 1536;
       };
+    })
+    {
+      spine-a = "192.168.1.4";
+      spine-b = "192.168.1.5";
+      alpha = "192.168.1.1";
+      beta = "192.168.1.2";
+      gamma = "192.168.1.3";
+    };
 
   testScript = ''
     machines = [spine_a, spine_b, alpha, beta, gamma]

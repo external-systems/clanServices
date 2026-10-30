@@ -1,6 +1,8 @@
-{ ifstateOverlay }:
-{ config, lib, ... }:
-{
+{ifstateOverlay}: {
+  config,
+  lib,
+  ...
+}: {
   assertions = [
     {
       assertion = !config.systemd.network.enable;
@@ -16,7 +18,7 @@
     }
   ];
 
-  nixpkgs.overlays = lib.mkAfter [ ifstateOverlay ];
+  nixpkgs.overlays = lib.mkAfter [ifstateOverlay];
 
   networking = {
     ifstate = {
@@ -30,15 +32,15 @@
             "^vnet"
           ];
           routes = [
-            { dev = "^cilium"; }
-            { dev = "^lxc"; }
+            {dev = "^cilium";}
+            {dev = "^lxc";}
           ];
-          rules = [ { table = 200; } ];
+          rules = [{table = 200;}];
         };
       };
     };
 
-    interfaces = lib.mkForce { };
+    interfaces = lib.mkForce {};
     networkmanager.enable = lib.mkForce false;
     useDHCP = lib.mkForce false;
     useNetworkd = lib.mkForce false;

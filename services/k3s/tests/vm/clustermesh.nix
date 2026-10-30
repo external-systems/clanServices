@@ -21,8 +21,11 @@
 #
 # Fabric topology: alpha and gamma are spines (the spine↔spine adjacency
 # derives automatically); beta and delta are leaves attaching every spine.
-{ lib, inputs, ... }:
 {
+  lib,
+  inputs,
+  ...
+}: {
   name = "k3s-clustermesh";
 
   clan = {
@@ -41,10 +44,10 @@
       meta.domain = "test.clan";
 
       machines = {
-        alpha = { };
-        beta = { };
-        gamma = { };
-        delta = { };
+        alpha = {};
+        beta = {};
+        gamma = {};
+        delta = {};
       };
 
       instances = {
@@ -152,54 +155,53 @@
     };
   };
 
-  nodes =
-    let
-      busyboxImage =
-        pkgs:
-        pkgs.dockerTools.pullImage {
-          imageName = "busybox";
-          imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
-          hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
-          finalImageTag = "1.36.1";
-        };
-      commonNode = name: { pkgs, ... }: {
-        imports = [
-          (import ../../../../tests/ifstate-vm.nix {
-            ifstateOverlay = inputs.pkgs.overlays.ifstate;
-            addresses = [
-              "192.168.1.${
-                toString
-                  {
-                    alpha = 1;
-                    beta = 2;
-                    gamma = 3;
-                    delta = 4;
-                  }
-                  .${name}
-              }/24"
-            ];
-          })
-        ];
-        virtualisation = {
-          cores = 2;
-          memorySize = 3584;
-          diskSize = 8192;
-        };
-        environment.sessionVariables.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-        environment.systemPackages = [
-          pkgs.kubectl
-          pkgs.cilium-cli
-          pkgs.socat
-        ];
-        services.k3s.images = [ (busyboxImage pkgs) ];
+  nodes = let
+    busyboxImage = pkgs:
+      pkgs.dockerTools.pullImage {
+        imageName = "busybox";
+        imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
+        hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
+        finalImageTag = "1.36.1";
       };
-    in
-    {
-      alpha = commonNode "alpha";
-      beta = commonNode "beta";
-      gamma = commonNode "gamma";
-      delta = commonNode "delta";
+    commonNode = name: {pkgs, ...}: {
+      imports = [
+        (import ../../../../tests/ifstate-vm.nix {
+          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          addresses = [
+            "192.168.1.${
+              toString
+              {
+                alpha = 1;
+                beta = 2;
+                gamma = 3;
+                delta = 4;
+              }
+                  .${
+                name
+              }
+            }/24"
+          ];
+        })
+      ];
+      virtualisation = {
+        cores = 2;
+        memorySize = 3584;
+        diskSize = 8192;
+      };
+      environment.sessionVariables.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+      environment.systemPackages = [
+        pkgs.kubectl
+        pkgs.cilium-cli
+        pkgs.socat
+      ];
+      services.k3s.images = [(busyboxImage pkgs)];
     };
+  in {
+    alpha = commonNode "alpha";
+    beta = commonNode "beta";
+    gamma = commonNode "gamma";
+    delta = commonNode "delta";
+  };
 
   testScript = ''
     def fail_dump(m):

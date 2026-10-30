@@ -3,8 +3,7 @@
   inputs,
   distro,
   profile,
-}:
-let
+}: let
   native = profile == "native";
   k3s = distro == "k3s";
   clusterA = "${distro}-a";
@@ -14,49 +13,59 @@ let
   dnsServerIp = stableIp "dns";
   ipA = "192.168.77.1";
   ipB = "192.168.77.3";
-  runtimeUnit = if k3s then "k3s.service" else "rke2-server.service";
+  runtimeUnit =
+    if k3s
+    then "k3s.service"
+    else "rke2-server.service";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
   marker = "${distro}-clustermesh-external-${profile}-ok";
-  transportModule = if native then "routed-fabric" else "wireguard-mesh";
-  underlayIp =
-    name:
-    "192.168.1.${
-      toString
-        {
-          alpha = 1;
-          beta = 2;
-          gamma = 3;
-          delta = 4;
-          dns = 254;
-        }
-        .${name}
-    }";
-  stableIp =
-    name:
-    "192.168.77.${
-      toString
-        {
-          alpha = 1;
-          beta = 2;
-          gamma = 3;
-          delta = 4;
-          dns = 5;
-        }
-        .${name}
-    }";
-  stableIp6 =
-    name:
-    "${if native then "fd77" else "fd00:77"}::${
-      toString
-        {
-          alpha = 1;
-          beta = 2;
-          gamma = 3;
-          delta = 4;
-          dns = 5;
-        }
-        .${name}
-    }";
+  transportModule =
+    if native
+    then "routed-fabric"
+    else "wireguard-mesh";
+  underlayIp = name: "192.168.1.${
+    toString
+    {
+      alpha = 1;
+      beta = 2;
+      gamma = 3;
+      delta = 4;
+      dns = 254;
+    }
+        .${
+      name
+    }
+  }";
+  stableIp = name: "192.168.77.${
+    toString
+    {
+      alpha = 1;
+      beta = 2;
+      gamma = 3;
+      delta = 4;
+      dns = 5;
+    }
+        .${
+      name
+    }
+  }";
+  stableIp6 = name: "${
+    if native
+    then "fd77"
+    else "fd00:77"
+  }::${
+    toString
+    {
+      alpha = 1;
+      beta = 2;
+      gamma = 3;
+      delta = 4;
+      dns = 5;
+    }
+        .${
+      name
+    }
+  }";
   clusterSettings = id: dns: {
     network.fabric = {
       service = transportModule;
@@ -72,11 +81,11 @@ let
       };
     };
   };
-  mkNode = name: { pkgs, ... }: {
+  mkNode = name: {pkgs, ...}: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
         ifstateOverlay = inputs.pkgs.overlays.ifstate;
-        addresses = [ "${underlayIp name}/24" ];
+        addresses = ["${underlayIp name}/24"];
       })
     ];
     virtualisation = {
@@ -91,18 +100,23 @@ let
       pkgs.openssl
       pkgs.socat
     ];
-    networking.nameservers = lib.mkForce [ dnsServerIp ];
+    networking.nameservers = lib.mkForce [dnsServerIp];
     services.resolved.enable = false;
     systemd.services = lib.optionalAttrs (name == "alpha" || name == "gamma") (
       let
-        cluster = if name == "alpha" then clusterA else clusterB;
-        ip = if name == "alpha" then ipA else ipB;
-      in
-      {
+        cluster =
+          if name == "alpha"
+          then clusterA
+          else clusterB;
+        ip =
+          if name == "alpha"
+          then ipA
+          else ipB;
+      in {
         "fake-external-lb-${cluster}" = {
           description = "Hermetic external LoadBalancer controller for ${cluster}";
-          wantedBy = [ ];
-          after = [ runtimeUnit ];
+          wantedBy = [];
+          after = [runtimeUnit];
           path = [
             pkgs.kubectl
             pkgs.coreutils
@@ -131,8 +145,7 @@ let
       }
     );
   };
-in
-{
+in {
   name = "${distro}-clustermesh-external-${profile}";
 
   clan = {
@@ -150,70 +163,70 @@ in
           ifstateOverlay = inputs.pkgs.overlays.ifstate;
         };
       };
-    exportInterfaces = {
-      node_transport = ../../../../lib/node-transport-interface.nix;
-    }
-    // lib.optionalAttrs native {
-      routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
-    };
+    exportInterfaces =
+      {
+        node_transport = ../../../../lib/node-transport-interface.nix;
+      }
+      // lib.optionalAttrs native {
+        routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
+      };
 
     inventory = {
       meta.domain = "test.clan";
       machines = {
-        alpha = { };
-        beta = { };
-        gamma = { };
-        delta = { };
-        dns = { };
+        alpha = {};
+        beta = {};
+        gamma = {};
+        delta = {};
+        dns = {};
       };
       instances = {
         mesh = {
           module.name = transportModule;
           module.input = "self";
           roles =
-            if native then
-              {
-                spine.machines = {
-                  alpha.settings = {
-                    ipv4 = stableIp "alpha";
-                    ipv6 = stableIp6 "alpha";
-                    endpoint = underlayIp "alpha";
-                  };
-                  gamma.settings = {
-                    ipv4 = stableIp "gamma";
-                    ipv6 = stableIp6 "gamma";
-                    endpoint = underlayIp "gamma";
-                  };
+            if native
+            then {
+              spine.machines = {
+                alpha.settings = {
+                  ipv4 = stableIp "alpha";
+                  ipv6 = stableIp6 "alpha";
+                  endpoint = underlayIp "alpha";
                 };
-                leaf.machines = {
-                  beta.settings = {
-                    ipv4 = stableIp "beta";
-                    ipv6 = stableIp6 "beta";
-                    endpoint = underlayIp "beta";
-                  };
-                  delta.settings = {
-                    ipv4 = stableIp "delta";
-                    ipv6 = stableIp6 "delta";
-                    endpoint = underlayIp "delta";
-                  };
-                  dns.settings = {
-                    ipv4 = stableIp "dns";
-                    ipv6 = stableIp6 "dns";
-                    endpoint = underlayIp "dns";
-                    access = "admin";
-                  };
+                gamma.settings = {
+                  ipv4 = stableIp "gamma";
+                  ipv6 = stableIp6 "gamma";
+                  endpoint = underlayIp "gamma";
                 };
-              }
-            else
-              {
-                peer.machines = lib.genAttrs [ "alpha" "beta" "gamma" "delta" "dns" ] (name: {
-                  settings = {
-                    ipv4 = stableIp name;
-                    ipv6 = stableIp6 name;
-                    endpoint = underlayIp name;
-                  };
-                });
               };
+              leaf.machines = {
+                beta.settings = {
+                  ipv4 = stableIp "beta";
+                  ipv6 = stableIp6 "beta";
+                  endpoint = underlayIp "beta";
+                };
+                delta.settings = {
+                  ipv4 = stableIp "delta";
+                  ipv6 = stableIp6 "delta";
+                  endpoint = underlayIp "delta";
+                };
+                dns.settings = {
+                  ipv4 = stableIp "dns";
+                  ipv6 = stableIp6 "dns";
+                  endpoint = underlayIp "dns";
+                  access = "admin";
+                };
+              };
+            }
+            else {
+              peer.machines = lib.genAttrs ["alpha" "beta" "gamma" "delta" "dns"] (name: {
+                settings = {
+                  ipv4 = stableIp name;
+                  ipv6 = stableIp6 name;
+                  endpoint = underlayIp name;
+                };
+              });
+            };
         };
         ${clusterA} = {
           module.name = distro;
@@ -241,50 +254,52 @@ in
     };
   };
 
-  nodes = (lib.genAttrs [ "alpha" "beta" "gamma" "delta" ] mkNode) // {
-    dns = {
-      imports = [
-        (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
-          addresses = [ "${underlayIp "dns"}/24" ];
-          routes = [
-            {
-              to = "10.1.0.0/16";
-              via = underlayIp "alpha";
-              dev = "eth1";
-            }
-            {
-              to = "10.3.0.0/16";
-              via = underlayIp "gamma";
-              dev = "eth1";
-            }
-          ];
-        })
-      ];
-      networking = {
-        nameservers = lib.mkForce [ dnsServerIp ];
-        firewall = {
-          allowedTCPPorts = [ 53 ];
-          allowedUDPPorts = [ 53 ];
+  nodes =
+    (lib.genAttrs ["alpha" "beta" "gamma" "delta"] mkNode)
+    // {
+      dns = {
+        imports = [
+          (import ../../../../tests/ifstate-vm.nix {
+            ifstateOverlay = inputs.pkgs.overlays.ifstate;
+            addresses = ["${underlayIp "dns"}/24"];
+            routes = [
+              {
+                to = "10.1.0.0/16";
+                via = underlayIp "alpha";
+                dev = "eth1";
+              }
+              {
+                to = "10.3.0.0/16";
+                via = underlayIp "gamma";
+                dev = "eth1";
+              }
+            ];
+          })
+        ];
+        networking = {
+          nameservers = lib.mkForce [dnsServerIp];
+          firewall = {
+            allowedTCPPorts = [53];
+            allowedUDPPorts = [53];
+          };
         };
-      };
-      # The DNS VM is outside both clusters, so tunnel-profile pod return
-      # traffic uses each cluster's init node. Native admin routes also exist.
-      services.dnsmasq = {
-        enable = true;
-        settings = {
-          listen-address = dnsServerIp;
-          bind-dynamic = true;
-          no-resolv = true;
-          log-queries = true;
-          address = [
-            "/${dnsA}/${ipA}"
-            "/${dnsB}/${ipB}"
-          ];
+        # The DNS VM is outside both clusters, so tunnel-profile pod return
+        # traffic uses each cluster's init node. Native admin routes also exist.
+        services.dnsmasq = {
+          enable = true;
+          settings = {
+            listen-address = dnsServerIp;
+            bind-dynamic = true;
+            no-resolv = true;
+            log-queries = true;
+            address = [
+              "/${dnsA}/${ipA}"
+              "/${dnsB}/${ipB}"
+            ];
+          };
         };
       };
     };
-  };
 
   testScript = ''
     def fail_dump(m):
@@ -334,7 +349,11 @@ in
         alpha.wait_until_succeeds("cilium status", timeout=180)
         gamma.wait_until_succeeds("cilium status", timeout=180)
 
-        if ${if native then "False" else "True"}:
+        if ${
+      if native
+      then "False"
+      else "True"
+    }:
             for m in [alpha, gamma]:
                 m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -qx tunnel")
                 m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.tunnel-protocol}' | grep -qx vxlan")

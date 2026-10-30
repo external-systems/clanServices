@@ -1,9 +1,8 @@
 # MkDocs documentation site + reveal.js slides for the spec.
 # Build: nix build .#documentation / .#slides
 # Preview: nix run .#watch-documentation / .#serve-slides
-{ inputs, ... }:
-{
-  imports = [ inputs.presenting.flakeModules.default ];
+{inputs, ...}: {
+  imports = [inputs.presenting.flakeModules.default];
 
   perSystem = {
     documentation = {

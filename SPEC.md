@@ -4,17 +4,35 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
-Round 20 (2026-10-29): **status corrections only; no behavior change.** A
-review found routed-fabric and netif claims that the code or VM suites do
-not yet meet. Those claims stay in the target contract and are now marked
-*(planned)* where they appear; the work to close them is phased in
-`documentation/docs/plans/data-plane-hardening.md`, with one hand-off
-prompt per phase under `documentation/docs/plans/phase-*/`. From this
-round, a *VM-proven* status names its test file and a unique `*_OK` marker
-the test prints; VM logs live in `.baton-pass/vm-logs/<suite>/logs-<n>`
-(never committed). Verification is a full `nix flake check` (`checks` is
-static-only), formatting is alejandra, breaking changes need no shims, and
-`targetHost` stays on the underlay (AGENTS.md rules 2 and 10–12).
+Round 20 (2026-10-29): **status corrections and tooling-only phase 1; no
+service behavior change.** A review found routed-fabric and netif claims that
+the code or VM suites do not yet meet. Those claims stay in the target
+contract and are now marked *(planned)* where they appear; the work to close
+them is phased in `documentation/docs/plans/data-plane-hardening.md`, with
+one hand-off prompt per phase under `documentation/docs/plans/phase-*/`. From
+this round, a *VM-proven* status names its test file and a unique `*_OK`
+marker the test prints; VM logs live in
+`.baton-pass/vm-logs/<suite>/logs-<n>` (never committed). Verification is a
+full `nix flake check` (`checks` is static-only), formatting is alejandra,
+breaking changes need no shims, and `targetHost` stays on the underlay
+(AGENTS.md rules 2 and 10–12).
+
+Phase 1 is implemented on PR #2 (pending merge). It uses alejandra, statix,
+deadnix, and nixf-diagnose through treefmt-nix. The nixf-diagnose gate is
+limited to `sema-primop-removed-prefix`, rejecting redundant `builtins.`
+prefixes when the prelude builtin is unshadowed. Development inputs and the
+checks, formatter,
+documentation, slides, and development shell outputs live in a flake-parts
+`dev` partition so consumers do not lock `nix-unit` or `presenting`. The root
+flake has no test-only follows or nix-unit wrapper: the check evaluates the
+root `tests.systems` output directly with offline input overrides. Direct
+evaluation exposed two malformed fleet-check diagnostic renderers; their
+message formatting is corrected without changing any assertion, and eval tests
+cover both collision messages. `apps.<system>.vm-test` builds one suite from
+`legacyPackages.<system>.vmTests`, atomically allocates the next numbered
+build log under `.baton-pass/vm-logs/<suite>/`, fails on log-creation errors,
+records cached output paths, and uses a plain build for `--rebuild` when no
+cached output exists; VM suites remain outside `checks`.
 
 Round 19 (2026-10-28): **the artifact flake is the packaging and shared-input
 authority (D62).** `external-systems/pkgs` pins nixpkgs and flake-parts, owns

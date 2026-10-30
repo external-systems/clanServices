@@ -1,8 +1,6 @@
-{ inputs, ... }:
-let
+{inputs, ...}: let
   ifstateOverlay = inputs.pkgs.overlays.ifstate;
-in
-{
+in {
   name = "netif-dhcp";
 
   clan = {
@@ -11,8 +9,8 @@ in
 
     inventory = {
       machines = {
-        client = { };
-        server = { };
+        client = {};
+        server = {};
       };
       instances.dhcp = {
         module.name = "netif";
@@ -31,7 +29,7 @@ in
       cores = 1;
       memorySize = 1024;
     };
-    server = { pkgs, ... }: {
+    server = {...}: {
       imports = [
         (import ../../../../tests/ifstate-vm.nix {
           inherit ifstateOverlay;
@@ -47,7 +45,7 @@ in
         memorySize = 1024;
       };
       networking.firewall = {
-        allowedTCPPorts = [ 53 ];
+        allowedTCPPorts = [53];
         allowedUDPPorts = [
           53
           67
