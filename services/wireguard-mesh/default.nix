@@ -4,6 +4,17 @@
   lib,
   ...
 }: let
+  cidr = import ../../lib/kube-cluster/cidr.nix {inherit lib;};
+
+  pairs = values:
+    lib.concatMap (
+      i:
+        map (j: {
+          first = builtins.elemAt values i;
+          second = builtins.elemAt values j;
+        }) (lib.range (i + 1) (builtins.length values - 1))
+    ) (lib.range 0 (builtins.length values - 2));
+
   interfaceName = instanceName: settings:
     if settings.interface == null
     then "wg-${instanceName}"
@@ -267,6 +278,26 @@ in {
         })
         peerMembers;
 
+      unreachablePeers =
+        builtins.filter (
+          peer: peer.endpoint == null && endpointOf machine.name == null
+        )
+        peerEntries;
+      allowedIPClaims = lib.concatMap (
+        name:
+          map (prefix: {
+            peer = name;
+            inherit prefix;
+          })
+          allMembers.${name}.settings.extraAllowedIPs
+      ) (builtins.attrNames allMembers);
+      overlappingExtraAllowedIPs = builtins.filter (
+        pair:
+          pair.first.peer
+          != pair.second.peer
+          && cidr.overlap pair.first.prefix pair.second.prefix
+      ) (pairs allowedIPClaims);
+
       hostEntries = lib.concatMapStringsSep "\n" (
         name: let
           memberSettings = allMembers.${name}.settings;
@@ -368,7 +399,6 @@ in {
 
         allV4s = map (name: (resolvedAddr name).ipv4) (lib.attrNames allMembers);
         allV6s = map (name: (resolvedAddr name).ipv6) (lib.attrNames allMembers);
-        endpoints = map endpointOf (lib.attrNames allMembers);
       in {
         assertions = [
           {
@@ -400,9 +430,19 @@ in {
             message = "wireguard-mesh/${instanceName}: mesh IPv6 addresses must be unique; got ${lib.concatStringsSep ", " allV6s}";
           }
           {
-            assertion =
-              lib.length (lib.attrNames allMembers) <= 1 || lib.any (endpoint: endpoint != null) endpoints;
-            message = "wireguard-mesh/${instanceName}: a multi-member mesh needs at least one explicit endpoint or endpointSources match";
+            assertion = unreachablePeers == [];
+            message = "wireguard-mesh/${instanceName}: every member pair needs an endpoint on at least one side; unreachable from '${machine.name}' to ${
+              lib.concatMapStringsSep ", " (peer: peer.name) unreachablePeers
+            }";
+          }
+          {
+            assertion = overlappingExtraAllowedIPs == [];
+            message = "wireguard-mesh/${instanceName}: extraAllowedIPs overlap between peers: ${
+              lib.concatMapStringsSep "; " (
+                pair: "${pair.first.peer}=${pair.first.prefix} overlaps ${pair.second.peer}=${pair.second.prefix}"
+              )
+              overlappingExtraAllowedIPs
+            }";
           }
         ];
 
@@ -461,7 +501,11 @@ in {
     machine,
     ...
   }: {
-    nixosModule = {lib, ...}: let
+    nixosModule = {
+      config,
+      lib,
+      ...
+    }: let
       memberships =
         lib.filterAttrs (
           _: instance: instance.roles ? peer && instance.roles.peer.machines ? ${machine.name}
@@ -475,8 +519,15 @@ in {
         memberships;
       interfaces = map (member: interfaceName member.instanceName member.settings) members;
       ports = map (member: member.settings.port) members;
+      routedFabricPorts = lib.concatMap (
+        fabric: map (adjacency: adjacency.port) (builtins.attrValues fabric.adjacencies)
+      ) (builtins.attrValues config.clan.networkFacts.fabric);
+      routedFabricPortClashes = lib.intersectLists ports routedFabricPorts;
     in {
-      imports = [(import ../../lib/ifstate.nix {inherit ifstateOverlay;})];
+      imports = [
+        (import ../../lib/ifstate.nix {inherit ifstateOverlay;})
+        ../../lib/kube-cluster/network-facts.nix
+      ];
 
       assertions = [
         {
@@ -486,6 +537,10 @@ in {
         {
           assertion = lib.length (lib.unique ports) == lib.length ports;
           message = "wireguard-mesh: machine '${machine.name}' has duplicate WireGuard listen ports across mesh instances: ${lib.concatStringsSep ", " (map toString ports)}";
+        }
+        {
+          assertion = routedFabricPortClashes == [];
+          message = "wireguard-mesh: machine '${machine.name}' has WireGuard listen-port clashes with routed-fabric: ${lib.concatStringsSep ", " (map toString routedFabricPortClashes)}";
         }
       ];
     };

@@ -86,6 +86,15 @@ in {
               default = null;
               description = "Derived WireGuard MTU.";
             };
+            timerProfile = lib.mkOption {
+              type = t.enum [
+                "site"
+                "wan"
+                ""
+              ];
+              default = "";
+              description = "Symmetric FRR stability profile for this adjacency.";
+            };
             endpoint = lib.mkOption {
               type = t.nullOr t.str;
               default = null;

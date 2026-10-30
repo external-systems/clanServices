@@ -49,8 +49,18 @@ and ClusterIP routes. No member-facing DNS service is rendered.
 `border.ownedPrefixes` and `border.upstreamPeers` enable external BGP
 transit independently of spine membership. Per-adjacency
 `externalTransit` permits default entries only in the WireGuard crypto
-ACL. `sourceReturn` adds policy-table defaults, never a main-table
-fabric default.
+ACL. `sourceReturn` adds policy-table defaults, never a main-table fabric
+default. Source-return tables never use 200 or collide with netif;
+`sourceReturnTable` is the explicit per-adjacency pin.
+
+Equal `settings.site` values default to the `site` timer profile (BFD 300
+ms x3), different sites to `wan` (BFD 1000 ms x5 plus BGP 10/30 seconds).
+`adjacencies.<remote>.timerProfile` overrides the default symmetrically.
+Both ends use five-second DelayOpen recovery hold-down and every
+maximum-prefix limit restarts after ten minutes. BGP/BFD ports are scoped
+to fabric interfaces and declared upstream source addresses, never opened
+globally. All WireGuard listen ports are reserved in
+`net.ipv4.ip_local_reserved_ports`.
 
 ## Exports
 

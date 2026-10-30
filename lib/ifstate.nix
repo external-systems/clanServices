@@ -2,7 +2,14 @@
   config,
   lib,
   ...
-}: {
+}: let
+  wireguardInterfaces = builtins.filter (
+    interface: (interface.link.kind or null) == "wireguard" && (interface.wireguard.listen_port or null) != null
+  ) (builtins.attrValues config.networking.ifstate.settings.interfaces);
+  wireguardPorts = lib.sort builtins.lessThan (
+    lib.unique (map (interface: interface.wireguard.listen_port) wireguardInterfaces)
+  );
+in {
   assertions = [
     {
       assertion = !config.systemd.network.enable;
@@ -19,6 +26,10 @@
   ];
 
   nixpkgs.overlays = lib.mkAfter [ifstateOverlay];
+
+  boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," (
+    map toString wireguardPorts
+  );
 
   networking = {
     ifstate = {

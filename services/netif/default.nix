@@ -778,7 +778,7 @@ in {
 
       dhcpHookName = logical: "netif-dhcp-${instanceName}-${logical}";
 
-      ifstateInterfaces =
+      mkIfstateInterfaces = forwarding:
         lib.mapAttrs' (
           logical: r:
             lib.nameValuePair r.interface (
@@ -809,7 +809,10 @@ in {
                 sysctl.ipv6 = {
                   accept_ra =
                     if r.ra
-                    then 1
+                    then
+                      if forwarding
+                      then 2
+                      else 1
                     else 0;
                   autoconf =
                     if r.ra
@@ -939,10 +942,48 @@ in {
       };
 
       nixosModule = {
+        config,
         lib,
         pkgs,
         ...
       }: let
+        forwardingSysctl = config.boot.kernel.sysctl."net.ipv6.conf.all.forwarding" or false;
+        fabricForwarding = lib.any (
+          fabric: fabric.topology == "spine" || fabric.border.enabled
+        ) (builtins.attrValues config.clan.networkFacts.fabric);
+        forwarding = builtins.elem forwardingSysctl [true 1 "1"] || fabricForwarding;
+        ifstateInterfaces = mkIfstateInterfaces forwarding;
+        fabricAddresses = lib.concatMap (
+          fabric:
+            [
+              fabric.ipv4
+              fabric.ipv6
+            ]
+            ++ lib.concatMap (adjacency: [adjacency.ipv4 adjacency.ipv6]) (
+              builtins.attrValues fabric.adjacencies
+            )
+        ) (builtins.attrValues config.clan.networkFacts.fabric);
+        wireguardAddresses =
+          lib.concatMap (
+            interface:
+              map (
+                address:
+                  stripPrefix (
+                    if builtins.isString address
+                    then address
+                    else address.address
+                  )
+              )
+              interface.addresses
+          ) (
+            builtins.filter (
+              interface: (interface.link.kind or null) == "wireguard"
+            ) (builtins.attrValues config.networking.ifstate.settings.interfaces)
+          );
+        overlayAddresses = lib.unique (
+          builtins.filter builtins.isString (fabricAddresses ++ wireguardAddresses)
+        );
+        targetHostOnOverlay = settings.targetHost && lib.elem targetHostAddr overlayAddresses;
         dhcpHookScript = pkgs.writeScript "netif-dhcp-hook" ''
           running() {
             ${lib.getExe' pkgs.procps "pgrep"} -f "dhcpcd.* ''${IFS_IFNAME}( |$)" >/dev/null
@@ -994,6 +1035,10 @@ in {
             {
               assertion = !settings.targetHost || targetHostValue != null;
               message = "netif/${instanceName}: machine '${machine.name}' sets 'targetHost = true' but no deploy address resolves; set 'endpoint', matching 'endpointSources', or an endpoint-enabled link with static addresses";
+            }
+            {
+              assertion = !targetHostOnOverlay;
+              message = "netif/${instanceName}: machine '${machine.name}' targetHost '${toString targetHostAddr}' resolves to a fabric, transfer, or tunnel address; keep the deploy target on the underlay";
             }
           ]
           ++ linkAssertions instanceName machine.name settings.links resolved;
@@ -1120,6 +1165,48 @@ in {
     v4Defaults = lib.filter v4Default allResolved;
     v6Defaults = lib.filter v6Default allResolved;
 
+    policyTableClaims = lib.concatLists (
+      lib.mapAttrsToList (
+        instanceName: resolved:
+          lib.concatMap (
+            r:
+              lib.optional (r.policy.table != null) {
+                inherit instanceName;
+                inherit (r) logical;
+                value = r.policy.table;
+              }
+          ) (lib.attrValues resolved)
+      )
+      resolvedByInstance
+    );
+    rulePriorityClaims = lib.concatLists (
+      lib.mapAttrsToList (
+        instanceName: resolved:
+          lib.concatMap (
+            r:
+              lib.optionals (r.policy.table != null) (
+                map (priority: {
+                  inherit instanceName;
+                  inherit (r) logical;
+                  value = priority;
+                }) (
+                  (lib.genList (i: r.policy.priority + i) (lib.length r.policy.from))
+                  ++ (lib.genList (i: r.policy.priority + 50 + i) (lib.length r.policy.to))
+                )
+              )
+          ) (lib.attrValues resolved)
+      )
+      resolvedByInstance
+    );
+    crossInstanceDuplicates = claims:
+      lib.attrNames (
+        lib.filterAttrs (
+          _: entries: lib.length (lib.unique (map (entry: entry.instanceName) entries)) > 1
+        ) (lib.groupBy (entry: toString entry.value) claims)
+      );
+    policyTableDuplicates = crossInstanceDuplicates policyTableClaims;
+    rulePriorityDuplicates = crossInstanceDuplicates rulePriorityClaims;
+
     # Per-instance effective DNS (segment default + per-link override).
     dnsByInstance =
       lib.mapAttrs (
@@ -1173,6 +1260,14 @@ in {
           message = "netif: machine '${machine.name}' has conflicting DNS nameservers between netif instances: ${
             lib.concatStringsSep "; " (map (c: "${c.aName} vs ${c.bName}") dnsConflicts)
           } (identical or disjoint sets are allowed; overlapping-but-different sets are ambiguous, D53)";
+        }
+        {
+          assertion = policyTableDuplicates == [];
+          message = "netif: machine '${machine.name}' has cross-instance routingPolicy table collisions: ${lib.concatStringsSep ", " policyTableDuplicates}";
+        }
+        {
+          assertion = rulePriorityDuplicates == [];
+          message = "netif: machine '${machine.name}' has cross-instance routingPolicy rule-priority collisions: ${lib.concatStringsSep ", " rulePriorityDuplicates}";
         }
       ];
     };

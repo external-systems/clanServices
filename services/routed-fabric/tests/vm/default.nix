@@ -220,12 +220,20 @@
         rib(beta, "/tmp/rib.before")
         beta.succeed("ip route show > /tmp/fib.before")
 
-        # Reload is daemon-preserving (FRR 10.7 probe, SPEC.md D19): the
-        # local RIB must not move.
+        # Reload is daemon-preserving (FRR 10.7 probe, SPEC.md D19). D63's
+        # bilateral DelayOpen intentionally holds recovered sessions for five
+        # seconds; wait for that hold-down and route replay, then require the
+        # exact original RIB rather than comparing during the hold-down.
         rib(spine_a, "/tmp/rib.spine-a.before")
         spine_a.succeed("systemctl reload frr")
-        rib(spine_a, "/tmp/rib.spine-a.after")
-        spine_a.succeed("diff -u /tmp/rib.spine-a.before /tmp/rib.spine-a.after")
+        spine_a.wait_until_succeeds(
+            "vtysh -c 'show bgp neighbors' | grep -c 'BGP state = Established' | grep -q '^8$'",
+            timeout=60,
+        )
+        spine_a.wait_until_succeeds(
+            "vtysh -c 'show ip route' | sed -E 's/, (XX|[0-9]{2,}):[0-9]{2}:[0-9]{2}$//' > /tmp/rib.spine-a.after && diff -u /tmp/rib.spine-a.before /tmp/rib.spine-a.after",
+            timeout=60,
+        )
 
         # Fail spine-b; dual-homed leaves lose one ECMP leg and converge on
         # spine-a, and traffic to/from the single-homed leaf keeps flowing.

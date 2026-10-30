@@ -14,7 +14,13 @@ ports, and overlay deploy targets. Forwarding nodes accept RAs with
 `accept_ra = 2`. Fabric adjacencies use symmetric `site`/`wan` timer
 profiles, a bilateral five-second FRR DelayOpen hold-down, and automatic
 maximum-prefix restart. Hostname address families remain a warning because
-hermetic eval never performs DNS resolution.
+hermetic eval never performs DNS resolution. Positive and negative nix-unit
+coverage and the full static `nix flake check --show-trace` pass. Fresh VM
+runs pass `netif` (`NETIF_IFSTATE_LIVE_OK`), `netif-dhcp`
+(`NETIF_DHCP_RA_IFSTATE_OK`), `routed-fabric`
+(`ROUTED_FABRIC_TRANSPORT_OK`, `ROUTED_FABRIC_SPINE_HA_OK`), and
+`k3s-data-plane` (`K3S_DATA_PLANE_OK`). The routed-fabric reload assertion
+waits for DelayOpen and route replay before requiring the identical RIB.
 
 Round 20 (2026-10-29): **status corrections and tooling-only phase 1; no
 service behavior change.** A review found routed-fabric and netif claims that

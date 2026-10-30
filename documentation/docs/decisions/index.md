@@ -13,7 +13,11 @@ bilateral five-second DelayOpen recovery hold-down, and maximum-prefix
 restart after ten minutes. FRR 10.7 DelayOpen was chosen because it runs on
 both inbound and outbound session recovery; BFD strict hold-time does not
 provide this hold-down with nonzero BGP hold timers. Hostname families warn
-instead of triggering DNS resolution during hermetic eval.
+instead of triggering DNS resolution during hermetic eval. Positive and
+negative eval coverage, the full static check, and fresh netif, netif-dhcp,
+routed-fabric, and k3s-data-plane VM runs pass. The routed-fabric test
+retains its exact-RIB reload assertion after waiting for DelayOpen and route
+replay.
 
 **Round 19 (2026-10-28) — artifact authority and static-only checks.** Added
 D62: `pkgs` owns shared inputs, overlays, packages, and airgap artifacts; VM

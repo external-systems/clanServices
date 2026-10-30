@@ -41,10 +41,13 @@ Segment defaults live on `roles.default.settings`: `mtu`, `nameservers`,
 
 A machine may join several netif instances. Eval rejects: the same
 interface owned by more than one instance, more than one default route
-per address family (DHCP lease defaults count), and DNS nameserver sets
-that overlap while differing between instances (identical or disjoint
-sets are allowed). DHCP hook names are instance- and link-namespaced
-(`netif-dhcp-<instance>-<link>`).
+per address family (DHCP lease defaults count), DNS nameserver sets that
+overlap while differing between instances (identical or disjoint sets are
+allowed), and cross-instance policy-table or effective rule-priority
+collisions. DHCP hook names are instance- and link-namespaced
+(`netif-dhcp-<instance>-<link>`). RA-enabled links use `accept_ra = 2` on
+forwarding machines. Literal deploy targets may not name fabric, transfer,
+or tunnel addresses.
 
 ## Exports
 

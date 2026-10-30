@@ -51,6 +51,21 @@
         default = false;
         description = "Route return traffic from owned prefixes through this adjacency in a separate policy table.";
       };
+      sourceReturnTable = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.u32;
+        default = null;
+        description = "Override the source-return policy table; never 200 or a same-host netif policy table.";
+      };
+      timerProfile = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "site"
+            "wan"
+          ]
+        );
+        default = null;
+        description = "Override the symmetric adjacency timer profile; null selects site for equal sites and wan otherwise.";
+      };
     };
   };
 
@@ -65,6 +80,11 @@
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Stable fabric IPv6 host address without a prefix; null derives it deterministically.";
+      };
+      site = lib.mkOption {
+        type = lib.types.str;
+        default = "default";
+        description = "Failure-domain site label; equal sites default to site timers and different sites to wan timers.";
       };
       port = lib.mkOption {
         type = lib.types.port;
@@ -231,6 +251,15 @@
     else if lib.hasInfix ":" host
     then "[${host}]:${toString port}"
     else "${host}:${toString port}";
+
+  endpointFamily = host:
+    if host == null
+    then null
+    else if lib.hasInfix ":" host
+    then 6
+    else if builtins.match "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" host != null
+    then 4
+    else null;
 
   roleFor = roles: machineName:
     if (roles.spine.machines or {}) ? ${machineName}
@@ -449,6 +478,27 @@
         (localOverride.externalTransit or false) || (remoteOverride.externalTransit or false);
       sourceReturn = localOverride.sourceReturn or false;
       extraAllowedIPs = localOverride.extraAllowedIPs or [];
+      localEndpointHost = endpointOf machine.name;
+      localFamily = endpointFamily localEndpointHost;
+      remoteFamily = endpointFamily endpointHost;
+      addressFamilyMismatch =
+        localFamily != null && remoteFamily != null && localFamily != remoteFamily;
+      hostnameEndpoint =
+        (localEndpointHost != null && localFamily == null)
+        || (endpointHost != null && remoteFamily == null);
+      timerProfile =
+        if (localOverride.timerProfile or null) != null
+        then localOverride.timerProfile
+        else if (remoteOverride.timerProfile or null) != null
+        then remoteOverride.timerProfile
+        else if ownSettings.site == remoteSettings.site
+        then "site"
+        else "wan";
+      timerOverrideConflict =
+        (localOverride.timerProfile or null)
+        != null
+        && (remoteOverride.timerProfile or null) != null
+        && localOverride.timerProfile != remoteOverride.timerProfile;
       remoteRole = roleFor roles remoteName;
       import =
         if ownRole == "spine" && remoteRole == "spine"
@@ -497,13 +547,18 @@
       linkLocal = let
         hash = builtins.hashString "sha256" "${key}:${machine.name}";
       in "fe80::${builtins.substring 0 4 hash}:${builtins.substring 4 4 hash}:${builtins.substring 8 4 hash}:${builtins.substring 12 4 hash}";
-      table = 200 + lib.mod (fabric.nodeAsn instanceName remoteName) 40000;
+      table =
+        if (localOverride.sourceReturnTable or null) != null
+        then localOverride.sourceReturnTable
+        else 200 + lib.mod (fabric.nodeAsn instanceName remoteName) 40000;
     in {
       inherit
+        addressFamilyMismatch
         allowedIPs
         endpoint
         export
         externalTransit
+        hostnameEndpoint
         import
         key
         linkLocal
@@ -513,6 +568,8 @@
         remoteName
         sourceReturn
         table
+        timerOverrideConflict
+        timerProfile
         underlayMtu
         ;
       local = localAddress;
@@ -576,6 +633,9 @@
     interfaceNames = map (adjacency: adjacency.name) adjacencies;
     listenPorts = map (adjacency: adjacency.port) adjacencies;
     sourceReturns = builtins.filter (adjacency: adjacency.sourceReturn) adjacencies;
+    addressFamilyMismatches = builtins.filter (adjacency: adjacency.addressFamilyMismatch) adjacencies;
+    hostnameEndpoints = builtins.filter (adjacency: adjacency.hostnameEndpoint) adjacencies;
+    timerOverrideConflicts = builtins.filter (adjacency: adjacency.timerOverrideConflict) adjacencies;
     inherit (ownSettings) border;
 
     # D58: routed-fabric is the native transport — every adjacency
@@ -646,6 +706,7 @@
                 name
                 port
                 prefixes
+                timerProfile
                 ;
               inherit (adjacency.local) ipv4 ipv6;
             };
@@ -757,8 +818,41 @@
             )
         )
         adjacencies;
+      netifPolicyTables = lib.unique (
+        lib.concatMap (
+          instance:
+            lib.concatMap (
+              link: lib.optional ((link.routingPolicy.table or null) != null) link.routingPolicy.table
+            ) (builtins.attrValues instance.links)
+        ) (builtins.attrValues config.clan.networkFacts.netif)
+      );
+      upstreamPeers =
+        if border != null
+        then border.upstreamPeers
+        else [];
+      upstream4 = map (peer: peer.address) (
+        builtins.filter (peer: !(lib.hasInfix ":" peer.address)) upstreamPeers
+      );
+      upstream6 = map (peer: peer.address) (
+        builtins.filter (peer: lib.hasInfix ":" peer.address) upstreamPeers
+      );
+      upstreamFirewallRules =
+        lib.optionalString (upstream4 != []) ''
+          ip saddr { ${lib.concatStringsSep ", " upstream4} } tcp dport 179 accept
+          ip saddr { ${lib.concatStringsSep ", " upstream4} } udp dport { 3784, 4784 } accept
+        ''
+        + lib.optionalString (upstream6 != []) ''
+          ip6 saddr { ${lib.concatStringsSep ", " upstream6} } tcp dport 179 accept
+          ip6 saddr { ${lib.concatStringsSep ", " upstream6} } udp dport { 3784, 4784 } accept
+        '';
     in {
       imports = [../../lib/kube-cluster/network-facts.nix];
+
+      warnings =
+        map (
+          adjacency: "routed-fabric/${instanceName}: adjacency ${adjacency.key} uses a hostname endpoint; eval cannot verify a shared address family without DNS resolution"
+        )
+        hostnameEndpoints;
 
       assertions = [
         {
@@ -816,6 +910,26 @@
         {
           assertion = sourceReturns == [] || border != null;
           message = "routed-fabric/${instanceName}: sourceReturn requires border.ownedPrefixes";
+        }
+        {
+          assertion = lib.all (adjacency: adjacency.table != 200) sourceReturns;
+          message = "routed-fabric/${instanceName}: source-return tables must never use 200 (Cilium owns and flushes that table)";
+        }
+        {
+          assertion = lib.all (adjacency: !(lib.elem adjacency.table netifPolicyTables)) sourceReturns;
+          message = "routed-fabric/${instanceName}: source-return tables must not collide with same-host netif routingPolicy tables (${lib.concatStringsSep ", " (map toString netifPolicyTables)})";
+        }
+        {
+          assertion = addressFamilyMismatches == [];
+          message = "routed-fabric/${instanceName}: adjacency endpoints must share an address family when both are IP literals; mismatched ${
+            lib.concatMapStringsSep ", " (adjacency: adjacency.key) addressFamilyMismatches
+          }";
+        }
+        {
+          assertion = timerOverrideConflicts == [];
+          message = "routed-fabric/${instanceName}: both sides of an adjacency must select the same timerProfile; conflicting ${
+            lib.concatMapStringsSep ", " (adjacency: adjacency.key) timerOverrideConflicts
+          }";
         }
       ];
 
@@ -878,6 +992,7 @@
                     allowedIPs
                     externalTransit
                     sourceReturn
+                    timerProfile
                     ;
                 };
               })
@@ -912,13 +1027,21 @@
         };
         nftables.enable = true;
         firewall = {
-          allowedTCPPorts = [179];
-          allowedUDPPorts =
-            lib.optionals ownSettings.firewall.openPort listenPorts
-            ++ [
-              3784
-              4784
-            ];
+          allowedUDPPorts = lib.optionals ownSettings.firewall.openPort listenPorts;
+          interfaces = lib.listToAttrs (
+            map (adjacency: {
+              inherit (adjacency) name;
+              value = {
+                allowedTCPPorts = [179];
+                allowedUDPPorts = [
+                  3784
+                  4784
+                ];
+              };
+            })
+            adjacencies
+          );
+          extraInputRules = upstreamFirewallRules;
           trustedInterfaces = lib.optionals ownSettings.firewall.trust interfaceNames;
         };
       };

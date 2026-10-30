@@ -152,17 +152,28 @@
     };
   };
 
-  mkEvaled = inventory:
+  mkEvaledWith = machines: inventory:
     clanLib.clan {
       self = {};
       directory = ./.;
-      inherit exportInterfaces;
+      inherit exportInterfaces machines inventory;
       modules.netif = module;
-      machines = machineConfigs;
-      inherit inventory;
     };
 
+  mkEvaled = mkEvaledWith machineConfigs;
+
   evaled = mkEvaled baseInventory;
+  forwardingEval =
+    mkEvaledWith (
+      machineConfigs
+      // {
+        kamrui-h1 = {
+          nixpkgs.hostPlatform = "x86_64-linux";
+          boot.kernel.sysctl."net.ipv6.conf.all.forwarding" = true;
+        };
+      }
+    )
+    baseInventory;
   kam = evaled.config.nixosConfigurations.kamrui-h1.config;
   edge = evaled.config.nixosConfigurations.edge-1.config;
 
@@ -224,6 +235,48 @@
         "192.168.10.1"
         "1.1.1.1"
       ]; # overlaps home-net but differs
+    }
+  );
+  policyTableConflictEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
+        table = 300;
+        from = ["192.168.10.10/32"];
+        priority = 200;
+      };
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.routingPolicy = {
+        table = 300;
+        from = ["10.99.0.2/32"];
+        priority = 300;
+      };
+    }
+  );
+  rulePriorityConflictEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
+        table = 301;
+        from = ["192.168.10.10/32"];
+        priority = 100;
+      };
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.routingPolicy = {
+        table = 302;
+        from = ["10.99.0.2/32"];
+        priority = 100;
+      };
+    }
+  );
+  policyDisjointEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
+        table = 301;
+        from = ["192.168.10.10/32"];
+        priority = 200;
+      };
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.routingPolicy = {
+        table = 302;
+        from = ["10.99.0.2/32"];
+        priority = 300;
+      };
     }
   );
 
@@ -294,6 +347,18 @@ in {
     test_dhcpHookRegistrationMatchesLinkReference = {
       expr = lib.attrNames kamIfstate.parameters.hooks;
       expected = ["netif-dhcp-home-net-wifi"];
+    };
+    test_forwardingAcceptsRouterAdvertisements = {
+      expr = let
+        interfaces = forwardingEval.config.nixosConfigurations.kamrui-h1.config.networking.ifstate.settings.interfaces;
+      in {
+        dhcp = interfaces.wlp2s0.sysctl.ipv6.accept_ra;
+        static = interfaces.enp3s0.sysctl.ipv6.accept_ra;
+      };
+      expected = {
+        dhcp = 2;
+        static = 2;
+      };
     };
     test_multiNicStatic = {
       expr = kamInterfaces.enp3s0.addresses;
@@ -579,6 +644,18 @@ in {
     test_dnsConflictRejected = {
       expr = failedAssertion dnsConflictEval.config.nixosConfigurations.kamrui-h1.config "conflicting DNS nameservers";
       expected = true;
+    };
+    test_policyTableCollisionRejected = {
+      expr = failedAssertion policyTableConflictEval.config.nixosConfigurations.kamrui-h1.config "routingPolicy table collisions: 300";
+      expected = true;
+    };
+    test_rulePriorityCollisionRejected = {
+      expr = failedAssertion rulePriorityConflictEval.config.nixosConfigurations.kamrui-h1.config "rule-priority collisions: 100";
+      expected = true;
+    };
+    test_disjointPolicyClaimsAccepted = {
+      expr = failedAssertion policyDisjointEval.config.nixosConfigurations.kamrui-h1.config "collisions";
+      expected = false;
     };
     # Malformed per-instance link definitions.
     test_vlanWithoutParentRejected = {

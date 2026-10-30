@@ -1,6 +1,8 @@
 # Data-plane hardening plan
 
-Status: **phase 2 in progress** (2026-10-29); phase 1 is merged. SPEC.md
+Status: **phase 2 implemented** (2026-10-29); phases 1–2 are complete.
+The full static flake check and the netif, netif-dhcp, routed-fabric, and
+k3s-data-plane VM suites pass with their existing `*_OK` markers. SPEC.md
 stays the status authority, and each phase below amends SPEC.md before it
 changes code (AGENTS.md rule 3).
 
@@ -346,7 +348,7 @@ Each phase has a self-contained hand-off prompt in its own folder under
 | --- | --- | --- | --- |
 | 0 | this file, the phase prompts, SPEC.md status corrections, AGENTS.md rules, slides and docs theme (docs only) | merged; every VM-proven claim names a marker or is marked planned | — |
 | 1 | alejandra + statix + deadnix, flake input cleanup and partitions, VM log helper | `nix flake check` green; `nix-github-actions` gone; consumers no longer lock dev inputs | [phase-1-tooling/prompt.md](phase-1-tooling/prompt.md) |
-| 2 | correctness fixes, eval assertions, stability timers | each finding has a fix or an assertion with positive and negative tests | [phase-2-correctness/prompt.md](phase-2-correctness/prompt.md) |
+| 2 (implemented) | correctness fixes, eval assertions, stability timers | each finding has a fix or an assertion with positive and negative tests | [phase-2-correctness/prompt.md](phase-2-correctness/prompt.md) |
 | 3 | allocation through clan vars, new ranges | no hash-derived address, ASN or port remains; all suites green | [phase-3-allocation/prompt.md](phase-3-allocation/prompt.md) |
 | 4 | netif underlay features | `match.mac`, DHCPv6 + PD, forwarding-safe RA, declared path MTU | [phase-4-netif-underlay/prompt.md](phase-4-netif-underlay/prompt.md) |
 | 5 | facts schema, materializer, synthetic inventories | every `tests/clans/` inventory evaluates; materializer round-trips | [phase-5-facts-and-clans/prompt.md](phase-5-facts-and-clans/prompt.md) |
