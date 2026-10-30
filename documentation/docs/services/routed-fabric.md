@@ -76,6 +76,33 @@ path, and installs accepted routes through Zebra. Cilium peers only with
 local FRR over `::1`; FRR rewrites its next hop before redistribution, and
 native routing forwards remote pod traffic through the kernel FIB.
 
+D63 makes convergence deliberately stable. Equal `settings.site` values use
+the `site` profile (BFD 300 ms x3); different sites use `wan` (BFD 1000 ms
+x5 plus BGP keepalive/hold 10/30 seconds). Set
+`adjacencies.<remote>.timerProfile = "site" | "wan"` to override the
+default; conflicting two-sided overrides fail eval. Border upstreams always
+use `wan`. Both ends and upstreams use a five-second FRR DelayOpen fixed
+hold-down before a recovered session establishes; this is not exponential
+flap damping. Every maximum-prefix limit restarts the session after ten
+minutes. Plain `bfd` accompanies each profile, site defaults stay implicit,
+and `use-underlays-nexthop-weight` is explicit, so an unchanged reload has
+an empty dry-run diff and preserves peer uptimes and the immediate RIB.
+TCP 179 and UDP 3784/4784 are opened only on fabric WireGuard interfaces and
+from declared literal upstream peer addresses, never globally. Every
+WireGuard listen port is unique and reserved in
+`net.ipv4.ip_local_reserved_ports`; additional ports or ranges can be added
+through `clanServices.networking.reservedPorts`. The shared IfState module
+has a stable key, so importing it through several networking services is safe.
+
+Declared literal endpoints on an adjacency must share an address family;
+hostname endpoints produce an eval warning because evaluation does not
+resolve DNS. Full per-host underlay-family reachability is phase-5 work.
+Source-return tables never use `{0,200,201,253,254,255,2004,2005}` or
+collide with same-host netif/source-return tables. Their independent rule
+priorities stay below 32766 and unique across fabric and netif rules.
+`adjacencies.<remote>.sourceReturnTable` and `sourceReturnPriority` pin
+explicit non-conflicting values when derived values are unsuitable.
+
 Node-owned `node-bgp` pools advertise only from their owner (and only when
 BGP delivery actually exists). `shared-bgp` pools advertise from every
 healthy eligible node and use ECMP. Ordinary clients receive

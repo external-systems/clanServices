@@ -25,3 +25,9 @@ deleted in the round-17 cleanup.
 Pick the profile by datapath need (native + internal LoadBalancer via
 `routed-fabric`, or tunnel/VXLAN + nodePort via `wireguard-mesh`) and let
 the generic `node_transport` export carry the facts to the distro services.
+
+D63 requires every member pair to have an endpoint on at least one side,
+rejects overlapping `extraAllowedIPs` between peers, and rejects listen-port
+clashes between any WireGuard interfaces on the same host. Every listen port
+is reserved in `net.ipv4.ip_local_reserved_ports`; additional ports or ranges
+can be supplied through `clanServices.networking.reservedPorts`.

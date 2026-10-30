@@ -93,10 +93,13 @@ A dual-stack mesh member. Every peer renders all other members as WireGuard
 peers. Role settings apply to every member; per-machine settings under
 `roles.peer.machines.<name>.settings` override them.
 
-A multi-member mesh needs at least one reachable endpoint, not an endpoint on
-every member. A NAT or outbound-only member may leave `endpoint` and
-`endpointSources` empty while dialing reachable members. The default 25-second
-keepalive maintains that path.
+Every member pair needs an endpoint on at least one side, not an endpoint
+on every member. A NAT or outbound-only member may leave `endpoint` and
+`endpointSources` empty while dialing reachable members, but two such
+members cannot form a pair and fail eval. The default 25-second keepalive
+maintains reachable paths. `extraAllowedIPs` may not overlap between peers,
+and a mesh listen port may not collide with routed-fabric on the same host.
+Every listen port is reserved in `net.ipv4.ip_local_reserved_ports`.
 
 ## Options
 

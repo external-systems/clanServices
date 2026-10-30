@@ -1,7 +1,31 @@
-# Decision record (D1–D62)
+# Decision record (D1–D63)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history.
+
+**Round 21 (2026-10-29) — correctness and stable convergence.** D63 limits
+BGP/BFD exposure to fabric interfaces and declared literal upstream sources,
+reserves unique WireGuard listen ports through the composable
+`clanServices.networking.reservedPorts` list; the shared IfState module's
+stable key deduplicates repeated service imports. D63 also eval-enforces
+policy, declared-endpoint, mesh, and final-value underlay deploy-target
+coherence. Netif and source-return tables share the same kernel/Cilium
+reserved set; source-return tables and independent rule priorities have
+explicit pins, priorities stay before `main`, and neither tables nor
+priorities can collide with netif. IPv6 deploy targets are normalized before
+comparison. Explicit
+forwarding facts drive `accept_ra = 2`. Fabric adjacencies use symmetric
+site/WAN profiles: 300 ms x3 BFD on site, 1000 ms x5 BFD plus BGP 10/30
+seconds on WAN. Upstreams always use WAN stability settings. A bilateral
+five-second DelayOpen provides a fixed recovery hold-down, not exponential
+flap damping; FRR 10.7.1 `bgp_bfd.c` confirms BFD strict hold-time requires
+a zero effective BGP hold timer, while FRR route dampening is discouraged
+and not dual-stack complete. Hostname families warn instead of triggering
+DNS resolution; complete underlay reachability remains phase-5 work. Plain
+`bfd` accompanies every profile, site defaults stay implicit, and
+`use-underlays-nexthop-weight` is explicit so FRR running config round-trips.
+A no-op reload must have an empty dry-run diff, preserve peer uptimes, and
+leave the RIB immediately identical rather than waiting for recovery.
 
 **Round 19 (2026-10-28) — artifact authority and static-only checks.** Added
 D62: `pkgs` owns shared inputs, overlays, packages, and airgap artifacts; VM

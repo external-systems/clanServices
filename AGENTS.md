@@ -50,7 +50,11 @@ is a review destination, not a dependency.
   authority and moves every VM suite from `checks` to
   `legacyPackages.<system>.vmTests`. The full netif, routed-fabric, k3s,
   and RKE2 native/tunnel/selective/external VM matrix is green on the
-  IfState tree. Round 13's Bootstrap +
+  IfState tree. Round 21 (2026-10-29, D63) adds phase-2 exposure,
+  policy/endpoint/mesh/final-deploy-target assertions, forwarding-safe RA,
+  stable FRR timer/recovery behavior, and no-op reload preservation; routes
+  are stable before fast.
+  Round 13's Bootstrap +
   Data-plane scope remains: Envoy Gateway, cert-manager, Flux install,
   external-dns, Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps
   patterns, never clan-rendered (SPEC.md §3.3, D39–D45).
@@ -82,7 +86,7 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D62) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D63) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
    FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
    `routed-fabric` and made `netif` multi-instance/multi-link; round 16

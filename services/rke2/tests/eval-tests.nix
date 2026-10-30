@@ -1331,6 +1331,11 @@ in {
     expected = true;
   };
 
+  test_forwardingFact = {
+    expr = alphaExplicit.clan.networkFacts.forwarding;
+    expected = true;
+  };
+
   test_fakeTransportContradictingOverridesRejected = {
     expr = !(builtins.tryEval (builtins.deepSeq fakeContradictionEvaled.config true)).success;
     expected = true;

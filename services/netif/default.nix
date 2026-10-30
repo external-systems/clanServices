@@ -5,6 +5,7 @@
   ...
 }: let
   inherit (lib) mkOption types;
+  ip = import ../../lib/ip.nix {inherit lib;};
 
   # ---------------------------------------------------------------------
   # Link resolution (D50/D53): derive kind + interface names and the
@@ -375,10 +376,10 @@
         description = ''
           Underlay policy-routing table for this link (netif owns underlay
           policy routing; routed-fabric owns fabric policy, D53). Null =
-          no policy routing; gateways land in the main table. Must not be
-          200: Cilium flushes table 200 on startup (cilium#38531).
+          no policy routing; gateways land in the main table. Kernel and
+          Cilium tables {0,200,201,253,254,255,2004,2005} are reserved.
         '';
-        example = 201;
+        example = 300;
       };
       from = mkOption {
         type = types.listOf types.str;
@@ -529,8 +530,8 @@
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' resolves to interface name '${r.interface}', which is invalid or exceeds the 15-character kernel limit; set an explicit shorter 'interface'";
           }
           {
-            assertion = r.policy.table == null || r.policy.table != 200;
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' must not use routingPolicy table 200 (Cilium flushes table 200 on startup)";
+            assertion = r.policy.table == null || !(lib.elem r.policy.table ip.reservedPolicyTables);
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' must not use reserved kernel/Cilium routingPolicy table ${toString r.policy.table} (reserved: 0,200,201,253,254,255,2004,2005)";
           }
           {
             assertion = r.policy.table == null || r.policy.from != [] || r.policy.to != [];
@@ -778,7 +779,7 @@ in {
 
       dhcpHookName = logical: "netif-dhcp-${instanceName}-${logical}";
 
-      ifstateInterfaces =
+      mkIfstateInterfaces = forwarding:
         lib.mapAttrs' (
           logical: r:
             lib.nameValuePair r.interface (
@@ -809,7 +810,10 @@ in {
                 sysctl.ipv6 = {
                   accept_ra =
                     if r.ra
-                    then 1
+                    then
+                      if forwarding
+                      then 2
+                      else 1
                     else 0;
                   autoconf =
                     if r.ra
@@ -939,10 +943,13 @@ in {
       };
 
       nixosModule = {
+        config,
         lib,
         pkgs,
         ...
       }: let
+        forwarding = config.clan.networkFacts.forwarding;
+        ifstateInterfaces = mkIfstateInterfaces forwarding;
         dhcpHookScript = pkgs.writeScript "netif-dhcp-hook" ''
           running() {
             ${lib.getExe' pkgs.procps "pgrep"} -f "dhcpcd.* ''${IFS_IFNAME}( |$)" >/dev/null
@@ -1120,6 +1127,48 @@ in {
     v4Defaults = lib.filter v4Default allResolved;
     v6Defaults = lib.filter v6Default allResolved;
 
+    policyTableClaims = lib.concatLists (
+      lib.mapAttrsToList (
+        instanceName: resolved:
+          lib.concatMap (
+            r:
+              lib.optional (r.policy.table != null) {
+                inherit instanceName;
+                inherit (r) logical;
+                value = r.policy.table;
+              }
+          ) (lib.attrValues resolved)
+      )
+      resolvedByInstance
+    );
+    rulePriorityClaims = lib.concatLists (
+      lib.mapAttrsToList (
+        instanceName: resolved:
+          lib.concatMap (
+            r:
+              lib.optionals (r.policy.table != null) (
+                map (priority: {
+                  inherit instanceName;
+                  inherit (r) logical;
+                  value = priority;
+                }) (
+                  (lib.genList (i: r.policy.priority + i) (lib.length r.policy.from))
+                  ++ (lib.genList (i: r.policy.priority + 50 + i) (lib.length r.policy.to))
+                )
+              )
+          ) (lib.attrValues resolved)
+      )
+      resolvedByInstance
+    );
+    crossInstanceDuplicates = claims:
+      lib.attrNames (
+        lib.filterAttrs (
+          _: entries: lib.length (lib.unique (map (entry: entry.instanceName) entries)) > 1
+        ) (lib.groupBy (entry: toString entry.value) claims)
+      );
+    policyTableDuplicates = crossInstanceDuplicates policyTableClaims;
+    rulePriorityDuplicates = crossInstanceDuplicates rulePriorityClaims;
+
     # Per-instance effective DNS (segment default + per-link override).
     dnsByInstance =
       lib.mapAttrs (
@@ -1173,6 +1222,14 @@ in {
           message = "netif: machine '${machine.name}' has conflicting DNS nameservers between netif instances: ${
             lib.concatStringsSep "; " (map (c: "${c.aName} vs ${c.bName}") dnsConflicts)
           } (identical or disjoint sets are allowed; overlapping-but-different sets are ambiguous, D53)";
+        }
+        {
+          assertion = policyTableDuplicates == [];
+          message = "netif: machine '${machine.name}' has cross-instance routingPolicy table collisions: ${lib.concatStringsSep ", " policyTableDuplicates}";
+        }
+        {
+          assertion = rulePriorityDuplicates == [];
+          message = "netif: machine '${machine.name}' has cross-instance routingPolicy rule-priority collisions: ${lib.concatStringsSep ", " rulePriorityDuplicates}";
         }
       ];
     };

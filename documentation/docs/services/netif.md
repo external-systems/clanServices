@@ -32,9 +32,11 @@ Cross-instance checks keep the host coherent (D53): an interface/link is
 owned by exactly one instance, exactly one link per address family may
 provide the host default route (DHCP lease defaults count), and DNS
 nameserver sets that overlap while differing between instances are
-rejected (identical or disjoint sets are allowed). `routed-fabric`
-owns fabric policy routing — `netif` never renders fabric rules — and
-`netif` links never become a shared-L2 Kubernetes datapath. Within one
+rejected (identical or disjoint sets are allowed). Policy-routing tables
+and every effective from/to rule priority must also be unique across
+instances. `routed-fabric` owns fabric policy routing — `netif` never
+renders fabric rules — and `netif` links never become a shared-L2
+Kubernetes datapath. Within one
 instance, a VLAN child names its parent link, and bonds/bridges name
 physical member links; a physical link consumed as a member carries no
 addressing of its own. Every DHCP hook is instance-namespaced
@@ -65,6 +67,19 @@ link/interface/address/gateway/MTU/route configuration is published to the
 per-node `clan.networkFacts` interface as underlay graph facts (D57) —
 producer-owned, non-secret, and exposed through `readOnly = true` options;
 see [Network diagrams](../architecture/network-diagrams.md).
+
+RA-enabled links use `accept_ra = 2` on machines with actual forwarding
+intent (spines, borders with `border.forwarding = true`, and k3s/rke2
+nodes), so SLAAC default routes survive while forwarding is enabled. The
+final literal `targetHost`, including an explicit override without netif,
+is rejected if it names a fabric loopback, transfer, or tunnel address;
+IPv6 is normalized before comparison and deployment stays on the underlay.
+Additional `clanServices.networking.reservedPorts` strings (ports or ranges)
+merge with every rendered WireGuard listen port in `ip_local_reserved_ports`.
+The option lives in clanServices' own namespace, and the shared IfState
+module's stable key makes repeated imports idempotent. Netif and source-return
+policy tables both reject `{0,200,201,253,254,255,2004,2005}`; netif tables
+and effective rule priorities must also be unique across instances.
 
 ## Inventory example
 

@@ -1,8 +1,10 @@
 # Data-plane hardening plan
 
-Status: **phase 1 implemented on PR #2, pending merge** (2026-10-29); later
-phases planned. SPEC.md stays the status authority, and each phase below
-amends SPEC.md before it changes code (AGENTS.md rule 3).
+Status: **phase 2 implemented** (2026-10-29); phases 1–2 are complete.
+The full static flake check and the netif, netif-dhcp, routed-fabric, and
+k3s-data-plane VM suites pass with their existing `*_OK` markers. SPEC.md
+stays the status authority, and each phase below amends SPEC.md before it
+changes code (AGENTS.md rule 3).
 
 Goal: make the Data-plane contract (SPEC.md §3.2) enforceable and stable on
 any underlay — bare metal, Proxmox, Hetzner, GCP, later AWS and Azure — by
@@ -126,10 +128,32 @@ New rule: a status of *VM-proven* names its test file and a unique
 | S2 Isolation | separate fabric instances, non-peered clusters and access levels cannot reach what they are not granted | VM |
 | F1 Facts completeness | `clan.networkFacts` plus underlay facts drive the reachability matrix and tf firewall rules | eval |
 
-C1 implies two timer profiles chosen per adjacency — same-site (for example
-BFD 300 ms × 3) and WAN (for example BFD 1000 ms × 5 with BGP 10/30 s as a
-backstop) — plus a hold-down before a recovered path is used again. The
-exact FRR mechanisms are chosen and documented in phase 2.
+C1 uses two timer profiles per adjacency: `site` = BFD 300 ms × 3 and
+`wan` = BFD 1000 ms × 5 with BGP 10/30 s as a backstop. Equal declared
+sites default to `site`, different sites to `wan`, and an explicit symmetric
+per-adjacency override wins; upstream border sessions always use `wan`.
+Phase 2 chooses FRR 10.7 `neighbor <peer> timers delayopen 5` on both ends
+for a fixed recovery hold-down. DelayOpen runs on inbound and outbound
+session recovery. [FRR 10.7.1 `bgp_bfd.c`](https://github.com/FRRouting/frr/blob/frr-10.7.1/bgpd/bgp_bfd.c)
+starts BFD strict hold-time only with a zero effective BGP hold timer, so
+it cannot provide this hold-down. DelayOpen is not exponential damping;
+[FRR route dampening](https://docs.frrouting.org/en/stable-10.7/bgp.html#route-flap-dampening)
+is discouraged and does not cover IPv6 here, so periodic-flap measurement
+stays in the phase-6 WAN soak. Every maximum-prefix clause uses `restart 10`.
+Profiled neighbors also render plain `bfd`; site defaults stay implicit and
+`use-underlays-nexthop-weight` is explicit to match running-config
+serialization. An unchanged reload has an empty dry-run diff, preserves peer
+uptimes, and leaves the RIB immediately identical; DelayOpen is not
+permission for a reload to reset sessions.
+
+The phase-2 review follow-up gives the shared IfState module a stable key and
+moves extra port reservations to `clanServices.networking.reservedPorts`, so
+repeated imports cannot duplicate the option or invade clan-core's namespace.
+Netif rejects the same kernel/Cilium policy tables as source-return.
+`sourceReturnPriority` joins `sourceReturnTable` as an explicit collision
+escape. The existing routed-fabric VM derives its loopback fixture from
+network facts and checks a wildcard TCP/179 listener alongside negative
+underlay exposure; no VM suite is added.
 
 ## NAT egress and floating IPs
 
@@ -341,9 +365,9 @@ Each phase has a self-contained hand-off prompt in its own folder under
 | --- | --- | --- | --- |
 | 0 | this file, the phase prompts, SPEC.md status corrections, AGENTS.md rules, slides and docs theme (docs only) | merged; every VM-proven claim names a marker or is marked planned | — |
 | 1 | alejandra + statix + deadnix, flake input cleanup and partitions, VM log helper | `nix flake check` green; `nix-github-actions` gone; consumers no longer lock dev inputs | [phase-1-tooling/prompt.md](phase-1-tooling/prompt.md) |
-| 2 | correctness fixes, eval assertions, stability timers | each finding has a fix or an assertion with positive and negative tests | [phase-2-correctness/prompt.md](phase-2-correctness/prompt.md) |
+| 2 (implemented) | correctness fixes, eval assertions, stability timers | each finding has a fix or an assertion with positive and negative tests | [phase-2-correctness/prompt.md](phase-2-correctness/prompt.md) |
 | 3 | allocation through clan vars, new ranges | no hash-derived address, ASN or port remains; all suites green | [phase-3-allocation/prompt.md](phase-3-allocation/prompt.md) |
-| 4 | netif underlay features | `match.mac`, DHCPv6 + PD, forwarding-safe RA, declared path MTU | [phase-4-netif-underlay/prompt.md](phase-4-netif-underlay/prompt.md) |
+| 4 | netif underlay features | `match.mac`, DHCPv6 + PD, declared path MTU | [phase-4-netif-underlay/prompt.md](phase-4-netif-underlay/prompt.md) |
 | 5 | facts schema, materializer, synthetic inventories | every `tests/clans/` inventory evaluates; materializer round-trips | [phase-5-facts-and-clans/prompt.md](phase-5-facts-and-clans/prompt.md) |
 | 6 | VM harness + priority scenarios | scenarios 1, 2, 4, 6, 8, 9, 13, 19, 22 green with markers | [phase-6-vm-harness/prompt.md](phase-6-vm-harness/prompt.md) |
 | 7 | gateway service, single NAT egress, floating IP coexistence | scenarios 16, 20, 21 green | [phase-7-gateway/prompt.md](phase-7-gateway/prompt.md) |

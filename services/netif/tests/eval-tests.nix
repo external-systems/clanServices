@@ -5,6 +5,8 @@
   lib,
   ...
 }: let
+  ip = import ../../../lib/ip.nix {inherit lib;};
+
   machineConfigs =
     lib.genAttrs
     [
@@ -134,7 +136,7 @@
             static.ipv4 = ["10.30.0.1/24"];
           };
           # Underlay policy routing (D53: netif owns underlay policy):
-          # /32 on an L3-only segment, gateway on-link in table 201.
+          # /32 on an L3-only segment, gateway on-link in table 300.
           vswitch = {
             interface = "enp7s0";
             static.ipv4 = ["192.0.2.10/32"];
@@ -143,7 +145,7 @@
               onLink = true;
             };
             routingPolicy = {
-              table = 201;
+              table = 300;
               from = ["192.0.2.10/32"];
             };
           };
@@ -152,17 +154,28 @@
     };
   };
 
-  mkEvaled = inventory:
+  mkEvaledWith = machines: inventory:
     clanLib.clan {
       self = {};
       directory = ./.;
-      inherit exportInterfaces;
+      inherit exportInterfaces machines inventory;
       modules.netif = module;
-      machines = machineConfigs;
-      inherit inventory;
     };
 
+  mkEvaled = mkEvaledWith machineConfigs;
+
   evaled = mkEvaled baseInventory;
+  forwardingEval =
+    mkEvaledWith (
+      machineConfigs
+      // {
+        kamrui-h1 = {
+          nixpkgs.hostPlatform = "x86_64-linux";
+          clan._networkFacts.forwarding = true;
+        };
+      }
+    )
+    baseInventory;
   kam = evaled.config.nixosConfigurations.kamrui-h1.config;
   edge = evaled.config.nixosConfigurations.edge-1.config;
 
@@ -225,6 +238,56 @@
         "1.1.1.1"
       ]; # overlaps home-net but differs
     }
+  );
+  policyTableConflictEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
+        table = 300;
+        from = ["192.168.10.10/32"];
+        priority = 200;
+      };
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.routingPolicy = {
+        table = 300;
+        from = ["10.99.0.2/32"];
+        priority = 300;
+      };
+    }
+  );
+  rulePriorityConflictEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
+        table = 301;
+        from = ["192.168.10.10/32"];
+        priority = 100;
+      };
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.routingPolicy = {
+        table = 302;
+        from = ["10.99.0.2/32"];
+        priority = 100;
+      };
+    }
+  );
+  policyDisjointEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
+        table = 301;
+        from = ["192.168.10.10/32"];
+        priority = 200;
+      };
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.routingPolicy = {
+        table = 302;
+        from = ["10.99.0.2/32"];
+        priority = 300;
+      };
+    }
+  );
+  reservedPolicyTableEvals = lib.genAttrs (map toString ip.reservedPolicyTables) (
+    table:
+      mkEvaled (
+        lib.recursiveUpdate baseInventory {
+          instances.dmz-net.roles.default.machines.edge-1.settings.links.vswitch.routingPolicy.table = builtins.fromJSON table;
+        }
+      )
   );
 
   # --- negatives: malformed links (perInstance) ---
@@ -295,6 +358,18 @@ in {
       expr = lib.attrNames kamIfstate.parameters.hooks;
       expected = ["netif-dhcp-home-net-wifi"];
     };
+    test_forwardingAcceptsRouterAdvertisements = {
+      expr = let
+        interfaces = forwardingEval.config.nixosConfigurations.kamrui-h1.config.networking.ifstate.settings.interfaces;
+      in {
+        dhcp = interfaces.wlp2s0.sysctl.ipv6.accept_ra;
+        static = interfaces.enp3s0.sysctl.ipv6.accept_ra;
+      };
+      expected = {
+        dhcp = 2;
+        static = 2;
+      };
+    };
     test_multiNicStatic = {
       expr = kamInterfaces.enp3s0.addresses;
       expected = [
@@ -338,13 +413,13 @@ in {
     test_policyRouting = {
       expr = {
         rules = edgeIfstate.routing.rules;
-        routes = builtins.filter (r: (r.table or null) == 201) edgeIfstate.routing.routes;
+        routes = builtins.filter (r: (r.table or null) == 300) edgeIfstate.routing.routes;
       };
       expected = {
         rules = [
           {
             from = "192.0.2.10/32";
-            table = 201;
+            table = 300;
             priority = 100;
           }
         ];
@@ -353,7 +428,7 @@ in {
             to = "0.0.0.0/0";
             via = "192.0.2.1";
             dev = "enp7s0";
-            table = 201;
+            table = 300;
             onlink = true;
           }
         ];
@@ -578,6 +653,24 @@ in {
     };
     test_dnsConflictRejected = {
       expr = failedAssertion dnsConflictEval.config.nixosConfigurations.kamrui-h1.config "conflicting DNS nameservers";
+      expected = true;
+    };
+    test_policyTableCollisionRejected = {
+      expr = failedAssertion policyTableConflictEval.config.nixosConfigurations.kamrui-h1.config "routingPolicy table collisions: 300";
+      expected = true;
+    };
+    test_rulePriorityCollisionRejected = {
+      expr = failedAssertion rulePriorityConflictEval.config.nixosConfigurations.kamrui-h1.config "rule-priority collisions: 100";
+      expected = true;
+    };
+    test_disjointPolicyClaimsAccepted = {
+      expr = failedAssertion policyDisjointEval.config.nixosConfigurations.kamrui-h1.config "collisions";
+      expected = false;
+    };
+    test_reservedPolicyTablesRejected = {
+      expr = lib.all (
+        eval: failedAssertion eval.config.nixosConfigurations.edge-1.config "reserved kernel/Cilium routingPolicy table"
+      ) (builtins.attrValues reservedPolicyTableEvals);
       expected = true;
     };
     # Malformed per-instance link definitions.

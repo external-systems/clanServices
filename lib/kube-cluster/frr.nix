@@ -109,6 +109,10 @@
     rmIn6 = "${name}_rin6";
     rmOut4 = "${name}_rout4";
     rmOut6 = "${name}_rout6";
+    bgpTimers =
+      if adjacency.timerProfile == "wan"
+      then "10 30"
+      else "3 9";
     mkAf = {
       family,
       peer,
@@ -119,7 +123,7 @@
        neighbor ${peer} activate
        neighbor ${peer} route-map ${rmIn} in
        neighbor ${peer} route-map ${rmOut} out
-       neighbor ${peer} maximum-prefix 4096
+       neighbor ${peer} maximum-prefix 4096 restart 10
        ${lib.optionalString adjacency.nextHopSelf " neighbor ${peer} next-hop-self"}
        maximum-paths ${toString adjacency.maximumPaths}
       exit-address-family
@@ -169,13 +173,17 @@
      neighbor ${adjacency.remote.ipv4} remote-as ${toString adjacency.remoteAsn}
      neighbor ${adjacency.remote.ipv4} description ${adjacency.key}
      neighbor ${adjacency.remote.ipv4} bfd
-     neighbor ${adjacency.remote.ipv4} timers 3 9
+     neighbor ${adjacency.remote.ipv4} bfd profile ${adjacency.timerProfile}
+     neighbor ${adjacency.remote.ipv4} timers ${bgpTimers}
      neighbor ${adjacency.remote.ipv4} timers connect 5
+     neighbor ${adjacency.remote.ipv4} timers delayopen 5
      neighbor ${adjacency.remote.ipv6} remote-as ${toString adjacency.remoteAsn}
      neighbor ${adjacency.remote.ipv6} description ${adjacency.key}
      neighbor ${adjacency.remote.ipv6} bfd
-     neighbor ${adjacency.remote.ipv6} timers 3 9
+     neighbor ${adjacency.remote.ipv6} bfd profile ${adjacency.timerProfile}
+     neighbor ${adjacency.remote.ipv6} timers ${bgpTimers}
      neighbor ${adjacency.remote.ipv6} timers connect 5
+     neighbor ${adjacency.remote.ipv6} timers delayopen 5
     ${mkAf {
       family = 4;
       peer = adjacency.remote.ipv4;
@@ -257,13 +265,13 @@
       neighbor ::1 activate
       neighbor ::1 route-map ${rmIn4} in
       neighbor ::1 route-map ${rmOut4} out
-      neighbor ::1 maximum-prefix 4096
+      neighbor ::1 maximum-prefix 4096 restart 10
      exit-address-family
      address-family ipv6 unicast
       neighbor ::1 activate
       neighbor ::1 route-map ${rmIn6} in
       neighbor ::1 route-map ${rmOut6} out
-      neighbor ::1 maximum-prefix 4096
+      neighbor ::1 maximum-prefix 4096 restart 10
      exit-address-family
   '';
 in rec {
@@ -329,14 +337,16 @@ in rec {
              neighbor ${peer.address} remote-as ${toString peer.asn}
              neighbor ${peer.address} description border-upstream
              neighbor ${peer.address} bfd
-             neighbor ${peer.address} timers 3 9
+             neighbor ${peer.address} bfd profile wan
+             neighbor ${peer.address} timers 10 30
              neighbor ${peer.address} timers connect 5
+             neighbor ${peer.address} timers delayopen 5
              address-family ipv${suffix} unicast
               neighbor ${peer.address} activate
               neighbor ${peer.address} route-map ${routeMap} in
               neighbor ${peer.address} route-map ${routeMap} out
               neighbor ${peer.address} next-hop-self
-              neighbor ${peer.address} maximum-prefix 4096
+              neighbor ${peer.address} maximum-prefix 4096 restart 10
              exit-address-family
           '')
           peers}
@@ -368,6 +378,15 @@ in rec {
   in ''
     frr defaults datacenter
     allow-reserved-ranges
+    bfd
+     profile site
+     !
+     profile wan
+      detect-multiplier 5
+      receive-interval 1000
+      transmit-interval 1000
+     !
+    !
     ip prefix-list rf_source4 seq 5 permit any
     ipv6 prefix-list rf_source6 seq 5 permit any
     route-map rf_source4 permit 10
@@ -386,6 +405,7 @@ in rec {
      bgp ebgp-requires-policy
      bgp bestpath as-path multipath-relax
      bgp allow-martian-nexthop
+     use-underlays-nexthop-weight
      address-family ipv4 unicast
       ${lib.concatMapStringsSep "\n " (network: "network ${network}") familyNetworks.v4}
       maximum-paths 8

@@ -1361,6 +1361,11 @@ in {
     expected = true;
   };
 
+  test_forwardingFact = {
+    expr = alphaExplicit.clan.networkFacts.forwarding;
+    expected = true;
+  };
+
   # Contradicting cilium.helmValues on the fake transport eval-fail (D58).
   test_fakeTransportContradictingOverridesRejected = {
     expr = !(builtins.tryEval (builtins.deepSeq fakeContradictionEvaled.config true)).success;

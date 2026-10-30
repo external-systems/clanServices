@@ -98,6 +98,22 @@
       instances.mesh.roles.peer.settings.endpointSources = [];
     }
   );
+  pairWithoutEndpointEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mesh.roles.peer.settings.endpointSources = [];
+      instances.mesh.roles.peer.machines.alpha.settings.endpoint = "alpha.example.net";
+    }
+  );
+  overlappingAllowedIPsEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mesh.roles.peer.machines.gamma.settings.extraAllowedIPs = ["10.77.0.0/16"];
+    }
+  );
+  localOverlappingAllowedIPsEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mesh.roles.peer.machines.alpha.settings.extraAllowedIPs = ["10.77.0.0/16"];
+    }
+  );
 
   interfaceCollisionEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
@@ -108,7 +124,7 @@
           ipv4 = "192.168.78.1";
           ipv6 = "fd00:78::1";
           interface = "wg-mesh";
-          port = 51822;
+          port = 51820;
           endpoint = "alpha.example.net";
         };
       };
@@ -245,6 +261,10 @@ in {
         interfaceTrusted = true;
       };
     };
+    test_listenPortReserved = {
+      expr = alpha.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
+      expected = "51820";
+    };
     # §6.3: mesh addresses derive deterministically from the mesh
     # instance + machine name when unset (pinned hash contract).
     test_derivedMeshAddresses = {
@@ -355,8 +375,24 @@ in {
       expected = true;
     };
     test_missingEndpointsRejected = {
-      expr = failedAssertion noEndpointEval.config.nixosConfigurations.alpha.config "needs at least one explicit endpoint";
+      expr = failedAssertion noEndpointEval.config.nixosConfigurations.alpha.config "every member pair needs an endpoint";
       expected = true;
+    };
+    test_pairWithoutEndpointRejected = {
+      expr = failedAssertion pairWithoutEndpointEval.config.nixosConfigurations.beta.config "unreachable from 'beta' to gamma";
+      expected = true;
+    };
+    test_overlappingExtraAllowedIPsRejected = {
+      expr = failedAssertion overlappingAllowedIPsEval.config.nixosConfigurations.alpha.config "extraAllowedIPs overlap between peers";
+      expected = true;
+    };
+    test_localExtraAllowedIPsOverlapRejected = {
+      expr = failedAssertion localOverlappingAllowedIPsEval.config.nixosConfigurations.beta.config "alpha=10.77.0.0/16 overlaps beta=10.77.10.0/24";
+      expected = true;
+    };
+    test_disjointExtraAllowedIPsAccepted = {
+      expr = failedAssertion alpha "extraAllowedIPs overlap";
+      expected = false;
     };
     test_interfaceCollisionRejected = {
       expr = failedAssertion interfaceCollisionEval.config.nixosConfigurations.alpha.config "duplicate interface names";

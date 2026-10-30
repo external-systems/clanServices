@@ -4,6 +4,25 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 21 (2026-10-29): **data-plane correctness and stable convergence
+(D63).** BGP/BFD exposure is limited to fabric WireGuard interfaces and
+source-restricted declared upstream peers; every IfState WireGuard listen
+port is reserved against ephemeral-port reuse. Eval rejects source-return
+and netif policy collisions, incompatible literal endpoint families,
+unreachable mesh pairs, overlapping mesh AllowedIPs, cross-transport listen
+ports, and overlay deploy targets. Forwarding nodes accept RAs with
+`accept_ra = 2`. Fabric adjacencies use symmetric `site`/`wan` timer
+profiles, a bilateral five-second FRR DelayOpen hold-down, and automatic
+maximum-prefix restart. Hostname address families remain a warning because
+hermetic eval never performs DNS resolution. Positive and negative nix-unit
+coverage and the full static `nix flake check --show-trace` pass. Fresh VM
+runs pass `netif` (`NETIF_IFSTATE_LIVE_OK`), `netif-dhcp`
+(`NETIF_DHCP_RA_IFSTATE_OK`), `routed-fabric`
+(`ROUTED_FABRIC_TRANSPORT_OK`, `ROUTED_FABRIC_SPINE_HA_OK`), and
+`k3s-data-plane` (`K3S_DATA_PLANE_OK`). The routed-fabric suite also proves
+source-return selection before `main`, negative underlay exposure, an empty
+reload diff, preserved peer uptimes, and an immediately identical RIB.
+
 Round 20 (2026-10-29): **status corrections and tooling-only phase 1; no
 service behavior change.** A review found routed-fabric and netif claims that
 the code or VM suites do not yet meet. Those claims stay in the target
@@ -335,7 +354,10 @@ buildable diagrams without becoming a clanServices dependency (D57).
   next-hop-self, leaves never provide transit. WireGuard `AllowedIPs` —
   outbound cryptokey selection AND inbound source ACL — and BGP filters
   derive from the same route policy; external-transit adjacencies may
-  carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route.
+  carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route. D63 scopes
+  BGP/BFD exposure, reserves listen ports, validates endpoint/policy
+  coherence, and uses stable `site`/`wan` timers with DelayOpen and
+  maximum-prefix restart.
 - Access-scoped route consumption (D13): Kubernetes machines always
   install remote pod-pool blocks and advertised-VIP routes (native-
   routing requirement, D49); non-Kubernetes `access = "client"` machines
@@ -370,7 +392,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D62)
+## 4. Decision record (D1–D63)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1283,6 +1305,62 @@ unless noted) — revoked entries keep one-line reasons for history.
   emits `legacyPackages.<system>.vmTests`; `checks` contains only lightweight
   static checks. VM derivations must never return to `checks`.
 
+### Round 21 decisions (2026-10-29) — active
+
+- **D63 Correct exposure, collision-free ownership, and stable convergence.**
+  TCP 179 and UDP 3784/4784 are never opened globally by routed-fabric:
+  they are allowed on fabric WireGuard interfaces and, for external
+  sessions, only from declared literal `border.upstreamPeers` addresses.
+  Hostnames, zones, and malformed upstream literals are eval errors. The
+  shared IfState base has a stable module key so repeated service imports
+  deduplicate, requires globally unique rendered WireGuard listen ports, and
+  reserves them, together with entries from the composable clanServices-owned
+  `clanServices.networking.reservedPorts` list, in
+  `net.ipv4.ip_local_reserved_ports`.
+
+  Source-return and netif policy tables never use the shared kernel/Cilium
+  reserved set `{0,200,201,253,254,255,2004,2005}`. Source-return tables also
+  avoid same-host netif policy tables and other source-return tables. Their
+  independent rule priorities occupy a deterministic band below kernel `main`
+  (32766) and are unique across all source-return and effective netif rules.
+  `sourceReturnTable` and `sourceReturnPriority` pin either derived value.
+  Netif policy tables and effective rule priorities are unique across
+  instances. Every adjacency with two
+  declared literal endpoints must share an address family; a hostname
+  produces an eval warning because eval does not resolve DNS. This is a
+  declared-endpoint check, not the phase-5 per-host underlay reachability
+  matrix. Wireguard-mesh rejects pairs with no endpoint on either side,
+  overlapping `extraAllowedIPs`, and same-host routed-fabric listen-port
+  clashes. The final literal `clan.core.networking.targetHost`, including an
+  explicit override on a machine without netif, never names a fabric
+  loopback, transfer, or tunnel address; optional user/brackets/port are
+  parsed and IPv6 is normalized before comparison.
+  `clan.networkFacts.forwarding` exports actual host forwarding intent from
+  spines, borders with `border.forwarding`, and k3s/rke2 nodes without a
+  sysctl evaluation cycle; RA-enabled links on forwarding machines use
+  `accept_ra = 2`.
+
+  Each fabric adjacency has a symmetric timer profile: `site` = BFD 300 ms
+  x3, `wan` = BFD 1000 ms x5 plus BGP keepalive/hold 10/30 seconds. Equal
+  `settings.site` values default to `site`; different sites default to
+  `wan`; an explicit per-adjacency profile overrides the default and two
+  conflicting overrides are eval errors. Border upstream sessions always
+  use `wan`. Both fabric ends and upstreams render FRR 10.7
+  `neighbor <peer> timers delayopen 5`: DelayOpen applies on each inbound
+  and outbound session recovery and delays establishment for up to five
+  seconds. FRR 10.7.1 `bgp_bfd.c` starts BFD strict hold-time only when the
+  effective BGP hold timer is zero, so strict hold-time is not this recovery
+  hold-down. DelayOpen is fixed, not exponential flap damping; FRR route
+  dampening is not substituted because upstream discourages it and its
+  dual-stack coverage is incomplete. Periodic-flap behavior belongs to the
+  phase-6 WAN soak. Every rendered `maximum-prefix 4096` uses `restart 10`.
+  Every profiled neighbor also renders plain `bfd`; site profile defaults
+  stay implicit and `use-underlays-nexthop-weight` is explicit, matching FRR
+  running-config serialization. A no-op FRR reload therefore has an empty
+  `frr-reload.py --test` diff, preserves peer uptimes, and leaves the RIB
+  immediately identical; DelayOpen must never excuse reload-induced
+  recovery. Stability takes precedence over faster reconvergence.
+
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
 1. One declarative fleet: instance declaration ⇒ stable identity,
@@ -1369,6 +1447,11 @@ unless noted) — revoked entries keep one-line reasons for history.
     and never branch on provider service names; admin overrides cannot
     contradict the transport-derived datapath mode, protocol, devices,
     `directRoutingDevice`, MTU, or exposure capabilities (D58).
+24. Exposure and convergence follow D63: BGP/BFD are interface/source
+    scoped, WireGuard ports are reserved, policy/endpoint/AllowedIP/deploy
+    collisions fail eval, forwarding-safe RA is used, and symmetric BFD/BGP
+    profiles plus DelayOpen and maximum-prefix restart favor stability over
+    speed.
 
 ## 6. Subsystem contracts (condensed)
 
@@ -1455,10 +1538,13 @@ optional deploy-target export. Its `peer`/`netif` exports feed adjacency
 endpoint selection automatically, with explicit per-adjacency overrides.
 Static values may be interpolated from the consumer's `secrets`/
 `not-secret` input; exports still contain no private keys.
-Cross-instance assertions: a link is owned by exactly one instance,
-default-route and DNS conflicts between instances are eval errors, and
-every DHCP hook is instance-namespaced (rule 5). All netif settings render
-through IfState (D61), which applies address/link/route changes live.
+Cross-instance assertions: a link is owned by exactly one instance;
+default-route, DNS, policy-table, and effective rule-priority conflicts
+between instances are eval errors; and every DHCP hook is
+instance-namespaced (rule 5). All netif settings render through IfState
+(D61), which applies address/link/route changes live. RA-enabled links use
+`accept_ra = 2` on forwarding machines. A literal deploy target is rejected
+when it matches any declared fabric or tunnel address.
 
 `routed-fabric` is the native overlay transport (the supported tunnel
 transport is `wireguard-mesh`, D58). Its `leaf`/`spine` symmetric graph is
@@ -1501,7 +1587,18 @@ derives from the underlay MTU minus WireGuard overhead (80 bytes v4 /
 96 v6) with a 1280 floor; VMs assert path MTU. Endpoint reachability is
 evaluated per adjacency; private endpoints are allowed when
 actually reachable. One `routed-fabric` instance = one trust domain; one
-machine has at most one membership and one topology role.
+machine has at most one membership and one topology role. Declared literal
+endpoints on one adjacency must share an address family; hostname endpoints
+generate an eval warning instead of impure DNS resolution. Source-return
+tables have an explicit per-adjacency pin, avoid all kernel/Cilium owners
+and netif/source-return collisions, and use independent unique rule
+priorities below 32766. `settings.site` selects the default timer profile:
+equal sites use `site` (BFD 300 ms x3), different sites use `wan` (BFD
+1000 ms x5 and BGP 10/30 seconds), and
+`adjacencies.<remote>.timerProfile` overrides either. Upstreams use `wan`.
+Both ends and upstreams use a five-second fixed DelayOpen hold-down; all
+maximum-prefix limits restart after ten minutes. No-op reloads preserve
+peer uptimes and the immediate RIB (D63).
 
 ```nix
 inventory.instances = {
@@ -1770,10 +1867,10 @@ GitOps owns all lifecycle post-bootstrap; base upgrades preserve
 operator CRDs.
 
 ### 6.12 Assertions and firewall
-*Status (round 20): the leaf-transit, asymmetric source/return, HA-profile
-and duplicate-ASN rejections below are planned, not implemented, and
-BGP/BFD ports are currently opened on every interface. See the hardening
-plan, phase 2.*
+*Status (round 21): D63 exposure, policy, endpoint, mesh, RA, deploy-target,
+and timer invariants are eval-enforced. The leaf-transit, asymmetric
+source/return, HA-profile and duplicate-ASN rejections below remain planned;
+see the later hardening phases.*
 
 Eval rejects: multiple bootstraps; duplicate ids/CIDRs/ports/ASNs/
 interface names/transfer prefixes; missing dual-stack or topology facts;
@@ -1785,15 +1882,22 @@ fabric IPv4 block MUST contain host offset 79 (at least 128 addresses;
 the default /24 satisfies this; the old offset-53 / 64-address rule is
 retired); BGP pools outside border-owned prefixes; node-in-two-clusters; multiple
 fabric memberships or routing stacks per host; adjacencies with no
-reachable endpoint on either side; leaves with no reachable spine or
-spines not declared with the spine role; HA profiles without two
-reachable spines;
+reachable endpoint on either side or with mismatched literal address
+families; leaves with no reachable spine or spines not declared with the
+spine role; HA profiles without two reachable spines;
 leaf-transit configurations (a non-border leaf readvertising fabric
 routes); default-route/AllowedIP leaks — a
 0.0.0.0/0 or ::/0 crypto ACL must not create or accept an IP default
 route; asymmetric Internet source/return paths; WG MTU below the derived
-floor; netif cross-instance conflicts (link ownership, default-route,
-DNS) and non-namespaced netif units; missing native CIDR containment;
+floor; source-return kernel/Cilium/netif/source-return table collisions or
+rule priorities at/above 32766 and any netif/fabric priority collisions;
+netif cross-instance conflicts (link ownership, default-route, DNS, policy
+tables, effective rule priorities) and non-namespaced netif units;
+wireguard-mesh pairs without an endpoint on either side, overlapping
+`extraAllowedIPs`, and any same-host WireGuard listen-port clashes;
+non-literal upstream peers; final literal overlay deploy targets;
+conflicting adjacency timer overrides;
+missing native CIDR containment;
 Geneve or non-derived tunnel protocols, or `auto-direct-node-routes` in
 the canonical profile;
 Cilium devices missing WG links; ETP Cluster on clan-rendered external
@@ -1806,9 +1910,10 @@ or write verbs (D38). Firewall: nftables-only — Cilium's required
 KPR/BPF-masquerade rules use iptables-nft; legacy iptables and
 kube-proxy rules are forbidden (D55); API on transport only; public
 ports only where exposed; WireGuard only on configured underlays;
-BGP/BFD only on loopback and expected WG/upstream peers *(planned)*; mirror Services
-restricted to GitOps namespaces. VMs assert positive AND negative
-exposure, the nft backend, Cilium datapath rules, and no kube-proxy rules.
+BGP/BFD only on fabric WireGuard interfaces and from declared upstream
+peers, never globally (D63); mirror Services restricted to GitOps
+namespaces. VMs assert positive AND negative exposure, the nft backend,
+Cilium datapath rules, and no kube-proxy rules.
 
 ### 6.13 routed-fabric service
 Per D11/D13/D19/D22/D33/D47/D48/D51/D52/D53/D56/D59. Two topology roles,
