@@ -1,8 +1,10 @@
 {ifstateOverlay}: {
   clanLib,
+  directory,
   lib,
   ...
 }: let
+  cidr = import ../../lib/kube-cluster/cidr.nix {inherit lib;};
   fabric = import ../../lib/kube-cluster/fabric.nix {inherit lib;};
   frr = import ../../lib/kube-cluster/frr.nix {inherit lib;};
   ip = import ../../lib/ip.nix {inherit lib;};
@@ -30,7 +32,7 @@
       port = lib.mkOption {
         type = lib.types.nullOr lib.types.port;
         default = null;
-        description = "Override the deterministic UDP port for this adjacency.";
+        description = "Override the allocated UDP port for this adjacency.";
       };
       underlayMtu = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
@@ -80,12 +82,22 @@
       ipv4 = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Stable fabric IPv4 host address without a prefix; null derives it deterministically.";
+        description = "Stable fabric IPv4 host address without a prefix; null reads the public node allocation.";
       };
       ipv6 = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Stable fabric IPv6 host address without a prefix; null derives it deterministically.";
+        description = "Stable fabric IPv6 host address without a prefix; null reads the public node allocation.";
+      };
+      loopback4Pool = lib.mkOption {
+        type = lib.types.str;
+        default = "198.18.0.0/17";
+        description = "Member-uniform IPv4 loopback allocation pool recorded by the shared prefix generator.";
+      };
+      transfer4Pool = lib.mkOption {
+        type = lib.types.str;
+        default = "198.19.0.0/16";
+        description = "Member-uniform IPv4 transfer allocation pool recorded by the shared prefix generator.";
       };
       site = lib.mkOption {
         type = lib.types.str;
@@ -95,7 +107,25 @@
       port = lib.mkOption {
         type = lib.types.port;
         default = 51820;
-        description = "Base UDP port from which deterministic per-adjacency listen ports derive.";
+        description = "Base transport UDP port published in node_transport; per-adjacency ports are allocated independently.";
+      };
+      portRange = lib.mkOption {
+        type = lib.types.submodule {
+          options = {
+            start = lib.mkOption {
+              type = lib.types.port;
+              default = 10000;
+              description = "First port available to adjacency allocation.";
+            };
+            end = lib.mkOption {
+              type = lib.types.port;
+              default = 32767;
+              description = "Last port available to adjacency allocation.";
+            };
+          };
+        };
+        default = {};
+        description = "Member-uniform inclusive range for allocated adjacency ports.";
       };
       underlayMtu = lib.mkOption {
         type = lib.types.ints.positive;
@@ -183,7 +213,7 @@
         openPort = lib.mkOption {
           type = lib.types.bool;
           default = true;
-          description = "Open deterministic WireGuard UDP listen ports.";
+          description = "Open allocated WireGuard UDP listen ports.";
         };
         trust = lib.mkOption {
           type = lib.types.bool;
@@ -304,17 +334,65 @@
     allMachines = (roles.leaf.machines or {}) // (roles.spine.machines or {});
     ownRole = roleFor roles machine.name;
     ownSettings = allMachines.${machine.name}.settings;
+    prefixGenerator = "routed-fabric-${instanceName}-prefixes";
+    nodeGenerator = "routed-fabric-${instanceName}-node";
+    adjacencyGeneratorName = remoteName: let
+      endpoints = lib.sort builtins.lessThan [
+        machine.name
+        remoteName
+      ];
+    in "routed-fabric-${instanceName}-adj-${builtins.head endpoints}-${builtins.elemAt endpoints 1}";
+
+    allocation = {
+      generator,
+      file,
+      machineName ? null,
+      generateMachine ? machine.name,
+    }:
+      lib.trim (
+        clanLib.getPublicValue {
+          inherit generator file;
+          flake = directory;
+          machine = machineName;
+          default = throw "routed-fabric/${instanceName}: no allocation for ${
+            if machineName == null
+            then generateMachine
+            else machineName
+          } (${generator}/${file}); run: clan vars generate ${generateMachine} --generator ${generator}";
+        }
+      );
 
     addressOf = name: {
       ipv4 =
         if allMachines.${name}.settings.ipv4 != null
         then allMachines.${name}.settings.ipv4
-        else fabric.stableIpv4 instanceName name;
+        else
+          allocation {
+            generator = nodeGenerator;
+            machineName = name;
+            generateMachine = name;
+            file = "ipv4";
+          };
       ipv6 =
         if allMachines.${name}.settings.ipv6 != null
         then allMachines.${name}.settings.ipv6
-        else fabric.stableIpv6 instanceName name;
+        else
+          allocation {
+            generator = nodeGenerator;
+            machineName = name;
+            generateMachine = name;
+            file = "ipv6";
+          };
     };
+    asnOf = name:
+      builtins.fromJSON (
+        allocation {
+          generator = nodeGenerator;
+          machineName = name;
+          generateMachine = name;
+          file = "asn";
+        }
+      );
     ownAddress = addressOf machine.name;
     stableHosts = lib.concatMap (
       name: let
@@ -439,23 +517,45 @@
 
     mkAdjacency = remoteName: let
       remoteSettings = allMachines.${remoteName}.settings;
-      transfer = fabric.transferAddresses instanceName machine.name remoteName;
-      localIsFirst =
-        transfer.ordered
-        == lib.sort builtins.lessThan [
-          machine.name
-          remoteName
-        ]
-        && machine.name == builtins.head transfer.ordered;
+      key = fabric.adjacencyKey instanceName machine.name remoteName;
+      generator = adjacencyGeneratorName remoteName;
+      allocatedPort = builtins.fromJSON (
+        allocation {
+          inherit generator;
+          file = "port";
+        }
+      );
+      prefixes = {
+        ipv4 = allocation {
+          inherit generator;
+          file = "transfer4";
+        };
+        ipv6 = allocation {
+          inherit generator;
+          file = "transfer6";
+        };
+      };
+      ordered = lib.sort builtins.lessThan [
+        machine.name
+        remoteName
+      ];
+      localIsFirst = machine.name == builtins.head ordered;
+      firstAddress = {
+        ipv4 = cidr.addressAt prefixes.ipv4 0;
+        ipv6 = cidr.addressAtV6 prefixes.ipv6 0;
+      };
+      secondAddress = {
+        ipv4 = cidr.addressAt prefixes.ipv4 1;
+        ipv6 = cidr.addressAtV6 prefixes.ipv6 1;
+      };
       localAddress =
         if localIsFirst
-        then transfer.localFirst
-        else transfer.localSecond;
+        then firstAddress
+        else secondAddress;
       remoteAddress =
         if localIsFirst
-        then transfer.localSecond
-        else transfer.localFirst;
-      inherit (transfer) key;
+        then secondAddress
+        else firstAddress;
       localOverride = ownSettings.adjacencies.${remoteName} or {};
       remoteOverride = remoteSettings.adjacencies.${machine.name} or {};
       port =
@@ -463,13 +563,8 @@
         then localOverride.port
         else if (remoteOverride.port or null) != null
         then remoteOverride.port
-        else fabric.adjacencyPort ownSettings.port key;
-      remotePort =
-        if (localOverride.port or null) != null
-        then localOverride.port
-        else if (remoteOverride.port or null) != null
-        then remoteOverride.port
-        else fabric.adjacencyPort remoteSettings.port key;
+        else allocatedPort;
+      remotePort = port;
       endpointHost =
         if (localOverride.endpoint or null) != null
         then localOverride.endpoint
@@ -556,11 +651,11 @@
       table =
         if (localOverride.sourceReturnTable or null) != null
         then localOverride.sourceReturnTable
-        else 1000 + lib.mod (fabric.nodeAsn instanceName remoteName) 30000;
+        else 1000 + lib.mod (asnOf remoteName) 30000;
       rulePriority =
         if (localOverride.sourceReturnPriority or null) != null
         then localOverride.sourceReturnPriority
-        else 10000 + lib.mod (fabric.nodeAsn instanceName remoteName) 20000;
+        else 10000 + lib.mod (asnOf remoteName) 20000;
     in {
       inherit
         addressFamilyMismatch
@@ -568,6 +663,7 @@
         endpoint
         export
         externalTransit
+        generator
         hostnameEndpoint
         import
         key
@@ -575,6 +671,7 @@
         mtu
         name
         port
+        prefixes
         remoteName
         rulePriority
         sourceReturn
@@ -585,10 +682,9 @@
         ;
       local = localAddress;
       remote = remoteAddress;
-      remoteAsn = fabric.nodeAsn instanceName remoteName;
+      remoteAsn = asnOf remoteName;
       nextHopSelf = ownRole == "spine";
       inherit (ownSettings) maximumPaths;
-      inherit (transfer) prefixes;
     };
 
     clusterRoutesFor = name:
@@ -605,7 +701,7 @@
       );
 
     adjacencies = map mkAdjacency peerNames;
-    ownAsn = fabric.nodeAsn instanceName machine.name;
+    ownAsn = asnOf machine.name;
     loopbackName = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" instanceName)}";
     frrConfig = frr.mkConfig {
       routerId = ownAddress.ipv4;
@@ -680,6 +776,7 @@
         inherit (ownAddress) ipv4 ipv6;
         inherit (ownSettings) port;
         instance = instanceName;
+        asn = ownAsn;
         interfaces = transportInterfaces;
         inherit directRoutingDevice;
         endpoint = endpointString (endpointOf machine.name) ownSettings.port;
@@ -967,23 +1064,126 @@
       ];
 
       clan = {
-        core.vars.generators.${generatorName} = {
-          files.privatekey = {
-            owner = "root";
-            group = "root";
-            mode = "0400";
-            restartUnits = ["ifstate.service"];
-          };
-          files.publickey = {
-            secret = false;
-            deploy = false;
-          };
-          runtimeInputs = [pkgs.wireguard-tools];
-          script = ''
-            wg genkey > "$out"/privatekey
-            wg pubkey < "$out"/privatekey > "$out"/publickey
-          '';
-        };
+        core.vars.generators =
+          {
+            ${generatorName} = {
+              files.privatekey = {
+                owner = "root";
+                group = "root";
+                mode = "0400";
+                restartUnits = ["ifstate.service"];
+              };
+              files.publickey = {
+                secret = false;
+                deploy = false;
+              };
+              runtimeInputs = [pkgs.wireguard-tools];
+              script = ''
+                wg genkey > "$out"/privatekey
+                wg pubkey < "$out"/privatekey > "$out"/publickey
+              '';
+            };
+            ${prefixGenerator} = {
+              share = true;
+              files = lib.genAttrs ["ula48" "loopback4-pool" "transfer4-pool"] (_: {
+                secret = false;
+                deploy = false;
+              });
+              validation = {
+                inherit (ownSettings) loopback4Pool transfer4Pool;
+              };
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import ipaddress
+                import os
+                import secrets
+                from pathlib import Path
+
+                out = Path(os.environ["out"])
+                ula = f"fd{secrets.randbits(40):010x}"
+                (out / "ula48").write_text(f"{ula[:4]}:{ula[4:8]}:{ula[8:12]}::/48\n")
+                (out / "loopback4-pool").write_text("${ownSettings.loopback4Pool}\n")
+                (out / "transfer4-pool").write_text("${ownSettings.transfer4Pool}\n")
+                PY
+              '';
+            };
+            ${nodeGenerator} = {
+              dependencies = [prefixGenerator];
+              files = lib.genAttrs ["ipv4" "ipv6" "asn"] (_: {
+                secret = false;
+                deploy = false;
+              });
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import ipaddress
+                import os
+                import secrets
+                from pathlib import Path
+
+                inputs = Path(os.environ["in"]) / "${prefixGenerator}"
+                out = Path(os.environ["out"])
+                ula = ipaddress.IPv6Network((inputs / "ula48").read_text().strip())
+                pool = ipaddress.IPv4Network((inputs / "loopback4-pool").read_text().strip())
+                if pool.num_addresses < 4:
+                    raise ValueError("loopback4Pool must contain at least four addresses")
+                ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
+                loopback6 = ipaddress.IPv6Network((int(ula.network_address), 64))
+                ipv6 = loopback6.network_address + secrets.randbits(64)
+                asn = 4200000000 + secrets.randbelow(4294967294 - 4200000000 + 1)
+                (out / "ipv4").write_text(f"{ipv4}\n")
+                (out / "ipv6").write_text(f"{ipv6}\n")
+                (out / "asn").write_text(f"{asn}\n")
+                PY
+              '';
+            };
+          }
+          // lib.listToAttrs (
+            map (remoteName: {
+              name = adjacencyGeneratorName remoteName;
+              value = {
+                share = true;
+                dependencies = [prefixGenerator];
+                files = lib.genAttrs ["port" "transfer4" "transfer6"] (_: {
+                  secret = false;
+                  deploy = false;
+                });
+                validation = {
+                  portStart = toString ownSettings.portRange.start;
+                  portEnd = toString ownSettings.portRange.end;
+                };
+                runtimeInputs = [pkgs.python3];
+                script = ''
+                  python3 - <<'PY'
+                  import ipaddress
+                  import os
+                  import secrets
+                  from pathlib import Path
+
+                  inputs = Path(os.environ["in"]) / "${prefixGenerator}"
+                  out = Path(os.environ["out"])
+                  ula = ipaddress.IPv6Network((inputs / "ula48").read_text().strip())
+                  pool = ipaddress.IPv4Network((inputs / "transfer4-pool").read_text().strip())
+                  if pool.num_addresses < 4:
+                      raise ValueError("transfer4Pool must contain at least two /31 prefixes")
+                  transfer4 = ipaddress.IPv4Network((int(pool.network_address) + 2 * secrets.randbelow(pool.num_addresses // 2), 31))
+                  transfer6_pool = ipaddress.IPv6Network((int(ula.network_address) + (1 << 64), 64))
+                  transfer6 = ipaddress.IPv6Network((int(transfer6_pool.network_address) + 2 * secrets.randbelow(1 << 63), 127))
+                  start = ${toString ownSettings.portRange.start}
+                  end = ${toString ownSettings.portRange.end}
+                  if start > end:
+                      raise ValueError("portRange.start must not exceed portRange.end")
+                  port = start + secrets.randbelow(end - start + 1)
+                  (out / "port").write_text(f"{port}\n")
+                  (out / "transfer4").write_text(f"{transfer4.with_prefixlen}\n")
+                  (out / "transfer6").write_text(f"{transfer6.with_prefixlen}\n")
+                  PY
+                '';
+              };
+            })
+            peerNames
+          );
         _networkFacts = {
           schemaVersion = 2;
           forwarding = lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) true;

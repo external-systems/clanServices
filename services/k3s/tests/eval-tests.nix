@@ -267,6 +267,10 @@
             default = 1500;
             description = "Underlay MTU of the fake link.";
           };
+          asn = lib.mkOption {
+            type = lib.types.ints.u32;
+            description = "Allocated host routing ASN on the fake overlay.";
+          };
         };
       };
       perInstance = {
@@ -286,7 +290,7 @@
         exports = mkExports {
           node_transport = {
             schemaVersion = 2;
-            inherit (own) ipv4 ipv6;
+            inherit (own) ipv4 ipv6 asn;
             instance = instanceName;
             endpoint = null;
             port = 59999;
@@ -323,21 +327,25 @@
             ipv4 = "192.168.77.1";
             ipv6 = "fd77::1";
             mtu = 1500;
+            asn = 4258224172;
           };
           beta.settings = {
             ipv4 = "192.168.77.2";
             ipv6 = "fd77::2";
             mtu = 1400;
+            asn = 4258224173;
           };
           gamma.settings = {
             ipv4 = "192.168.77.3";
             ipv6 = "fd77::3";
             mtu = 1500;
+            asn = 4258224174;
           };
           delta.settings = {
             ipv4 = "192.168.77.4";
             ipv6 = "fd77::4";
             mtu = 1500;
+            asn = 4258224175;
           };
         };
       };
@@ -407,28 +415,7 @@
   # fleet check must throw at clan eval.
   fakeAsymmetricEvaled = mkEvaled {
     instances = {
-      fabric = {
-        module.name = "fake-transport";
-        module.input = "self";
-        roles.node.machines = {
-          alpha.settings = {
-            ipv4 = "192.168.77.1";
-            ipv6 = "fd77::1";
-          };
-          beta.settings = {
-            ipv4 = "192.168.77.2";
-            ipv6 = "fd77::2";
-          };
-          gamma.settings = {
-            ipv4 = "192.168.77.3";
-            ipv6 = "fd77::3";
-          };
-          delta.settings = {
-            ipv4 = "192.168.77.4";
-            ipv6 = "fd77::4";
-          };
-        };
-      };
+      fabric = fakeInventory.instances.fabric;
       k3s-a = {
         module.name = "k3s";
         module.input = "self";
@@ -471,20 +458,7 @@
   # (D58 post-merge validation).
   fakeContradictionEvaled = mkEvaled {
     instances = {
-      fabric = {
-        module.name = "fake-transport";
-        module.input = "self";
-        roles.node.machines = {
-          alpha.settings = {
-            ipv4 = "192.168.77.1";
-            ipv6 = "fd77::1";
-          };
-          beta.settings = {
-            ipv4 = "192.168.77.2";
-            ipv6 = "fd77::2";
-          };
-        };
-      };
+      fabric = fakeInventory.instances.fabric;
       k3s-a = {
         module.name = "k3s";
         module.input = "self";

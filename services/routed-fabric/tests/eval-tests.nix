@@ -8,6 +8,10 @@
 }: let
   fabric = import ../../../lib/kube-cluster/fabric.nix {inherit lib;};
   ip = import ../../../lib/ip.nix {inherit lib;};
+  nodeAsn = machine:
+    builtins.fromJSON (
+      lib.trim (builtins.readFile ./fixtures/vars/per-machine/${machine}/routed-fabric-fleet-node/asn/value)
+    );
 
   machineConfigs = lib.genAttrs ["spine-a" "spine-b" "client" "admin" "node-a"] (_: {
     nixpkgs.hostPlatform = "x86_64-linux";
@@ -101,7 +105,7 @@
                 if second
                 then 4200000002
                 else 4200000001;
-              hostAsn = fabric.nodeAsn "fleet" member;
+              hostAsn = nodeAsn member;
               advertiseClusterIPs = true;
             };
           };
@@ -238,6 +242,15 @@
   );
   portClient = portEval.config.nixosConfigurations.client.config;
   portSpine = portEval.config.nixosConfigurations.spine-a.config;
+  allocatedEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.fleet.roles.leaf.machines.client.settings = {
+        ipv4 = null;
+        ipv6 = null;
+      };
+    }
+  );
+  allocatedClient = allocatedEval.config.nixosConfigurations.client.config;
 
   mtuEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
@@ -429,8 +442,8 @@
       instances.fleet.roles.spine.machines.spine-b.settings.adjacencies.spine-a.timerProfile = "wan";
     }
   );
-  derivedSourceReturnTable = 1000 + lib.mod (fabric.nodeAsn "fleet" "client") 30000;
-  derivedSourceReturnPriority = 10000 + lib.mod (fabric.nodeAsn "fleet" "client") 20000;
+  derivedSourceReturnTable = 1000 + lib.mod (nodeAsn "client") 30000;
+  derivedSourceReturnPriority = 10000 + lib.mod (nodeAsn "client") 20000;
   sourceReturnReservedEvals = lib.genAttrs (map toString ip.reservedPolicyTables) (
     table:
       mkEvaled (
@@ -638,7 +651,7 @@
   );
   meshPortCollisionEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
-      instances.mesh = meshInstance 52679;
+      instances.mesh = meshInstance 20001;
     }
   );
 in {
@@ -669,11 +682,21 @@ in {
     };
     test_wireguardPortsReserved = {
       expr = client.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
-      expected = "52679,54843";
+      expected = "20001,20002";
     };
     test_sharedIfstateModuleDeduplicatesAndMergesReservations = {
       expr = reservedPortsEval.config.nixosConfigurations.client.config.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
-      expected = "30000-32767,51820,51822,52679,54843";
+      expected = "30000-32767,51820,20001,20002,51822";
+    };
+    test_publicNodeAllocation = {
+      expr = {
+        inherit (allocatedClient.clan.networkFacts.fabric.fleet) ipv4 ipv6 asn;
+      };
+      expected = {
+        ipv4 = "198.18.0.10";
+        ipv6 = "fd64:6464:6464::10";
+        asn = 4200000010;
+      };
     };
     test_forwardingNetifAcceptsRouterAdvertisements = {
       expr = forwardingNetifEval.config.nixosConfigurations.spine-a.config.networking.ifstate.settings.interfaces.enp1s0.sysctl.ipv6.accept_ra;
@@ -795,14 +818,14 @@ in {
           nameLength = 15;
           peerCount = 1;
           mtu = 1404;
-          listenPort = 52679;
+          listenPort = 20001;
           allowedDefaultAclOnly = true;
         }
         {
           nameLength = 15;
           peerCount = 1;
           mtu = 1404;
-          listenPort = 54843;
+          listenPort = 20002;
           allowedDefaultAclOnly = true;
         }
       ];
@@ -854,12 +877,12 @@ in {
           interface: (builtins.head (lib.attrValues interface.wireguard.peers)).endpoint or null == null
         ) (builtins.attrValues leafInterfaces);
         dualHomedLeafDialsBothSpines =
-          (peerEndpoint endpointClient "rfd0d91d1f47a84" == "192.168.1.4:52679")
-          && (peerEndpoint endpointClient "rfaa5538a64228d" == "192.168.1.5:54843");
+          (peerEndpoint endpointClient "rfd0d91d1f47a84" == "192.168.1.4:20001")
+          && (peerEndpoint endpointClient "rfaa5538a64228d" == "192.168.1.5:20002");
       };
       expected = {
-        spinePairOnA = "192.168.1.5:55962";
-        spinePairOnB = "192.168.1.4:55962";
+        spinePairOnA = "192.168.1.5:20006";
+        spinePairOnB = "192.168.1.4:20006";
         leafPeersOnSpineHaveNoEndpoint = true;
         dualHomedLeafDialsBothSpines = true;
       };
@@ -1105,6 +1128,39 @@ in {
     };
   };
 
+  vars = let
+    generators = client.clan.core.vars.generators;
+    allocationNames = [
+      "routed-fabric-fleet-prefixes"
+      "routed-fabric-fleet-node"
+      "routed-fabric-fleet-adj-client-spine-a"
+    ];
+  in {
+    test_allocationFilesArePublicAndNotDeployed = {
+      expr = lib.all (
+        name:
+          lib.all (file: !file.secret && !file.deploy) (
+            builtins.attrValues generators.${name}.files
+          )
+      ) allocationNames;
+      expected = true;
+    };
+    test_sharedGeneratorsAndDependencies = {
+      expr = {
+        prefixesShared = generators.routed-fabric-fleet-prefixes.share;
+        adjacencyShared = generators.routed-fabric-fleet-adj-client-spine-a.share;
+        nodeDependencies = generators.routed-fabric-fleet-node.dependencies;
+        adjacencyDependencies = generators.routed-fabric-fleet-adj-client-spine-a.dependencies;
+      };
+      expected = {
+        prefixesShared = true;
+        adjacencyShared = true;
+        nodeDependencies = ["routed-fabric-fleet-prefixes"];
+        adjacencyDependencies = ["routed-fabric-fleet-prefixes"];
+      };
+    };
+  };
+
   validation = {
     test_leafNeedsSpine = {
       expr = failedAssertion withoutSpines.config.nixosConfigurations.client.config "must attach to at least one spine";
@@ -1211,7 +1267,7 @@ in {
       expected = true;
     };
     test_meshRoutedFabricPortCollisionRejected = {
-      expr = failedAssertion meshPortCollisionEval.config.nixosConfigurations.client.config "listen-port clashes with routed-fabric: 52679";
+      expr = failedAssertion meshPortCollisionEval.config.nixosConfigurations.client.config "listen-port clashes with routed-fabric: 20001";
       expected = true;
     };
   };

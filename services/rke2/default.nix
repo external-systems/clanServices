@@ -200,7 +200,7 @@
           then null
           else if allMembers.${name}.settings.bgp.hostASN != null
           then allMembers.${name}.settings.bgp.hostASN
-          else kube.hostNodeAsn settings.network.fabric.instance name
+          else facts.asn
       )
       allTransportFacts
     );

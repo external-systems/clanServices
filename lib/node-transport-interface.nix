@@ -22,6 +22,11 @@ in {
       default = null;
       description = "Transport instance (trust domain) name.";
     };
+    asn = lib.mkOption {
+      type = t.nullOr t.ints.u32;
+      default = null;
+      description = "Allocated host routing ASN for the local-router profile; null on tunnel transports.";
+    };
     endpoint = lib.mkOption {
       type = t.nullOr t.str;
       default = null;

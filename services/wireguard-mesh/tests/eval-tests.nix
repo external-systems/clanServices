@@ -304,6 +304,7 @@ in {
         ipv4 = "10.42.0.1";
         ipv6 = "fd10:42::1";
         instance = "mesh";
+        asn = null;
         endpoint = "alpha.example.net:51820";
         port = 51820;
         interfaces = {

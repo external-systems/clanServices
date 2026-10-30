@@ -94,6 +94,7 @@ in rec {
         endpoint = transport.endpoint or null;
         port = transport.port or null;
         instance = transport.instance or null;
+        asn = transport.asn or null;
         inherit (transport) ipv4 ipv6;
         internalLoadBalancer = transport.internalLoadBalancer or false;
         nodePort = transport.nodePort or false;

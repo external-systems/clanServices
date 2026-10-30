@@ -1,8 +1,15 @@
 {
   lib,
   inputs,
+  nodes,
   ...
-}: {
+}: let
+  spineABeta = nodes.spine-a.config.clan.networkFacts.fabric.fleet.adjacencies.beta.ipv4;
+  spineBBeta = nodes.spine-b.config.clan.networkFacts.fabric.fleet.adjacencies.beta.ipv4;
+  spineASpineB = nodes.spine-a.config.clan.networkFacts.fabric.fleet.adjacencies.spine-b.ipv4;
+  gammaSpineA = nodes.gamma.config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.ipv4;
+  spineAAlpha = nodes.spine-a.config.clan.networkFacts.fabric.fleet.adjacencies.alpha.ipv4;
+in {
   name = "routed-fabric";
 
   clan = {
@@ -246,15 +253,15 @@
             machine.fail("vtysh -c 'show ipv6 route' | grep -q 'r>'")
 
         # Leaf ECMP: beta reaches alpha through both spines.
-        beta.succeed("ip route show 192.168.77.3 | grep -q 'via 100.110.157.53'")
-        beta.succeed("ip route show 192.168.77.3 | grep -q 'via 100.166.181.145'")
+        beta.succeed("ip route show 192.168.77.3 | grep -q 'via ${spineABeta}'")
+        beta.succeed("ip route show 192.168.77.3 | grep -q 'via ${spineBBeta}'")
         beta.succeed("ip route show 192.168.77.3 | grep -q 'src 192.168.77.4'")
         beta.succeed("ip -6 route show fd77::3 | grep -Eq 'via fe80::.* dev rf'")
         beta.succeed("ip -6 route show fd77::3 | grep -q 'src fd77::4'")
         # Spine<->spine readvertisement with next-hop-self: spine-b reaches
         # the single-homed gamma only through spine-a.
-        spine_b.succeed("ip route show 192.168.77.5 | grep -q 'via 100.64.231.32'")
-        spine_a.succeed("ip route show 192.168.77.5 | grep -q 'via 100.65.139.74'")
+        spine_b.succeed("ip route show 192.168.77.5 | grep -q 'via ${spineASpineB}'")
+        spine_a.succeed("ip route show 192.168.77.5 | grep -q 'via ${gammaSpineA}'")
         beta.wait_until_succeeds("ping -M do -c 1 -W 2 -s 1376 192.168.77.1", timeout=60)
         beta.fail("ping -M do -c 1 -W 2 -s 1377 192.168.77.1")
         beta.wait_until_succeeds("ping -M do -c 1 -W 2 -s 1356 fd77::1", timeout=60)
@@ -265,7 +272,7 @@
         spine_a.succeed("ip route get 192.0.2.1 from 198.51.100.1 | grep -q 'dev rf'")
         spine_a.succeed("ip -6 route get 2001:db8::1 from 2001:db8:100::1 | grep -q 'dev rf'")
         spine_a.succeed("ss -ltn | grep -Eq '(\\*|0\\.0\\.0\\.0):179 '")
-        beta.succeed("timeout 2 bash -c 'echo > /dev/tcp/100.110.157.52/179'")
+        beta.succeed("timeout 2 bash -c 'echo > /dev/tcp/${spineABeta}/179'")
         beta.fail("timeout 2 bash -c 'echo > /dev/tcp/192.168.1.4/179'")
         print("ROUTED_FABRIC_TRANSPORT_OK")
 
@@ -300,8 +307,8 @@
         beta.wait_until_succeeds(
             "test \"$(ip route show 192.168.77.3 | grep -c 'via ')\" -eq 1", timeout=120
         )
-        beta.succeed("ip route show 192.168.77.3 | grep -q 'via 100.110.157.53'")
-        alpha.succeed("ip route show 192.168.77.5 | grep -q 'via 100.185.127.95'")
+        beta.succeed("ip route show 192.168.77.3 | grep -q 'via ${spineABeta}'")
+        alpha.succeed("ip route show 192.168.77.5 | grep -q 'via ${spineAAlpha}'")
         for source in [alpha, beta, gamma]:
             for target in [alpha, beta, gamma]:
                 if source.name == target.name:
