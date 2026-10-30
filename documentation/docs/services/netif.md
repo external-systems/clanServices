@@ -32,9 +32,11 @@ Cross-instance checks keep the host coherent (D53): an interface/link is
 owned by exactly one instance, exactly one link per address family may
 provide the host default route (DHCP lease defaults count), and DNS
 nameserver sets that overlap while differing between instances are
-rejected (identical or disjoint sets are allowed). `routed-fabric`
-owns fabric policy routing — `netif` never renders fabric rules — and
-`netif` links never become a shared-L2 Kubernetes datapath. Within one
+rejected (identical or disjoint sets are allowed). Policy-routing tables
+and every effective from/to rule priority must also be unique across
+instances. `routed-fabric` owns fabric policy routing — `netif` never
+renders fabric rules — and `netif` links never become a shared-L2
+Kubernetes datapath. Within one
 instance, a VLAN child names its parent link, and bonds/bridges name
 physical member links; a physical link consumed as a member carries no
 addressing of its own. Every DHCP hook is instance-namespaced
@@ -65,6 +67,12 @@ link/interface/address/gateway/MTU/route configuration is published to the
 per-node `clan.networkFacts` interface as underlay graph facts (D57) —
 producer-owned, non-secret, and exposed through `readOnly = true` options;
 see [Network diagrams](../architecture/network-diagrams.md).
+
+RA-enabled links use `accept_ra = 2` on forwarding machines (spines,
+borders, and k3s/rke2 nodes), so SLAAC default routes survive while
+forwarding is enabled. A literal `targetHost` is rejected if it names a
+fabric loopback, transfer, or tunnel address; deployment stays on the
+underlay.
 
 ## Inventory example
 

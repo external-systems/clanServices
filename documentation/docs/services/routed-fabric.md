@@ -76,6 +76,24 @@ path, and installs accepted routes through Zebra. Cilium peers only with
 local FRR over `::1`; FRR rewrites its next hop before redistribution, and
 native routing forwards remote pod traffic through the kernel FIB.
 
+D63 makes convergence deliberately stable. Equal `settings.site` values use
+the `site` profile (BFD 300 ms x3); different sites use `wan` (BFD 1000 ms
+x5 plus BGP keepalive/hold 10/30 seconds). Set
+`adjacencies.<remote>.timerProfile = "site" | "wan"` to override the
+default; conflicting two-sided overrides fail eval. Both ends use a
+five-second FRR DelayOpen hold-down before a recovered session establishes,
+and every maximum-prefix limit restarts the session after ten minutes
+rather than leaving it down indefinitely. TCP 179 and UDP 3784/4784 are
+opened only on fabric WireGuard interfaces and from declared upstream peer
+addresses, never globally. Every WireGuard listen port is reserved in
+`net.ipv4.ip_local_reserved_ports`.
+
+Literal endpoints on an adjacency must share an address family; hostname
+endpoints produce an eval warning because evaluation does not resolve DNS.
+Source-return tables never use table 200 or collide with same-host netif
+policy tables. `adjacencies.<remote>.sourceReturnTable` pins an explicit
+non-conflicting table when the derived value is unsuitable.
+
 Node-owned `node-bgp` pools advertise only from their owner (and only when
 BGP delivery actually exists). `shared-bgp` pools advertise from every
 healthy eligible node and use ECMP. Ordinary clients receive

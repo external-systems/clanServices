@@ -1,7 +1,19 @@
-# Decision record (D1–D62)
+# Decision record (D1–D63)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history.
+
+**Round 21 (2026-10-29) — correctness and stable convergence.** D63 limits
+BGP/BFD exposure to fabric interfaces and declared upstream sources,
+reserves every WireGuard listen port, and eval-enforces policy, endpoint,
+mesh, and underlay deploy-target coherence. Forwarding nodes accept RAs
+with `accept_ra = 2`. Fabric adjacencies use symmetric site/WAN profiles:
+300 ms x3 BFD on site, 1000 ms x5 BFD plus BGP 10/30 seconds on WAN, a
+bilateral five-second DelayOpen recovery hold-down, and maximum-prefix
+restart after ten minutes. FRR 10.7 DelayOpen was chosen because it runs on
+both inbound and outbound session recovery; BFD strict hold-time does not
+provide this hold-down with nonzero BGP hold timers. Hostname families warn
+instead of triggering DNS resolution during hermetic eval.
 
 **Round 19 (2026-10-28) — artifact authority and static-only checks.** Added
 D62: `pkgs` owns shared inputs, overlays, packages, and airgap artifacts; VM

@@ -55,7 +55,7 @@ nav:
       - GitOps: architecture/gitops.md
       - Security: architecture/security.md
   - Decisions:
-      - Decision record D1–D60: decisions/index.md
+      - Decision record D1–D63: decisions/index.md
   - Services:
       - Overview: services/index.md
       - rke2: services/rke2.md

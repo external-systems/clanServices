@@ -1,8 +1,8 @@
 # Data-plane hardening plan
 
-Status: **phase 1 implemented on PR #2, pending merge** (2026-10-29); later
-phases planned. SPEC.md stays the status authority, and each phase below
-amends SPEC.md before it changes code (AGENTS.md rule 3).
+Status: **phase 2 in progress** (2026-10-29); phase 1 is merged. SPEC.md
+stays the status authority, and each phase below amends SPEC.md before it
+changes code (AGENTS.md rule 3).
 
 Goal: make the Data-plane contract (SPEC.md §3.2) enforceable and stable on
 any underlay — bare metal, Proxmox, Hetzner, GCP, later AWS and Azure — by
@@ -126,10 +126,15 @@ New rule: a status of *VM-proven* names its test file and a unique
 | S2 Isolation | separate fabric instances, non-peered clusters and access levels cannot reach what they are not granted | VM |
 | F1 Facts completeness | `clan.networkFacts` plus underlay facts drive the reachability matrix and tf firewall rules | eval |
 
-C1 implies two timer profiles chosen per adjacency — same-site (for example
-BFD 300 ms × 3) and WAN (for example BFD 1000 ms × 5 with BGP 10/30 s as a
-backstop) — plus a hold-down before a recovered path is used again. The
-exact FRR mechanisms are chosen and documented in phase 2.
+C1 uses two timer profiles per adjacency: `site` = BFD 300 ms × 3 and
+`wan` = BFD 1000 ms × 5 with BGP 10/30 s as a backstop. Equal declared
+sites default to `site`, different sites to `wan`, and an explicit symmetric
+per-adjacency override wins. Phase 2 chooses FRR 10.7
+`neighbor <peer> timers delayopen 5` on both ends for the recovery
+hold-down: DelayOpen runs on inbound and outbound session recovery. BFD
+strict hold-time is not a substitute because its dampening is bypassed with
+the nonzero WAN BGP hold timer. Every maximum-prefix clause uses
+`restart 10`, so overflow cannot suppress a peer forever.
 
 ## NAT egress and floating IPs
 
