@@ -19,8 +19,9 @@ coverage and the full static `nix flake check --show-trace` pass. Fresh VM
 runs pass `netif` (`NETIF_IFSTATE_LIVE_OK`), `netif-dhcp`
 (`NETIF_DHCP_RA_IFSTATE_OK`), `routed-fabric`
 (`ROUTED_FABRIC_TRANSPORT_OK`, `ROUTED_FABRIC_SPINE_HA_OK`), and
-`k3s-data-plane` (`K3S_DATA_PLANE_OK`). The routed-fabric reload assertion
-waits for DelayOpen and route replay before requiring the identical RIB.
+`k3s-data-plane` (`K3S_DATA_PLANE_OK`). The routed-fabric suite also proves
+source-return selection before `main`, negative underlay exposure, an empty
+reload diff, preserved peer uptimes, and an immediately identical RIB.
 
 Round 20 (2026-10-29): **status corrections and tooling-only phase 1; no
 service behavior change.** A review found routed-fabric and netif claims that
@@ -1310,30 +1311,52 @@ unless noted) — revoked entries keep one-line reasons for history.
   TCP 179 and UDP 3784/4784 are never opened globally by routed-fabric:
   they are allowed on fabric WireGuard interfaces and, for external
   sessions, only from declared literal `border.upstreamPeers` addresses.
-  The shared IfState base reserves every rendered WireGuard listen port in
-  `net.ipv4.ip_local_reserved_ports`. Source-return tables never use 200 or
-  a same-host netif policy table; netif policy tables and effective rule
-  priorities are unique across instances. Every adjacency with two literal
-  endpoints must share an address family; a hostname produces an eval
-  warning because eval does not resolve DNS. Wireguard-mesh rejects pairs
-  with no endpoint on either side, overlapping `extraAllowedIPs`, and
-  same-host routed-fabric listen-port clashes. A literal
-  `clan.core.networking.targetHost` never names a fabric loopback, transfer,
-  or tunnel address. RA-enabled links on forwarding machines use
+  Hostnames, zones, and malformed upstream literals are eval errors. The
+  shared IfState base requires globally unique rendered WireGuard listen
+  ports and reserves them, together with entries from the composable
+  `clan.core.networking.reservedPorts` list, in
+  `net.ipv4.ip_local_reserved_ports`.
+
+  Source-return tables never use kernel/Cilium-owned
+  `{0,200,201,253,254,255,2004,2005}`, a same-host netif policy table, or
+  another source-return table. Their independent rule priorities occupy a
+  deterministic band below kernel `main` (32766) and are unique across all
+  source-return and effective netif rules. Netif policy tables and effective
+  rule priorities are unique across instances. Every adjacency with two
+  declared literal endpoints must share an address family; a hostname
+  produces an eval warning because eval does not resolve DNS. This is a
+  declared-endpoint check, not the phase-5 per-host underlay reachability
+  matrix. Wireguard-mesh rejects pairs with no endpoint on either side,
+  overlapping `extraAllowedIPs`, and same-host routed-fabric listen-port
+  clashes. The final literal `clan.core.networking.targetHost`, including an
+  explicit override on a machine without netif, never names a fabric
+  loopback, transfer, or tunnel address; optional user/brackets/port are
+  parsed and IPv6 is normalized before comparison.
+  `clan.networkFacts.forwarding` exports actual host forwarding intent from
+  spines, borders with `border.forwarding`, and k3s/rke2 nodes without a
+  sysctl evaluation cycle; RA-enabled links on forwarding machines use
   `accept_ra = 2`.
 
   Each fabric adjacency has a symmetric timer profile: `site` = BFD 300 ms
   x3, `wan` = BFD 1000 ms x5 plus BGP keepalive/hold 10/30 seconds. Equal
   `settings.site` values default to `site`; different sites default to
   `wan`; an explicit per-adjacency profile overrides the default and two
-  conflicting overrides are eval errors. Both ends render FRR 10.7
+  conflicting overrides are eval errors. Border upstream sessions always
+  use `wan`. Both fabric ends and upstreams render FRR 10.7
   `neighbor <peer> timers delayopen 5`: DelayOpen applies on each inbound
   and outbound session recovery and delays establishment for up to five
-  seconds, unlike BFD strict hold-time, whose dampening is bypassed with a
-  nonzero BGP hold timer. Every rendered `maximum-prefix 4096` uses
-  `restart 10`, so an overflow retries after ten minutes instead of leaving
-  the peer suppressed indefinitely. Stability takes precedence over faster
-  reconvergence.
+  seconds. FRR 10.7.1 `bgp_bfd.c` starts BFD strict hold-time only when the
+  effective BGP hold timer is zero, so strict hold-time is not this recovery
+  hold-down. DelayOpen is fixed, not exponential flap damping; FRR route
+  dampening is not substituted because upstream discourages it and its
+  dual-stack coverage is incomplete. Periodic-flap behavior belongs to the
+  phase-6 WAN soak. Every rendered `maximum-prefix 4096` uses `restart 10`.
+  Every profiled neighbor also renders plain `bfd`; site profile defaults
+  stay implicit and `use-underlays-nexthop-weight` is explicit, matching FRR
+  running-config serialization. A no-op FRR reload therefore has an empty
+  `frr-reload.py --test` diff, preserves peer uptimes, and leaves the RIB
+  immediately identical; DelayOpen must never excuse reload-induced
+  recovery. Stability takes precedence over faster reconvergence.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -1561,15 +1584,18 @@ derives from the underlay MTU minus WireGuard overhead (80 bytes v4 /
 96 v6) with a 1280 floor; VMs assert path MTU. Endpoint reachability is
 evaluated per adjacency; private endpoints are allowed when
 actually reachable. One `routed-fabric` instance = one trust domain; one
-machine has at most one membership and one topology role. Literal endpoints
-on one adjacency must share an address family; hostname endpoints generate
-an eval warning instead of impure DNS resolution. Source-return tables have
-an explicit per-adjacency pin and never use table 200 or a netif-owned
-table. `settings.site` selects the default timer profile: equal sites use
-`site` (BFD 300 ms x3), different sites use `wan` (BFD 1000 ms x5 and BGP
-10/30 seconds), and `adjacencies.<remote>.timerProfile` overrides either.
-Both ends use a five-second DelayOpen hold-down; all maximum-prefix limits
-restart after ten minutes (D63).
+machine has at most one membership and one topology role. Declared literal
+endpoints on one adjacency must share an address family; hostname endpoints
+generate an eval warning instead of impure DNS resolution. Source-return
+tables have an explicit per-adjacency pin, avoid all kernel/Cilium owners
+and netif/source-return collisions, and use independent unique rule
+priorities below 32766. `settings.site` selects the default timer profile:
+equal sites use `site` (BFD 300 ms x3), different sites use `wan` (BFD
+1000 ms x5 and BGP 10/30 seconds), and
+`adjacencies.<remote>.timerProfile` overrides either. Upstreams use `wan`.
+Both ends and upstreams use a five-second fixed DelayOpen hold-down; all
+maximum-prefix limits restart after ten minutes. No-op reloads preserve
+peer uptimes and the immediate RIB (D63).
 
 ```nix
 inventory.instances = {
@@ -1860,12 +1886,14 @@ leaf-transit configurations (a non-border leaf readvertising fabric
 routes); default-route/AllowedIP leaks — a
 0.0.0.0/0 or ::/0 crypto ACL must not create or accept an IP default
 route; asymmetric Internet source/return paths; WG MTU below the derived
-floor; source-return table 200 or netif table collisions; netif
-cross-instance conflicts (link ownership, default-route, DNS, policy
+floor; source-return kernel/Cilium/netif/source-return table collisions or
+rule priorities at/above 32766 and any netif/fabric priority collisions;
+netif cross-instance conflicts (link ownership, default-route, DNS, policy
 tables, effective rule priorities) and non-namespaced netif units;
 wireguard-mesh pairs without an endpoint on either side, overlapping
-`extraAllowedIPs`, and same-host routed-fabric listen-port clashes;
-literal overlay deploy targets; conflicting adjacency timer overrides;
+`extraAllowedIPs`, and any same-host WireGuard listen-port clashes;
+non-literal upstream peers; final literal overlay deploy targets;
+conflicting adjacency timer overrides;
 missing native CIDR containment;
 Geneve or non-derived tunnel protocols, or `auto-direct-node-routes` in
 the canonical profile;

@@ -68,11 +68,14 @@ per-node `clan.networkFacts` interface as underlay graph facts (D57) —
 producer-owned, non-secret, and exposed through `readOnly = true` options;
 see [Network diagrams](../architecture/network-diagrams.md).
 
-RA-enabled links use `accept_ra = 2` on forwarding machines (spines,
-borders, and k3s/rke2 nodes), so SLAAC default routes survive while
-forwarding is enabled. A literal `targetHost` is rejected if it names a
-fabric loopback, transfer, or tunnel address; deployment stays on the
-underlay.
+RA-enabled links use `accept_ra = 2` on machines with actual forwarding
+intent (spines, borders with `border.forwarding = true`, and k3s/rke2
+nodes), so SLAAC default routes survive while forwarding is enabled. The
+final literal `targetHost`, including an explicit override without netif,
+is rejected if it names a fabric loopback, transfer, or tunnel address;
+IPv6 is normalized before comparison and deployment stays on the underlay.
+Additional `clan.core.networking.reservedPorts` strings (ports or ranges) merge
+with every rendered WireGuard listen port in `ip_local_reserved_ports`.
 
 ## Inventory example
 

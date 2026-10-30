@@ -162,11 +162,11 @@
     };
   };
 
-  mkEvaled = inventory:
+  mkEvaledWith = machines: inventory:
     clanLib.clan {
       self = {};
       directory = ./fixtures;
-      inherit exportInterfaces;
+      inherit exportInterfaces machines;
       modules = {
         routed-fabric = module;
         netif = lib.modules.importApply ../../netif/default.nix {
@@ -177,9 +177,10 @@
         };
         k3s = clusterModule;
       };
-      machines = machineConfigs;
       inherit inventory;
     };
+
+  mkEvaled = mkEvaledWith machineConfigs;
 
   evaled = mkEvaled baseInventory;
   configs = evaled.config.nixosConfigurations;
@@ -427,11 +428,75 @@
       instances.fleet.roles.spine.machines.spine-b.settings.adjacencies.spine-a.timerProfile = "wan";
     }
   );
-  sourceReturnTable200Eval = mkEvaled (
+  derivedSourceReturnTable = 1000 + lib.mod (fabric.nodeAsn "fleet" "client") 30000;
+  derivedSourceReturnPriority = 10000 + lib.mod (fabric.nodeAsn "fleet" "client") 20000;
+  sourceReturnReservedEvals = lib.genAttrs (map toString [0 200 201 253 254 255 2004 2005]) (
+    table:
+      mkEvaled (
+        lib.recursiveUpdate borderInventory {
+          instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.client.sourceReturnTable = builtins.fromJSON table;
+        }
+      )
+  );
+  sourceReturnDuplicateEval = mkEvaled (
     lib.recursiveUpdate borderInventory {
-      instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.client.sourceReturnTable = 200;
+      instances.fleet.roles.spine.machines.spine-a.settings.adjacencies = {
+        client.sourceReturnTable = 40500;
+        spine-b = {
+          sourceReturn = true;
+          sourceReturnTable = 40500;
+        };
+      };
     }
   );
+  sourceReturnNetifPriorityCollisionEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.underlay-netif = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines.spine-a.settings.links.wan = {
+          interface = "enp1s0";
+          static.ipv4 = ["203.0.113.2/30"];
+          routingPolicy = {
+            table = 40000;
+            from = ["203.0.113.2/32"];
+            priority = derivedSourceReturnPriority;
+          };
+        };
+      };
+    }
+  );
+  upstreamHostnameEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.border.upstreamPeers = [
+        {
+          address = "upstream.example.net";
+          asn = 64500;
+        }
+      ];
+    }
+  );
+  upstreamZonedEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.border.upstreamPeers = [
+        {
+          address = "fe80::1%eth0";
+          asn = 64500;
+        }
+      ];
+    }
+  );
+  targetHostOverrideEval =
+    mkEvaledWith (
+      machineConfigs
+      // {
+        client = {
+          nixpkgs.hostPlatform = "x86_64-linux";
+          clan.core.networking.targetHost = "root@[fd77:0:0::10]:22";
+        };
+      }
+    )
+    baseInventory;
   sourceReturnPinEval = mkEvaled (
     lib.recursiveUpdate borderInventory {
       instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.client.sourceReturnTable = 40500;
@@ -446,7 +511,7 @@
           interface = "enp1s0";
           static.ipv4 = ["203.0.113.2/30"];
           routingPolicy = {
-            table = 39681;
+            table = derivedSourceReturnTable;
             from = ["203.0.113.2/32"];
           };
         };
@@ -465,6 +530,42 @@
       };
     }
   );
+  nonForwardingBorderNetifEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.fleet.roles.leaf.machines.client.settings.border = {
+        ownedPrefixes = ["172.16.0.0/12"];
+        upstreamPeers = [
+          {
+            address = "203.0.113.1";
+            asn = 64500;
+          }
+        ];
+        forwarding = false;
+      };
+      instances.underlay-netif = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines.client.settings.links.wan = {
+          interface = "enp1s0";
+          dhcp.ipv4 = true;
+        };
+      };
+    }
+  );
+  reservedPortsEval =
+    mkEvaledWith (
+      machineConfigs
+      // {
+        client = {
+          nixpkgs.hostPlatform = "x86_64-linux";
+          clan.core.networking.reservedPorts = [
+            "30000-32767"
+            "51820"
+          ];
+        };
+      }
+    )
+    baseInventory;
   deployInstance = endpoint: {
     module.name = "netif";
     module.input = "self";
@@ -535,28 +636,49 @@ in {
       expr = client.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
       expected = "52679,54843";
     };
+    test_additionalPortsMergeWithWireguardReservations = {
+      expr = reservedPortsEval.config.nixosConfigurations.client.config.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
+      expected = "30000-32767,51820,52679,54843";
+    };
     test_forwardingNetifAcceptsRouterAdvertisements = {
       expr = forwardingNetifEval.config.nixosConfigurations.spine-a.config.networking.ifstate.settings.interfaces.enp1s0.sysctl.ipv6.accept_ra;
       expected = 2;
     };
+    test_nonForwardingBorderUsesHostRouterAdvertisementMode = {
+      expr = nonForwardingBorderNetifEval.config.nixosConfigurations.client.config.networking.ifstate.settings.interfaces.enp1s0.sysctl.ipv6.accept_ra;
+      expected = 1;
+    };
     test_stabilityProfilesAndRecovery = {
       expr = let
         wanConfig = wanEval.config.nixosConfigurations.spine-a.config.services.frr.config;
+        borderConfig = borderSpine.services.frr.config;
       in {
         siteBfd = lib.hasInfix "profile site" spine.services.frr.config;
         siteTimers = lib.hasInfix "timers 3 9" spine.services.frr.config;
+        siteDefaultsImplicit = !(lib.hasInfix "receive-interval 300" spine.services.frr.config);
+        plainBfd = lib.hasInfix " bfd\n" spine.services.frr.config;
         wanBfd = lib.hasInfix "bfd profile wan" wanConfig;
         wanTimers = lib.hasInfix "timers 10 30" wanConfig;
         delayOpen = lib.hasInfix "timers delayopen 5" wanConfig;
         prefixRestart = lib.hasInfix "maximum-prefix 4096 restart 10" wanConfig;
+        upstreamWan = lib.hasInfix "neighbor 203.0.113.1 bfd profile wan" borderConfig;
+        upstreamPlainBfd = lib.hasInfix "neighbor 203.0.113.1 bfd\n" borderConfig;
+        upstreamTimers = lib.hasInfix "neighbor 203.0.113.1 timers 10 30" borderConfig;
+        upstreamDelayOpen = lib.hasInfix "neighbor 203.0.113.1 timers delayopen 5" borderConfig;
       };
       expected = {
         siteBfd = true;
         siteTimers = true;
+        siteDefaultsImplicit = true;
+        plainBfd = true;
         wanBfd = true;
         wanTimers = true;
         delayOpen = true;
         prefixRestart = true;
+        upstreamWan = true;
+        upstreamPlainBfd = true;
+        upstreamTimers = true;
+        upstreamDelayOpen = true;
       };
     };
     test_adjacencyTimerOverride = {
@@ -844,11 +966,13 @@ in {
     test_borderCryptoAclAndSourceReturn = {
       expr = let
         sourceRoutes = borderSpine.networking.ifstate.settings.routing.routes;
+        sourceRules = borderSpine.networking.ifstate.settings.routing.rules;
       in {
         spineDefaultAcl = lib.hasInfix "0.0.0.0/0" (builtins.toJSON (allowedFor borderSpine));
         peerDefaultAcl = lib.hasInfix "::/0" (builtins.toJSON (allowedFor borderClient));
         upstream = lib.hasInfix "neighbor 203.0.113.1 remote-as 64500" borderSpine.services.frr.config;
         policyTables = lib.unique (map (route: route.table) sourceRoutes);
+        rulePriorities = lib.unique (map (rule: rule.priority) sourceRules);
         mainTables = lib.unique (
           map (route: route.table or "main") (
             builtins.filter (route: (route.table or "main") == "main") sourceRoutes
@@ -859,7 +983,8 @@ in {
         spineDefaultAcl = true;
         peerDefaultAcl = true;
         upstream = true;
-        policyTables = [39681];
+        policyTables = [derivedSourceReturnTable];
+        rulePriorities = [derivedSourceReturnPriority];
         mainTables = [];
       };
     };
@@ -984,12 +1109,22 @@ in {
       expr = failedAssertion timerConflictEval.config.nixosConfigurations.spine-a.config "must select the same timerProfile";
       expected = true;
     };
-    test_sourceReturnTable200Rejected = {
-      expr = failedAssertion sourceReturnTable200Eval.config.nixosConfigurations.spine-a.config "must never use 200";
+    test_sourceReturnReservedTablesRejected = {
+      expr = lib.all (
+        eval: failedAssertion eval.config.nixosConfigurations.spine-a.config "reserved kernel/Cilium tables"
+      ) (builtins.attrValues sourceReturnReservedEvals);
+      expected = true;
+    };
+    test_sourceReturnDuplicateTableRejected = {
+      expr = failedAssertion sourceReturnDuplicateEval.config.nixosConfigurations.spine-a.config "source-return tables must be unique";
       expected = true;
     };
     test_sourceReturnNetifCollisionRejected = {
       expr = failedAssertion sourceReturnNetifCollisionEval.config.nixosConfigurations.spine-a.config "must not collide with same-host netif";
+      expected = true;
+    };
+    test_sourceReturnNetifPriorityCollisionRejected = {
+      expr = failedAssertion sourceReturnNetifPriorityCollisionEval.config.nixosConfigurations.spine-a.config "unique across source-return and same-host netif rules";
       expected = true;
     };
     test_sourceReturnPinAccepted = {
@@ -998,10 +1133,22 @@ in {
       in {
         collision = failedAssertion config "source-return";
         tables = lib.unique (map (route: route.table) config.networking.ifstate.settings.routing.routes);
+        priorities = lib.unique (map (rule: rule.priority) config.networking.ifstate.settings.routing.rules);
       };
       expected = {
         collision = false;
         tables = [40500];
+        priorities = [derivedSourceReturnPriority];
+      };
+    };
+    test_nonLiteralUpstreamPeersRejected = {
+      expr = {
+        hostname = failedAssertion upstreamHostnameEval.config.nixosConfigurations.spine-a.config "literal unzoned IPv4 or IPv6";
+        zoned = failedAssertion upstreamZonedEval.config.nixosConfigurations.spine-a.config "literal unzoned IPv4 or IPv6";
+      };
+      expected = {
+        hostname = true;
+        zoned = true;
       };
     };
     test_targetHostFabricAddressRejected = {
@@ -1014,6 +1161,10 @@ in {
     };
     test_targetHostTunnelAddressRejected = {
       expr = failedAssertion targetHostTunnelEval.config.nixosConfigurations.client.config "keep the deploy target on the underlay";
+      expected = true;
+    };
+    test_finalNormalizedTargetHostOverrideRejected = {
+      expr = failedAssertion targetHostOverrideEval.config.nixosConfigurations.client.config "keep the deploy target on the underlay";
       expected = true;
     };
     test_meshRoutedFabricPortCollisionRejected = {

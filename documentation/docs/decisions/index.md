@@ -4,20 +4,24 @@ Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history.
 
 **Round 21 (2026-10-29) — correctness and stable convergence.** D63 limits
-BGP/BFD exposure to fabric interfaces and declared upstream sources,
-reserves every WireGuard listen port, and eval-enforces policy, endpoint,
-mesh, and underlay deploy-target coherence. Forwarding nodes accept RAs
-with `accept_ra = 2`. Fabric adjacencies use symmetric site/WAN profiles:
-300 ms x3 BFD on site, 1000 ms x5 BFD plus BGP 10/30 seconds on WAN, a
-bilateral five-second DelayOpen recovery hold-down, and maximum-prefix
-restart after ten minutes. FRR 10.7 DelayOpen was chosen because it runs on
-both inbound and outbound session recovery; BFD strict hold-time does not
-provide this hold-down with nonzero BGP hold timers. Hostname families warn
-instead of triggering DNS resolution during hermetic eval. Positive and
-negative eval coverage, the full static check, and fresh netif, netif-dhcp,
-routed-fabric, and k3s-data-plane VM runs pass. The routed-fabric test
-retains its exact-RIB reload assertion after waiting for DelayOpen and route
-replay.
+BGP/BFD exposure to fabric interfaces and declared literal upstream sources,
+reserves unique WireGuard listen ports through a composable reservation
+list, and eval-enforces policy, declared-endpoint, mesh, and final-value
+underlay deploy-target coherence. Source-return tables avoid kernel/Cilium
+owners; independent rule priorities stay before `main` and cannot collide
+with netif. IPv6 deploy targets are normalized before comparison. Explicit
+forwarding facts drive `accept_ra = 2`. Fabric adjacencies use symmetric
+site/WAN profiles: 300 ms x3 BFD on site, 1000 ms x5 BFD plus BGP 10/30
+seconds on WAN. Upstreams always use WAN stability settings. A bilateral
+five-second DelayOpen provides a fixed recovery hold-down, not exponential
+flap damping; FRR 10.7.1 `bgp_bfd.c` confirms BFD strict hold-time requires
+a zero effective BGP hold timer, while FRR route dampening is discouraged
+and not dual-stack complete. Hostname families warn instead of triggering
+DNS resolution; complete underlay reachability remains phase-5 work. Plain
+`bfd` accompanies every profile, site defaults stay implicit, and
+`use-underlays-nexthop-weight` is explicit so FRR running config round-trips.
+A no-op reload must have an empty dry-run diff, preserve peer uptimes, and
+leave the RIB immediately identical rather than waiting for recovery.
 
 **Round 19 (2026-10-28) — artifact authority and static-only checks.** Added
 D62: `pkgs` owns shared inputs, overlays, packages, and airgap artifacts; VM

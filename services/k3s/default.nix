@@ -722,6 +722,8 @@
       );
       configPath = pkgs.writeText "k3s-config.yaml" (builtins.toJSON cleanConfig);
     in {
+      imports = [../../lib/kube-cluster/network-facts.nix];
+
       # D19: the ONE host routing stack (FRR) is owned by
       # routed-fabric — the distro service renders no BIRD and no
       # second FRR stack; it publishes the kube_cluster facts
@@ -754,9 +756,12 @@
         {
           nixpkgs.overlays = lib.mkAfter [inputs.pkgs.overlays.kubernetes];
 
-          clan.kubeClusters.${instanceName} = {
-            renderedDistroConfig = cleanConfig;
-            bundleJson = lib.mkIf (isInit && settings.bootstrap.apply) bundle.json;
+          clan = {
+            _networkFacts.forwarding = true;
+            kubeClusters.${instanceName} = {
+              renderedDistroConfig = cleanConfig;
+              bundleJson = lib.mkIf (isInit && settings.bootstrap.apply) bundle.json;
+            };
           };
 
           assertions =

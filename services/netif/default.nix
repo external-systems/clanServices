@@ -947,43 +947,8 @@ in {
         pkgs,
         ...
       }: let
-        forwardingSysctl = config.boot.kernel.sysctl."net.ipv6.conf.all.forwarding" or false;
-        fabricForwarding = lib.any (
-          fabric: fabric.topology == "spine" || fabric.border.enabled
-        ) (builtins.attrValues config.clan.networkFacts.fabric);
-        forwarding = builtins.elem forwardingSysctl [true 1 "1"] || fabricForwarding;
+        forwarding = config.clan.networkFacts.forwarding;
         ifstateInterfaces = mkIfstateInterfaces forwarding;
-        fabricAddresses = lib.concatMap (
-          fabric:
-            [
-              fabric.ipv4
-              fabric.ipv6
-            ]
-            ++ lib.concatMap (adjacency: [adjacency.ipv4 adjacency.ipv6]) (
-              builtins.attrValues fabric.adjacencies
-            )
-        ) (builtins.attrValues config.clan.networkFacts.fabric);
-        wireguardAddresses =
-          lib.concatMap (
-            interface:
-              map (
-                address:
-                  stripPrefix (
-                    if builtins.isString address
-                    then address
-                    else address.address
-                  )
-              )
-              interface.addresses
-          ) (
-            builtins.filter (
-              interface: (interface.link.kind or null) == "wireguard"
-            ) (builtins.attrValues config.networking.ifstate.settings.interfaces)
-          );
-        overlayAddresses = lib.unique (
-          builtins.filter builtins.isString (fabricAddresses ++ wireguardAddresses)
-        );
-        targetHostOnOverlay = settings.targetHost && lib.elem targetHostAddr overlayAddresses;
         dhcpHookScript = pkgs.writeScript "netif-dhcp-hook" ''
           running() {
             ${lib.getExe' pkgs.procps "pgrep"} -f "dhcpcd.* ''${IFS_IFNAME}( |$)" >/dev/null
@@ -1035,10 +1000,6 @@ in {
             {
               assertion = !settings.targetHost || targetHostValue != null;
               message = "netif/${instanceName}: machine '${machine.name}' sets 'targetHost = true' but no deploy address resolves; set 'endpoint', matching 'endpointSources', or an endpoint-enabled link with static addresses";
-            }
-            {
-              assertion = !targetHostOnOverlay;
-              message = "netif/${instanceName}: machine '${machine.name}' targetHost '${toString targetHostAddr}' resolves to a fabric, transfer, or tunnel address; keep the deploy target on the underlay";
             }
           ]
           ++ linkAssertions instanceName machine.name settings.links resolved;

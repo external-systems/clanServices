@@ -66,6 +66,7 @@
     };
   in {
     schemaVersion = fact t.ints.positive 2 "Network facts schema version.";
+    forwarding = bool "Whether any declared service enables host packet forwarding.";
     node = {
       name = str "Clan machine identity.";
     };
@@ -94,6 +95,7 @@
           options = {
             topology = str "Leaf or spine topology role.";
             access = str "Member, client, or admin route-consumption access.";
+            forwarding = bool "Whether this node enables fabric or external packet forwarding.";
             asn = nullableInt "Deterministic private node ASN.";
             ipv4 = nullableStr "Stable fabric IPv4 address.";
             ipv6 = nullableStr "Stable fabric IPv6 address.";

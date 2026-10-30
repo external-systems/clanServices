@@ -169,7 +169,7 @@
       // {
         kamrui-h1 = {
           nixpkgs.hostPlatform = "x86_64-linux";
-          boot.kernel.sysctl."net.ipv6.conf.all.forwarding" = true;
+          clan._networkFacts.forwarding = true;
         };
       }
     )

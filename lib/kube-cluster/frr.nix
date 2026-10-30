@@ -172,12 +172,14 @@
     router bgp ${toString localAsn}
      neighbor ${adjacency.remote.ipv4} remote-as ${toString adjacency.remoteAsn}
      neighbor ${adjacency.remote.ipv4} description ${adjacency.key}
+     neighbor ${adjacency.remote.ipv4} bfd
      neighbor ${adjacency.remote.ipv4} bfd profile ${adjacency.timerProfile}
      neighbor ${adjacency.remote.ipv4} timers ${bgpTimers}
      neighbor ${adjacency.remote.ipv4} timers connect 5
      neighbor ${adjacency.remote.ipv4} timers delayopen 5
      neighbor ${adjacency.remote.ipv6} remote-as ${toString adjacency.remoteAsn}
      neighbor ${adjacency.remote.ipv6} description ${adjacency.key}
+     neighbor ${adjacency.remote.ipv6} bfd
      neighbor ${adjacency.remote.ipv6} bfd profile ${adjacency.timerProfile}
      neighbor ${adjacency.remote.ipv6} timers ${bgpTimers}
      neighbor ${adjacency.remote.ipv6} timers connect 5
@@ -335,8 +337,10 @@ in rec {
              neighbor ${peer.address} remote-as ${toString peer.asn}
              neighbor ${peer.address} description border-upstream
              neighbor ${peer.address} bfd
-             neighbor ${peer.address} timers 3 9
+             neighbor ${peer.address} bfd profile wan
+             neighbor ${peer.address} timers 10 30
              neighbor ${peer.address} timers connect 5
+             neighbor ${peer.address} timers delayopen 5
              address-family ipv${suffix} unicast
               neighbor ${peer.address} activate
               neighbor ${peer.address} route-map ${routeMap} in
@@ -376,9 +380,6 @@ in rec {
     allow-reserved-ranges
     bfd
      profile site
-      detect-multiplier 3
-      receive-interval 300
-      transmit-interval 300
      !
      profile wan
       detect-multiplier 5
@@ -404,6 +405,7 @@ in rec {
      bgp ebgp-requires-policy
      bgp bestpath as-path multipath-relax
      bgp allow-martian-nexthop
+     use-underlays-nexthop-weight
      address-family ipv4 unicast
       ${lib.concatMapStringsSep "\n " (network: "network ${network}") familyNetworks.v4}
       maximum-paths 8

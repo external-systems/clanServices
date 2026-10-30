@@ -51,8 +51,9 @@ is a review destination, not a dependency.
   `legacyPackages.<system>.vmTests`. The full netif, routed-fabric, k3s,
   and RKE2 native/tunnel/selective/external VM matrix is green on the
   IfState tree. Round 21 (2026-10-29, D63) adds phase-2 exposure,
-  policy/endpoint/mesh/deploy-target assertions, forwarding-safe RA, and
-  stable FRR timer/recovery behavior; routes are stable before fast.
+  policy/endpoint/mesh/final-deploy-target assertions, forwarding-safe RA,
+  stable FRR timer/recovery behavior, and no-op reload preservation; routes
+  are stable before fast.
   Round 13's Bootstrap +
   Data-plane scope remains: Envoy Gateway, cert-manager, Flux install,
   external-dns, Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps

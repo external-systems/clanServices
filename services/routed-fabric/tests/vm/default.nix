@@ -51,6 +51,19 @@
                     instance = "underlay";
                   }
                 ];
+                border = {
+                  ownedPrefixes = [
+                    "198.51.100.0/24"
+                    "2001:db8:100::/64"
+                  ];
+                  upstreamPeers = [
+                    {
+                      address = "192.168.1.254";
+                      asn = 64500;
+                    }
+                  ];
+                };
+                adjacencies.spine-b.sourceReturn = true;
               };
               spine-b.settings = {
                 ipv4 = "192.168.77.2";
@@ -87,13 +100,31 @@
   nodes =
     lib.mapAttrs
     (_name: address: {pkgs, ...}: {
-      environment.systemPackages = [pkgs.tcpdump];
+      environment = {
+        systemPackages = [pkgs.tcpdump];
+        etc."frr-reload.py" = {
+          source = "${pkgs.frr}/libexec/frr/frr-reload.py";
+          mode = "0755";
+        };
+      };
       imports = [
         (import ../../../../tests/ifstate-vm.nix {
           ifstateOverlay = inputs.pkgs.overlays.ifstate;
           addresses = ["${address}/24"];
         })
       ];
+      networking.ifstate.settings = {
+        interfaces.rflo5eb2ce291c.addresses = lib.mkIf (_name == "spine-a") (
+          lib.mkAfter [
+            "198.51.100.1/32"
+            "2001:db8:100::1/128"
+          ]
+        );
+        routing.routes = lib.optional (_name == "spine-a") {
+          to = "0.0.0.0/0";
+          via = "192.168.1.254";
+        };
+      };
       virtualisation = {
         cores = 1;
         memorySize = 1536;
@@ -108,6 +139,8 @@
     };
 
   testScript = ''
+    import json
+
     machines = [spine_a, spine_b, alpha, beta, gamma]
     stable = {
         "spine-a": ("192.168.77.1", "fd77::1"),
@@ -154,6 +187,15 @@
         machine.succeed(
             "vtysh -c 'show ip route' | sed -E 's/, (XX|[0-9]{2,}):[0-9]{2}:[0-9]{2}$//' > %s" % path
         )
+
+
+    def bgp_uptimes(machine):
+        summary = json.loads(machine.succeed("vtysh -c 'show bgp summary json'"))
+        return {
+            peer: details["peerUptimeMsec"]
+            for afi in ["ipv4Unicast", "ipv6Unicast"]
+            for peer, details in summary.get(afi, {}).get("peers", {}).items()
+        }
 
 
     try:
@@ -213,6 +255,13 @@
         beta.fail("ping -M do -c 1 -W 2 -s 1377 192.168.77.1")
         beta.wait_until_succeeds("ping -M do -c 1 -W 2 -s 1356 fd77::1", timeout=60)
         beta.fail("ping -M do -c 1 -W 2 -s 1357 fd77::1")
+
+        # Source-return rules precede main even when main has an underlay
+        # default, and BGP is exposed on fabric but not the underlay.
+        spine_a.succeed("ip route get 192.0.2.1 from 198.51.100.1 | grep -q 'dev rf'")
+        spine_a.succeed("ip -6 route get 2001:db8::1 from 2001:db8:100::1 | grep -q 'dev rf'")
+        beta.succeed("timeout 2 bash -c 'echo > /dev/tcp/100.110.157.52/179'")
+        beta.fail("timeout 2 bash -c 'echo > /dev/tcp/192.168.1.4/179'")
         print("ROUTED_FABRIC_TRANSPORT_OK")
 
         # Spine HA: FRR reload/restart keep the RIB/FIB stable across a
@@ -220,19 +269,24 @@
         rib(beta, "/tmp/rib.before")
         beta.succeed("ip route show > /tmp/fib.before")
 
-        # Reload is daemon-preserving (FRR 10.7 probe, SPEC.md D19). D63's
-        # bilateral DelayOpen intentionally holds recovered sessions for five
-        # seconds; wait for that hold-down and route replay, then require the
-        # exact original RIB rather than comparing during the hold-down.
+        # Reload is daemon-preserving (FRR 10.7 probe, SPEC.md D19/D63).
         rib(spine_a, "/tmp/rib.spine-a.before")
-        spine_a.succeed("systemctl reload frr")
-        spine_a.wait_until_succeeds(
-            "vtysh -c 'show bgp neighbors' | grep -c 'BGP state = Established' | grep -q '^8$'",
-            timeout=60,
+        before_uptimes = bgp_uptimes(spine_a)
+        reload_diff = spine_a.succeed(
+            "/etc/frr-reload.py --bindir /run/current-system/sw/bin --test /etc/frr/frr.conf 2>&1"
         )
-        spine_a.wait_until_succeeds(
-            "vtysh -c 'show ip route' | sed -E 's/, (XX|[0-9]{2,}):[0-9]{2}:[0-9]{2}$//' > /tmp/rib.spine-a.after && diff -u /tmp/rib.spine-a.before /tmp/rib.spine-a.after",
-            timeout=60,
+        print(reload_diff)
+        assert "Lines To Delete" not in reload_diff, reload_diff
+        assert "Lines To Add" not in reload_diff, reload_diff
+        spine_a.succeed("systemctl reload frr")
+        spine_a.succeed(
+            "vtysh -c 'show ip route' | sed -E 's/, (XX|[0-9]{2,}):[0-9]{2}:[0-9]{2}$//' > /tmp/rib.spine-a.after && diff -u /tmp/rib.spine-a.before /tmp/rib.spine-a.after"
+        )
+        after_uptimes = bgp_uptimes(spine_a)
+        assert after_uptimes.keys() == before_uptimes.keys(), (before_uptimes, after_uptimes)
+        assert all(after_uptimes[peer] >= before_uptimes[peer] for peer in before_uptimes), (
+            before_uptimes,
+            after_uptimes,
         )
 
         # Fail spine-b; dual-homed leaves lose one ECMP leg and converge on

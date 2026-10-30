@@ -124,7 +124,7 @@
           ipv4 = "192.168.78.1";
           ipv6 = "fd00:78::1";
           interface = "wg-mesh";
-          port = 51822;
+          port = 51820;
           endpoint = "alpha.example.net";
         };
       };

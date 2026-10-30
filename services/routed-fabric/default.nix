@@ -5,6 +5,7 @@
 }: let
   fabric = import ../../lib/kube-cluster/fabric.nix {inherit lib;};
   frr = import ../../lib/kube-cluster/frr.nix {inherit lib;};
+  ip = import ../../lib/ip.nix {inherit lib;};
 
   endpointSourceOptions = lib.types.submodule {
     options = {
@@ -54,7 +55,7 @@
       sourceReturnTable = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.u32;
         default = null;
-        description = "Override the source-return policy table; never 200 or a same-host netif policy table.";
+        description = "Override the source-return policy table; reserved kernel/Cilium, netif, and duplicate source-return tables are rejected.";
       };
       timerProfile = lib.mkOption {
         type = lib.types.nullOr (
@@ -145,7 +146,7 @@
                     options = {
                       address = lib.mkOption {
                         type = lib.types.str;
-                        description = "Upstream BGP peer address.";
+                        description = "Upstream BGP peer literal unzoned IPv4 or IPv6 address.";
                       };
                       asn = lib.mkOption {
                         type = lib.types.ints.between 1 4294967295;
@@ -255,10 +256,10 @@
   endpointFamily = host:
     if host == null
     then null
-    else if lib.hasInfix ":" host
-    then 6
-    else if builtins.match "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" host != null
+    else if ip.isIpv4 host
     then 4
+    else if ip.isIpv6 host
+    then 6
     else null;
 
   roleFor = roles: machineName:
@@ -550,7 +551,8 @@
       table =
         if (localOverride.sourceReturnTable or null) != null
         then localOverride.sourceReturnTable
-        else 200 + lib.mod (fabric.nodeAsn instanceName remoteName) 40000;
+        else 1000 + lib.mod (fabric.nodeAsn instanceName remoteName) 30000;
+      rulePriority = 10000 + lib.mod (fabric.nodeAsn instanceName remoteName) 20000;
     in {
       inherit
         addressFamilyMismatch
@@ -566,6 +568,7 @@
         name
         port
         remoteName
+        rulePriority
         sourceReturn
         table
         timerOverrideConflict
@@ -809,7 +812,7 @@
               map (prefix: {
                 from = prefix;
                 inherit (adjacency) table;
-                priority = adjacency.table;
+                priority = adjacency.rulePriority;
               }) (
                 if border != null
                 then border.ownedPrefixes
@@ -818,23 +821,31 @@
             )
         )
         adjacencies;
-      netifPolicyTables = lib.unique (
+      netifPolicyLinks = lib.concatMap (
+        instance:
+          builtins.filter (link: (link.routingPolicy.table or null) != null) (
+            builtins.attrValues instance.links
+          )
+      ) (builtins.attrValues config.clan.networkFacts.netif);
+      netifPolicyTables = map (link: link.routingPolicy.table) netifPolicyLinks;
+      netifRulePriorities =
         lib.concatMap (
-          instance:
-            lib.concatMap (
-              link: lib.optional ((link.routingPolicy.table or null) != null) link.routingPolicy.table
-            ) (builtins.attrValues instance.links)
-        ) (builtins.attrValues config.clan.networkFacts.netif)
-      );
+          link:
+            (lib.genList (i: link.routingPolicy.priority + i) (lib.length link.routingPolicy.from))
+            ++ (lib.genList (i: link.routingPolicy.priority + 50 + i) (lib.length link.routingPolicy.to))
+        )
+        netifPolicyLinks;
+      sourceReturnTables = map (adjacency: adjacency.table) sourceReturns;
+      sourceReturnRulePriorities = map (adjacency: adjacency.rulePriority) sourceReturns;
       upstreamPeers =
         if border != null
         then border.upstreamPeers
         else [];
       upstream4 = map (peer: peer.address) (
-        builtins.filter (peer: !(lib.hasInfix ":" peer.address)) upstreamPeers
+        builtins.filter (peer: ip.isIpv4 peer.address) upstreamPeers
       );
       upstream6 = map (peer: peer.address) (
-        builtins.filter (peer: lib.hasInfix ":" peer.address) upstreamPeers
+        builtins.filter (peer: ip.isIpv6 peer.address) upstreamPeers
       );
       upstreamFirewallRules =
         lib.optionalString (upstream4 != []) ''
@@ -908,16 +919,30 @@
           message = "routed-fabric/${instanceName}: border ownedPrefixes must not contain default routes";
         }
         {
+          assertion = lib.all (peer: ip.isLiteral peer.address) upstreamPeers;
+          message = "routed-fabric/${instanceName}: border.upstreamPeers addresses must be literal unzoned IPv4 or IPv6 addresses";
+        }
+        {
           assertion = sourceReturns == [] || border != null;
           message = "routed-fabric/${instanceName}: sourceReturn requires border.ownedPrefixes";
         }
         {
-          assertion = lib.all (adjacency: adjacency.table != 200) sourceReturns;
-          message = "routed-fabric/${instanceName}: source-return tables must never use 200 (Cilium owns and flushes that table)";
+          assertion = lib.all (adjacency: !(lib.elem adjacency.table [0 200 201 253 254 255 2004 2005])) sourceReturns;
+          message = "routed-fabric/${instanceName}: source-return tables must never use reserved kernel/Cilium tables {0,200,201,253,254,255,2004,2005}";
         }
         {
-          assertion = lib.all (adjacency: !(lib.elem adjacency.table netifPolicyTables)) sourceReturns;
-          message = "routed-fabric/${instanceName}: source-return tables must not collide with same-host netif routingPolicy tables (${lib.concatStringsSep ", " (map toString netifPolicyTables)})";
+          assertion =
+            lib.length (lib.unique sourceReturnTables)
+            == lib.length sourceReturnTables
+            && lib.all (table: !(lib.elem table netifPolicyTables)) sourceReturnTables;
+          message = "routed-fabric/${instanceName}: source-return tables must be unique and must not collide with same-host netif routingPolicy tables (${lib.concatStringsSep ", " (map toString netifPolicyTables)})";
+        }
+        {
+          assertion =
+            lib.all (priority: priority >= 0 && priority < 32766) sourceReturnRulePriorities
+            && lib.length (lib.unique sourceReturnRulePriorities) == lib.length sourceReturnRulePriorities
+            && lib.intersectLists sourceReturnRulePriorities netifRulePriorities == [];
+          message = "routed-fabric/${instanceName}: source-return rule priorities must be below 32766 and unique across source-return and same-host netif rules";
         }
         {
           assertion = addressFamilyMismatches == [];
@@ -953,10 +978,12 @@
         };
         _networkFacts = {
           schemaVersion = 2;
+          forwarding = lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) true;
           node.name = machine.name;
           fabric.${instanceName} = {
             topology = ownRole;
             inherit (ownSettings) access;
+            forwarding = ownRole == "spine" || (border != null && border.forwarding);
             asn = ownAsn;
             inherit (ownAddress) ipv4 ipv6;
             loopback = loopbackName;
