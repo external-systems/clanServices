@@ -145,9 +145,8 @@
     }
   );
 
-  # Derived mesh addresses (§6.3): no explicit ipv4/ipv6 — deterministic
-  # from the mesh instance + machine name.
-  derivedInventory =
+  # No explicit addresses: values come from committed public allocation fixtures.
+  allocatedInventory =
     baseInventory
     // {
       instances =
@@ -162,8 +161,8 @@
             };
         };
     };
-  derivedEval = mkEvaled derivedInventory;
-  alphaDerived = derivedEval.config.nixosConfigurations.alpha.config;
+  allocatedEval = mkEvaled allocatedInventory;
+  alphaAllocated = allocatedEval.config.nixosConfigurations.alpha.config;
 in {
   rendering = {
     test_ifstateOnly = {
@@ -265,25 +264,23 @@ in {
       expr = alpha.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports";
       expected = "51820";
     };
-    # §6.3: mesh addresses derive deterministically from the mesh
-    # instance + machine name when unset (pinned hash contract).
-    test_derivedMeshAddresses = {
-      expr = alphaDerived.networking.ifstate.settings.interfaces.wg-mesh.addresses;
+    test_allocatedMeshAddresses = {
+      expr = alphaAllocated.networking.ifstate.settings.interfaces.wg-mesh.addresses;
       expected = [
-        "192.168.49.19/32"
-        "fd77:3131:676a:8ad7::516b/128"
+        "198.18.128.1/32"
+        "fd66:6666:6666::1/128"
       ];
     };
-    test_derivedMeshPeerRoutes = {
-      expr = map (route: route.to) alphaDerived.networking.ifstate.settings.routing.routes;
+    test_allocatedMeshPeerRoutes = {
+      expr = map (route: route.to) alphaAllocated.networking.ifstate.settings.routing.routes;
       expected = [
-        "192.168.32.0/32"
-        "fd77:2003:1148:a2fe::7e93/128"
-        "192.168.160.8/32"
-        "fd77:a087:a89c:dc45::22e2/128"
+        "198.18.128.2/32"
+        "fd66:6666:6666::2/128"
+        "198.18.128.3/32"
+        "fd66:6666:6666::3/128"
       ];
     };
-    test_derivedMeshExport = {
+    test_allocatedMeshExport = {
       expr =
         (clanLib.getExport {
             serviceName = "wireguard-mesh";
@@ -291,8 +288,8 @@ in {
             roleName = "peer";
             machineName = "alpha";
           }
-          derivedEval.config.exports).node_transport.ipv6;
-      expected = "fd77:3131:676a:8ad7::516b";
+          allocatedEval.config.exports).node_transport.ipv6;
+      expected = "fd66:6666:6666::1";
     };
   };
 
@@ -337,7 +334,8 @@ in {
   };
 
   vars = let
-    generator = alpha.clan.core.vars.generators."wireguard-mesh-mesh";
+    generators = alpha.clan.core.vars.generators;
+    generator = generators."wireguard-mesh-mesh";
   in {
     test_files = {
       expr = builtins.attrNames generator.files;
@@ -366,6 +364,25 @@ in {
         owner = "root";
         group = "root";
         mode = "0400";
+      };
+    };
+    test_allocationFilesArePublicAndNotDeployed = {
+      expr = lib.all (
+        name:
+          lib.all (file: !file.secret && !file.deploy) (
+            builtins.attrValues generators.${name}.files
+          )
+      ) ["wireguard-mesh-mesh-prefixes" "wireguard-mesh-mesh-node"];
+      expected = true;
+    };
+    test_allocationGeneratorScopeAndDependencies = {
+      expr = {
+        shared = generators.wireguard-mesh-mesh-prefixes.share;
+        dependencies = generators.wireguard-mesh-mesh-node.dependencies;
+      };
+      expected = {
+        shared = true;
+        dependencies = ["wireguard-mesh-mesh-prefixes"];
       };
     };
   };

@@ -1137,12 +1137,14 @@ in {
     ];
   in {
     test_allocationFilesArePublicAndNotDeployed = {
-      expr = lib.all (
-        name:
-          lib.all (file: !file.secret && !file.deploy) (
-            builtins.attrValues generators.${name}.files
-          )
-      ) allocationNames;
+      expr =
+        lib.all (
+          name:
+            lib.all (file: !file.secret && !file.deploy) (
+              builtins.attrValues generators.${name}.files
+            )
+        )
+        allocationNames;
       expected = true;
     };
     test_sharedGeneratorsAndDependencies = {

@@ -547,6 +547,8 @@ in {
       "rancher-server-token-k3s"
       "state-version"
       "wireguard-mesh-mesh"
+      "wireguard-mesh-mesh-node"
+      "wireguard-mesh-mesh-prefixes"
     ];
   };
 

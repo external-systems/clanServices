@@ -548,6 +548,8 @@ in {
       "rancher-server-token-rke2"
       "state-version"
       "wireguard-mesh-mesh"
+      "wireguard-mesh-mesh-node"
+      "wireguard-mesh-mesh-prefixes"
     ];
   };
 

@@ -1,6 +1,7 @@
 {ifstateOverlay}: {
   clanLib,
   config,
+  directory,
   lib,
   ...
 }: let
@@ -24,32 +25,6 @@
     if settings.domain == null
     then instanceName
     else settings.domain;
-
-  # Deterministic mesh addresses (SPEC §6.3): sha256 of
-  # "<instanceName>:<machineName>" → 192.168.<b0>.<b1> and
-  # fd77:<h0>:<h1>:<h2>::<h3>. 192.168.0.0/16 and fd77::/16 stay clear of
-  # the derived cluster CIDR space (10.0.0.0/8, fd10::/16). Collisions
-  # fail the mesh's unique-address assertions; per-machine ipv4/ipv6
-  # overrides are the escape.
-  meshHash = instanceName: machineName: builtins.hashString "sha256" "${instanceName}:${machineName}";
-
-  hexVal = c: let
-    digits = lib.stringToCharacters "0123456789abcdef";
-    idx = lib.findFirst (i: builtins.elemAt digits i == c) (-1) (lib.genList (x: x) 16);
-  in
-    if idx == -1
-    then throw "wireguard-mesh: bad hex digit '${c}' in address hash"
-    else idx;
-
-  hexByte = h: i: hexVal (builtins.substring i 1 h) * 16 + hexVal (builtins.substring (i + 1) 1 h);
-
-  derivedV4 = instanceName: machineName: let
-    h = meshHash instanceName machineName;
-  in "192.168.${toString (hexByte h 0)}.${toString (hexByte h 1)}";
-
-  derivedV6 = instanceName: machineName: let
-    h = meshHash instanceName machineName;
-  in "fd77:${builtins.substring 0 4 h}:${builtins.substring 4 4 h}:${builtins.substring 8 4 h}::${builtins.substring 12 4 h}";
 
   resolveHostValue = hostItem:
     hostItem.plain or (
@@ -127,22 +102,25 @@ in {
         ipv4 = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
-          example = "192.168.77.1";
+          example = "198.18.128.1";
           description = ''
             The machine's mesh IPv4 host address, without a prefix
-            length. null derives a deterministic address from the
-            instance and machine names (192.168.0.0/16, §6.3).
+            length. Null reads the public node allocation.
           '';
         };
         ipv6 = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
-          example = "fd00:77::1";
+          example = "fd64:6464:6464::1";
           description = ''
             The machine's mesh IPv6 host address, without a prefix
-            length. null derives a deterministic address from the
-            instance and machine names (fd77::/16, §6.3).
+            length. Null reads the public node allocation.
           '';
+        };
+        ipv4Pool = lib.mkOption {
+          type = lib.types.str;
+          default = "198.18.128.0/17";
+          description = "Member-uniform IPv4 allocation pool recorded by the shared prefix generator.";
         };
         interface = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
@@ -230,23 +208,54 @@ in {
       ...
     }: let
       generatorName = "wireguard-mesh-${instanceName}";
+      prefixGenerator = "wireguard-mesh-${instanceName}-prefixes";
+      nodeGenerator = "wireguard-mesh-${instanceName}-node";
       interface = interfaceName instanceName settings;
       allMembers = roles.peer.machines;
       peerMembers = lib.filterAttrs (name: _: name != machine.name) allMembers;
 
-      # Resolved mesh addresses (§6.3): explicit per-machine overrides
-      # win over the deterministic instance+machine-name derivation.
+      allocation = {
+        generator,
+        file,
+        machineName ? null,
+        generateMachine ? machine.name,
+      }:
+        lib.trim (
+          clanLib.getPublicValue {
+            inherit generator file;
+            flake = directory;
+            machine = machineName;
+            default = throw "wireguard-mesh/${instanceName}: no allocation for ${
+              if machineName == null
+              then generateMachine
+              else machineName
+            } (${generator}/${file}); run: clan vars generate ${generateMachine} --generator ${generator}";
+          }
+        );
+
       resolvedAddr = name: let
         memberSettings = allMembers.${name}.settings;
       in {
         ipv4 =
           if memberSettings.ipv4 != null
           then memberSettings.ipv4
-          else derivedV4 instanceName name;
+          else
+            allocation {
+              generator = nodeGenerator;
+              machineName = name;
+              generateMachine = name;
+              file = "ipv4";
+            };
         ipv6 =
           if memberSettings.ipv6 != null
           then memberSettings.ipv6
-          else derivedV6 instanceName name;
+          else
+            allocation {
+              generator = nodeGenerator;
+              machineName = name;
+              generateMachine = name;
+              file = "ipv6";
+            };
       };
       ownAddr = resolvedAddr machine.name;
 
@@ -473,22 +482,74 @@ in {
           extraHosts = hostEntries;
         };
 
-        clan.core.vars.generators.${generatorName} = {
-          files.privatekey = {
-            owner = "root";
-            group = "root";
-            mode = "0400";
-            restartUnits = ["ifstate.service"];
+        clan.core.vars.generators = {
+          ${generatorName} = {
+            files.privatekey = {
+              owner = "root";
+              group = "root";
+              mode = "0400";
+              restartUnits = ["ifstate.service"];
+            };
+            files.publickey = {
+              secret = false;
+              deploy = false;
+            };
+            runtimeInputs = [pkgs.wireguard-tools];
+            script = ''
+              wg genkey > "$out"/privatekey
+              wg pubkey < "$out"/privatekey > "$out"/publickey
+            '';
           };
-          files.publickey = {
-            secret = false;
-            deploy = false;
+          ${prefixGenerator} = {
+            share = true;
+            files = lib.genAttrs ["ula48" "ipv4-pool"] (_: {
+              secret = false;
+              deploy = false;
+            });
+            validation.ipv4Pool = settings.ipv4Pool;
+            runtimeInputs = [pkgs.python3];
+            script = ''
+              python3 - <<'PY'
+              import ipaddress
+              import os
+              import secrets
+              from pathlib import Path
+
+              out = Path(os.environ["out"])
+              ula = f"fd{secrets.randbits(40):010x}"
+              (out / "ula48").write_text(f"{ula[:4]}:{ula[4:8]}:{ula[8:12]}::/48\n")
+              (out / "ipv4-pool").write_text("${settings.ipv4Pool}\n")
+              PY
+            '';
           };
-          runtimeInputs = [pkgs.wireguard-tools];
-          script = ''
-            wg genkey > "$out"/privatekey
-            wg pubkey < "$out"/privatekey > "$out"/publickey
-          '';
+          ${nodeGenerator} = {
+            dependencies = [prefixGenerator];
+            files = lib.genAttrs ["ipv4" "ipv6"] (_: {
+              secret = false;
+              deploy = false;
+            });
+            runtimeInputs = [pkgs.python3];
+            script = ''
+              python3 - <<'PY'
+              import ipaddress
+              import os
+              import secrets
+              from pathlib import Path
+
+              inputs = Path(os.environ["in"]) / "${prefixGenerator}"
+              out = Path(os.environ["out"])
+              ula = ipaddress.IPv6Network((inputs / "ula48").read_text().strip())
+              pool = ipaddress.IPv4Network((inputs / "ipv4-pool").read_text().strip())
+              if pool.num_addresses < 4:
+                  raise ValueError("ipv4Pool must contain at least four addresses")
+              ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
+              loopback6 = ipaddress.IPv6Network((int(ula.network_address), 64))
+              ipv6 = loopback6.network_address + secrets.randbits(64)
+              (out / "ipv4").write_text(f"{ipv4}\n")
+              (out / "ipv6").write_text(f"{ipv6}\n")
+              PY
+            '';
+          };
         };
 
         environment.systemPackages = [pkgs.wireguard-tools];
