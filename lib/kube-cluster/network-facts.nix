@@ -38,7 +38,7 @@
       options = {
         interface = str "Point-to-point WireGuard interface name.";
         remote = str "Remote machine name.";
-        generator = str "Shared public adjacency allocation generator.";
+        generator = strList "Shared public adjacency port, transfer4, and transfer6 allocation generators.";
         ipv4 = nullableStr "Local transfer IPv4 address.";
         ipv6 = nullableStr "Local transfer IPv6 address.";
         prefix4 = str "Transfer IPv4 prefix.";

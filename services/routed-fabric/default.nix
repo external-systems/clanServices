@@ -345,11 +345,15 @@
     ownSettings = allMachines.${machine.name}.settings;
     ulaGenerator = "routed-fabric-${instanceName}-ula";
     prefixGenerator = "routed-fabric-${instanceName}-prefixes";
-    nodeGenerator = "routed-fabric-${instanceName}-node";
+    node4Generator = "routed-fabric-${instanceName}-node4";
+    node6Generator = "routed-fabric-${instanceName}-node6";
     asnGenerator = "routed-fabric-${instanceName}-asn";
-    adjacencyGeneratorName = remoteName: let
+    adjacencyGeneratorBase = remoteName: let
       key = fabric.adjacencyKey instanceName machine.name remoteName;
     in "routed-fabric-${instanceName}-adj-${builtins.substring 0 16 (builtins.hashString "sha256" key)}";
+    adjacencyPortGeneratorName = remoteName: "${adjacencyGeneratorBase remoteName}-port";
+    adjacencyTransfer4GeneratorName = remoteName: "${adjacencyGeneratorBase remoteName}-transfer4";
+    adjacencyTransfer6GeneratorName = remoteName: "${adjacencyGeneratorBase remoteName}-transfer6";
 
     allocation = {
       generator,
@@ -376,7 +380,7 @@
         then allMachines.${name}.settings.ipv4
         else
           allocation {
-            generator = nodeGenerator;
+            generator = node4Generator;
             machineName = name;
             generateMachine = name;
             file = "ipv4";
@@ -386,7 +390,7 @@
         then allMachines.${name}.settings.ipv6
         else
           allocation {
-            generator = nodeGenerator;
+            generator = node6Generator;
             machineName = name;
             generateMachine = name;
             file = "ipv6";
@@ -618,20 +622,27 @@
     mkAdjacency = remoteName: let
       remoteSettings = allMachines.${remoteName}.settings;
       key = fabric.adjacencyKey instanceName machine.name remoteName;
-      generator = adjacencyGeneratorName remoteName;
+      portGenerator = adjacencyPortGeneratorName remoteName;
+      transfer4Generator = adjacencyTransfer4GeneratorName remoteName;
+      transfer6Generator = adjacencyTransfer6GeneratorName remoteName;
+      generator = [
+        portGenerator
+        transfer4Generator
+        transfer6Generator
+      ];
       allocatedPort = builtins.fromJSON (
         allocation {
-          inherit generator;
+          generator = portGenerator;
           file = "port";
         }
       );
       prefixes = {
         ipv4 = allocation {
-          inherit generator;
+          generator = transfer4Generator;
           file = "transfer4";
         };
         ipv6 = allocation {
-          inherit generator;
+          generator = transfer6Generator;
           file = "transfer6";
         };
       };
@@ -771,8 +782,11 @@
         mtu
         name
         port
+        portGenerator
         prefixes
         remoteName
+        transfer4Generator
+        transfer6Generator
         rulePriority
         sourceReturn
         table
@@ -812,18 +826,18 @@
             memberSettings.ipv4
             == null
             && !cidr.contains ownSettings.loopback4Pool "${address.ipv4}/32"
-          ) "${name}/ipv4=${address.ipv4} outside loopback4Pool=${ownSettings.loopback4Pool}; run: clan vars generate ${name} --generator ${nodeGenerator} --regenerate"
+          ) "${name}/ipv4=${address.ipv4} outside loopback4Pool=${ownSettings.loopback4Pool}; run: clan vars generate ${name} --generator ${node4Generator} --regenerate"
           ++ lib.optional (
             memberSettings.ipv6
             == null
             && !cidr.contains "${ulaBase}:0::/64" "${address.ipv6}/128"
-          ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${nodeGenerator} --regenerate"
+          ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${node6Generator} --regenerate"
       )
       memberNames
       ++ lib.concatMap (
         adjacency:
-          lib.optional (!cidr.contains ownSettings.transfer4Pool adjacency.prefixes.ipv4) "${adjacency.key}/transfer4=${adjacency.prefixes.ipv4} outside transfer4Pool=${ownSettings.transfer4Pool}; run: clan vars generate <newer-machine> --generator ${adjacency.generator} --regenerate"
-          ++ lib.optional (!cidr.contains "${ulaBase}:1::/64" adjacency.prefixes.ipv6) "${adjacency.key}/transfer6=${adjacency.prefixes.ipv6} outside ${ulaBase}:1::/64; run: clan vars generate <newer-machine> --generator ${adjacency.generator} --regenerate"
+          lib.optional (!cidr.contains ownSettings.transfer4Pool adjacency.prefixes.ipv4) "${adjacency.key}/transfer4=${adjacency.prefixes.ipv4} outside transfer4Pool=${ownSettings.transfer4Pool}; run: clan vars generate <newer-machine> --generator ${adjacency.transfer4Generator} --regenerate"
+          ++ lib.optional (!cidr.contains "${ulaBase}:1::/64" adjacency.prefixes.ipv6) "${adjacency.key}/transfer6=${adjacency.prefixes.ipv6} outside ${ulaBase}:1::/64; run: clan vars generate <newer-machine> --generator ${adjacency.transfer6Generator} --regenerate"
       )
       adjacencies;
     loopbackName = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" instanceName)}";
@@ -1201,13 +1215,13 @@
           assertion = ipv4CollisionMachines == [];
           message = "routed-fabric/${instanceName}: loopback IPv4 ${ownAddress.ipv4} collides on owners ${machine.name}, ${
             lib.concatStringsSep ", " ipv4CollisionMachines
-          }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${nodeGenerator} --regenerate";
+          }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node4Generator} --regenerate";
         }
         {
           assertion = ipv6CollisionMachines == [];
           message = "routed-fabric/${instanceName}: loopback IPv6 ${ownAddress.ipv6} collides on owners ${machine.name}, ${
             lib.concatStringsSep ", " ipv6CollisionMachines
-          }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${nodeGenerator} --regenerate";
+          }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node6Generator} --regenerate";
         }
         {
           assertion = asnCollisionMachines == [];
@@ -1225,7 +1239,7 @@
           assertion = poolRecordDrift == [];
           message = "routed-fabric/${instanceName}: recorded pools differ from settings for ${
             lib.concatStringsSep ", " poolRecordDrift
-          }; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate (ULA and ASN are unchanged)";
+          }; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate to update the records. Then regenerate ${node4Generator} after a loopback4Pool change to re-roll only unpinned IPv4 loopbacks, or each adjacency -transfer4 generator after a transfer4Pool change to re-roll only transfer4 prefixes. ULA, IPv6, ASNs, ports, and transfer6 are unchanged";
         }
         {
           assertion = cidr.validV4Pool ownSettings.loopback4Pool && cidr.validV4Pool ownSettings.transfer4Pool;
@@ -1274,11 +1288,11 @@
           message = "routed-fabric/${instanceName}: ${
             lib.concatStringsSep "; " (
               map (
-                pair: "adjacency port ${toString pair.first.port} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.generator} --regenerate"
+                pair: "adjacency port ${toString pair.first.port} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.portGenerator} --regenerate"
               )
               portCollisionPairs
               ++ map (
-                collision: "adjacency ${collision.adjacency.key} port ${toString collision.adjacency.port} collides with WireGuard interface ${collision.other.name}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${collision.adjacency.generator} --regenerate"
+                collision: "adjacency ${collision.adjacency.key} port ${toString collision.adjacency.port} collides with WireGuard interface ${collision.other.name}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${collision.adjacency.portGenerator} --regenerate"
               )
               externalPortCollisions
             )
@@ -1289,7 +1303,7 @@
           message = "routed-fabric/${instanceName}: ${
             lib.concatStringsSep "; " (
               map (
-                pair: "transfer4 ${pair.first.prefixes.ipv4} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.generator} --regenerate"
+                pair: "transfer4 ${pair.first.prefixes.ipv4} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.transfer4Generator} --regenerate"
               )
               transfer4CollisionPairs
             )
@@ -1300,7 +1314,7 @@
           message = "routed-fabric/${instanceName}: ${
             lib.concatStringsSep "; " (
               map (
-                pair: "transfer6 ${pair.first.prefixes.ipv6} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.generator} --regenerate"
+                pair: "transfer6 ${pair.first.prefixes.ipv6} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.transfer6Generator} --regenerate"
               )
               transfer6CollisionPairs
             )
@@ -1432,12 +1446,36 @@
                 PY
               '';
             };
-            ${nodeGenerator} = {
-              dependencies = [ulaGenerator prefixGenerator];
-              files = lib.genAttrs ["ipv4" "ipv6"] (_: {
+            ${node4Generator} = {
+              dependencies = [prefixGenerator];
+              files.ipv4 = {
                 secret = false;
                 deploy = false;
-              });
+              };
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import ipaddress
+                import os
+                import secrets
+                from pathlib import Path
+
+                inputs = Path(os.environ["in"])
+                out = Path(os.environ["out"])
+                pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "loopback4-pool").read_text().strip())
+                if pool.num_addresses < 4:
+                    raise ValueError("loopback4Pool must contain at least four addresses")
+                ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
+                (out / "ipv4").write_text(f"{ipv4}\n")
+                PY
+              '';
+            };
+            ${node6Generator} = {
+              dependencies = [ulaGenerator];
+              files.ipv6 = {
+                secret = false;
+                deploy = false;
+              };
               runtimeInputs = [pkgs.python3];
               script = ''
                 python3 - <<'PY'
@@ -1449,13 +1487,8 @@
                 inputs = Path(os.environ["in"])
                 out = Path(os.environ["out"])
                 ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
-                pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "loopback4-pool").read_text().strip())
-                if pool.num_addresses < 4:
-                    raise ValueError("loopback4Pool must contain at least four addresses")
-                ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
                 loopback6 = ipaddress.IPv6Network((int(ula.network_address), 64))
                 ipv6 = loopback6.network_address + secrets.randbits(64)
-                (out / "ipv4").write_text(f"{ipv4}\n")
                 (out / "ipv6").write_text(f"{ipv6}\n")
                 PY
               '';
@@ -1480,48 +1513,95 @@
             };
           }
           // lib.listToAttrs (
-            map (remoteName: {
-              name = adjacencyGeneratorName remoteName;
-              value = {
-                share = true;
-                dependencies = [ulaGenerator prefixGenerator];
-                files = lib.genAttrs ["port" "transfer4" "transfer6"] (_: {
-                  secret = false;
-                  deploy = false;
-                });
-                validation = {
-                  portStart = toString ownSettings.portRange.start;
-                  portEnd = toString ownSettings.portRange.end;
-                };
-                runtimeInputs = [pkgs.python3];
-                script = ''
-                  python3 - <<'PY'
-                  import ipaddress
-                  import os
-                  import secrets
-                  from pathlib import Path
+            lib.concatMap (
+              remoteName: [
+                {
+                  name = adjacencyPortGeneratorName remoteName;
+                  value = {
+                    share = true;
+                    files.port = {
+                      secret = false;
+                      deploy = false;
+                    };
+                    validation = {
+                      portStart = toString ownSettings.portRange.start;
+                      portEnd = toString ownSettings.portRange.end;
+                    };
+                    runtimeInputs = [pkgs.python3];
+                    script = ''
+                      python3 - <<'PY'
+                      import os
+                      import secrets
+                      from pathlib import Path
 
-                  inputs = Path(os.environ["in"])
-                  out = Path(os.environ["out"])
-                  ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
-                  pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "transfer4-pool").read_text().strip())
-                  if pool.num_addresses < 4:
-                      raise ValueError("transfer4Pool must contain at least two /31 prefixes")
-                  transfer4 = ipaddress.IPv4Network((int(pool.network_address) + 2 * secrets.randbelow(pool.num_addresses // 2), 31))
-                  transfer6_pool = ipaddress.IPv6Network((int(ula.network_address) + (1 << 64), 64))
-                  transfer6 = ipaddress.IPv6Network((int(transfer6_pool.network_address) + 2 * secrets.randbelow(1 << 63), 127))
-                  start = ${toString ownSettings.portRange.start}
-                  end = ${toString ownSettings.portRange.end}
-                  if start > end:
-                      raise ValueError("portRange.start must not exceed portRange.end")
-                  port = start + secrets.randbelow(end - start + 1)
-                  (out / "port").write_text(f"{port}\n")
-                  (out / "transfer4").write_text(f"{transfer4.with_prefixlen}\n")
-                  (out / "transfer6").write_text(f"{transfer6.with_prefixlen}\n")
-                  PY
-                '';
-              };
-            })
+                      out = Path(os.environ["out"])
+                      start = ${toString ownSettings.portRange.start}
+                      end = ${toString ownSettings.portRange.end}
+                      if start > end:
+                          raise ValueError("portRange.start must not exceed portRange.end")
+                      port = start + secrets.randbelow(end - start + 1)
+                      (out / "port").write_text(f"{port}\n")
+                      PY
+                    '';
+                  };
+                }
+                {
+                  name = adjacencyTransfer4GeneratorName remoteName;
+                  value = {
+                    share = true;
+                    dependencies = [prefixGenerator];
+                    files.transfer4 = {
+                      secret = false;
+                      deploy = false;
+                    };
+                    runtimeInputs = [pkgs.python3];
+                    script = ''
+                      python3 - <<'PY'
+                      import ipaddress
+                      import os
+                      import secrets
+                      from pathlib import Path
+
+                      inputs = Path(os.environ["in"])
+                      out = Path(os.environ["out"])
+                      pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "transfer4-pool").read_text().strip())
+                      if pool.num_addresses < 4:
+                          raise ValueError("transfer4Pool must contain at least two /31 prefixes")
+                      transfer4 = ipaddress.IPv4Network((int(pool.network_address) + 2 * secrets.randbelow(pool.num_addresses // 2), 31))
+                      (out / "transfer4").write_text(f"{transfer4.with_prefixlen}\n")
+                      PY
+                    '';
+                  };
+                }
+                {
+                  name = adjacencyTransfer6GeneratorName remoteName;
+                  value = {
+                    share = true;
+                    dependencies = [ulaGenerator];
+                    files.transfer6 = {
+                      secret = false;
+                      deploy = false;
+                    };
+                    runtimeInputs = [pkgs.python3];
+                    script = ''
+                      python3 - <<'PY'
+                      import ipaddress
+                      import os
+                      import secrets
+                      from pathlib import Path
+
+                      inputs = Path(os.environ["in"])
+                      out = Path(os.environ["out"])
+                      ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
+                      transfer6_pool = ipaddress.IPv6Network((int(ula.network_address) + (1 << 64), 64))
+                      transfer6 = ipaddress.IPv6Network((int(transfer6_pool.network_address) + 2 * secrets.randbelow(1 << 63), 127))
+                      (out / "transfer6").write_text(f"{transfer6.with_prefixlen}\n")
+                      PY
+                    '';
+                  };
+                }
+              ]
+            )
             peerNames
           );
         _networkFacts = {

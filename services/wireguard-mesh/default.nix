@@ -214,7 +214,8 @@ in {
       generatorName = "wireguard-mesh-${instanceName}";
       ulaGenerator = "wireguard-mesh-${instanceName}-ula";
       prefixGenerator = "wireguard-mesh-${instanceName}-prefixes";
-      nodeGenerator = "wireguard-mesh-${instanceName}-node";
+      node4Generator = "wireguard-mesh-${instanceName}-node4";
+      node6Generator = "wireguard-mesh-${instanceName}-node6";
       interface = interfaceName instanceName settings;
       allMembers = roles.peer.machines;
       peerMembers = lib.filterAttrs (name: _: name != machine.name) allMembers;
@@ -246,7 +247,7 @@ in {
           then memberSettings.ipv4
           else
             allocation {
-              generator = nodeGenerator;
+              generator = node4Generator;
               machineName = name;
               generateMachine = name;
               file = "ipv4";
@@ -256,7 +257,7 @@ in {
           then memberSettings.ipv6
           else
             allocation {
-              generator = nodeGenerator;
+              generator = node6Generator;
               machineName = name;
               generateMachine = name;
               file = "ipv6";
@@ -285,10 +286,10 @@ in {
         in
           lib.optional (
             memberSettings.ipv4 == null && !cidr.contains settings.ipv4Pool "${address.ipv4}/32"
-          ) "${name}/ipv4=${address.ipv4} outside ipv4Pool=${settings.ipv4Pool}; run: clan vars generate ${name} --generator ${nodeGenerator} --regenerate"
+          ) "${name}/ipv4=${address.ipv4} outside ipv4Pool=${settings.ipv4Pool}; run: clan vars generate ${name} --generator ${node4Generator} --regenerate"
           ++ lib.optional (
             memberSettings.ipv6 == null && !cidr.contains "${ulaBase}:0::/64" "${address.ipv6}/128"
-          ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${nodeGenerator} --regenerate"
+          ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${node6Generator} --regenerate"
       ) (builtins.attrNames allMembers);
       allocationPools = [
         {
@@ -578,13 +579,13 @@ in {
             assertion = ipv4CollisionMachines == [];
             message = "wireguard-mesh/${instanceName}: mesh IPv4 ${ownAddr.ipv4} collides on owners ${machine.name}, ${
               lib.concatStringsSep ", " ipv4CollisionMachines
-            }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${nodeGenerator} --regenerate";
+            }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node4Generator} --regenerate";
           }
           {
             assertion = ipv6CollisionMachines == [];
             message = "wireguard-mesh/${instanceName}: mesh IPv6 ${ownAddr.ipv6} collides on owners ${machine.name}, ${
               lib.concatStringsSep ", " ipv6CollisionMachines
-            }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${nodeGenerator} --regenerate";
+            }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node6Generator} --regenerate";
           }
           {
             assertion = allocationMembershipErrors == [];
@@ -594,7 +595,7 @@ in {
           }
           {
             assertion = !poolRecordDrift;
-            message = "wireguard-mesh/${instanceName}: recorded ipv4Pool differs from the setting; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate (ULA is unchanged)";
+            message = "wireguard-mesh/${instanceName}: recorded ipv4Pool differs from the setting; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate to update the record, then regenerate ${node4Generator} on each machine to re-roll only unpinned IPv4 addresses. ULA and IPv6 are unchanged";
           }
           {
             assertion = cidr.validV4Pool settings.ipv4Pool;
@@ -729,12 +730,36 @@ in {
               PY
             '';
           };
-          ${nodeGenerator} = {
-            dependencies = [ulaGenerator prefixGenerator];
-            files = lib.genAttrs ["ipv4" "ipv6"] (_: {
+          ${node4Generator} = {
+            dependencies = [prefixGenerator];
+            files.ipv4 = {
               secret = false;
               deploy = false;
-            });
+            };
+            runtimeInputs = [pkgs.python3];
+            script = ''
+              python3 - <<'PY'
+              import ipaddress
+              import os
+              import secrets
+              from pathlib import Path
+
+              inputs = Path(os.environ["in"])
+              out = Path(os.environ["out"])
+              pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "ipv4-pool").read_text().strip())
+              if pool.num_addresses < 4:
+                  raise ValueError("ipv4Pool must contain at least four addresses")
+              ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
+              (out / "ipv4").write_text(f"{ipv4}\n")
+              PY
+            '';
+          };
+          ${node6Generator} = {
+            dependencies = [ulaGenerator];
+            files.ipv6 = {
+              secret = false;
+              deploy = false;
+            };
             runtimeInputs = [pkgs.python3];
             script = ''
               python3 - <<'PY'
@@ -746,13 +771,8 @@ in {
               inputs = Path(os.environ["in"])
               out = Path(os.environ["out"])
               ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
-              pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "ipv4-pool").read_text().strip())
-              if pool.num_addresses < 4:
-                  raise ValueError("ipv4Pool must contain at least four addresses")
-              ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
               loopback6 = ipaddress.IPv6Network((int(ula.network_address), 64))
               ipv6 = loopback6.network_address + secrets.randbits(64)
-              (out / "ipv4").write_text(f"{ipv4}\n")
               (out / "ipv6").write_text(f"{ipv6}\n")
               PY
             '';

@@ -519,7 +519,8 @@ in {
         ) [
           "wireguard-mesh-mesh-ula"
           "wireguard-mesh-mesh-prefixes"
-          "wireguard-mesh-mesh-node"
+          "wireguard-mesh-mesh-node4"
+          "wireguard-mesh-mesh-node6"
         ];
       expected = true;
     };
@@ -528,23 +529,22 @@ in {
         ulaShared = generators.wireguard-mesh-mesh-ula.share;
         ulaValidation = generators.wireguard-mesh-mesh-ula.validation or {};
         shared = generators.wireguard-mesh-mesh-prefixes.share;
-        dependencies = generators.wireguard-mesh-mesh-node.dependencies;
+        node4Dependencies = generators.wireguard-mesh-mesh-node4.dependencies;
+        node6Dependencies = generators.wireguard-mesh-mesh-node6.dependencies;
       };
       expected = {
         ulaShared = true;
         ulaValidation = null;
         shared = true;
-        dependencies = [
-          "wireguard-mesh-mesh-ula"
-          "wireguard-mesh-mesh-prefixes"
-        ];
+        node4Dependencies = ["wireguard-mesh-mesh-prefixes"];
+        node6Dependencies = ["wireguard-mesh-mesh-ula"];
       };
     };
   };
 
   validation = {
     test_duplicateAddressesRejected = {
-      expr = failedAssertion duplicateEval.config.nixosConfigurations.alpha.config "mesh IPv4 10.42.0.1 collides on owners alpha, beta; regenerate the newer machine: clan vars generate <newer-machine> --generator wireguard-mesh-mesh-node --regenerate";
+      expr = failedAssertion duplicateEval.config.nixosConfigurations.alpha.config "mesh IPv4 10.42.0.1 collides on owners alpha, beta; regenerate the newer machine: clan vars generate <newer-machine> --generator wireguard-mesh-mesh-node4 --regenerate";
       expected = true;
     };
     test_unequalPoolsRejected = {
@@ -574,7 +574,7 @@ in {
       expected = true;
     };
     test_recordedPoolDriftRejected = {
-      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.alpha.config "recorded ipv4Pool differs from the setting; run: clan vars generate alpha --generator wireguard-mesh-mesh-prefixes --regenerate (ULA is unchanged)";
+      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.alpha.config "recorded ipv4Pool differs from the setting; run: clan vars generate alpha --generator wireguard-mesh-mesh-prefixes --regenerate to update the record, then regenerate wireguard-mesh-mesh-node4 on each machine to re-roll only unpinned IPv4 addresses. ULA and IPv6 are unchanged";
       expected = true;
     };
     test_nonCanonicalPoolRejected = {

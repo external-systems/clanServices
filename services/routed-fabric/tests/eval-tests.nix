@@ -1340,14 +1340,28 @@ in {
 
   vars = let
     generators = client.clan.core.vars.generators;
-    adjacencyGenerator = client.clan.networkFacts.fabric.fleet.adjacencies.spine-a.generator;
-    allocationNames = [
-      "routed-fabric-fleet-ula"
-      "routed-fabric-fleet-prefixes"
-      "routed-fabric-fleet-node"
-      "routed-fabric-fleet-asn"
-      adjacencyGenerator
-    ];
+    spineGenerators = spine.clan.core.vars.generators;
+    adjacencyGenerators = client.clan.networkFacts.fabric.fleet.adjacencies.spine-a.generator;
+    portGenerator = builtins.elemAt adjacencyGenerators 0;
+    transfer4Generator = builtins.elemAt adjacencyGenerators 1;
+    transfer6Generator = builtins.elemAt adjacencyGenerators 2;
+    declaration = set: name: let
+      generator = set.${name};
+    in {
+      inherit (generator) share script;
+      dependencies = generator.dependencies or [];
+      validation = generator.validation or {};
+      files = lib.mapAttrs (_: file: {inherit (file) secret deploy;}) generator.files;
+    };
+    allocationNames =
+      [
+        "routed-fabric-fleet-ula"
+        "routed-fabric-fleet-prefixes"
+        "routed-fabric-fleet-node4"
+        "routed-fabric-fleet-node6"
+        "routed-fabric-fleet-asn"
+      ]
+      ++ adjacencyGenerators;
   in {
     test_allocationFilesArePublicAndNotDeployed = {
       expr =
@@ -1365,23 +1379,30 @@ in {
         ulaShared = generators.routed-fabric-fleet-ula.share;
         ulaValidation = generators.routed-fabric-fleet-ula.validation or {};
         prefixesShared = generators.routed-fabric-fleet-prefixes.share;
-        adjacencyShared = generators.${adjacencyGenerator}.share;
-        nodeDependencies = generators.routed-fabric-fleet-node.dependencies;
-        adjacencyDependencies = generators.${adjacencyGenerator}.dependencies;
+        adjacencyShared = lib.all (name: generators.${name}.share) adjacencyGenerators;
+        adjacencyByteIdentical = lib.all (name: declaration generators name == declaration spineGenerators name) adjacencyGenerators;
+        node4Dependencies = generators.routed-fabric-fleet-node4.dependencies;
+        node6Dependencies = generators.routed-fabric-fleet-node6.dependencies;
+        portDependencies = generators.${portGenerator}.dependencies or [];
+        portValidation = generators.${portGenerator}.validation;
+        transfer4Dependencies = generators.${transfer4Generator}.dependencies;
+        transfer6Dependencies = generators.${transfer6Generator}.dependencies;
       };
       expected = {
         ulaShared = true;
         ulaValidation = null;
         prefixesShared = true;
         adjacencyShared = true;
-        nodeDependencies = [
-          "routed-fabric-fleet-ula"
-          "routed-fabric-fleet-prefixes"
-        ];
-        adjacencyDependencies = [
-          "routed-fabric-fleet-ula"
-          "routed-fabric-fleet-prefixes"
-        ];
+        adjacencyByteIdentical = true;
+        node4Dependencies = ["routed-fabric-fleet-prefixes"];
+        node6Dependencies = ["routed-fabric-fleet-ula"];
+        portDependencies = [];
+        portValidation = {
+          portStart = "10000";
+          portEnd = "29999";
+        };
+        transfer4Dependencies = ["routed-fabric-fleet-prefixes"];
+        transfer6Dependencies = ["routed-fabric-fleet-ula"];
       };
     };
   };
@@ -1529,11 +1550,11 @@ in {
       expected = true;
     };
     test_duplicateLoopbackIpv4Rejected = {
-      expr = failedAssertion duplicateIpv4Eval.config.nixosConfigurations.dup4-a.config "loopback IPv4 198.18.0.40 collides on owners dup4-a, dup4-b; regenerate the newer machine: clan vars generate <newer-machine> --generator routed-fabric-fleet-node --regenerate";
+      expr = failedAssertion duplicateIpv4Eval.config.nixosConfigurations.dup4-a.config "loopback IPv4 198.18.0.40 collides on owners dup4-a, dup4-b; regenerate the newer machine: clan vars generate <newer-machine> --generator routed-fabric-fleet-node4 --regenerate";
       expected = true;
     };
     test_duplicateLoopbackIpv6Rejected = {
-      expr = failedAssertion duplicateIpv6Eval.config.nixosConfigurations.dup6-a.config "loopback IPv6 fd64:6464:6464::50 collides on owners dup6-a, dup6-b; regenerate the newer machine: clan vars generate <newer-machine> --generator routed-fabric-fleet-node --regenerate";
+      expr = failedAssertion duplicateIpv6Eval.config.nixosConfigurations.dup6-a.config "loopback IPv6 fd64:6464:6464::50 collides on owners dup6-a, dup6-b; regenerate the newer machine: clan vars generate <newer-machine> --generator routed-fabric-fleet-node6 --regenerate";
       expected = true;
     };
     test_duplicateAsnRejected = {
@@ -1599,7 +1620,7 @@ in {
       expected = true;
     };
     test_recordedPoolDriftRejected = {
-      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.overlap-a.config "recorded pools differ from settings for loopback4Pool; run: clan vars generate overlap-a --generator routed-fabric-overlap-prefixes --regenerate (ULA and ASN are unchanged)";
+      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.overlap-a.config "recorded pools differ from settings for loopback4Pool; run: clan vars generate overlap-a --generator routed-fabric-overlap-prefixes --regenerate to update the records. Then regenerate routed-fabric-overlap-node4 after a loopback4Pool change to re-roll only unpinned IPv4 loopbacks, or each adjacency -transfer4 generator after a transfer4Pool change to re-roll only transfer4 prefixes. ULA, IPv6, ASNs, ports, and transfer6 are unchanged";
       expected = true;
     };
     test_nonCanonicalPoolRejected = {
