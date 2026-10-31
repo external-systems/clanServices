@@ -470,6 +470,13 @@ in {
         nodePort = true;
       };
     };
+    test_meshNetworkFacts = {
+      expr = alpha.clan.networkFacts.mesh.mesh;
+      expected = {
+        ipv4 = "10.42.0.1";
+        ipv6 = "fd10:42::1";
+      };
+    };
     test_standardPeer = {
       expr = (memberExport "alpha").peer.hosts;
       expected = [{plain = "alpha.mesh";}];

@@ -784,7 +784,10 @@ in {
           };
         };
 
-        clan._networkFacts.allocationPools."wireguard-mesh/${instanceName}" = allocationPools;
+        clan._networkFacts = {
+          allocationPools."wireguard-mesh/${instanceName}" = allocationPools;
+          mesh.${instanceName} = ownAddr;
+        };
         environment.systemPackages = [pkgs.wireguard-tools];
       };
     };

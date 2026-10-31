@@ -4,11 +4,8 @@
   nodes,
   ...
 }: let
-  addresses = lib.mapAttrs (_: node: let
-    allocated = node.networking.ifstate.settings.interfaces.wg-mesh.addresses;
-  in {
-    ipv4 = lib.removeSuffix "/32" (builtins.elemAt allocated 0);
-    ipv6 = lib.removeSuffix "/128" (builtins.elemAt allocated 1);
+  addresses = lib.mapAttrs (_: node: {
+    inherit (node.clan.networkFacts.mesh.mesh) ipv4 ipv6;
   }) (lib.getAttrs ["alpha" "beta" "gamma"] nodes);
 in {
   name = "wireguard-mesh";
@@ -126,8 +123,8 @@ in {
                 f"{machine.name} has a zero handshake: {handshakes}"
             )
 
-        alpha.succeed("getent ahosts beta.mesh | grep -q '${addresses.beta.ipv4}'")
-        alpha.succeed("getent ahosts beta.mesh | grep -q '${addresses.beta.ipv6}'")
+        alpha.succeed("getent ahosts beta.mesh | grep -Eq '^${addresses.beta.ipv4}( |$)'")
+        alpha.succeed("getent ahosts beta.mesh | grep -Eq '^${addresses.beta.ipv6}( |$)'")
         alpha.wait_until_succeeds("ping -c2 -W2 beta.mesh", timeout=60)
 
         for machine in machines:

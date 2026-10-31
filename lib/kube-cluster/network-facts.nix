@@ -127,6 +127,19 @@
       inherit readOnly;
       description = "Declared routed-fabric memberships and adjacencies.";
     };
+    mesh = lib.mkOption {
+      type = t.attrsOf (
+        t.submodule {
+          options = {
+            ipv4 = nullableStr "Stable mesh IPv4 member address.";
+            ipv6 = nullableStr "Stable mesh IPv6 member address.";
+          };
+        }
+      );
+      default = {};
+      inherit readOnly;
+      description = "Declared wireguard-mesh memberships and stable addresses.";
+    };
     clusters = lib.mkOption {
       type = t.attrsOf (
         t.submodule {
