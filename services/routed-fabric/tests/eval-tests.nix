@@ -385,6 +385,10 @@
     spineSettings.loopback4Pool = "198.18.64.0/18";
     leafSettings.loopback4Pool = "198.18.64.0/18";
   });
+  transferPoolDriftEval = mkEvaled (pairInventory {
+    spineSettings.transfer4Pool = "198.19.128.0/17";
+    leafSettings.transfer4Pool = "198.19.128.0/17";
+  });
   poolEvalWithLoopback = value:
     mkEvaled (pairInventory {
       instanceName = "overlap";
@@ -1361,14 +1365,18 @@ in {
       validation = generator.validation or {};
       files = lib.mapAttrs (_: file: {inherit (file) secret deploy;}) generator.files;
     };
+    poolGeneratorNames = [
+      "routed-fabric-fleet-loopback4-pool"
+      "routed-fabric-fleet-transfer4-pool"
+    ];
     allocationNames =
       [
         "routed-fabric-fleet-ula"
-        "routed-fabric-fleet-prefixes"
         "routed-fabric-fleet-node4"
         "routed-fabric-fleet-node6"
         "routed-fabric-fleet-asn"
       ]
+      ++ poolGeneratorNames
       ++ adjacencyGenerators;
   in {
     test_allocationFilesArePublicAndNotDeployed = {
@@ -1386,7 +1394,12 @@ in {
       expr = {
         ulaShared = generators.routed-fabric-fleet-ula.share;
         ulaValidation = generators.routed-fabric-fleet-ula.validation or {};
-        prefixesShared = generators.routed-fabric-fleet-prefixes.share;
+        poolRecordsShared = lib.all (name: generators.${name}.share) poolGeneratorNames;
+        poolRecordsByteIdentical = lib.all (name: declaration generators name == declaration spineGenerators name) poolGeneratorNames;
+        poolRecordValidation = {
+          loopback = generators.routed-fabric-fleet-loopback4-pool.validation;
+          transfer = generators.routed-fabric-fleet-transfer4-pool.validation;
+        };
         adjacencyShared = lib.all (name: generators.${name}.share) adjacencyGenerators;
         adjacencyByteIdentical = lib.all (name: declaration generators name == declaration spineGenerators name) adjacencyGenerators;
         node4Dependencies = generators.routed-fabric-fleet-node4.dependencies;
@@ -1399,17 +1412,22 @@ in {
       expected = {
         ulaShared = true;
         ulaValidation = null;
-        prefixesShared = true;
+        poolRecordsShared = true;
+        poolRecordsByteIdentical = true;
+        poolRecordValidation = {
+          loopback.pool = "198.18.0.0/17";
+          transfer.pool = "198.19.0.0/16";
+        };
         adjacencyShared = true;
         adjacencyByteIdentical = true;
-        node4Dependencies = ["routed-fabric-fleet-prefixes"];
+        node4Dependencies = ["routed-fabric-fleet-loopback4-pool"];
         node6Dependencies = ["routed-fabric-fleet-ula"];
         portDependencies = [];
         portValidation = {
           portStart = "10000";
           portEnd = "29999";
         };
-        transfer4Dependencies = ["routed-fabric-fleet-prefixes"];
+        transfer4Dependencies = ["routed-fabric-fleet-transfer4-pool"];
         transfer6Dependencies = ["routed-fabric-fleet-ula"];
       };
     };
@@ -1627,9 +1645,29 @@ in {
       expr = failedAssertion membershipDriftEval.config.nixosConfigurations.overlap-a.config "overlap-a/ipv4=198.19.0.10 outside loopback4Pool=198.18.64.0/18";
       expected = true;
     };
-    test_recordedPoolDriftRejected = {
-      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.overlap-a.config "recorded pools differ from settings for loopback4Pool; run: clan vars generate overlap-a --generator routed-fabric-overlap-prefixes --regenerate to update the records. Then regenerate routed-fabric-overlap-node4 after a loopback4Pool change to re-roll only unpinned IPv4 loopbacks, or each adjacency -transfer4 generator after a transfer4Pool change to re-roll only transfer4 prefixes. ULA, IPv6, ASNs, ports, and transfer6 are unchanged";
-      expected = true;
+    test_recordedLoopbackPoolDriftNamesOnlyLoopbackGenerator = {
+      expr = let
+        config = membershipDriftEval.config.nixosConfigurations.overlap-a.config;
+      in {
+        own = failedAssertion config "routed-fabric/overlap: recorded loopback4Pool differs from settings; run: clan vars generate overlap-a --generator routed-fabric-overlap-loopback4-pool --regenerate to update the record, then regenerate routed-fabric-overlap-node4 to re-roll only unpinned IPv4 loopbacks";
+        other = failedAssertion config "--generator routed-fabric-overlap-transfer4-pool --regenerate";
+      };
+      expected = {
+        own = true;
+        other = false;
+      };
+    };
+    test_recordedTransferPoolDriftNamesOnlyTransferGenerator = {
+      expr = let
+        config = transferPoolDriftEval.config.nixosConfigurations.spine-a.config;
+      in {
+        own = failedAssertion config "routed-fabric/fleet: recorded transfer4Pool differs from settings; run: clan vars generate spine-a --generator routed-fabric-fleet-transfer4-pool --regenerate to update the record, then regenerate each adjacency -transfer4 generator to re-roll only transfer4 prefixes";
+        other = failedAssertion config "--generator routed-fabric-fleet-loopback4-pool --regenerate";
+      };
+      expected = {
+        own = true;
+        other = false;
+      };
     };
     test_nonCanonicalPoolRejected = {
       expr = failedAssertion canonicalPoolEval.config.nixosConfigurations.overlap-a.config "must be canonical IPv4 CIDRs with host bits clear";

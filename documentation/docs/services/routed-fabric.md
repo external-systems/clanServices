@@ -83,13 +83,14 @@ Run `clan vars generate <machine>` after adding a machine or adjacency and
 before evaluation or deployment. Public, non-deployed vars allocate each
 machine's loopback IPv4/IPv6 and ASN, and each adjacency's port and transfer
 prefixes. The shared ULA generator creates an RFC 4193 ULA /48 and has no
-settings validation. A separate prefix generator records the member-uniform
-`loopback4Pool` (default `198.18.0.0/17`) and `transfer4Pool` (default
-`198.19.0.0/16`). Each machine has independent `node4` and `node6` generators:
-`node4` depends only on the prefix records and `node6` only on the ULA. Each
-adjacency likewise has independent `-port`, `-transfer4`, and `-transfer6`
-generators. Ports validate only `portRange`; transfer4 depends only on the
-prefix records; transfer6 depends only on the ULA. Evaluation asserts that
+settings validation. Separate shared `-loopback4-pool` and `-transfer4-pool`
+generators record the member-uniform pools (defaults `198.18.0.0/17` and
+`198.19.0.0/16`) in one `pool` file each, with `validation.pool`. Each machine
+has independent `node4` and `node6` generators: `node4` depends only on the
+loopback pool record and `node6` only on the ULA. Each adjacency likewise has
+independent `-port`, `-transfer4`, and `-transfer6` generators. Ports validate
+only `portRange`; transfer4 depends only on the transfer pool record;
+transfer6 depends only on the ULA. Evaluation asserts that
 pool records still equal the settings and that every allocated address or
 transfer lies inside its pool or ULA `/64`. Loopback IPv6 uses the ULA's
 `:0::/64`; transfer IPv6 uses `:1::/64`. The ASN has its own generator, so

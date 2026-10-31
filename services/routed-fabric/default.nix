@@ -344,7 +344,8 @@
     ownRole = roleFor roles machine.name;
     ownSettings = allMachines.${machine.name}.settings;
     ulaGenerator = "routed-fabric-${instanceName}-ula";
-    prefixGenerator = "routed-fabric-${instanceName}-prefixes";
+    loopback4PoolGenerator = "routed-fabric-${instanceName}-loopback4-pool";
+    transfer4PoolGenerator = "routed-fabric-${instanceName}-transfer4-pool";
     node4Generator = "routed-fabric-${instanceName}-node4";
     node6Generator = "routed-fabric-${instanceName}-node6";
     asnGenerator = "routed-fabric-${instanceName}-asn";
@@ -436,11 +437,13 @@
     );
     isKubernetes = name: builtins.elem name kubernetesMachines;
 
-    prefixFile = file:
+    poolFile = generator:
       allocation {
-        generator = prefixGenerator;
-        inherit file;
+        inherit generator;
+        file = "pool";
       };
+    loopback4PoolRecord = poolFile loopback4PoolGenerator;
+    transfer4PoolRecord = poolFile transfer4PoolGenerator;
     ulaBase = builtins.head (
       lib.splitString "::" (
         allocation {
@@ -450,16 +453,16 @@
       )
     );
     poolRecordDrift =
-      lib.optional (prefixFile "loopback4-pool" != ownSettings.loopback4Pool) "loopback4Pool"
-      ++ lib.optional (prefixFile "transfer4-pool" != ownSettings.transfer4Pool) "transfer4Pool";
+      lib.optional (loopback4PoolRecord != ownSettings.loopback4Pool) "routed-fabric/${instanceName}: recorded loopback4Pool differs from settings; run: clan vars generate ${machine.name} --generator ${loopback4PoolGenerator} --regenerate to update the record, then regenerate ${node4Generator} to re-roll only unpinned IPv4 loopbacks"
+      ++ lib.optional (transfer4PoolRecord != ownSettings.transfer4Pool) "routed-fabric/${instanceName}: recorded transfer4Pool differs from settings; run: clan vars generate ${machine.name} --generator ${transfer4PoolGenerator} --regenerate to update the record, then regenerate each adjacency -transfer4 generator to re-roll only transfer4 prefixes";
     allocationPools = [
       {
         name = "loopback4Pool";
-        cidr = prefixFile "loopback4-pool";
+        cidr = loopback4PoolRecord;
       }
       {
         name = "transfer4Pool";
-        cidr = prefixFile "transfer4-pool";
+        cidr = transfer4PoolRecord;
       }
       {
         name = "loopback6";
@@ -1241,9 +1244,7 @@
         }
         {
           assertion = poolRecordDrift == [];
-          message = "routed-fabric/${instanceName}: recorded pools differ from settings for ${
-            lib.concatStringsSep ", " poolRecordDrift
-          }; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate to update the records. Then regenerate ${node4Generator} after a loopback4Pool change to re-roll only unpinned IPv4 loopbacks, or each adjacency -transfer4 generator after a transfer4Pool change to re-roll only transfer4 prefixes. ULA, IPv6, ASNs, ports, and transfer6 are unchanged";
+          message = lib.concatStringsSep "\n" poolRecordDrift;
         }
         {
           assertion = cidr.validV4Pool ownSettings.loopback4Pool && cidr.validV4Pool ownSettings.transfer4Pool;
@@ -1429,15 +1430,13 @@
                 PY
               '';
             };
-            ${prefixGenerator} = {
+            ${loopback4PoolGenerator} = {
               share = true;
-              files = lib.genAttrs ["loopback4-pool" "transfer4-pool"] (_: {
+              files.pool = {
                 secret = false;
                 deploy = false;
-              });
-              validation = {
-                inherit (ownSettings) loopback4Pool transfer4Pool;
               };
+              validation.pool = ownSettings.loopback4Pool;
               runtimeInputs = [pkgs.python3];
               script = ''
                 python3 - <<'PY'
@@ -1445,13 +1444,30 @@
                 from pathlib import Path
 
                 out = Path(os.environ["out"])
-                (out / "loopback4-pool").write_text("${ownSettings.loopback4Pool}\n")
-                (out / "transfer4-pool").write_text("${ownSettings.transfer4Pool}\n")
+                (out / "pool").write_text("${ownSettings.loopback4Pool}\n")
+                PY
+              '';
+            };
+            ${transfer4PoolGenerator} = {
+              share = true;
+              files.pool = {
+                secret = false;
+                deploy = false;
+              };
+              validation.pool = ownSettings.transfer4Pool;
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import os
+                from pathlib import Path
+
+                out = Path(os.environ["out"])
+                (out / "pool").write_text("${ownSettings.transfer4Pool}\n")
                 PY
               '';
             };
             ${node4Generator} = {
-              dependencies = [prefixGenerator];
+              dependencies = [loopback4PoolGenerator];
               files.ipv4 = {
                 secret = false;
                 deploy = false;
@@ -1466,7 +1482,7 @@
 
                 inputs = Path(os.environ["in"])
                 out = Path(os.environ["out"])
-                pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "loopback4-pool").read_text().strip())
+                pool = ipaddress.IPv4Network((inputs / "${loopback4PoolGenerator}" / "pool").read_text().strip())
                 if pool.num_addresses < 4:
                     raise ValueError("loopback4Pool must contain at least four addresses")
                 ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
@@ -1553,7 +1569,7 @@
                   name = adjacencyTransfer4GeneratorName remoteName;
                   value = {
                     share = true;
-                    dependencies = [prefixGenerator];
+                    dependencies = [transfer4PoolGenerator];
                     files.transfer4 = {
                       secret = false;
                       deploy = false;
@@ -1568,7 +1584,7 @@
 
                       inputs = Path(os.environ["in"])
                       out = Path(os.environ["out"])
-                      pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "transfer4-pool").read_text().strip())
+                      pool = ipaddress.IPv4Network((inputs / "${transfer4PoolGenerator}" / "pool").read_text().strip())
                       if pool.num_addresses < 4:
                           raise ValueError("transfer4Pool must contain at least two /31 prefixes")
                       transfer4 = ipaddress.IPv4Network((int(pool.network_address) + 2 * secrets.randbelow(pool.num_addresses // 2), 31))

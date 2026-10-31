@@ -1389,13 +1389,14 @@ unless noted) — revoked entries keep one-line reasons for history.
 
   `routed-fabric-<inst>-ula` is shared, has no validation, and is the only
   generator that writes the random RFC 4193 `fdXX:XXXX:XXXX::/48` `ula48`.
-  `routed-fabric-<inst>-prefixes` is a separate shared generator writing only
-  `loopback4-pool` and `transfer4-pool`; pool defaults are `198.18.0.0/17`
-  and `198.19.0.0/16`. Member settings `loopback4Pool` and `transfer4Pool`
-  feed that generator through string-only `validation`, must be equal on
-  every member, and must equal the recorded pool vars. Each per-machine
-  `routed-fabric-<inst>-node4` depends only on `-prefixes` and writes `ipv4`
-  (a random non-network/non-broadcast host in the loopback pool);
+  `routed-fabric-<inst>-loopback4-pool` and
+  `routed-fabric-<inst>-transfer4-pool` are separate shared generators, each
+  writing one public non-deployed `pool` file with string-only
+  `validation.pool`. Pool defaults are `198.18.0.0/17` and `198.19.0.0/16`.
+  Member settings `loopback4Pool` and `transfer4Pool` must be equal on every
+  member and must equal their recorded pool vars. Each per-machine
+  `routed-fabric-<inst>-node4` depends only on `-loopback4-pool` and writes
+  `ipv4` (a random non-network/non-broadcast host in the loopback pool);
   `routed-fabric-<inst>-node6` depends only on `-ula` and writes `ipv6` (a
   random host in `<ula48>:0::/64`). `routed-fabric-<inst>-asn` is an
   independent per-machine generator writing `asn` randomly in
@@ -1407,8 +1408,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   adjacency key and cannot alias hyphenated machine-name pairs:
   `routed-fabric-<inst>-adj-<hash>-port` has no dependencies, validates only
   `portStart`/`portEnd`, and writes `port`;
-  `routed-fabric-<inst>-adj-<hash>-transfer4` depends only on `-prefixes` and
-  writes a `/31` `transfer4` from the transfer pool;
+  `routed-fabric-<inst>-adj-<hash>-transfer4` depends only on
+  `-transfer4-pool` and writes a `/31` `transfer4` from the transfer pool;
   `routed-fabric-<inst>-adj-<hash>-transfer6` depends only on `-ula` and
   writes a `/127` `transfer6` from `<ula48>:1::/64`. The `portRange` setting
   defaults to 10000–29999, below both the Kubernetes NodePort range and the

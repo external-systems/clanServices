@@ -193,12 +193,13 @@ missing values throw the targeted generation command.
 | Generator | Scope | Files (public) | Notes |
 | --- | --- | --- | --- |
 | `routed-fabric-<inst>-ula` | shared | `ula48` | random RFC 4193 ULA; no validation, so pool edits cannot re-roll IPv6 |
-| `routed-fabric-<inst>-prefixes` | shared | `loopback4-pool`, `transfer4-pool` | pools default to `198.18.0.0/17` and `198.19.0.0/16`; member settings feed string-only validation and must match the committed records |
-| `routed-fabric-<inst>-node4` | per machine | `ipv4` | depends only on prefixes; random host in loopback pool |
+| `routed-fabric-<inst>-loopback4-pool` | shared | `pool` | defaults to `198.18.0.0/17`; member setting feeds string-only `validation.pool` and must match the committed record |
+| `routed-fabric-<inst>-transfer4-pool` | shared | `pool` | defaults to `198.19.0.0/16`; member setting feeds string-only `validation.pool` and must match the committed record |
+| `routed-fabric-<inst>-node4` | per machine | `ipv4` | depends only on the loopback pool generator; random host in loopback pool |
 | `routed-fabric-<inst>-node6` | per machine | `ipv6` | depends only on ULA; random host in ULA `:0::/64` |
 | `routed-fabric-<inst>-asn` | per machine | `asn` | independent random ASN in 4200000000..4294967294 |
 | `routed-fabric-<inst>-adj-<hash>-port` | shared, one per canonical adjacency key | `port` | byte-identical on both endpoints; no dependencies; validates only `portStart`/`portEnd` (default 10000–29999) |
-| `routed-fabric-<inst>-adj-<hash>-transfer4` | shared, one per canonical adjacency key | `transfer4` | byte-identical on both endpoints; depends only on prefixes; /31 from the pool |
+| `routed-fabric-<inst>-adj-<hash>-transfer4` | shared, one per canonical adjacency key | `transfer4` | byte-identical on both endpoints; depends only on the transfer pool generator; /31 from the pool |
 | `routed-fabric-<inst>-adj-<hash>-transfer6` | shared, one per canonical adjacency key | `transfer6` | byte-identical on both endpoints; depends only on ULA; /127 from ULA `:1::/64` |
 | `wireguard-mesh-<inst>-ula` | shared | `ula48` | independent of pool validation |
 | `wireguard-mesh-<inst>-prefixes` | shared | `ipv4-pool` | pool defaults to `198.18.128.0/17`, disjoint from routed-fabric loopbacks |
