@@ -277,6 +277,7 @@
         alpha.succeed("kubectl create configmap rke2-smoke --from-literal=probe=ok")
         out = alpha.succeed("kubectl get configmap rke2-smoke -o jsonpath={.data.probe}")
         assert out.strip() == "ok", f"etcd smoke read back {out!r}"
+        print("RKE2_SINGLE_OK")
     except Exception:
         fail_dump(alpha)
         raise

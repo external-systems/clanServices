@@ -215,6 +215,7 @@
             "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait -n kube-system --for=condition=Ready pod -l k8s-app=cilium --timeout=120s",
             timeout=180,
         )
+        print("K3S_JOIN_OK")
     except Exception:
         fail_dump(alpha)
         fail_dump(beta)

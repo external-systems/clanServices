@@ -39,7 +39,6 @@
 
   cidrLib = import ./cidr.nix {inherit lib;};
   bgp = import ./bgp.nix {inherit lib;};
-  fabric = import ./fabric.nix {inherit lib;};
   transport = import ./transport.nix {inherit lib;};
   mesh = import ./mesh.nix {inherit lib;};
   cilium = import ./cilium.nix {
@@ -192,11 +191,8 @@ in rec {
     resolveDataPlane
     ;
 
-  # BGP v2 / fabric derivation helpers (D9/D10). The local-router ASN
-  # derivation is shared with native transport producers, so consumers need
-  # no provider-specific export.
+  # BGP v2 / local-router derivation helpers (D9/D10).
   inherit bgp;
-  hostNodeAsn = fabric.nodeAsn;
 
   # The generic node_transport consumer (D58) and the ClusterMesh
   # placement/exposure resolution (D60).
@@ -225,7 +221,7 @@ in rec {
   };
 
   assertions = {
-    inherit (assertFns) mkClusterAssertions mkPoolAssertions;
+    inherit (assertFns) mkClusterAssertions mkPoolAssertions mkBgpAsnAssertions mkHostAsnAssertions;
   };
 
   # Bootstrap-apply oneshot fragment (D40) + the ClusterMesh secrets-apply

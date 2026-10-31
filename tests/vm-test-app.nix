@@ -10,12 +10,20 @@
       runtimeInputs = [
         pkgs.coreutils
         pkgs.git
+        pkgs.gnugrep
       ];
       text = ''
         suites=(${lib.escapeShellArgs (builtins.attrNames config.legacyPackages.vmTests)})
 
+        expected_marker() {
+          printf '%s' "$1" | tr 'a-z-' 'A-Z_'
+          printf '_OK\n'
+        }
+
         if [[ $# -eq 1 && $1 == --list ]]; then
-          printf '%s\n' "''${suites[@]}"
+          for suite in "''${suites[@]}"; do
+            printf '%s %s\n' "$suite" "$(expected_marker "$suite")"
+          done
           exit 0
         fi
 
@@ -68,6 +76,24 @@
         nix build "''${build_args[@]}" 2>&1 | tee -a "$log"
         status=''${PIPESTATUS[0]}
         set -e
+        if [[ $status -eq 0 ]]; then
+          marker=$(expected_marker "$suite")
+          if ! grep -F -- "$marker" "$log" > /dev/null; then
+            cached_log=$(nix log "$target" 2>/dev/null || true)
+            if [[ -z $cached_log ]]; then
+              printf 'suite %s: cached result has no build log; rerun with: nix run .#vm-test -- --rebuild %s\n' "$suite" "$suite" >&2
+              status=1
+            else
+              printf '\n--- cached build log ---\n%s\n' "$cached_log" >> "$log"
+              if grep -F -- "$marker" "$log" > /dev/null; then
+                printf 'marker found in cached build log\n'
+              else
+                printf 'suite %s exited 0 but did not print %s\n' "$suite" "$marker" >&2
+                status=1
+              fi
+            fi
+          fi
+        fi
         printf 'VM build log: %s\n' "$log"
         exit "$status"
       '';

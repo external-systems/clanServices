@@ -68,19 +68,44 @@ upstream source addresses, never opened globally. All WireGuard listen
 ports are unique and reserved in `net.ipv4.ip_local_reserved_ports`;
 additional ports or ranges merge through `clanServices.networking.reservedPorts`.
 
+## Allocation
+
+Run `clan vars generate <machine>` after changing machines or adjacencies and
+before evaluation. Public non-deployed vars allocate loopback IPv4/IPv6,
+node ASNs, and each adjacency's port and transfer prefixes. Defaults are
+`198.18.0.0/17` for loopbacks, `198.19.0.0/16` for transfers, a random RFC
+4193 ULA /48, and ports 10000–29999. Separate shared `loopback4-pool` and
+`transfer4-pool` generators each record one `pool` file. Independent
+`node4`/`node6` and adjacency `port`/`transfer4`/`transfer6` generators depend
+only on their own pool, the ULA, or the port range from which each value is
+cut; the ASN is independent too. Thus an IPv4 pool, port range, or ULA edit
+cannot re-roll unrelated values.
+Member-uniform `loopback4Pool`, `transfer4Pool`, and `portRange` settings
+override those defaults; custom port ranges avoid reserved ports and
+Kubernetes NodePorts. Explicit `ipv4`, `ipv6`, and per-adjacency `port`
+settings win over vars.
+
+Eval rejects missing or duplicate allocations and pool collisions with a
+targeted `clan vars generate <machine> --generator <generator> --regenerate`
+or settings remedy. A machine rename is a new clan identity: generate new vars
+for the new name. There is no migration shim and no renumbering of other
+members. Remove orphaned shared adjacency vars only after confirming that the
+pair is absent from inventory; see the service documentation for the cleanup
+command.
+
 ## Exports
 
 Per machine: `peer.hosts` (stable dual-stack fabric addresses),
 `node_transport` (schemaVersion 2, D58 — native/local-router with
-`internalLoadBalancer` + `nodePort`; datapath interfaces keyed by actual
+`service`/`instance` identity, `internalLoadBalancer` + `nodePort`; datapath interfaces keyed by actual
 Linux interface name, each with its MTU; exactly one
 `directRoutingDevice`), and `routed_fabric` (schemaVersion 2, D59 —
 per-node ASN, stable addresses, leaf/spine topology, access, border
 facts, loopback, per-adjacency interface/transfer-prefix/MTU/port/
 endpoint/AllowedIPs facts). No secrets are exported.
 
-Run `clan vars generate <machine>` for the instance-scoped WireGuard
-keypairs before deployment. Public keys are non-secret; private keys
+The same generation command creates the instance-scoped WireGuard keypairs.
+Public keys and allocations are non-secret and are not deployed; private keys
 deploy only to their owner.
 
 ## Tests

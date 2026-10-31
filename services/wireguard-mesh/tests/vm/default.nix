@@ -1,8 +1,13 @@
 {
   lib,
   inputs,
+  nodes,
   ...
-}: {
+}: let
+  addresses = lib.mapAttrs (_: node: {
+    inherit (node.clan.networkFacts.mesh.mesh) ipv4 ipv6;
+  }) (lib.getAttrs ["alpha" "beta" "gamma"] nodes);
+in {
   name = "wireguard-mesh";
 
   clan = {
@@ -37,18 +42,9 @@
               }
             ];
             machines = {
-              alpha.settings = {
-                ipv4 = "192.168.77.1";
-                ipv6 = "fd00:77::1";
-              };
-              beta.settings = {
-                ipv4 = "192.168.77.2";
-                ipv6 = "fd00:77::2";
-              };
-              gamma.settings = {
-                ipv4 = "192.168.77.3";
-                ipv6 = "fd00:77::3";
-              };
+              alpha = {};
+              beta = {};
+              gamma = {};
             };
           };
         };
@@ -78,12 +74,10 @@
   });
 
   testScript = ''
+    import json
+
     machines = [alpha, beta, gamma]
-    addresses = {
-        "alpha": ("192.168.77.1", "fd00:77::1"),
-        "beta": ("192.168.77.2", "fd00:77::2"),
-        "gamma": ("192.168.77.3", "fd00:77::3"),
-    }
+    addresses = ${builtins.toJSON addresses}
 
 
     def fail_dump(machine):
@@ -100,21 +94,25 @@
 
     try:
         start_all()
+        print("ALLOCATIONS " + json.dumps(addresses, sort_keys=True))
 
         for machine in machines:
             machine.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             machine.wait_until_succeeds("ip link show wg-mesh", timeout=60)
-            ipv4, ipv6 = addresses[machine.name]
-            machine.succeed(f"ip -br addr show wg-mesh | grep -q '{ipv4}/32'")
-            machine.succeed(f"ip -br addr show wg-mesh | grep -q '{ipv6}/128'")
+            allocated = addresses[machine.name]
+            ipv4, ipv6 = allocated["ipv4"], allocated["ipv6"]
+            machine.succeed(f"ip -br addr show wg-mesh | grep -F '{ipv4}/32'")
+            machine.succeed(f"ip -br addr show wg-mesh | grep -F '{ipv6}/128'")
             peers = machine.succeed("wg show wg-mesh peers").strip().splitlines()
             assert len(peers) == 2, f"{machine.name} has {len(peers)} peers instead of 2"
+        print("WIREGUARD_MESH_ALLOCATED_OK")
 
         for source in machines:
             for target in machines:
                 if source.name == target.name:
                     continue
-                ipv4, ipv6 = addresses[target.name]
+                allocated = addresses[target.name]
+                ipv4, ipv6 = allocated["ipv4"], allocated["ipv6"]
                 source.wait_until_succeeds(f"ping -c2 -W2 {ipv4}", timeout=120)
                 source.wait_until_succeeds(f"ping -6 -c2 -W2 {ipv6}", timeout=120)
 
@@ -125,13 +123,14 @@
                 f"{machine.name} has a zero handshake: {handshakes}"
             )
 
-        alpha.succeed("getent ahosts beta.mesh | grep -q '192.168.77.2'")
-        alpha.succeed("getent ahosts beta.mesh | grep -q 'fd00:77::2'")
+        alpha.succeed("getent ahosts beta.mesh | grep -Eq '^${addresses.beta.ipv4}( |$)'")
+        alpha.succeed("getent ahosts beta.mesh | grep -Eq '^${addresses.beta.ipv6}( |$)'")
         alpha.wait_until_succeeds("ping -c2 -W2 beta.mesh", timeout=60)
 
         for machine in machines:
             code, _ = machine.execute("systemctl list-unit-files | grep -Eq '^(k3s|rke2)'")
             assert code != 0, f"{machine.name} unexpectedly contains a Kubernetes service"
+        print("WIREGUARD_MESH_OK")
     except Exception:
         for machine in machines:
             fail_dump(machine)

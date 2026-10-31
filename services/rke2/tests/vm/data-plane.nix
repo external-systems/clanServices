@@ -20,12 +20,18 @@
 # Underlay addressing is the test driver's deterministic assignment
 # (alphabetical node order): alpha=192.168.1.1/2001:db8:1::1,
 # beta=192.168.1.2/2001:db8:1::2, router=192.168.1.3/2001:db8:1::3.
-{inputs}: {lib, ...}: let
+{inputs}: {
+  lib,
+  nodes,
+  ...
+}: let
   kube = import ../../../../lib/kube-cluster {inherit lib;};
   fabric = import ../../../../lib/kube-cluster/fabric.nix {inherit lib;};
   fabricLink = fabric.adjacencyName (fabric.adjacencyKey "mesh" "alpha" "beta");
   fabricLoopback = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" "mesh")}";
-  nodeAsns = lib.genAttrs ["alpha" "beta"] (fabric.nodeAsn "mesh");
+  nodeAsns = lib.genAttrs ["alpha" "beta"] (name: nodes.${name}.config.clan.networkFacts.fabric.mesh.asn);
+  betaTransfer = nodes.beta.config.clan.networkFacts.fabric.mesh.adjacencies.alpha.ipv4;
+  fabricPort = nodes.alpha.config.clan.networkFacts.fabric.mesh.adjacencies.beta.port;
 
   httpbinVersions = import (inputs.pkgs + "/pkgs/go-httpbin/versions.nix");
   httpbinImageRef = "go-httpbin:v${httpbinVersions.version}";
@@ -584,7 +590,7 @@ in {
             "nft list chain inet nixos-fw input >&2 || true",
             "wg show >&2 || true",
             "pkill -INT tcpdump >&2 || true; sleep 1; tcpdump -nn -r /tmp/fabric.pcap >&2 || true; cat /tmp/tcpdump.log >&2 || true",
-            "ip route get 100.179.155.123 >&2; ping -c2 -W2 100.179.155.123 >&2 || true",
+            "ip route get ${betaTransfer} >&2; ping -c2 -W2 ${betaTransfer} >&2 || true",
             "ip -br addr >&2; ip rule >&2; ss -ulnp >&2",
             "iptables-save >&2 || true; ip6tables-save >&2 || true",
             "ip route >&2; ip -6 route >&2",
@@ -623,9 +629,9 @@ in {
             m.succeed(f"ip -br addr | grep -q '{ipv6}/128'")
         for m in [alpha, beta]:
             m.succeed("command -v tcpdump")
-            m.execute("rm -f /tmp/fabric.pcap; tcpdump -i any -nn -c 40 -w /tmp/fabric.pcap 'icmp or tcp port 179 or udp port 53344' >/tmp/tcpdump.log 2>&1 &")
-        alpha.succeed("ip route get 100.179.155.123 | grep -q 'dev rf'")
-        alpha.wait_until_succeeds("ping -c2 -W2 100.179.155.123", timeout=120)
+            m.execute("rm -f /tmp/fabric.pcap; tcpdump -i any -nn -c 40 -w /tmp/fabric.pcap 'icmp or tcp port 179 or udp port ${toString fabricPort}' >/tmp/tcpdump.log 2>&1 &")
+        alpha.succeed("ip route get ${betaTransfer} | grep -q 'dev rf'")
+        alpha.wait_until_succeeds("ping -c2 -W2 ${betaTransfer}", timeout=120)
         alpha.wait_until_succeeds("ping -c2 -W2 192.168.77.2", timeout=120)
         alpha.wait_until_succeeds("ping -6 -c2 -W2 fd77::2", timeout=120)
         beta.wait_until_succeeds("ping -c2 -W2 192.168.77.1", timeout=120)

@@ -1039,7 +1039,7 @@ in {
             lib.mkDefault targetHostValue
           );
           _networkFacts = {
-            schemaVersion = 1;
+            schemaVersion = 2;
             node.name = machine.name;
             netif.${instanceName} = {
               endpoint = machineEndpoint;

@@ -200,7 +200,7 @@
           then null
           else if allMembers.${name}.settings.bgp.hostASN != null
           then allMembers.${name}.settings.bgp.hostASN
-          else kube.hostNodeAsn settings.network.fabric.instance name
+          else facts.asn
       )
       allTransportFacts
     );
@@ -847,6 +847,18 @@
                 resolvedCidrs.serviceCIDRv4
                 resolvedCidrs.serviceCIDRv6
               ];
+            })
+            # D9: a fabric-allocated node ASN equal to the cluster's Cilium
+            # ASN makes the Cilium→FRR `::1` session accidental iBGP.
+            ++ (kube.assertions.mkBgpAsnAssertions {
+              inherit instanceName hostAsns;
+              inherit (dp) bgpActive;
+              ciliumAsn = dp.asns.cilium;
+              transportFacts = allTransportFacts;
+            })
+            ++ (kube.assertions.mkHostAsnAssertions {
+              inherit instanceName roleMembers;
+              transportFacts = allTransportFacts;
             })
             ++ [
               {

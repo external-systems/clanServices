@@ -1,8 +1,19 @@
 {
   lib,
   inputs,
+  nodes,
   ...
-}: {
+}: let
+  spineABeta = nodes.spine-a.clan.networkFacts.fabric.fleet.adjacencies.beta.ipv4;
+  spineBBeta = nodes.spine-b.clan.networkFacts.fabric.fleet.adjacencies.beta.ipv4;
+  spineASpineB = nodes.spine-a.clan.networkFacts.fabric.fleet.adjacencies.spine-b.ipv4;
+  gammaSpineA = nodes.gamma.clan.networkFacts.fabric.fleet.adjacencies.spine-a.ipv4;
+  spineAAlpha = nodes.spine-a.clan.networkFacts.fabric.fleet.adjacencies.alpha.ipv4;
+  stable = lib.mapAttrs (_: node: {
+    inherit (node.clan.networkFacts.fabric.fleet) ipv4 ipv6;
+  }) (lib.getAttrs ["spine-a" "spine-b" "alpha" "beta" "gamma"] nodes);
+  loopback = nodes.alpha.clan.networkFacts.fabric.fleet.loopback;
+in {
   name = "routed-fabric";
 
   clan = {
@@ -43,8 +54,6 @@
           roles = {
             spine.machines = {
               spine-a.settings = {
-                ipv4 = "192.168.77.1";
-                ipv6 = "fd77::1";
                 endpointSources = [
                   {
                     service = "clan-core/internet";
@@ -65,26 +74,16 @@
                 };
                 adjacencies.spine-b.sourceReturn = true;
               };
-              spine-b.settings = {
-                ipv4 = "192.168.77.2";
-                ipv6 = "fd77::2";
-                endpointSources = [
-                  {
-                    service = "clan-core/internet";
-                    instance = "underlay";
-                  }
-                ];
-              };
+              spine-b.settings.endpointSources = [
+                {
+                  service = "clan-core/internet";
+                  instance = "underlay";
+                }
+              ];
             };
             leaf.machines = {
-              alpha.settings = {
-                ipv4 = "192.168.77.3";
-                ipv6 = "fd77::3";
-              };
-              beta.settings = {
-                ipv4 = "192.168.77.4";
-                ipv6 = "fd77::4";
-              };
+              alpha = {};
+              beta = {};
               gamma.settings = {
                 ipv4 = "192.168.77.5";
                 ipv6 = "fd77::5";
@@ -146,13 +145,7 @@
     import json
 
     machines = [spine_a, spine_b, alpha, beta, gamma]
-    stable = {
-        "spine-a": ("192.168.77.1", "fd77::1"),
-        "spine-b": ("192.168.77.2", "fd77::2"),
-        "alpha": ("192.168.77.3", "fd77::3"),
-        "beta": ("192.168.77.4", "fd77::4"),
-        "gamma": ("192.168.77.5", "fd77::5"),
-    }
+    stable = ${builtins.toJSON stable}
     # One WireGuard interface per derived adjacency, two BGP sessions
     # (v4 + v6 transfer neighbors) and two BFD peers per adjacency.
     adjacency_counts = {
@@ -169,10 +162,10 @@
             "ip -br addr >&2",
             "ip route >&2; ip -6 route >&2",
             "ip rule >&2",
-            "ip route get 192.168.77.3 from 192.168.77.4 >&2 || true",
-            "ip -6 route get fd77::3 from fd77::4 >&2 || true",
-            "ip route get 192.168.77.5 from 192.168.77.2 >&2 || true",
-            "ip route get 192.168.77.2 from 192.168.77.5 >&2 || true",
+            f"ip route get {stable['alpha']['ipv4']} from {stable['beta']['ipv4']} >&2 || true",
+            f"ip -6 route get {stable['alpha']['ipv6']} from {stable['beta']['ipv6']} >&2 || true",
+            f"ip route get {stable['gamma']['ipv4']} from {stable['spine-b']['ipv4']} >&2 || true",
+            f"ip route get {stable['spine-b']['ipv4']} from {stable['gamma']['ipv4']} >&2 || true",
             "ifstatecli check >&2 || true",
             "cat /tmp/ping.cap >&2 || true",
             "sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding >&2",
@@ -204,15 +197,20 @@
 
     try:
         start_all()
+        print("ALLOCATIONS " + json.dumps(stable, sort_keys=True))
         for machine in machines:
             machine.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
             machine.wait_for_unit("frr.service", timeout=180)
+            addresses = stable[machine.name]
+            machine.succeed(f"ip -br addr show ${loopback} | grep -F '{addresses['ipv4']}/32'")
+            machine.succeed(f"ip -br addr show ${loopback} | grep -F '{addresses['ipv6']}/128'")
             expected = adjacency_counts[machine.name]
             machine.wait_until_succeeds(
                 f"test \"$(wg show interfaces | wc -w)\" -eq {expected}", timeout=120
             )
             machine.fail("ip route show | grep '^default' | grep -q 'rf'")
             machine.fail("ip -6 route show | grep '^default' | grep -q 'rf'")
+        print("ROUTED_FABRIC_ALLOCATED_OK")
 
         for machine in machines:
             expected = adjacency_counts[machine.name]
@@ -227,12 +225,13 @@
             )
 
         for machine in [spine_b, spine_a, gamma]:
-            machine.execute("tcpdump -ni any 'host 192.168.77.2 or host 192.168.77.5' > /tmp/ping.cap 2>&1 &")
+            machine.execute(f"tcpdump -ni any 'host {stable['spine-b']['ipv4']} or host {stable['gamma']['ipv4']}' > /tmp/ping.cap 2>&1 &")
         for source in machines:
             for target in machines:
                 if source.name == target.name:
                     continue
-                ipv4, ipv6 = stable[target.name]
+                target_addresses = stable[target.name]
+                ipv4, ipv6 = target_addresses["ipv4"], target_addresses["ipv6"]
                 source.wait_until_succeeds(f"ping -c 2 -W 2 {ipv4}", timeout=120)
                 source.wait_until_succeeds(f"ping -6 -c 2 -W 2 {ipv6}", timeout=120)
         for machine in [spine_b, spine_a, gamma]:
@@ -246,26 +245,26 @@
             machine.fail("vtysh -c 'show ipv6 route' | grep -q 'r>'")
 
         # Leaf ECMP: beta reaches alpha through both spines.
-        beta.succeed("ip route show 192.168.77.3 | grep -q 'via 100.110.157.53'")
-        beta.succeed("ip route show 192.168.77.3 | grep -q 'via 100.166.181.145'")
-        beta.succeed("ip route show 192.168.77.3 | grep -q 'src 192.168.77.4'")
-        beta.succeed("ip -6 route show fd77::3 | grep -Eq 'via fe80::.* dev rf'")
-        beta.succeed("ip -6 route show fd77::3 | grep -q 'src fd77::4'")
+        beta.succeed("ip route show ${stable.alpha.ipv4} | grep -Eq 'via ${spineABeta}( |$)'")
+        beta.succeed("ip route show ${stable.alpha.ipv4} | grep -Eq 'via ${spineBBeta}( |$)'")
+        beta.succeed("ip route show ${stable.alpha.ipv4} | grep -Eq 'src ${stable.beta.ipv4}( |$)'")
+        beta.succeed("ip -6 route show ${stable.alpha.ipv6} | grep -Eq 'via fe80::.* dev rf'")
+        beta.succeed("ip -6 route show ${stable.alpha.ipv6} | grep -Eq 'src ${stable.beta.ipv6}( |$)'")
         # Spine<->spine readvertisement with next-hop-self: spine-b reaches
         # the single-homed gamma only through spine-a.
-        spine_b.succeed("ip route show 192.168.77.5 | grep -q 'via 100.64.231.32'")
-        spine_a.succeed("ip route show 192.168.77.5 | grep -q 'via 100.65.139.74'")
-        beta.wait_until_succeeds("ping -M do -c 1 -W 2 -s 1376 192.168.77.1", timeout=60)
-        beta.fail("ping -M do -c 1 -W 2 -s 1377 192.168.77.1")
-        beta.wait_until_succeeds("ping -M do -c 1 -W 2 -s 1356 fd77::1", timeout=60)
-        beta.fail("ping -M do -c 1 -W 2 -s 1357 fd77::1")
+        spine_b.succeed("ip route show ${stable.gamma.ipv4} | grep -Eq 'via ${spineASpineB}( |$)'")
+        spine_a.succeed("ip route show ${stable.gamma.ipv4} | grep -Eq 'via ${gammaSpineA}( |$)'")
+        beta.wait_until_succeeds("ping -M do -c 1 -W 2 -s 1376 ${stable.spine-a.ipv4}", timeout=60)
+        beta.fail("ping -M do -c 1 -W 2 -s 1377 ${stable.spine-a.ipv4}")
+        beta.wait_until_succeeds("ping -M do -c 1 -W 2 -s 1356 ${stable.spine-a.ipv6}", timeout=60)
+        beta.fail("ping -M do -c 1 -W 2 -s 1357 ${stable.spine-a.ipv6}")
 
         # Source-return rules precede main even when main has an underlay
         # default, and BGP is exposed on fabric but not the underlay.
         spine_a.succeed("ip route get 192.0.2.1 from 198.51.100.1 | grep -q 'dev rf'")
         spine_a.succeed("ip -6 route get 2001:db8::1 from 2001:db8:100::1 | grep -q 'dev rf'")
         spine_a.succeed("ss -ltn | grep -Eq '(\\*|0\\.0\\.0\\.0):179 '")
-        beta.succeed("timeout 2 bash -c 'echo > /dev/tcp/100.110.157.52/179'")
+        beta.succeed("timeout 2 bash -c 'echo > /dev/tcp/${spineABeta}/179'")
         beta.fail("timeout 2 bash -c 'echo > /dev/tcp/192.168.1.4/179'")
         print("ROUTED_FABRIC_TRANSPORT_OK")
 
@@ -298,15 +297,16 @@
         # spine-a, and traffic to/from the single-homed leaf keeps flowing.
         spine_b.succeed("systemctl stop frr")
         beta.wait_until_succeeds(
-            "test \"$(ip route show 192.168.77.3 | grep -c 'via ')\" -eq 1", timeout=120
+            "test \"$(ip route show ${stable.alpha.ipv4} | grep -c 'via ')\" -eq 1", timeout=120
         )
-        beta.succeed("ip route show 192.168.77.3 | grep -q 'via 100.110.157.53'")
-        alpha.succeed("ip route show 192.168.77.5 | grep -q 'via 100.185.127.95'")
+        beta.succeed("ip route show ${stable.alpha.ipv4} | grep -Eq 'via ${spineABeta}( |$)'")
+        alpha.succeed("ip route show ${stable.gamma.ipv4} | grep -Eq 'via ${spineAAlpha}( |$)'")
         for source in [alpha, beta, gamma]:
             for target in [alpha, beta, gamma]:
                 if source.name == target.name:
                     continue
-                ipv4, ipv6 = stable[target.name]
+                target_addresses = stable[target.name]
+                ipv4, ipv6 = target_addresses["ipv4"], target_addresses["ipv6"]
                 source.wait_until_succeeds(f"ping -c 2 -W 2 {ipv4}", timeout=120)
                 source.wait_until_succeeds(f"ping -6 -c 2 -W 2 {ipv6}", timeout=120)
         spine_a.wait_until_succeeds(
@@ -318,7 +318,7 @@
         # exact pre-failure RIB/FIB.
         spine_b.succeed("systemctl start frr")
         beta.wait_until_succeeds(
-            "test \"$(ip route show 192.168.77.3 | grep -c 'via ')\" -eq 2", timeout=240
+            "test \"$(ip route show ${stable.alpha.ipv4} | grep -c 'via ')\" -eq 2", timeout=240
         )
         spine_b.wait_until_succeeds(
             "vtysh -c 'show bgp neighbors' | grep -c 'BGP state = Established' | grep -q '^6$'",
@@ -330,13 +330,14 @@
             timeout=240,
         )
         beta.wait_until_succeeds(
-            "test \"$(ip route show 192.168.77.3 | grep -c 'via ')\" -eq 2", timeout=240
+            "test \"$(ip route show ${stable.alpha.ipv4} | grep -c 'via ')\" -eq 2", timeout=240
         )
         rib(beta, "/tmp/rib.after")
         beta.succeed("ip route show > /tmp/fib.after")
         beta.succeed("diff -u /tmp/rib.before /tmp/rib.after")
         beta.succeed("diff -u /tmp/fib.before /tmp/fib.after")
         print("ROUTED_FABRIC_SPINE_HA_OK")
+        print("ROUTED_FABRIC_OK")
     except Exception:
         for machine in machines:
             try:

@@ -214,6 +214,7 @@
             "KUBECONFIG=/etc/rancher/rke2/rke2.yaml kubectl wait -n kube-system --for=condition=Ready pod -l k8s-app=cilium --timeout=120s",
             timeout=180,
         )
+        print("RKE2_JOIN_OK")
     except Exception:
         fail_dump(alpha)
         fail_dump(beta)

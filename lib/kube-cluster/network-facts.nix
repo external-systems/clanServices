@@ -28,10 +28,17 @@
       };
     };
     graph = fact (t.listOf edge) [];
+    allocationPool = t.submodule {
+      options = {
+        name = str "Allocation pool purpose.";
+        cidr = str "Allocation pool CIDR.";
+      };
+    };
     adjacency = t.submodule {
       options = {
         interface = str "Point-to-point WireGuard interface name.";
         remote = str "Remote machine name.";
+        generator = strList "Shared public adjacency port, transfer4, and transfer6 allocation generators.";
         ipv4 = nullableStr "Local transfer IPv4 address.";
         ipv6 = nullableStr "Local transfer IPv6 address.";
         prefix4 = str "Transfer IPv4 prefix.";
@@ -70,6 +77,7 @@
     node = {
       name = str "Clan machine identity.";
     };
+    allocationPools = fact (t.attrsOf (t.listOf allocationPool)) {} "Allocation pools keyed by service/instance.";
     netif = lib.mkOption {
       type = t.attrsOf (
         t.submodule {
@@ -118,6 +126,19 @@
       default = {};
       inherit readOnly;
       description = "Declared routed-fabric memberships and adjacencies.";
+    };
+    mesh = lib.mkOption {
+      type = t.attrsOf (
+        t.submodule {
+          options = {
+            ipv4 = nullableStr "Stable mesh IPv4 member address.";
+            ipv6 = nullableStr "Stable mesh IPv6 member address.";
+          };
+        }
+      );
+      default = {};
+      inherit readOnly;
+      description = "Declared wireguard-mesh memberships and stable addresses.";
     };
     clusters = lib.mkOption {
       type = t.attrsOf (

@@ -27,7 +27,8 @@ The contract:
   routes/MTU/DNS/firewall trust; fabric leaf/spine/access/border, stable
   loopbacks, per-adjacency WireGuard links, transfer prefixes, MTU,
   public endpoints, AllowedIPs, ASNs, upstreams, FRR prefix policy, and
-  NAT/source-return intent; and k8s cluster identity, node membership,
+  NAT/source-return intent; wireguard-mesh stable dual-stack member
+  addresses; and k8s cluster identity, node membership,
   distros, CIDRs, pools, Node-IPAM facts, and API/mirror
   endpoints — as independent underlay, fabric, ClusterMesh, and
   control-domain graph facts. Member-facing private DNS is never rendered

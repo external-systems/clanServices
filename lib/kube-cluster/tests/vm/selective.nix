@@ -17,7 +17,7 @@
     if k3s
     then "k3s.service"
     else "rke2-server.service";
-  marker = "${distro}-clustermesh-selective-${profile}-ok";
+  marker = "${lib.toUpper distro}_CLUSTERMESH_SELECTIVE${lib.optionalString (!native) "_TUNNEL"}_OK";
   underlayIp = name: "192.168.1.${
     toString
     {

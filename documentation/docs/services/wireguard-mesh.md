@@ -15,7 +15,10 @@ shape is a routed-fabric property. The generic `node_transport` export
 (schemaVersion 2) describes that single interface: Linux-name-keyed
 datapath interfaces with MTU, one `directRoutingDevice`,
 `datapath.mode = tunnel` with sibling `datapath.tunnelProtocol` (VXLAN),
-and the `nodePort` exposure capability.
+and the `nodePort` exposure capability. The same resolved addresses are
+published under `clan.networkFacts.mesh.<instance>.{ipv4,ipv6}`; the VM suite
+uses those facts as its expectations and anchors DNS address matches rather
+than inspecting the rendered IfState interface.
 
 Round 17 ends the "pending migration/removal" status: `wireguard-mesh` is
 a **supported profile**, not a retiring service. The legacy
@@ -25,6 +28,25 @@ deleted in the round-17 cleanup.
 Pick the profile by datapath need (native + internal LoadBalancer via
 `routed-fabric`, or tunnel/VXLAN + nodePort via `wireguard-mesh`) and let
 the generic `node_transport` export carry the facts to the distro services.
+
+## Allocation (D64)
+
+Run `clan vars generate <machine>` after changing membership and before eval.
+Independent shared generators hold an RFC 4193 ULA /48 and the member-uniform
+`ipv4Pool` (default `198.18.128.0/17`, disjoint from routed-fabric's default
+loopback pool). Evaluation checks that the recorded pool equals the setting
+and that allocated hosts remain inside their pool or ULA `/64`. Each machine's
+public `node4` generator depends only on the prefix records and allocates its
+IPv4 host from that pool; `node6` depends only on the ULA and allocates its
+IPv6 host from `:0::/64`. An `ipv4Pool` edit therefore re-rolls only unpinned
+IPv4 hosts when `node4` is regenerated, never IPv6 or the ULA. Pool validation
+checks the dotted-quad/slash shape and prefix length before parsing, so every
+malformed value produces the canonical-CIDR assertion rather than a raw Nix
+error. Explicit `ipv4` and `ipv6` settings win. Evaluation rejects missing values, duplicate
+addresses, unequal pools, foreign-pool and underlay/cluster overlaps, and
+collisions with other rendered WireGuard configuration. Duplicate messages
+name both machines and direct `--regenerate` at the newer machine. Renaming a
+machine creates a new identity and new vars, with no migration shim.
 
 D63 requires every member pair to have an endpoint on at least one side,
 rejects overlapping `extraAllowedIPs` between peers, and rejects listen-port

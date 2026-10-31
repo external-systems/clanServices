@@ -269,6 +269,10 @@
             default = 1500;
             description = "Underlay MTU of the fake link.";
           };
+          asn = lib.mkOption {
+            type = lib.types.ints.u32;
+            description = "Allocated host routing ASN on the fake overlay.";
+          };
         };
       };
       perInstance = {
@@ -288,7 +292,8 @@
         exports = mkExports {
           node_transport = {
             schemaVersion = 2;
-            inherit (own) ipv4 ipv6;
+            inherit (own) ipv4 ipv6 asn;
+            service = "routed-fabric";
             instance = instanceName;
             endpoint = null;
             port = 59999;
@@ -325,21 +330,25 @@
             ipv4 = "192.168.77.1";
             ipv6 = "fd77::1";
             mtu = 1500;
+            asn = 4258224172;
           };
           beta.settings = {
             ipv4 = "192.168.77.2";
             ipv6 = "fd77::2";
             mtu = 1400;
+            asn = 4258224173;
           };
           gamma.settings = {
             ipv4 = "192.168.77.3";
             ipv6 = "fd77::3";
             mtu = 1500;
+            asn = 4258224174;
           };
           delta.settings = {
             ipv4 = "192.168.77.4";
             ipv6 = "fd77::4";
             mtu = 1500;
+            asn = 4258224175;
           };
         };
       };
@@ -409,28 +418,7 @@
   # clan eval.
   fakeAsymmetricEvaled = mkEvaled {
     instances = {
-      fabric = {
-        module.name = "fake-transport";
-        module.input = "self";
-        roles.node.machines = {
-          alpha.settings = {
-            ipv4 = "192.168.77.1";
-            ipv6 = "fd77::1";
-          };
-          beta.settings = {
-            ipv4 = "192.168.77.2";
-            ipv6 = "fd77::2";
-          };
-          gamma.settings = {
-            ipv4 = "192.168.77.3";
-            ipv6 = "fd77::3";
-          };
-          delta.settings = {
-            ipv4 = "192.168.77.4";
-            ipv6 = "fd77::4";
-          };
-        };
-      };
+      fabric = fakeInventory.instances.fabric;
       rke2-a = {
         module.name = "rke2";
         module.input = "self";
@@ -472,20 +460,7 @@
   # Contradicting admin overrides on the fake transport must eval-fail.
   fakeContradictionEvaled = mkEvaled {
     instances = {
-      fabric = {
-        module.name = "fake-transport";
-        module.input = "self";
-        roles.node.machines = {
-          alpha.settings = {
-            ipv4 = "192.168.77.1";
-            ipv6 = "fd77::1";
-          };
-          beta.settings = {
-            ipv4 = "192.168.77.2";
-            ipv6 = "fd77::2";
-          };
-        };
-      };
+      fabric = fakeInventory.instances.fabric;
       rke2-a = {
         module.name = "rke2";
         module.input = "self";
@@ -574,6 +549,10 @@ in {
       "rancher-server-token-rke2"
       "state-version"
       "wireguard-mesh-mesh"
+      "wireguard-mesh-mesh-node4"
+      "wireguard-mesh-mesh-node6"
+      "wireguard-mesh-mesh-prefixes"
+      "wireguard-mesh-mesh-ula"
     ];
   };
 
@@ -1111,6 +1090,101 @@ in {
     in
       failedAssertion bad.config.nixosConfigurations.alpha.config "BGP only for node-bgp/shared-bgp pools";
     expected = true;
+  };
+
+  # D9 (round 22 PR review): a routed-fabric node ASN equal to the cluster's
+  # Cilium ASN would make the Cilium→FRR `::1` session accidental iBGP. The
+  # default fake fleet's allocations are disjoint and no host pin is set.
+  test_bgpAsnCollisionSilentByDefault = {
+    expr = {
+      collision = failedAssertion alphaFake "accidental iBGP";
+      hostPin = failedAssertion alphaFake "bgp.hostASN must match";
+    };
+    expected = {
+      collision = false;
+      hostPin = false;
+    };
+  };
+
+  # A Cilium/host collision offers only remedies that change one side of the
+  # real FRR session: a different Cilium ASN or a regenerated fabric ASN.
+  test_bgpAsnCollisionCiliumPinRejected = {
+    expr = let
+      bad = mkEvaled (
+        lib.recursiveUpdate fakeInventory {
+          instances.rke2-a.roles.server.settings.bgp.ciliumASN = 4258224173;
+        }
+      );
+      badAlpha = bad.config.nixosConfigurations.alpha.config;
+    in {
+      fired = failedAssertion badAlpha "accidental iBGP";
+      namesCluster = failedAssertion badAlpha "kube-cluster/rke2-a";
+      namesAsn = failedAssertion badAlpha "4258224173";
+      namesMachine = failedAssertion badAlpha "machine(s) beta";
+      namesCiliumPinFix = failedAssertion badAlpha "bgp.ciliumASN";
+      namesRegenerateFix = failedAssertion badAlpha "clan vars generate beta --generator routed-fabric-fabric-asn --regenerate";
+    };
+    expected = {
+      fired = true;
+      namesCluster = true;
+      namesAsn = true;
+      namesMachine = true;
+      namesCiliumPinFix = true;
+      namesRegenerateFix = true;
+    };
+  };
+
+  # FRR ignores a hostASN override, so a pin that differs from the allocated
+  # transport ASN is rejected instead of silently changing Cilium's peer.
+  test_bgpHostAsnPinMismatchRejected = {
+    expr = let
+      bad = mkEvaled (
+        lib.recursiveUpdate fakeInventory {
+          instances.rke2-a.roles.server.machines = {
+            alpha.settings.bgp.hostASN = 4258224172;
+            beta.settings.bgp.hostASN = 4268898264;
+          };
+        }
+      );
+      badAlpha = bad.config.nixosConfigurations.alpha.config;
+    in {
+      fired = failedAssertion badAlpha "bgp.hostASN must match the local-router transport ASN";
+      namesMachine = failedAssertion badAlpha "machine beta";
+      namesPin = failedAssertion badAlpha "pins 4268898264";
+      namesAllocated = failedAssertion badAlpha "transport allocates 4258224173";
+      namesRemoveFix = failedAssertion badAlpha "remove the bgp.hostASN pin";
+      namesRegenerateFix = failedAssertion badAlpha "clan vars generate beta --generator routed-fabric-fabric-asn --regenerate";
+    };
+    expected = {
+      fired = true;
+      namesMachine = true;
+      namesPin = true;
+      namesAllocated = true;
+      namesRemoveFix = true;
+      namesRegenerateFix = true;
+    };
+  };
+
+  # A pin equal to the transport allocation is a valid consistency check.
+  test_bgpHostAsnPinEqualAccepted = {
+    expr = let
+      fixed = mkEvaled (
+        lib.recursiveUpdate fakeInventory {
+          instances.rke2-a.roles.server.machines = {
+            alpha.settings.bgp.hostASN = 4258224172;
+            beta.settings.bgp.hostASN = 4258224173;
+          };
+        }
+      );
+      fixedAlpha = fixed.config.nixosConfigurations.alpha.config;
+    in {
+      hostPin = failedAssertion fixedAlpha "bgp.hostASN must match";
+      collision = failedAssertion fixedAlpha "accidental iBGP";
+    };
+    expected = {
+      hostPin = false;
+      collision = false;
+    };
   };
 
   # D19 revised: ONE dual-AF `::1` session to the node-local FRR, no

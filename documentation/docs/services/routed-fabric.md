@@ -68,13 +68,78 @@ state mechanism (D56).
 
 As the native profile (D58), routed-fabric publishes the generic
 `node_transport` export (schemaVersion 2) with `datapath.mode = native`,
-`native.routeExchange = local-router`, and the `internalLoadBalancer` +
-`nodePort` exposure capabilities; the provider-specific `routed_fabric`
-export carries ASN, topology, adjacencies, ACL, `access`, and `border`.
+`native.routeExchange = local-router`, the allocated host ASN, and the
+`internalLoadBalancer` + `nodePort` exposure capabilities; the
+provider-specific `routed_fabric` export carries ASN, topology, adjacencies,
+ACL, `access`, and `border`.
 FRR exchanges eBGP routes per address family, uses BFD on every fabric
 path, and installs accepted routes through Zebra. Cilium peers only with
 local FRR over `::1`; FRR rewrites its next hop before redistribution, and
 native routing forwards remote pod traffic through the kernel FIB.
+
+## Allocation (D64)
+
+Run `clan vars generate <machine>` after adding a machine or adjacency and
+before evaluation or deployment. Public, non-deployed vars allocate each
+machine's loopback IPv4/IPv6 and ASN, and each adjacency's port and transfer
+prefixes. The shared ULA generator creates an RFC 4193 ULA /48 and has no
+settings validation. Separate shared `-loopback4-pool` and `-transfer4-pool`
+generators record the member-uniform pools (defaults `198.18.0.0/17` and
+`198.19.0.0/16`) in one `pool` file each, with `validation.pool`. Each machine
+has independent `node4` and `node6` generators: `node4` depends only on the
+loopback pool record and `node6` only on the ULA. Each adjacency likewise has
+independent `-port`, `-transfer4`, and `-transfer6` generators. Ports validate
+only `portRange`; transfer4 depends only on the transfer pool record;
+transfer6 depends only on the ULA. Evaluation asserts that
+pool records still equal the settings and that every allocated address or
+transfer lies inside its pool or ULA `/64`. Loopback IPv6 uses the ULA's
+`:0::/64`; transfer IPv6 uses `:1::/64`. The ASN has its own generator, so
+repairing an address collision does not reset BGP sessions.
+
+A `loopback4Pool` change re-rolls only unpinned IPv4 loopbacks when `node4`
+is regenerated. A `transfer4Pool` change re-rolls only `transfer4`; a
+`portRange` change re-rolls only ports. These edits never re-roll the ULA,
+IPv6 loopbacks, transfer6, ASNs, or unrelated adjacency values. IPv4 pools
+must have exactly one slash, a dotted-quad address, and prefix length 0–30;
+malformed shapes and non-canonical addresses produce the canonical-CIDR eval
+assertion, not a raw Nix parse error.
+
+`portRange` defaults to 10000–29999 and must be equal on every member. Custom
+ranges must avoid `clanServices.networking.reservedPorts` and, on Kubernetes
+members, NodePorts 30000–32767. Explicit `ipv4`, `ipv6`, and
+`adjacencies.<remote>.port` settings override allocated values. Evaluation
+rejects missing values, fleet-wide duplicate loopbacks/ASNs, same-host
+port/transfer collisions, unequal pools, and overlap with member netif
+underlay, kube-cluster CIDRs, or another instance/service pool on the host.
+A duplicate message names both owners and directs regeneration at the newer
+machine:
+
+```console
+clan vars generate <newer-machine> --generator <generator> --regenerate
+```
+
+For a shared adjacency generator, either endpoint can run that command.
+Collisions are possible at initial random allocation; regeneration fixes them
+once and the committed values then stay stable. Regenerating the ULA is an
+instance-wide IPv6 loopback and transfer renumber, not an IPv4 pool remedy.
+Renaming a machine creates a new clan identity with new allocations; no
+migration shim preserves the old identity.
+
+Remove orphaned shared adjacency vars after confirming that their adjacency
+is no longer present in the inventory. Each network-facts adjacency exports a
+`generator` list containing its port, transfer4, and transfer6 generator names.
+Flatten those lists from every fabric member into `expected-adjacencies`, one
+name per line, then review this command's output before deleting anything:
+
+```console
+comm -23 \
+  <(find vars/shared -mindepth 1 -maxdepth 1 -type d \
+      -name 'routed-fabric-*-adj-*' -printf '%f\n' | sort) \
+  <(sort expected-adjacencies)
+```
+
+Interface names, FRR symbols, and per-adjacency link-local addresses remain
+hash-derived by design; they are names, not clan-vars allocations.
 
 D63 makes convergence deliberately stable. Equal `settings.site` values use
 the `site` profile (BFD 300 ms x3); different sites use `wan` (BFD 1000 ms

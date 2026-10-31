@@ -66,7 +66,7 @@ One term per concept. Mirrors SPEC.md §10.
   arbitrary maximum; leaves never provide transit.
 - **node_transport** — the generic shared neutral transport export
   (schemaVersion 2, D58) consumed by both distro services: stable
-  dual-stack node addresses/instance/endpoint, datapath interfaces keyed
+  dual-stack node addresses/service/instance/endpoint, datapath interfaces keyed
   by Linux name with MTU, one `directRoutingDevice`,
   `datapath.mode` (`native`|`tunnel`) with sibling `datapath.tunnelProtocol`,
   `native.routeExchange = local-router`, the independent
