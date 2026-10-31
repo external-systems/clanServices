@@ -15,7 +15,10 @@ shape is a routed-fabric property. The generic `node_transport` export
 (schemaVersion 2) describes that single interface: Linux-name-keyed
 datapath interfaces with MTU, one `directRoutingDevice`,
 `datapath.mode = tunnel` with sibling `datapath.tunnelProtocol` (VXLAN),
-and the `nodePort` exposure capability.
+and the `nodePort` exposure capability. The same resolved addresses are
+published under `clan.networkFacts.mesh.<instance>.{ipv4,ipv6}`; the VM suite
+uses those facts as its expectations and anchors DNS address matches rather
+than inspecting the rendered IfState interface.
 
 Round 17 ends the "pending migration/removal" status: `wireguard-mesh` is
 a **supported profile**, not a retiring service. The legacy

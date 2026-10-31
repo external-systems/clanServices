@@ -2133,7 +2133,11 @@ than flattening them into one misleading edge set.
 modes and known addresses, gateways, routes, MTU, and attachments.
 `routed-fabric` publishes leaf/spine/access/border, stable loopbacks,
 per-adjacency WireGuard interfaces, transfer prefixes, public endpoints,
-MTU, ASNs, upstreams, and authorized public prefixes. Distro services
+MTU, ASNs, upstreams, and authorized public prefixes. `wireguard-mesh`
+publishes each instance's stable dual-stack member addresses under
+`mesh.<instance>`. The wireguard-mesh VM reads expected addresses and DNS
+results from those facts, never from the rendered IfState interface. Distro
+services
 publish cluster identity, distro, node membership, pod/Service CIDRs,
 pools, mesh peers, and control-domain relationships. Nothing in the
 schema admits secret material.
