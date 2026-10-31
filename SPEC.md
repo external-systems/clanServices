@@ -2176,6 +2176,11 @@ facts in the routed-fabric and wireguard-mesh suites; dual-stack asserted in
 every boot test; round-trips + failure behavior (BGP withdrawal keeps VIP via
 healthy nodes); negative assertions; operational postconditions; fail fast.
 Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
+Every registered VM suite prints exactly one final `<SUITE>_OK` marker (suite
+name upper-cased, `-` → `_`) as the last statement of its `testScript`, after
+every assertion. Intermediate markers remain. `vm-test --list` shows the
+expected marker, and a zero-exit run whose log lacks it fails with `suite
+<name> exited 0 but did not print <SUITE>_OK`.
 
 Eval tests commit readable public allocation fixtures under
 `services/<svc>/tests/fixtures/vars/{per-machine,shared}` and never recompute

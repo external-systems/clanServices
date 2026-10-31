@@ -120,6 +120,11 @@ is a review destination, not a dependency.
 12. Keep the deploy target (`clan.core.networking.targetHost`) on the
     underlay address, never a fabric or tunnel address, so a fabric change
     cannot lock out its own deployment.
+13. Every registered VM suite prints exactly one final `<SUITE>_OK` marker
+    (suite name upper-cased, `-` → `_`) as the last statement of its
+    `testScript`, after every assertion. Intermediate markers stay. The
+    `vm-test` runner rejects a zero-exit run whose log lacks that marker;
+    `--list` shows each suite's expected marker.
 
 ## Verified upstream facts the spec depends on
 

@@ -18,10 +18,13 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   result fails; an uncached suite uses a plain build instead. The app
   atomically claims the first unused
   `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0, 1, …), writes the complete
-  build log there, prints the log path, and returns the build's exit status.
-  Cached builds record their output path instead of leaving an empty log;
-  log-creation errors stop the run. `.baton-pass/` is gitignored and never
-  committed.
+  build log there, and prints the log path. Every suite prints exactly one
+  final `<SUITE>_OK` (suite name upper-cased, `-` → `_`) as the last statement
+  of its `testScript`, after every assertion; intermediate markers remain.
+  `--list` shows each expected marker. A zero-exit run without it fails with
+  `suite <name> exited 0 but did not print <SUITE>_OK`. Cached builds record
+  their output path instead of leaving an empty log; log-creation errors stop
+  the run. `.baton-pass/` is gitignored and never committed.
 - Artifact source/hash/render and publish-freshness gates.
 - Offline execution, dual-stack in every boot test, round trips and failure
   behavior, negative assertions, operational postconditions, and fail-fast

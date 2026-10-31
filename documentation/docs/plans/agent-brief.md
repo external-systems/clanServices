@@ -74,12 +74,12 @@ Registered suites today (24): `netif`, `netif-dhcp`, `routed-fabric`,
 `wireguard-mesh`, and for each of `k3s` and `rke2`: `-single`, `-join`,
 `-ha`, `-data-plane`, `-clustermesh`, `-clustermesh-tunnel`,
 `-clustermesh-external`, `-clustermesh-external-native`,
-`-clustermesh-selective`, `-clustermesh-selective-tunnel`. Only some print a
-`*_OK` marker (`NETIF_IFSTATE_LIVE_OK`, `NETIF_DHCP_RA_IFSTATE_OK`,
-`ROUTED_FABRIC_TRANSPORT_OK`, `ROUTED_FABRIC_SPINE_HA_OK`,
-`K3S_DATA_PLANE_OK`, `RKE2_DATA_PLANE_OK`, `*_CLUSTERMESH_NATIVE_OK`,
-`*_CLUSTERMESH_TUNNEL_OK`); for the rest, report the exit status. Run k3s
-and rke2 suites one at a time: they are the heaviest.
+`-clustermesh-selective`, `-clustermesh-selective-tunnel`. Every suite prints
+exactly one final `<SUITE>_OK` (suite name upper-cased, `-` → `_`) as the last
+statement of its `testScript`, after every assertion; intermediate markers
+stay. `vm-test --list` shows each expected marker, and the runner rejects a
+zero-exit log that lacks it. Run k3s and rke2 suites one at a time: they are
+the heaviest.
 
 ## Workflow that worked in phases 1 and 2
 
