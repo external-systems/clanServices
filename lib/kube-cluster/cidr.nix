@@ -206,6 +206,15 @@ in rec {
     then throw "cidr.nix: addressAtV6 offset out of supported range (${toString offset})"
     else v6ToString (addCarry p.start offset 7);
 
+  validV4Pool = value: let
+    parts = lib.splitString "/" value;
+    canonical = "${addressAt value 0}/${builtins.elemAt parts 1}";
+    result = builtins.tryEval (
+      value == canonical && (parse value).end - (parse value).start >= 3
+    );
+  in
+    result.success && result.value;
+
   # Is `child` fully contained in `parent`? Different families → false.
   contains = parent: child: let
     pp = parse parent;

@@ -36,10 +36,11 @@
     then null
     else ip.normalizeAddress (ip.targetHostAddress targetHost);
   targetHostOnOverlay = targetAddress != null && lib.elem targetAddress overlayAddresses;
+  allocationPools = config.clan.networkFacts.allocationPools or {};
   poolClaims = lib.concatMap (
-    owner: map (pool: pool // {inherit owner;}) config.clan.networkFacts.allocationPools.${owner}
-  ) (builtins.attrNames config.clan.networkFacts.allocationPools);
-  crossPoolOverlaps =
+    owner: map (pool: pool // {inherit owner;}) allocationPools.${owner}
+  ) (builtins.attrNames allocationPools);
+  crossPoolOverlaps = lib.unique (
     lib.concatMap (
       first:
         lib.concatMap (
@@ -49,7 +50,8 @@
         )
         poolClaims
     )
-    poolClaims;
+    poolClaims
+  );
 in {
   key = "clanServices:lib/ifstate.nix";
 

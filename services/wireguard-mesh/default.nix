@@ -277,15 +277,6 @@ in {
           }
         )
       );
-      canonicalV4Pool = value: let
-        parts = lib.splitString "/" value;
-      in "${cidr.addressAt value 0}/${builtins.elemAt parts 1}";
-      validV4Pool = value: let
-        result = builtins.tryEval (
-          value == canonicalV4Pool value && (cidr.parse value).end - (cidr.parse value).start >= 3
-        );
-      in
-        result.success && result.value;
       poolRecordDrift = prefixFile "ipv4-pool" != settings.ipv4Pool;
       allocationMembershipErrors = lib.concatMap (
         name: let
@@ -606,7 +597,7 @@ in {
             message = "wireguard-mesh/${instanceName}: recorded ipv4Pool differs from the setting; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate (ULA is unchanged)";
           }
           {
-            assertion = validV4Pool settings.ipv4Pool;
+            assertion = cidr.validV4Pool settings.ipv4Pool;
             message = "wireguard-mesh/${instanceName}: ipv4Pool must be a canonical IPv4 CIDR with host bits clear and at least four addresses";
           }
           {

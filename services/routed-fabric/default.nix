@@ -445,15 +445,6 @@
         }
       )
     );
-    canonicalV4Pool = value: let
-      parts = lib.splitString "/" value;
-    in "${cidr.addressAt value 0}/${builtins.elemAt parts 1}";
-    validV4Pool = value: let
-      result = builtins.tryEval (
-        value == canonicalV4Pool value && (cidr.parse value).end - (cidr.parse value).start >= 3
-      );
-    in
-      result.success && result.value;
     poolRecordDrift =
       lib.optional (prefixFile "loopback4-pool" != ownSettings.loopback4Pool) "loopback4Pool"
       ++ lib.optional (prefixFile "transfer4-pool" != ownSettings.transfer4Pool) "transfer4Pool";
@@ -1237,7 +1228,7 @@
           }; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate (ULA and ASN are unchanged)";
         }
         {
-          assertion = validV4Pool ownSettings.loopback4Pool && validV4Pool ownSettings.transfer4Pool;
+          assertion = cidr.validV4Pool ownSettings.loopback4Pool && cidr.validV4Pool ownSettings.transfer4Pool;
           message = "routed-fabric/${instanceName}: loopback4Pool and transfer4Pool must be canonical IPv4 CIDRs with host bits clear and at least four addresses";
         }
         {

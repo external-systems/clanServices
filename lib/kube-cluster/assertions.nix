@@ -363,8 +363,6 @@ in {
   # CiliumBGPClusterConfig is rendered and no session exists. Vacuous for
   # tunnel/manual transports: their members have no routeExchange and are
   # filtered out of hostAsns upstream.
-  # ciliumAsn: the resolved dp.asns.cilium; hostAsns: { machineName = asn }
-  # of the cluster's local-router members; bgpActive: dp.bgpActive.
   mkBgpAsnAssertions = {
     instanceName,
     ciliumAsn,
