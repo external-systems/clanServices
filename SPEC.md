@@ -2159,8 +2159,9 @@ harness executes VM generators through its Nix vars executor, encrypts test
 secrets with its fixed test recipient, and merges generated `vars/` and
 `secrets/` into a temporary directory used by `getPublicValue`. It replaces
 the suite's source `vars/` tree, so these VM suites need no committed
-allocation files or separate `update-vars` run; committed public keys in VM
-directories are legacy fixtures, not the source of generated values.
+allocation files, legacy public-key fixtures, or separate `update-vars` run.
+Routed-fabric and wireguard-mesh print the fresh allocations and prove them
+with `ROUTED_FABRIC_ALLOCATED_OK` and `WIREGUARD_MESH_ALLOCATED_OK`.
 
 Current registered VM suites:
 - **single/join/HA per distro** on `wireguard-mesh`: bootstrap, local

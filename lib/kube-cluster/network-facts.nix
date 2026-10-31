@@ -28,10 +28,17 @@
       };
     };
     graph = fact (t.listOf edge) [];
+    allocationPool = t.submodule {
+      options = {
+        name = str "Allocation pool purpose.";
+        cidr = str "Allocation pool CIDR.";
+      };
+    };
     adjacency = t.submodule {
       options = {
         interface = str "Point-to-point WireGuard interface name.";
         remote = str "Remote machine name.";
+        generator = str "Shared public adjacency allocation generator.";
         ipv4 = nullableStr "Local transfer IPv4 address.";
         ipv6 = nullableStr "Local transfer IPv6 address.";
         prefix4 = str "Transfer IPv4 prefix.";
@@ -70,6 +77,7 @@
     node = {
       name = str "Clan machine identity.";
     };
+    allocationPools = fact (t.attrsOf (t.listOf allocationPool)) {} "Allocation pools keyed by service/instance.";
     netif = lib.mkOption {
       type = t.attrsOf (
         t.submodule {

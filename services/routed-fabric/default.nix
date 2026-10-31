@@ -128,8 +128,8 @@
             };
             end = lib.mkOption {
               type = lib.types.port;
-              default = 32767;
-              description = "Last port available to adjacency allocation.";
+              default = 29999;
+              description = "Last port available to adjacency allocation; defaults stay below Kubernetes NodePorts.";
             };
           };
         };
@@ -343,14 +343,13 @@
     allMachines = (roles.leaf.machines or {}) // (roles.spine.machines or {});
     ownRole = roleFor roles machine.name;
     ownSettings = allMachines.${machine.name}.settings;
+    ulaGenerator = "routed-fabric-${instanceName}-ula";
     prefixGenerator = "routed-fabric-${instanceName}-prefixes";
     nodeGenerator = "routed-fabric-${instanceName}-node";
+    asnGenerator = "routed-fabric-${instanceName}-asn";
     adjacencyGeneratorName = remoteName: let
-      endpoints = lib.sort builtins.lessThan [
-        machine.name
-        remoteName
-      ];
-    in "routed-fabric-${instanceName}-adj-${builtins.head endpoints}-${builtins.elemAt endpoints 1}";
+      key = fabric.adjacencyKey instanceName machine.name remoteName;
+    in "routed-fabric-${instanceName}-adj-${builtins.substring 0 16 (builtins.hashString "sha256" key)}";
 
     allocation = {
       generator,
@@ -396,7 +395,7 @@
     asnOf = name:
       builtins.fromJSON (
         allocation {
-          generator = nodeGenerator;
+          generator = asnGenerator;
           machineName = name;
           generateMachine = name;
           file = "asn";
@@ -438,7 +437,26 @@
         generator = prefixGenerator;
         inherit file;
       };
-    ulaBase = builtins.head (lib.splitString "::" (prefixFile "ula48"));
+    ulaBase = builtins.head (
+      lib.splitString "::" (
+        allocation {
+          generator = ulaGenerator;
+          file = "ula48";
+        }
+      )
+    );
+    canonicalV4Pool = value: let
+      parts = lib.splitString "/" value;
+    in "${cidr.addressAt value 0}/${builtins.elemAt parts 1}";
+    validV4Pool = value: let
+      result = builtins.tryEval (
+        value == canonicalV4Pool value && (cidr.parse value).end - (cidr.parse value).start >= 3
+      );
+    in
+      result.success && result.value;
+    poolRecordDrift =
+      lib.optional (prefixFile "loopback4-pool" != ownSettings.loopback4Pool) "loopback4Pool"
+      ++ lib.optional (prefixFile "transfer4-pool" != ownSettings.transfer4Pool) "transfer4Pool";
     allocationPools = [
       {
         name = "loopback4Pool";
@@ -793,6 +811,30 @@
 
     adjacencies = map mkAdjacency peerNames;
     ownAsn = asnOf machine.name;
+    allocationMembershipErrors =
+      lib.concatMap (
+        name: let
+          memberSettings = allMachines.${name}.settings;
+          address = addressOf name;
+        in
+          lib.optional (
+            memberSettings.ipv4
+            == null
+            && !cidr.contains ownSettings.loopback4Pool "${address.ipv4}/32"
+          ) "${name}/ipv4=${address.ipv4} outside loopback4Pool=${ownSettings.loopback4Pool}; run: clan vars generate ${name} --generator ${nodeGenerator} --regenerate"
+          ++ lib.optional (
+            memberSettings.ipv6
+            == null
+            && !cidr.contains "${ulaBase}:0::/64" "${address.ipv6}/128"
+          ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${nodeGenerator} --regenerate"
+      )
+      memberNames
+      ++ lib.concatMap (
+        adjacency:
+          lib.optional (!cidr.contains ownSettings.transfer4Pool adjacency.prefixes.ipv4) "${adjacency.key}/transfer4=${adjacency.prefixes.ipv4} outside transfer4Pool=${ownSettings.transfer4Pool}; run: clan vars generate <newer-machine> --generator ${adjacency.generator} --regenerate"
+          ++ lib.optional (!cidr.contains "${ulaBase}:1::/64" adjacency.prefixes.ipv6) "${adjacency.key}/transfer6=${adjacency.prefixes.ipv6} outside ${ulaBase}:1::/64; run: clan vars generate <newer-machine> --generator ${adjacency.generator} --regenerate"
+      )
+      adjacencies;
     loopbackName = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" instanceName)}";
     frrConfig = frr.mkConfig {
       routerId = ownAddress.ipv4;
@@ -1082,6 +1124,60 @@
             )
         )
         adjacencies;
+      reservedPortRanges =
+        map (
+          entry: let
+            parts = lib.splitString "-" entry;
+          in {
+            start = builtins.fromJSON (builtins.head parts);
+            end = builtins.fromJSON (builtins.elemAt parts (lib.length parts - 1));
+          }
+        )
+        config.clanServices.networking.reservedPorts;
+      portRangeConflicts =
+        builtins.filter (
+          range:
+            ownSettings.portRange.start <= range.end && range.start <= ownSettings.portRange.end
+        ) (
+          reservedPortRanges
+          ++ lib.optional (isKubernetes machine.name) {
+            start = 30000;
+            end = 32767;
+          }
+        );
+      ownPoolKey = "routed-fabric/${instanceName}";
+      foreignPools = lib.concatMap (
+        owner: map (pool: pool // {inherit owner;}) config.clan.networkFacts.allocationPools.${owner}
+      ) (builtins.attrNames (removeAttrs config.clan.networkFacts.allocationPools [ownPoolKey]));
+      explicitAddressOverlaps =
+        lib.concatMap (
+          claim: let
+            otherPools = builtins.filter (pool: pool.name != claim.ownPool) allocationPools;
+            candidates =
+              map (pool: pool // {owner = ownPoolKey;}) otherPools
+              ++ foreignPools
+              ++ map (prefix: {
+                name = "underlay/cluster";
+                cidr = prefix;
+                owner = "member underlay/cluster";
+              })
+              externalCidrs;
+          in
+            map (pool: "${claim.setting}=${claim.cidr} overlaps ${pool.owner}/${pool.name}=${pool.cidr}") (
+              builtins.filter (pool: cidr.overlap claim.cidr pool.cidr) candidates
+            )
+        ) (
+          lib.optional (ownSettings.ipv4 != null) {
+            setting = "ipv4";
+            cidr = "${ownAddress.ipv4}/32";
+            ownPool = "loopback4Pool";
+          }
+          ++ lib.optional (ownSettings.ipv6 != null) {
+            setting = "ipv6";
+            cidr = "${ownAddress.ipv6}/128";
+            ownPool = "loopback6";
+          }
+        );
     in {
       imports = [../../lib/kube-cluster/network-facts.nix];
 
@@ -1112,21 +1208,37 @@
         }
         {
           assertion = ipv4CollisionMachines == [];
-          message = "routed-fabric/${instanceName}: loopback IPv4 ${ownAddress.ipv4} on ${machine.name} collides with ${
+          message = "routed-fabric/${instanceName}: loopback IPv4 ${ownAddress.ipv4} collides on owners ${machine.name}, ${
             lib.concatStringsSep ", " ipv4CollisionMachines
-          }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
+          }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${nodeGenerator} --regenerate";
         }
         {
           assertion = ipv6CollisionMachines == [];
-          message = "routed-fabric/${instanceName}: loopback IPv6 ${ownAddress.ipv6} on ${machine.name} collides with ${
+          message = "routed-fabric/${instanceName}: loopback IPv6 ${ownAddress.ipv6} collides on owners ${machine.name}, ${
             lib.concatStringsSep ", " ipv6CollisionMachines
-          }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
+          }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${nodeGenerator} --regenerate";
         }
         {
           assertion = asnCollisionMachines == [];
-          message = "routed-fabric/${instanceName}: ASN ${toString ownAsn} on ${machine.name} collides with ${
+          message = "routed-fabric/${instanceName}: ASN ${toString ownAsn} collides on owners ${machine.name}, ${
             lib.concatStringsSep ", " asnCollisionMachines
-          }; run: clan vars generate ${machine.name} --generator ${nodeGenerator} --regenerate";
+          }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${asnGenerator} --regenerate";
+        }
+        {
+          assertion = allocationMembershipErrors == [];
+          message = "routed-fabric/${instanceName}: allocated values escaped their pools: ${
+            lib.concatStringsSep "; " allocationMembershipErrors
+          }";
+        }
+        {
+          assertion = poolRecordDrift == [];
+          message = "routed-fabric/${instanceName}: recorded pools differ from settings for ${
+            lib.concatStringsSep ", " poolRecordDrift
+          }; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate (ULA and ASN are unchanged)";
+        }
+        {
+          assertion = validV4Pool ownSettings.loopback4Pool && validV4Pool ownSettings.transfer4Pool;
+          message = "routed-fabric/${instanceName}: loopback4Pool and transfer4Pool must be canonical IPv4 CIDRs with host bits clear and at least four addresses";
         }
         {
           assertion = unequalPoolMembers == [];
@@ -1150,22 +1262,32 @@
               overlap: "${overlap.pool.name}=${overlap.pool.cidr} with ${overlap.prefix}"
             )
             externalPoolOverlaps
-          }); move the conflicting prefix or set loopback4Pool/transfer4Pool away from it; for a ULA collision run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate";
+          }); move the conflicting prefix or set loopback4Pool/transfer4Pool away from it; a deliberate ULA renumber requires: clan vars generate ${machine.name} --generator ${ulaGenerator} --regenerate";
         }
         {
           assertion = ownSettings.portRange.start <= ownSettings.portRange.end;
-          message = "routed-fabric/${instanceName}: portRange.start must not exceed portRange.end; set an inclusive range such as 10000–32767 on every member";
+          message = "routed-fabric/${instanceName}: portRange.start must not exceed portRange.end; set an inclusive range such as 10000–29999 on every member";
+        }
+        {
+          assertion = portRangeConflicts == [];
+          message = "routed-fabric/${instanceName}: portRange ${toString ownSettings.portRange.start}-${toString ownSettings.portRange.end} overlaps reserved or Kubernetes NodePort ranges; set a disjoint member-uniform portRange";
+        }
+        {
+          assertion = explicitAddressOverlaps == [];
+          message = "routed-fabric/${instanceName}: explicit addresses overlap foreign pools or member underlay/cluster CIDRs: ${
+            lib.concatStringsSep "; " explicitAddressOverlaps
+          }; choose addresses outside those prefixes";
         }
         {
           assertion = portCollisionPairs == [] && externalPortCollisions == [];
           message = "routed-fabric/${instanceName}: ${
             lib.concatStringsSep "; " (
               map (
-                pair: "adjacency ${pair.first.key} port ${toString pair.first.port} collides with ${pair.second.key}; run: clan vars generate ${machine.name} --generator ${pair.first.generator} --regenerate"
+                pair: "adjacency port ${toString pair.first.port} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.generator} --regenerate"
               )
               portCollisionPairs
               ++ map (
-                collision: "adjacency ${collision.adjacency.key} port ${toString collision.adjacency.port} collides with WireGuard interface ${collision.other.name}; run: clan vars generate ${machine.name} --generator ${collision.adjacency.generator} --regenerate"
+                collision: "adjacency ${collision.adjacency.key} port ${toString collision.adjacency.port} collides with WireGuard interface ${collision.other.name}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${collision.adjacency.generator} --regenerate"
               )
               externalPortCollisions
             )
@@ -1176,7 +1298,7 @@
           message = "routed-fabric/${instanceName}: ${
             lib.concatStringsSep "; " (
               map (
-                pair: "transfer4 ${pair.first.prefixes.ipv4} on ${pair.first.key} collides with ${pair.second.key}; run: clan vars generate ${machine.name} --generator ${pair.first.generator} --regenerate"
+                pair: "transfer4 ${pair.first.prefixes.ipv4} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.generator} --regenerate"
               )
               transfer4CollisionPairs
             )
@@ -1187,7 +1309,7 @@
           message = "routed-fabric/${instanceName}: ${
             lib.concatStringsSep "; " (
               map (
-                pair: "transfer6 ${pair.first.prefixes.ipv6} on ${pair.first.key} collides with ${pair.second.key}; run: clan vars generate ${machine.name} --generator ${pair.first.generator} --regenerate"
+                pair: "transfer6 ${pair.first.prefixes.ipv6} collides on owners ${pair.first.key} and ${pair.second.key}; regenerate the newer machine: clan vars generate <newer-machine> --generator ${pair.first.generator} --regenerate"
               )
               transfer6CollisionPairs
             )
@@ -1236,14 +1358,14 @@
             lib.length (lib.unique sourceReturnTables)
             == lib.length sourceReturnTables
             && lib.all (table: !(lib.elem table netifPolicyTables)) sourceReturnTables;
-          message = "routed-fabric/${instanceName}: source-return tables must be unique and must not collide with same-host netif routingPolicy tables (${lib.concatStringsSep ", " (map toString netifPolicyTables)})";
+          message = "routed-fabric/${instanceName}: source-return tables must be unique and must not collide with same-host netif routingPolicy tables (${lib.concatStringsSep ", " (map toString netifPolicyTables)}); set adjacencies.<remote>.sourceReturnTable on one colliding adjacency or move the netif table";
         }
         {
           assertion =
             lib.all (priority: priority >= 0 && priority < 32766) sourceReturnRulePriorities
             && lib.length (lib.unique sourceReturnRulePriorities) == lib.length sourceReturnRulePriorities
             && lib.intersectLists sourceReturnRulePriorities netifRulePriorities == [];
-          message = "routed-fabric/${instanceName}: source-return rule priorities must be below 32766 and unique across source-return and same-host netif rules";
+          message = "routed-fabric/${instanceName}: source-return rule priorities must be below 32766 and unique across source-return and same-host netif rules; set adjacencies.<remote>.sourceReturnPriority on one colliding adjacency or move the netif rule";
         }
         {
           assertion = addressFamilyMismatches == [];
@@ -1279,9 +1401,28 @@
                 wg pubkey < "$out"/privatekey > "$out"/publickey
               '';
             };
+            ${ulaGenerator} = {
+              share = true;
+              files.ula48 = {
+                secret = false;
+                deploy = false;
+              };
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import os
+                import secrets
+                from pathlib import Path
+
+                out = Path(os.environ["out"])
+                ula = f"fd{secrets.randbits(40):010x}"
+                (out / "ula48").write_text(f"{ula[:4]}:{ula[4:8]}:{ula[8:12]}::/48\n")
+                PY
+              '';
+            };
             ${prefixGenerator} = {
               share = true;
-              files = lib.genAttrs ["ula48" "loopback4-pool" "transfer4-pool"] (_: {
+              files = lib.genAttrs ["loopback4-pool" "transfer4-pool"] (_: {
                 secret = false;
                 deploy = false;
               });
@@ -1291,22 +1432,18 @@
               runtimeInputs = [pkgs.python3];
               script = ''
                 python3 - <<'PY'
-                import ipaddress
                 import os
-                import secrets
                 from pathlib import Path
 
                 out = Path(os.environ["out"])
-                ula = f"fd{secrets.randbits(40):010x}"
-                (out / "ula48").write_text(f"{ula[:4]}:{ula[4:8]}:{ula[8:12]}::/48\n")
                 (out / "loopback4-pool").write_text("${ownSettings.loopback4Pool}\n")
                 (out / "transfer4-pool").write_text("${ownSettings.transfer4Pool}\n")
                 PY
               '';
             };
             ${nodeGenerator} = {
-              dependencies = [prefixGenerator];
-              files = lib.genAttrs ["ipv4" "ipv6" "asn"] (_: {
+              dependencies = [ulaGenerator prefixGenerator];
+              files = lib.genAttrs ["ipv4" "ipv6"] (_: {
                 secret = false;
                 deploy = false;
               });
@@ -1318,18 +1455,34 @@
                 import secrets
                 from pathlib import Path
 
-                inputs = Path(os.environ["in"]) / "${prefixGenerator}"
+                inputs = Path(os.environ["in"])
                 out = Path(os.environ["out"])
-                ula = ipaddress.IPv6Network((inputs / "ula48").read_text().strip())
-                pool = ipaddress.IPv4Network((inputs / "loopback4-pool").read_text().strip())
+                ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
+                pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "loopback4-pool").read_text().strip())
                 if pool.num_addresses < 4:
                     raise ValueError("loopback4Pool must contain at least four addresses")
                 ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
                 loopback6 = ipaddress.IPv6Network((int(ula.network_address), 64))
                 ipv6 = loopback6.network_address + secrets.randbits(64)
-                asn = 4200000000 + secrets.randbelow(4294967294 - 4200000000 + 1)
                 (out / "ipv4").write_text(f"{ipv4}\n")
                 (out / "ipv6").write_text(f"{ipv6}\n")
+                PY
+              '';
+            };
+            ${asnGenerator} = {
+              files.asn = {
+                secret = false;
+                deploy = false;
+              };
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import os
+                import secrets
+                from pathlib import Path
+
+                out = Path(os.environ["out"])
+                asn = 4200000000 + secrets.randbelow(4294967294 - 4200000000 + 1)
                 (out / "asn").write_text(f"{asn}\n")
                 PY
               '';
@@ -1340,7 +1493,7 @@
               name = adjacencyGeneratorName remoteName;
               value = {
                 share = true;
-                dependencies = [prefixGenerator];
+                dependencies = [ulaGenerator prefixGenerator];
                 files = lib.genAttrs ["port" "transfer4" "transfer6"] (_: {
                   secret = false;
                   deploy = false;
@@ -1357,10 +1510,10 @@
                   import secrets
                   from pathlib import Path
 
-                  inputs = Path(os.environ["in"]) / "${prefixGenerator}"
+                  inputs = Path(os.environ["in"])
                   out = Path(os.environ["out"])
-                  ula = ipaddress.IPv6Network((inputs / "ula48").read_text().strip())
-                  pool = ipaddress.IPv4Network((inputs / "transfer4-pool").read_text().strip())
+                  ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
+                  pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "transfer4-pool").read_text().strip())
                   if pool.num_addresses < 4:
                       raise ValueError("transfer4Pool must contain at least two /31 prefixes")
                   transfer4 = ipaddress.IPv4Network((int(pool.network_address) + 2 * secrets.randbelow(pool.num_addresses // 2), 31))
@@ -1384,6 +1537,7 @@
           schemaVersion = 2;
           forwarding = lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) true;
           node.name = machine.name;
+          allocationPools."routed-fabric/${instanceName}" = allocationPools;
           fabric.${instanceName} = {
             topology = ownRole;
             inherit (ownSettings) access;
@@ -1412,6 +1566,7 @@
                 value = {
                   interface = adjacency.name;
                   remote = adjacency.remoteName;
+                  inherit (adjacency) generator;
                   inherit (adjacency.local) ipv4 ipv6;
                   prefix4 = adjacency.prefixes.ipv4;
                   prefix6 = adjacency.prefixes.ipv6;

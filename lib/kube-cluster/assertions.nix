@@ -1,6 +1,7 @@
 # Eval assertions (§6.12). mkClusterAssertions covers cluster shape;
 # mkPoolAssertions covers the D8 pool model plus the D9/D10 BGP/fabric
-# coupling.
+# coupling; mkBgpAsnAssertions covers the D9 node-ASN/Cilium-ASN eBGP
+# invariant.
 {
   lib,
   hashCiliumId,
@@ -350,6 +351,36 @@ in {
     {
       assertion = fabricV4Ok && fabricV6Ok;
       message = "kube-cluster/${instanceName}: fabric pool blocks must have at least 128 addresses (v4 /25 or shorter) and 256 (v6 /120 or shorter) — the internal ClusterMesh apiserver VIPs live at host offset 79 (D10 round 17/D60)";
+    }
+  ];
+
+  # D9 (round 22 PR review): the fabric-allocated node ASNs (the
+  # node_transport export's `asn`, RFC 6996 private range) and the cluster's
+  # Cilium ASN (the same private space — the §6.2 hash or a bgp.ciliumASN
+  # pin) must differ on every local-router member. An equality makes the
+  # Cilium→FRR `::1` session accidental iBGP instead of eBGP (D9). Only
+  # enforced while BGP is active: with no node-bgp/shared-bgp pool no
+  # CiliumBGPClusterConfig is rendered and no session exists. Vacuous for
+  # tunnel/manual transports: their members have no routeExchange and are
+  # filtered out of hostAsns upstream.
+  # ciliumAsn: the resolved dp.asns.cilium; hostAsns: { machineName = asn }
+  # of the cluster's local-router members; bgpActive: dp.bgpActive.
+  mkBgpAsnAssertions = {
+    instanceName,
+    ciliumAsn,
+    hostAsns,
+    bgpActive,
+  }: let
+    colliding = lib.filterAttrs (_: asn: asn == ciliumAsn) hostAsns;
+    collidingMachines = builtins.attrNames colliding;
+  in [
+    {
+      assertion = !bgpActive || colliding == {};
+      message = "kube-cluster/${instanceName}: routed-fabric node ASN ${toString ciliumAsn} allocated to machine(s) ${
+        lib.concatStringsSep ", " collidingMachines
+      } equals the cluster's Cilium BGP ASN — the Cilium→FRR session would be accidental iBGP, not eBGP (both sides draw from the RFC 6996 private range). Fix: pin bgp.ciliumASN to a different ASN, or pin ${
+        lib.concatMapStringsSep ", " (m: "${m}'s bgp.hostASN") collidingMachines
+      } to a different value";
     }
   ];
 }

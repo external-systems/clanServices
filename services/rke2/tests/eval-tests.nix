@@ -550,6 +550,7 @@ in {
       "wireguard-mesh-mesh"
       "wireguard-mesh-mesh-node"
       "wireguard-mesh-mesh-prefixes"
+      "wireguard-mesh-mesh-ula"
     ];
   };
 
@@ -1087,6 +1088,98 @@ in {
     in
       failedAssertion bad.config.nixosConfigurations.alpha.config "BGP only for node-bgp/shared-bgp pools";
     expected = true;
+  };
+
+  # D9 (round 22 PR review): a routed-fabric node ASN equal to the cluster's
+  # Cilium ASN would make the Cilium→FRR `::1` session accidental iBGP. The
+  # default fake fleet's allocations are disjoint, so the assertion is
+  # silent.
+  test_bgpAsnCollisionSilentByDefault = {
+    expr = failedAssertion alphaFake "accidental iBGP";
+    expected = false;
+  };
+
+  # Pinning bgp.ciliumASN onto a fabric node's ASN must fail, naming the
+  # cluster, the ASN, the colliding machine, and both consumer-side fixes
+  # (bgp.ciliumASN / the machine's bgp.hostASN). The pin targets beta's
+  # fabric ASN: alpha's export is the fleet check's per-cluster hostAsn
+  # view, so colliding on alpha would trip the fleet-wide uniqueness check
+  # before this cluster-level assertion.
+  test_bgpAsnCollisionCiliumPinRejected = {
+    expr = let
+      bad = mkEvaled (
+        lib.recursiveUpdate fakeInventory {
+          instances.rke2-a.roles.server.settings.bgp.ciliumASN = 4258224173;
+        }
+      );
+      badAlpha = bad.config.nixosConfigurations.alpha.config;
+    in {
+      fired = failedAssertion badAlpha "accidental iBGP";
+      namesCluster = failedAssertion badAlpha "kube-cluster/rke2-a";
+      namesAsn = failedAssertion badAlpha "4258224173";
+      namesMachine = failedAssertion badAlpha "machine(s) beta";
+      namesCiliumPinFix = failedAssertion badAlpha "bgp.ciliumASN";
+      namesHostPinFix = failedAssertion badAlpha "beta's bgp.hostASN";
+    };
+    expected = {
+      fired = true;
+      namesCluster = true;
+      namesAsn = true;
+      namesMachine = true;
+      namesCiliumPinFix = true;
+      namesHostPinFix = true;
+    };
+  };
+
+  # The same trap via the host-side pin: pinning beta's bgp.hostASN onto
+  # the cluster's (hashed) Cilium ASN must fail the same way. alpha is
+  # pinned to its own fabric ASN because cluster-level parity requires the
+  # bgp settings to be uniform across machines (a per-machine pin on beta
+  # alone would trip the parity assertion first); the needles below are
+  # unique to the ASN-collision message.
+  test_bgpAsnCollisionHostPinRejected = {
+    expr = let
+      bad = mkEvaled (
+        lib.recursiveUpdate fakeInventory {
+          instances.rke2-a.roles.server.machines = {
+            alpha.settings.bgp.hostASN = 4258224172;
+            beta.settings.bgp.hostASN = 4268898264;
+          };
+        }
+      );
+      badAlpha = bad.config.nixosConfigurations.alpha.config;
+    in {
+      fired = failedAssertion badAlpha "accidental iBGP";
+      namesAsn = failedAssertion badAlpha "4268898264";
+      namesMachine = failedAssertion badAlpha "machine(s) beta";
+      namesHostPinFix = failedAssertion badAlpha "beta's bgp.hostASN";
+    };
+    expected = {
+      fired = true;
+      namesAsn = true;
+      namesMachine = true;
+      namesHostPinFix = true;
+    };
+  };
+
+  # The documented fixes work: moving the machines' bgp.hostASN pins off
+  # the pinned Cilium ASN clears the assertion. The uniform pin value
+  # mirrors the cluster-level parity rule (identical bgp settings on every
+  # machine).
+  test_bgpAsnCollisionEscapableViaHostPin = {
+    expr = let
+      fixed = mkEvaled (
+        lib.recursiveUpdate fakeInventory {
+          instances.rke2-a.roles.server = {
+            settings.bgp.ciliumASN = 4258224173;
+            machines.alpha.settings.bgp.hostASN = 4258224000;
+            machines.beta.settings.bgp.hostASN = 4258224000;
+          };
+        }
+      );
+    in
+      failedAssertion fixed.config.nixosConfigurations.alpha.config "accidental iBGP";
+    expected = false;
   };
 
   # D19 revised: ONE dual-AF `::1` session to the node-local FRR, no

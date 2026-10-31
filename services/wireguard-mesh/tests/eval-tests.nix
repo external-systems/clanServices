@@ -5,7 +5,7 @@
   lib,
   ...
 }: let
-  machineConfigs = lib.genAttrs ["alpha" "beta" "gamma" "missing"] (_: {
+  machineConfigs = lib.genAttrs ["alpha" "beta" "gamma"] (_: {
     nixpkgs.hostPlatform = "x86_64-linux";
   });
 
@@ -125,10 +125,10 @@
     };
   };
 
-  mkEvaled = inventory:
+  mkEvaledAt = directory: inventory:
     clanLib.clan {
       self = {};
-      directory = ./fixtures;
+      inherit directory;
       exportInterfaces =
         exportInterfaces
         // {
@@ -144,6 +144,7 @@
       inherit inventory;
     };
 
+  mkEvaled = mkEvaledAt ./fixtures;
   evaled = mkEvaled baseInventory;
   alpha = evaled.config.nixosConfigurations.alpha.config;
   alphaIfstate = alpha.networking.ifstate.settings;
@@ -180,25 +181,8 @@
       instances.mesh.roles.peer.machines.beta.settings.ipv4Pool = "198.18.64.0/18";
     }
   );
-  missingNodeEval = mkEvaled (
-    lib.recursiveUpdate baseInventory {
-      instances.mesh.roles.peer.machines.missing.settings = {};
-    }
-  );
-  missingPrefixEval = mkEvaled (
-    lib.recursiveUpdate baseInventory {
-      instances.missing-prefix = {
-        module.name = "wireguard-mesh";
-        module.input = "self";
-        roles.peer.machines.alpha.settings = {
-          ipv4 = "198.18.128.10";
-          ipv6 = "fd66:6666:6666::10";
-          port = 51830;
-          endpoint = "alpha.example.net";
-        };
-      };
-    }
-  );
+  missingNodeEval = mkEvaledAt ./fixtures-missing-node allocatedInventory;
+  missingPrefixEval = mkEvaledAt ./fixtures-missing-prefix allocatedInventory;
   netifPoolOverlapEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
       instances.underlay-v4 = {
@@ -297,6 +281,31 @@
     };
   allocatedEval = mkEvaled allocatedInventory;
   alphaAllocated = allocatedEval.config.nixosConfigurations.alpha.config;
+  membershipDriftEval = mkEvaled (
+    lib.recursiveUpdate allocatedInventory {
+      instances.mesh.roles.peer.settings.ipv4Pool = "198.18.64.0/18";
+    }
+  );
+  canonicalPoolEval = mkEvaled (
+    lib.recursiveUpdate allocatedInventory {
+      instances.mesh.roles.peer.settings.ipv4Pool = "198.18.128.1/17";
+    }
+  );
+  explicitForeignPoolEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mesh.roles.peer.machines.alpha.settings.ipv4 = "198.18.128.1";
+      instances.other = {
+        module.name = "wireguard-mesh";
+        module.input = "self";
+        roles.peer.machines.alpha.settings = {
+          ipv4 = "192.168.78.1";
+          ipv6 = "fd00:78::1";
+          port = 51830;
+          endpoint = "alpha.example.net";
+        };
+      };
+    }
+  );
 in {
   rendering = {
     test_ifstateOnly = {
@@ -501,29 +510,41 @@ in {
       };
     };
     test_allocationFilesArePublicAndNotDeployed = {
-      expr = lib.all (
-        name:
-          lib.all (file: !file.secret && !file.deploy) (
-            builtins.attrValues generators.${name}.files
-          )
-      ) ["wireguard-mesh-mesh-prefixes" "wireguard-mesh-mesh-node"];
+      expr =
+        lib.all (
+          name:
+            lib.all (file: !file.secret && !file.deploy) (
+              builtins.attrValues generators.${name}.files
+            )
+        ) [
+          "wireguard-mesh-mesh-ula"
+          "wireguard-mesh-mesh-prefixes"
+          "wireguard-mesh-mesh-node"
+        ];
       expected = true;
     };
     test_allocationGeneratorScopeAndDependencies = {
       expr = {
+        ulaShared = generators.wireguard-mesh-mesh-ula.share;
+        ulaValidation = generators.wireguard-mesh-mesh-ula.validation or {};
         shared = generators.wireguard-mesh-mesh-prefixes.share;
         dependencies = generators.wireguard-mesh-mesh-node.dependencies;
       };
       expected = {
+        ulaShared = true;
+        ulaValidation = null;
         shared = true;
-        dependencies = ["wireguard-mesh-mesh-prefixes"];
+        dependencies = [
+          "wireguard-mesh-mesh-ula"
+          "wireguard-mesh-mesh-prefixes"
+        ];
       };
     };
   };
 
   validation = {
     test_duplicateAddressesRejected = {
-      expr = failedAssertion duplicateEval.config.nixosConfigurations.alpha.config "mesh IPv4 10.42.0.1 on alpha collides with beta; run: clan vars generate alpha --generator wireguard-mesh-mesh-node --regenerate";
+      expr = failedAssertion duplicateEval.config.nixosConfigurations.alpha.config "mesh IPv4 10.42.0.1 collides on owners alpha, beta; regenerate the newer machine: clan vars generate <newer-machine> --generator wireguard-mesh-mesh-node --regenerate";
       expected = true;
     };
     test_unequalPoolsRejected = {
@@ -533,20 +554,40 @@ in {
     test_missingNodeVarRejected = {
       expr =
         !(builtins.tryEval (
-          builtins.deepSeq missingNodeEval.config.nixosConfigurations.missing.config.networking.ifstate.settings.interfaces.wg-mesh.addresses true
+          builtins.deepSeq missingNodeEval.config.nixosConfigurations.alpha.config.networking.ifstate.settings.interfaces.wg-mesh.addresses true
         )).success;
       expected = true;
     };
     test_missingSharedPrefixRejected = {
       expr =
         !(builtins.tryEval (
-          failedAssertion missingPrefixEval.config.nixosConfigurations.alpha.config "wireguard-mesh/missing-prefix: allocation pools overlap"
+          failedAssertion missingPrefixEval.config.nixosConfigurations.alpha.config "wireguard-mesh/mesh: allocation pools overlap"
         )).success;
       expected = true;
     };
     test_disjointPoolsAccepted = {
       expr = failedAssertion alpha "allocation pools overlap";
       expected = false;
+    };
+    test_allocatedValueOutsidePoolRejected = {
+      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.alpha.config "alpha/ipv4=198.18.128.1 outside ipv4Pool=198.18.64.0/18";
+      expected = true;
+    };
+    test_recordedPoolDriftRejected = {
+      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.alpha.config "recorded ipv4Pool differs from the setting; run: clan vars generate alpha --generator wireguard-mesh-mesh-prefixes --regenerate (ULA is unchanged)";
+      expected = true;
+    };
+    test_nonCanonicalPoolRejected = {
+      expr = failedAssertion canonicalPoolEval.config.nixosConfigurations.alpha.config "ipv4Pool must be a canonical IPv4 CIDR with host bits clear";
+      expected = true;
+    };
+    test_crossInstancePoolOverlapRejected = {
+      expr = failedAssertion interfaceCollisionEval.config.nixosConfigurations.alpha.config "allocation pools overlap across instances/services on one host";
+      expected = true;
+    };
+    test_explicitAddressInForeignPoolRejected = {
+      expr = failedAssertion explicitForeignPoolEval.config.nixosConfigurations.alpha.config "ipv4=198.18.128.1/32 overlaps wireguard-mesh/other/ipv4Pool=198.18.128.0/17";
+      expected = true;
     };
     test_netifPoolOverlapRejected = {
       expr = failedAssertion netifPoolOverlapEval.config.nixosConfigurations.alpha.config "ipv4Pool=198.18.128.0/17 with 198.18.128.1/32";

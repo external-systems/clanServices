@@ -10,7 +10,7 @@
   ip = import ../../../lib/ip.nix {inherit lib;};
   nodeAsn = machine:
     builtins.fromJSON (
-      lib.trim (builtins.readFile ./fixtures/vars/per-machine/${machine}/routed-fabric-fleet-node/asn/value)
+      lib.trim (builtins.readFile ./fixtures/vars/per-machine/${machine}/routed-fabric-fleet-asn/asn/value)
     );
 
   machineConfigs =
@@ -34,8 +34,6 @@
       "transfer-b"
       "isolated-a"
       "isolated-b"
-      "missing-node"
-      "missing-adj"
       "overlap-a"
       "overlap-b"
     ] (_: {
@@ -194,11 +192,10 @@
     };
   };
 
-  mkEvaledWith = machines: inventory:
+  mkEvaledAt = directory: machines: inventory:
     clanLib.clan {
       self = {};
-      directory = ./fixtures;
-      inherit exportInterfaces machines;
+      inherit directory exportInterfaces machines;
       modules = {
         routed-fabric = module;
         netif = lib.modules.importApply ../../netif/default.nix {
@@ -212,6 +209,7 @@
       inherit inventory;
     };
 
+  mkEvaledWith = mkEvaledAt ./fixtures;
   mkEvaled = mkEvaledWith machineConfigs;
 
   evaled = mkEvaled baseInventory;
@@ -357,12 +355,8 @@
       };
     };
   };
-  missingNodeEval = mkEvaled (pairInventory {
-    leaf = "missing-node";
-  });
-  missingAdjacencyEval = mkEvaled (pairInventory {
-    leaf = "missing-adj";
-  });
+  missingNodeEval = mkEvaledAt ./fixtures-missing-node machineConfigs (pairInventory {});
+  missingAdjacencyEval = mkEvaledAt ./fixtures-missing-adj machineConfigs (pairInventory {});
   unequalPoolEval = mkEvaled (pairInventory {
     leafSettings.loopback4Pool = "198.18.64.0/18";
   });
@@ -382,6 +376,59 @@
     leafSettings.portRange = {
       start = 30000;
       end = 20000;
+    };
+  });
+  membershipDriftEval = mkEvaled (pairInventory {
+    instanceName = "overlap";
+    spine = "overlap-a";
+    leaf = "overlap-b";
+    spineSettings.loopback4Pool = "198.18.64.0/18";
+    leafSettings.loopback4Pool = "198.18.64.0/18";
+  });
+  canonicalPoolEval = mkEvaled (pairInventory {
+    instanceName = "overlap";
+    spine = "overlap-a";
+    leaf = "overlap-b";
+    spineSettings.loopback4Pool = "198.18.0.1/17";
+    leafSettings.loopback4Pool = "198.18.0.1/17";
+  });
+  reservedPortRangeEval = mkEvaledWith (
+    machineConfigs
+    // {
+      spine-a = {
+        nixpkgs.hostPlatform = "x86_64-linux";
+        clanServices.networking.reservedPorts = ["20000-21000"];
+      };
+    }
+  ) (pairInventory {});
+  nodePortRangeEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.fleet.roles.spine.settings.portRange = {
+        start = 31000;
+        end = 32000;
+      };
+      instances.fleet.roles.leaf.settings.portRange = {
+        start = 31000;
+        end = 32000;
+      };
+    }
+  );
+  explicitForeignPoolEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.fleet.roles.leaf.machines.client.settings.ipv4 = "198.18.128.1";
+      instances.mesh = meshInstance 51822;
+    }
+  );
+  crossServicePoolEval = mkEvaled (pairInventory {
+    extraInstances.cross = {
+      module.name = "wireguard-mesh";
+      module.input = "self";
+      roles.peer.machines.client.settings = {
+        ipv4 = "10.42.0.1";
+        ipv6 = "fd42::1";
+        port = 51822;
+        endpoint = "192.0.2.10";
+      };
     };
   });
   netifPoolOverlapEval = mkEvaled (pairInventory {
@@ -1293,10 +1340,13 @@ in {
 
   vars = let
     generators = client.clan.core.vars.generators;
+    adjacencyGenerator = client.clan.networkFacts.fabric.fleet.adjacencies.spine-a.generator;
     allocationNames = [
+      "routed-fabric-fleet-ula"
       "routed-fabric-fleet-prefixes"
       "routed-fabric-fleet-node"
-      "routed-fabric-fleet-adj-client-spine-a"
+      "routed-fabric-fleet-asn"
+      adjacencyGenerator
     ];
   in {
     test_allocationFilesArePublicAndNotDeployed = {
@@ -1312,16 +1362,26 @@ in {
     };
     test_sharedGeneratorsAndDependencies = {
       expr = {
+        ulaShared = generators.routed-fabric-fleet-ula.share;
+        ulaValidation = generators.routed-fabric-fleet-ula.validation or {};
         prefixesShared = generators.routed-fabric-fleet-prefixes.share;
-        adjacencyShared = generators.routed-fabric-fleet-adj-client-spine-a.share;
+        adjacencyShared = generators.${adjacencyGenerator}.share;
         nodeDependencies = generators.routed-fabric-fleet-node.dependencies;
-        adjacencyDependencies = generators.routed-fabric-fleet-adj-client-spine-a.dependencies;
+        adjacencyDependencies = generators.${adjacencyGenerator}.dependencies;
       };
       expected = {
+        ulaShared = true;
+        ulaValidation = null;
         prefixesShared = true;
         adjacencyShared = true;
-        nodeDependencies = ["routed-fabric-fleet-prefixes"];
-        adjacencyDependencies = ["routed-fabric-fleet-prefixes"];
+        nodeDependencies = [
+          "routed-fabric-fleet-ula"
+          "routed-fabric-fleet-prefixes"
+        ];
+        adjacencyDependencies = [
+          "routed-fabric-fleet-ula"
+          "routed-fabric-fleet-prefixes"
+        ];
       };
     };
   };
@@ -1445,42 +1505,51 @@ in {
         pools = false;
       };
     };
+    test_completeAllocationTwinAccepted = {
+      expr =
+        builtins.deepSeq {
+          inherit (allocationEval.config.nixosConfigurations.client.config.clan.networkFacts.fabric.fleet) ipv4;
+          transfer4 = allocationEval.config.nixosConfigurations.client.config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.prefix4;
+        }
+        true;
+      expected = true;
+    };
     test_missingNodeVarRejected = {
       expr =
         !(builtins.tryEval (
-          builtins.deepSeq missingNodeEval.config.nixosConfigurations.missing-node.config.clan.networkFacts.fabric.fleet.ipv4 true
+          builtins.deepSeq missingNodeEval.config.nixosConfigurations.client.config.clan.networkFacts.fabric.fleet.ipv4 true
         )).success;
       expected = true;
     };
     test_missingAdjacencyVarRejected = {
       expr =
         !(builtins.tryEval (
-          builtins.deepSeq missingAdjacencyEval.config.nixosConfigurations.missing-adj.config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.prefix4 true
+          builtins.deepSeq missingAdjacencyEval.config.nixosConfigurations.client.config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.prefix4 true
         )).success;
       expected = true;
     };
     test_duplicateLoopbackIpv4Rejected = {
-      expr = failedAssertion duplicateIpv4Eval.config.nixosConfigurations.dup4-a.config "loopback IPv4 198.18.0.40 on dup4-a collides with dup4-b; run: clan vars generate dup4-a --generator routed-fabric-fleet-node --regenerate";
+      expr = failedAssertion duplicateIpv4Eval.config.nixosConfigurations.dup4-a.config "loopback IPv4 198.18.0.40 collides on owners dup4-a, dup4-b; regenerate the newer machine: clan vars generate <newer-machine> --generator routed-fabric-fleet-node --regenerate";
       expected = true;
     };
     test_duplicateLoopbackIpv6Rejected = {
-      expr = failedAssertion duplicateIpv6Eval.config.nixosConfigurations.dup6-a.config "loopback IPv6 fd64:6464:6464::50 on dup6-a collides with dup6-b; run: clan vars generate dup6-a --generator routed-fabric-fleet-node --regenerate";
+      expr = failedAssertion duplicateIpv6Eval.config.nixosConfigurations.dup6-a.config "loopback IPv6 fd64:6464:6464::50 collides on owners dup6-a, dup6-b; regenerate the newer machine: clan vars generate <newer-machine> --generator routed-fabric-fleet-node --regenerate";
       expected = true;
     };
     test_duplicateAsnRejected = {
-      expr = failedAssertion duplicateAsnEval.config.nixosConfigurations.asn-a.config "ASN 4200000060 on asn-a collides with asn-b; run: clan vars generate asn-a --generator routed-fabric-fleet-node --regenerate";
+      expr = failedAssertion duplicateAsnEval.config.nixosConfigurations.asn-a.config "ASN 4200000060 collides on owners asn-a, asn-b; regenerate the newer machine: clan vars generate <newer-machine> --generator routed-fabric-fleet-asn --regenerate";
       expected = true;
     };
     test_duplicatePortOnOneHostRejected = {
-      expr = failedAssertion duplicatePortEval.config.nixosConfigurations.port-spine.config "port 20700 collides with fleet:port-b:port-spine; run: clan vars generate port-spine --generator routed-fabric-fleet-adj-port-a-port-spine --regenerate";
+      expr = failedAssertion duplicatePortEval.config.nixosConfigurations.port-spine.config "port 20700 collides on owners fleet:port-a:port-spine and fleet:port-b:port-spine; regenerate the newer machine: clan vars generate <newer-machine>";
       expected = true;
     };
     test_duplicateTransferOnOneHostRejected = {
       expr = let
         config = duplicateTransferEval.config.nixosConfigurations.transfer-spine.config;
       in {
-        ipv4 = failedAssertion config "transfer4 198.19.8.0/31 on fleet:transfer-a:transfer-spine collides with fleet:transfer-b:transfer-spine; run: clan vars generate transfer-spine --generator routed-fabric-fleet-adj-transfer-a-transfer-spine --regenerate";
-        ipv6 = failedAssertion config "transfer6 fd64:6464:6464:1:800::/127 on fleet:transfer-a:transfer-spine collides with fleet:transfer-b:transfer-spine; run: clan vars generate transfer-spine --generator routed-fabric-fleet-adj-transfer-a-transfer-spine --regenerate";
+        ipv4 = failedAssertion config "transfer4 198.19.8.0/31 collides on owners fleet:transfer-a:transfer-spine and fleet:transfer-b:transfer-spine; regenerate the newer machine: clan vars generate <newer-machine>";
+        ipv6 = failedAssertion config "transfer6 fd64:6464:6464:1:800::/127 collides on owners fleet:transfer-a:transfer-spine and fleet:transfer-b:transfer-spine; regenerate the newer machine: clan vars generate <newer-machine>";
       };
       expected = {
         ipv4 = true;
@@ -1522,7 +1591,35 @@ in {
       expected = true;
     };
     test_invalidPortRangeRejected = {
-      expr = failedAssertion invalidPortRangeEval.config.nixosConfigurations.spine-a.config "portRange.start must not exceed portRange.end; set an inclusive range such as 10000–32767 on every member";
+      expr = failedAssertion invalidPortRangeEval.config.nixosConfigurations.spine-a.config "portRange.start must not exceed portRange.end; set an inclusive range such as 10000–29999 on every member";
+      expected = true;
+    };
+    test_allocatedValueOutsidePoolRejected = {
+      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.overlap-a.config "overlap-a/ipv4=198.19.0.10 outside loopback4Pool=198.18.64.0/18";
+      expected = true;
+    };
+    test_recordedPoolDriftRejected = {
+      expr = failedAssertion membershipDriftEval.config.nixosConfigurations.overlap-a.config "recorded pools differ from settings for loopback4Pool; run: clan vars generate overlap-a --generator routed-fabric-overlap-prefixes --regenerate (ULA and ASN are unchanged)";
+      expected = true;
+    };
+    test_nonCanonicalPoolRejected = {
+      expr = failedAssertion canonicalPoolEval.config.nixosConfigurations.overlap-a.config "must be canonical IPv4 CIDRs with host bits clear";
+      expected = true;
+    };
+    test_reservedPortRangeRejected = {
+      expr = failedAssertion reservedPortRangeEval.config.nixosConfigurations.spine-a.config "portRange 10000-29999 overlaps reserved or Kubernetes NodePort ranges";
+      expected = true;
+    };
+    test_kubernetesNodePortRangeRejected = {
+      expr = failedAssertion nodePortRangeEval.config.nixosConfigurations.spine-b.config "portRange 31000-32000 overlaps reserved or Kubernetes NodePort ranges";
+      expected = true;
+    };
+    test_crossServicePoolOverlapRejected = {
+      expr = failedAssertion crossServicePoolEval.config.nixosConfigurations.client.config "allocation pools overlap across instances/services on one host";
+      expected = true;
+    };
+    test_explicitAddressInForeignPoolRejected = {
+      expr = failedAssertion explicitForeignPoolEval.config.nixosConfigurations.client.config "ipv4=198.18.128.1/32 overlaps wireguard-mesh/mesh/ipv4Pool=198.18.128.0/17";
       expected = true;
     };
     test_explicitOverridesBeatVars = {

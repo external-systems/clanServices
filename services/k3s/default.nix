@@ -804,6 +804,13 @@
                 resolvedCidrs.serviceCIDRv6
               ];
             })
+            # D9: a fabric-allocated node ASN equal to the cluster's Cilium
+            # ASN makes the Cilium→FRR `::1` session accidental iBGP.
+            ++ (kube.assertions.mkBgpAsnAssertions {
+              inherit instanceName hostAsns;
+              inherit (dp) bgpActive;
+              ciliumAsn = dp.asns.cilium;
+            })
             ++ [
               {
                 assertion = settings.coredns.helmValues == {};

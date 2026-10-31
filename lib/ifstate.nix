@@ -4,6 +4,7 @@
   ...
 }: let
   ip = import ./ip.nix {inherit lib;};
+  cidr = import ./kube-cluster/cidr.nix {inherit lib;};
   addressValue = address:
     ip.addressFromCIDR (
       if builtins.isString address
@@ -35,6 +36,20 @@
     then null
     else ip.normalizeAddress (ip.targetHostAddress targetHost);
   targetHostOnOverlay = targetAddress != null && lib.elem targetAddress overlayAddresses;
+  poolClaims = lib.concatMap (
+    owner: map (pool: pool // {inherit owner;}) config.clan.networkFacts.allocationPools.${owner}
+  ) (builtins.attrNames config.clan.networkFacts.allocationPools);
+  crossPoolOverlaps =
+    lib.concatMap (
+      first:
+        lib.concatMap (
+          second:
+            lib.optional (first.owner != second.owner && cidr.overlap first.cidr second.cidr)
+            "${first.owner}/${first.name}=${first.cidr} overlaps ${second.owner}/${second.name}=${second.cidr}"
+        )
+        poolClaims
+    )
+    poolClaims;
 in {
   key = "clanServices:lib/ifstate.nix";
 
@@ -66,6 +81,10 @@ in {
       {
         assertion = !targetHostOnOverlay;
         message = "clanServices: clan.core.networking.targetHost '${toString targetHost}' resolves to a fabric, transfer, or tunnel address; keep the deploy target on the underlay";
+      }
+      {
+        assertion = crossPoolOverlaps == [];
+        message = "clanServices: allocation pools overlap across instances/services on one host: ${lib.concatStringsSep "; " crossPoolOverlaps}; set disjoint pool settings";
       }
     ];
 
