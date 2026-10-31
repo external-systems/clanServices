@@ -148,7 +148,7 @@ The service declares `peer` as an input and publishes:
 - `node_transport` (schemaVersion 2, SPEC.md D58) per member — the
   tunnel/VXLAN + `nodePort` profile, exporting
   that ONE shared interface: stable
-  dual-stack node addresses (`ipv4`, `ipv6`), `instance`, `endpoint`
+  dual-stack node addresses (`ipv4`, `ipv6`), `service`, `instance`, `endpoint`
   (nullable), `port`, the datapath interface keyed by its Linux
   `interface` name with its `mtu`, `directRoutingDevice` naming that
   interface, `datapath.mode = "tunnel"` with sibling

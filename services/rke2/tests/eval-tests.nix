@@ -293,6 +293,7 @@
           node_transport = {
             schemaVersion = 2;
             inherit (own) ipv4 ipv6 asn;
+            service = "routed-fabric";
             instance = instanceName;
             endpoint = null;
             port = 59999;

@@ -451,6 +451,7 @@ in {
         schemaVersion = 2;
         ipv4 = "10.42.0.1";
         ipv6 = "fd10:42::1";
+        service = "wireguard-mesh";
         instance = "mesh";
         asn = null;
         endpoint = "alpha.example.net:51820";

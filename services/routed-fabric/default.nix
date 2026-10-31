@@ -929,6 +929,7 @@
         schemaVersion = 2;
         inherit (ownAddress) ipv4 ipv6;
         inherit (ownSettings) port;
+        service = "routed-fabric";
         instance = instanceName;
         asn = ownAsn;
         interfaces = transportInterfaces;

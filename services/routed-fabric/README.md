@@ -97,7 +97,7 @@ command.
 
 Per machine: `peer.hosts` (stable dual-stack fabric addresses),
 `node_transport` (schemaVersion 2, D58 — native/local-router with
-`internalLoadBalancer` + `nodePort`; datapath interfaces keyed by actual
+`service`/`instance` identity, `internalLoadBalancer` + `nodePort`; datapath interfaces keyed by actual
 Linux interface name, each with its MTU; exactly one
 `directRoutingDevice`), and `routed_fabric` (schemaVersion 2, D59 —
 per-node ASN, stable addresses, leaf/spine topology, access, border

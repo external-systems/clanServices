@@ -17,6 +17,11 @@ in {
       default = null;
       description = "Stable dual-stack node IPv6 address on the transport.";
     };
+    service = lib.mkOption {
+      type = t.nullOr t.str;
+      default = null;
+      description = "Transport service name used with instance for targeted allocation remedies.";
+    };
     instance = lib.mkOption {
       type = t.nullOr t.str;
       default = null;

@@ -244,7 +244,7 @@ Round 17 replaces service-specific transport facts with ONE generic shared
 neutral export — **`node_transport`, schemaVersion 2** — consumed by both
 distro services:
 
-- stable dual-stack node addresses, instance, and endpoint;
+- stable dual-stack node addresses, service and instance identity, and endpoint;
 - every datapath interface **keyed by its Linux interface name**, with MTU;
 - exactly one **`directRoutingDevice`** naming an exported interface;
 - **`datapath.mode`** (`native`|`tunnel`) with sibling

@@ -1169,7 +1169,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   names. The schema is shared, neutral, and declared OUTSIDE
   `lib/kube-cluster` so third-party overlays can implement it. Per
   instance and endpoint it pins: stable dual-stack node addresses; the
-  instance identity; every datapath interface keyed by its Linux
+  service and instance identity used for targeted allocation remedies;
+  every datapath interface keyed by its Linux
   interface name, each with its MTU; exactly one `directRoutingDevice`
   naming one of the exported interfaces; `datapath.mode = native |
   tunnel` with sibling `datapath.tunnelProtocol` (vxlan for the only
@@ -1439,9 +1440,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   null or exactly equal to the transport's allocated `asn`. It cannot renumber
   FRR, whose `router bgp` always uses the routed-fabric allocation. A differing
   pin is an eval error naming the machine, both ASNs, and the remedies (remove
-  the pin or regenerate `routed-fabric-<inst>-asn`). A Cilium/host ASN
-  collision remedy offers `bgp.ciliumASN` or that same targeted ASN
-  regeneration, never a `bgp.hostASN` pin.
+  the pin or regenerate the member's `<service>-<instance>-asn` generator,
+  with both name parts read from its resolved `node_transport` facts). A
+  Cilium/host ASN collision remedy offers `bgp.ciliumASN` or that same
+  facts-derived targeted ASN regeneration, never a `bgp.hostASN` pin or a
+  hard-coded transport service name.
 
   IPv4 pool validation checks the lexical shape first: exactly one slash, a
   dotted-quad address, and prefix length 0–30. Only a matching value is parsed

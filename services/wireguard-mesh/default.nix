@@ -436,6 +436,7 @@ in {
           schemaVersion = 2;
           inherit (ownAddr) ipv4 ipv6;
           inherit (settings) port;
+          service = "wireguard-mesh";
           instance = instanceName;
           interfaces = {
             ${interface} = {

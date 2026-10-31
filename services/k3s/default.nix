@@ -808,19 +808,12 @@
             # ASN makes the Cilium→FRR `::1` session accidental iBGP.
             ++ (kube.assertions.mkBgpAsnAssertions {
               inherit instanceName hostAsns;
-              transportInstance =
-                if fabricEnabled
-                then settings.network.fabric.instance
-                else "manual";
               inherit (dp) bgpActive;
               ciliumAsn = dp.asns.cilium;
+              transportFacts = allTransportFacts;
             })
             ++ (kube.assertions.mkHostAsnAssertions {
               inherit instanceName roleMembers;
-              transportInstance =
-                if fabricEnabled
-                then settings.network.fabric.instance
-                else "manual";
               transportFacts = allTransportFacts;
             })
             ++ [

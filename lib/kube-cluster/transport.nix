@@ -93,6 +93,7 @@ in rec {
         interfaces = sorted ifaceNames;
         endpoint = transport.endpoint or null;
         port = transport.port or null;
+        service = transport.service or null;
         instance = transport.instance or null;
         asn = transport.asn or null;
         inherit (transport) ipv4 ipv6;
