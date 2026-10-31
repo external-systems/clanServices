@@ -1111,19 +1111,20 @@ in {
 
   # D9 (round 22 PR review): a routed-fabric node ASN equal to the cluster's
   # Cilium ASN would make the Cilium→FRR `::1` session accidental iBGP. The
-  # default fake fleet's allocations are disjoint, so the assertion is
-  # silent.
+  # default fake fleet's allocations are disjoint and no host pin is set.
   test_bgpAsnCollisionSilentByDefault = {
-    expr = failedAssertion alphaFake "accidental iBGP";
-    expected = false;
+    expr = {
+      collision = failedAssertion alphaFake "accidental iBGP";
+      hostPin = failedAssertion alphaFake "bgp.hostASN must match";
+    };
+    expected = {
+      collision = false;
+      hostPin = false;
+    };
   };
 
-  # Pinning bgp.ciliumASN onto a fabric node's ASN must fail, naming the
-  # cluster, the ASN, the colliding machine, and both consumer-side fixes
-  # (bgp.ciliumASN / the machine's bgp.hostASN). The pin targets beta's
-  # fabric ASN: alpha's export is the fleet check's per-cluster hostAsn
-  # view, so colliding on alpha would trip the fleet-wide uniqueness check
-  # before this cluster-level assertion.
+  # A Cilium/host collision offers only remedies that change one side of the
+  # real FRR session: a different Cilium ASN or a regenerated fabric ASN.
   test_bgpAsnCollisionCiliumPinRejected = {
     expr = let
       bad = mkEvaled (
@@ -1138,7 +1139,7 @@ in {
       namesAsn = failedAssertion badAlpha "4258224173";
       namesMachine = failedAssertion badAlpha "machine(s) beta";
       namesCiliumPinFix = failedAssertion badAlpha "bgp.ciliumASN";
-      namesHostPinFix = failedAssertion badAlpha "beta's bgp.hostASN";
+      namesRegenerateFix = failedAssertion badAlpha "clan vars generate beta --generator routed-fabric-fabric-asn --regenerate";
     };
     expected = {
       fired = true;
@@ -1146,17 +1147,13 @@ in {
       namesAsn = true;
       namesMachine = true;
       namesCiliumPinFix = true;
-      namesHostPinFix = true;
+      namesRegenerateFix = true;
     };
   };
 
-  # The same trap via the host-side pin: pinning beta's bgp.hostASN onto
-  # the cluster's (hashed) Cilium ASN must fail the same way. alpha is
-  # pinned to its own fabric ASN because cluster-level parity requires the
-  # bgp settings to be uniform across machines (a per-machine pin on beta
-  # alone would trip the parity assertion first); the needles below are
-  # unique to the ASN-collision message.
-  test_bgpAsnCollisionHostPinRejected = {
+  # FRR ignores a hostASN override, so a pin that differs from the allocated
+  # transport ASN is rejected instead of silently changing Cilium's peer.
+  test_bgpHostAsnPinMismatchRejected = {
     expr = let
       bad = mkEvaled (
         lib.recursiveUpdate fakeInventory {
@@ -1168,37 +1165,43 @@ in {
       );
       badAlpha = bad.config.nixosConfigurations.alpha.config;
     in {
-      fired = failedAssertion badAlpha "accidental iBGP";
-      namesAsn = failedAssertion badAlpha "4255026608";
-      namesMachine = failedAssertion badAlpha "machine(s) beta";
-      namesHostPinFix = failedAssertion badAlpha "beta's bgp.hostASN";
+      fired = failedAssertion badAlpha "bgp.hostASN must match the local-router transport ASN";
+      namesMachine = failedAssertion badAlpha "machine beta";
+      namesPin = failedAssertion badAlpha "pins 4255026608";
+      namesAllocated = failedAssertion badAlpha "transport allocates 4258224173";
+      namesRemoveFix = failedAssertion badAlpha "remove the bgp.hostASN pin";
+      namesRegenerateFix = failedAssertion badAlpha "clan vars generate beta --generator routed-fabric-fabric-asn --regenerate";
     };
     expected = {
       fired = true;
-      namesAsn = true;
       namesMachine = true;
-      namesHostPinFix = true;
+      namesPin = true;
+      namesAllocated = true;
+      namesRemoveFix = true;
+      namesRegenerateFix = true;
     };
   };
 
-  # The documented fixes work: moving the machines' bgp.hostASN pins off
-  # the pinned Cilium ASN clears the assertion. The uniform pin value
-  # mirrors the cluster-level parity rule (identical bgp settings on every
-  # machine).
-  test_bgpAsnCollisionEscapableViaHostPin = {
+  # A pin equal to the transport allocation is a valid consistency check.
+  test_bgpHostAsnPinEqualAccepted = {
     expr = let
       fixed = mkEvaled (
         lib.recursiveUpdate fakeInventory {
-          instances.k3s-a.roles.server = {
-            settings.bgp.ciliumASN = 4258224173;
-            machines.alpha.settings.bgp.hostASN = 4258224000;
-            machines.beta.settings.bgp.hostASN = 4258224000;
+          instances.k3s-a.roles.server.machines = {
+            alpha.settings.bgp.hostASN = 4258224172;
+            beta.settings.bgp.hostASN = 4258224173;
           };
         }
       );
-    in
-      failedAssertion fixed.config.nixosConfigurations.alpha.config "accidental iBGP";
-    expected = false;
+      fixedAlpha = fixed.config.nixosConfigurations.alpha.config;
+    in {
+      hostPin = failedAssertion fixedAlpha "bgp.hostASN must match";
+      collision = failedAssertion fixedAlpha "accidental iBGP";
+    };
+    expected = {
+      hostPin = false;
+      collision = false;
+    };
   };
 
   # D19 revised: the Cilium side dials the node-local FRR at `::1` in ONE

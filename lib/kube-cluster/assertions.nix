@@ -365,6 +365,7 @@ in {
   # filtered out of hostAsns upstream.
   mkBgpAsnAssertions = {
     instanceName,
+    transportInstance,
     ciliumAsn,
     hostAsns,
     bgpActive,
@@ -376,9 +377,44 @@ in {
       assertion = !bgpActive || colliding == {};
       message = "kube-cluster/${instanceName}: routed-fabric node ASN ${toString ciliumAsn} allocated to machine(s) ${
         lib.concatStringsSep ", " collidingMachines
-      } equals the cluster's Cilium BGP ASN — the Cilium→FRR session would be accidental iBGP, not eBGP (both sides draw from the RFC 6996 private range). Fix: pin bgp.ciliumASN to a different ASN, or pin ${
-        lib.concatMapStringsSep ", " (m: "${m}'s bgp.hostASN") collidingMachines
-      } to a different value";
+      } equals the cluster's Cilium BGP ASN — the Cilium→FRR session would be accidental iBGP, not eBGP (both sides draw from the RFC 6996 private range). Fix: pin bgp.ciliumASN to a different ASN, or run: ${
+        lib.concatMapStringsSep ", " (
+          m: "clan vars generate ${m} --generator routed-fabric-${transportInstance}-asn --regenerate"
+        )
+        collidingMachines
+      }";
+    }
+  ];
+
+  # FRR always uses the transport allocation. A hostASN pin therefore only
+  # checks consistency; it must never make Cilium dial a different peer ASN.
+  mkHostAsnAssertions = {
+    instanceName,
+    transportInstance,
+    roleMembers,
+    transportFacts,
+  }: let
+    drifted =
+      lib.filter (
+        m: let
+          facts = transportFacts.${m.machineName} or null;
+          pin = m.settings.bgp.hostASN;
+        in
+          facts != null && facts.routeExchange == "local-router" && pin != null && pin != facts.asn
+      )
+      roleMembers;
+  in [
+    {
+      assertion = drifted == [];
+      message = "kube-cluster/${instanceName}: bgp.hostASN must match the local-router transport ASN; ${
+        lib.concatMapStringsSep "; " (
+          m: let
+            facts = transportFacts.${m.machineName};
+            pin = m.settings.bgp.hostASN;
+          in "machine ${m.machineName} pins ${toString pin} but transport allocates ${toString facts.asn}; remove the bgp.hostASN pin, or run: clan vars generate ${m.machineName} --generator routed-fabric-${transportInstance}-asn --regenerate"
+        )
+        drifted
+      }";
     }
   ];
 }

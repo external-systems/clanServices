@@ -358,7 +358,7 @@ in rec {
 
     kube-cluster-unique-bgp-asns = {
       assertion = duplicateAsns == {};
-      message = "kube-cluster fleet check: BGP ASN collision (D9 — pin bgp.ciliumASN/bgp.hostASN on all but one claimant): ${
+      message = "kube-cluster fleet check: BGP ASN collision (D9 — pin bgp.ciliumASN on all but one cluster claimant): ${
         lib.concatStringsSep "; " (
           lib.mapAttrsToList (
             asn: xs: "ASN ${asn} claimed by ${lib.concatStringsSep ", " (lib.unique (map (x: x.who) xs))}"

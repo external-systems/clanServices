@@ -221,7 +221,7 @@ in rec {
   };
 
   assertions = {
-    inherit (assertFns) mkClusterAssertions mkPoolAssertions mkBgpAsnAssertions;
+    inherit (assertFns) mkClusterAssertions mkPoolAssertions mkBgpAsnAssertions mkHostAsnAssertions;
   };
 
   # Bootstrap-apply oneshot fragment (D40) + the ClusterMesh secrets-apply
