@@ -98,7 +98,10 @@ repairing an address collision does not reset BGP sessions.
 A `loopback4Pool` change re-rolls only unpinned IPv4 loopbacks when `node4`
 is regenerated. A `transfer4Pool` change re-rolls only `transfer4`; a
 `portRange` change re-rolls only ports. These edits never re-roll the ULA,
-IPv6 loopbacks, transfer6, ASNs, or unrelated adjacency values.
+IPv6 loopbacks, transfer6, ASNs, or unrelated adjacency values. IPv4 pools
+must have exactly one slash, a dotted-quad address, and prefix length 0–30;
+malformed shapes and non-canonical addresses produce the canonical-CIDR eval
+assertion, not a raw Nix parse error.
 
 `portRange` defaults to 10000–29999 and must be equal on every member. Custom
 ranges must avoid `clanServices.networking.reservedPorts` and, on Kubernetes

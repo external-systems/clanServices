@@ -1442,6 +1442,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   collision remedy offers `bgp.ciliumASN` or that same targeted ASN
   regeneration, never a `bgp.hostASN` pin.
 
+  IPv4 pool validation checks the lexical shape first: exactly one slash, a
+  dotted-quad address, and prefix length 0–30. Only a matching value is parsed
+  and checked for canonical network address and capacity, so malformed input
+  produces the canonical-CIDR assertion rather than an uncatchable Nix error.
+
   Eval rejects missing allocations; allocated values outside their recorded
   pool or ULA `/64`; recorded pools that differ from current settings;
   fleet-wide duplicate loopback IPv4, loopback IPv6, and ASNs within an
