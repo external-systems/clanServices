@@ -816,30 +816,34 @@
 
     adjacencies = map mkAdjacency peerNames;
     ownAsn = asnOf machine.name;
+    poolsValid = cidr.validV4Pool ownSettings.loopback4Pool && cidr.validV4Pool ownSettings.transfer4Pool;
     allocationMembershipErrors =
-      lib.concatMap (
-        name: let
-          memberSettings = allMachines.${name}.settings;
-          address = addressOf name;
-        in
-          lib.optional (
-            memberSettings.ipv4
-            == null
-            && !cidr.contains ownSettings.loopback4Pool "${address.ipv4}/32"
-          ) "${name}/ipv4=${address.ipv4} outside loopback4Pool=${ownSettings.loopback4Pool}; run: clan vars generate ${name} --generator ${node4Generator} --regenerate"
-          ++ lib.optional (
-            memberSettings.ipv6
-            == null
-            && !cidr.contains "${ulaBase}:0::/64" "${address.ipv6}/128"
-          ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${node6Generator} --regenerate"
-      )
-      memberNames
-      ++ lib.concatMap (
-        adjacency:
-          lib.optional (!cidr.contains ownSettings.transfer4Pool adjacency.prefixes.ipv4) "${adjacency.key}/transfer4=${adjacency.prefixes.ipv4} outside transfer4Pool=${ownSettings.transfer4Pool}; run: clan vars generate <newer-machine> --generator ${adjacency.transfer4Generator} --regenerate"
-          ++ lib.optional (!cidr.contains "${ulaBase}:1::/64" adjacency.prefixes.ipv6) "${adjacency.key}/transfer6=${adjacency.prefixes.ipv6} outside ${ulaBase}:1::/64; run: clan vars generate <newer-machine> --generator ${adjacency.transfer6Generator} --regenerate"
-      )
-      adjacencies;
+      if !poolsValid
+      then []
+      else
+        lib.concatMap (
+          name: let
+            memberSettings = allMachines.${name}.settings;
+            address = addressOf name;
+          in
+            lib.optional (
+              memberSettings.ipv4
+              == null
+              && !cidr.contains ownSettings.loopback4Pool "${address.ipv4}/32"
+            ) "${name}/ipv4=${address.ipv4} outside loopback4Pool=${ownSettings.loopback4Pool}; run: clan vars generate ${name} --generator ${node4Generator} --regenerate"
+            ++ lib.optional (
+              memberSettings.ipv6
+              == null
+              && !cidr.contains "${ulaBase}:0::/64" "${address.ipv6}/128"
+            ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${node6Generator} --regenerate"
+        )
+        memberNames
+        ++ lib.concatMap (
+          adjacency:
+            lib.optional (!cidr.contains ownSettings.transfer4Pool adjacency.prefixes.ipv4) "${adjacency.key}/transfer4=${adjacency.prefixes.ipv4} outside transfer4Pool=${ownSettings.transfer4Pool}; run: clan vars generate <newer-machine> --generator ${adjacency.transfer4Generator} --regenerate"
+            ++ lib.optional (!cidr.contains "${ulaBase}:1::/64" adjacency.prefixes.ipv6) "${adjacency.key}/transfer6=${adjacency.prefixes.ipv6} outside ${ulaBase}:1::/64; run: clan vars generate <newer-machine> --generator ${adjacency.transfer6Generator} --regenerate"
+        )
+        adjacencies;
     loopbackName = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" instanceName)}";
     frrConfig = frr.mkConfig {
       routerId = ownAddress.ipv4;

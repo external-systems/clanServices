@@ -385,13 +385,21 @@
     spineSettings.loopback4Pool = "198.18.64.0/18";
     leafSettings.loopback4Pool = "198.18.64.0/18";
   });
-  canonicalPoolEval = mkEvaled (pairInventory {
-    instanceName = "overlap";
-    spine = "overlap-a";
-    leaf = "overlap-b";
-    spineSettings.loopback4Pool = "198.18.0.1/17";
-    leafSettings.loopback4Pool = "198.18.0.1/17";
-  });
+  poolEvalWithLoopback = value:
+    mkEvaled (pairInventory {
+      instanceName = "overlap";
+      spine = "overlap-a";
+      leaf = "overlap-b";
+      spineSettings.loopback4Pool = value;
+      leafSettings.loopback4Pool = value;
+    });
+  canonicalPoolEval = poolEvalWithLoopback "198.18.0.1/17";
+  malformedPoolEvals = map poolEvalWithLoopback [
+    "198.18.0.0"
+    "198.18.0.0/33"
+    "not-a-cidr"
+    "198.18.0.1/17"
+  ];
   reservedPortRangeEval = mkEvaledWith (
     machineConfigs
     // {
@@ -1625,6 +1633,14 @@ in {
     };
     test_nonCanonicalPoolRejected = {
       expr = failedAssertion canonicalPoolEval.config.nixosConfigurations.overlap-a.config "must be canonical IPv4 CIDRs with host bits clear";
+      expected = true;
+    };
+    test_malformedPoolsProduceCanonicalAssertion = {
+      expr =
+        lib.all (
+          eval: failedAssertion eval.config.nixosConfigurations.overlap-a.config "must be canonical IPv4 CIDRs with host bits clear"
+        )
+        malformedPoolEvals;
       expected = true;
     };
     test_reservedPortRangeRejected = {

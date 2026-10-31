@@ -207,13 +207,14 @@ in rec {
     else v6ToString (addCarry p.start offset 7);
 
   validV4Pool = value: let
+    shape = match "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(0|[1-9]|[12][0-9]|30)$" value;
     parts = lib.splitString "/" value;
     canonical = "${addressAt value 0}/${builtins.elemAt parts 1}";
     result = builtins.tryEval (
       value == canonical && (parse value).end - (parse value).start >= 3
     );
   in
-    result.success && result.value;
+    shape != null && result.success && result.value;
 
   # Is `child` fully contained in `parent`? Different families → false.
   contains = parent: child: let

@@ -279,18 +279,23 @@ in {
         )
       );
       poolRecordDrift = prefixFile "ipv4-pool" != settings.ipv4Pool;
-      allocationMembershipErrors = lib.concatMap (
-        name: let
-          memberSettings = allMembers.${name}.settings;
-          address = resolvedAddr name;
-        in
-          lib.optional (
-            memberSettings.ipv4 == null && !cidr.contains settings.ipv4Pool "${address.ipv4}/32"
-          ) "${name}/ipv4=${address.ipv4} outside ipv4Pool=${settings.ipv4Pool}; run: clan vars generate ${name} --generator ${node4Generator} --regenerate"
-          ++ lib.optional (
-            memberSettings.ipv6 == null && !cidr.contains "${ulaBase}:0::/64" "${address.ipv6}/128"
-          ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${node6Generator} --regenerate"
-      ) (builtins.attrNames allMembers);
+      poolValid = cidr.validV4Pool settings.ipv4Pool;
+      allocationMembershipErrors =
+        if !poolValid
+        then []
+        else
+          lib.concatMap (
+            name: let
+              memberSettings = allMembers.${name}.settings;
+              address = resolvedAddr name;
+            in
+              lib.optional (
+                memberSettings.ipv4 == null && !cidr.contains settings.ipv4Pool "${address.ipv4}/32"
+              ) "${name}/ipv4=${address.ipv4} outside ipv4Pool=${settings.ipv4Pool}; run: clan vars generate ${name} --generator ${node4Generator} --regenerate"
+              ++ lib.optional (
+                memberSettings.ipv6 == null && !cidr.contains "${ulaBase}:0::/64" "${address.ipv6}/128"
+              ) "${name}/ipv6=${address.ipv6} outside ${ulaBase}:0::/64; run: clan vars generate ${name} --generator ${node6Generator} --regenerate"
+          ) (builtins.attrNames allMembers);
       allocationPools = [
         {
           name = "ipv4Pool";
