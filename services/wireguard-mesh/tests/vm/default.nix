@@ -130,6 +130,7 @@ in {
         for machine in machines:
             code, _ = machine.execute("systemctl list-unit-files | grep -Eq '^(k3s|rke2)'")
             assert code != 0, f"{machine.name} unexpectedly contains a Kubernetes service"
+        print("WIREGUARD_MESH_OK")
     except Exception:
         for machine in machines:
             fail_dump(machine)

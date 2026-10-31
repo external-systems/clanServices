@@ -18,7 +18,7 @@
     then "k3s.service"
     else "rke2-server.service";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
-  marker = "${distro}-clustermesh-external-${profile}-ok";
+  marker = "${lib.toUpper distro}_CLUSTERMESH_EXTERNAL${lib.optionalString native "_NATIVE"}_OK";
   transportModule =
     if native
     then "routed-fabric"

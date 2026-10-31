@@ -337,6 +337,7 @@ in {
         beta.succeed("diff -u /tmp/rib.before /tmp/rib.after")
         beta.succeed("diff -u /tmp/fib.before /tmp/fib.after")
         print("ROUTED_FABRIC_SPINE_HA_OK")
+        print("ROUTED_FABRIC_OK")
     except Exception:
         for machine in machines:
             try:

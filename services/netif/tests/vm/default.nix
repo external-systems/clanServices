@@ -121,6 +121,7 @@ _: {
         edge_1.succeed("ip addr show eth1 | grep -q '10.99.0.2/24'")
         edge_1.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
         print("NETIF_IFSTATE_LIVE_OK")
+        print("NETIF_OK")
     except Exception:
         for command in [
             "ip -br addr >&2",

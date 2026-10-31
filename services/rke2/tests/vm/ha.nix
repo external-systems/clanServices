@@ -287,6 +287,7 @@
         alpha.wait_until_succeeds(
             "kubectl wait --for=condition=Ready pod/ha-post-crash --timeout=120s", timeout=180
         )
+        print("RKE2_HA_OK")
     except Exception:
         for m in machines:
             try:

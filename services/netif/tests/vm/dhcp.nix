@@ -93,6 +93,7 @@ in {
         client.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
         client.fail("systemctl is-active systemd-networkd.service")
         print("NETIF_DHCP_RA_IFSTATE_OK")
+        print("NETIF_DHCP_OK")
     except Exception:
         for machine in [client, server]:
             for command in [

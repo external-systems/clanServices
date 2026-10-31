@@ -353,6 +353,7 @@
         alpha.succeed("kubectl scale deployment/clustermesh-apiserver -n kube-system --replicas=2")
         gamma.wait_until_succeeds("ip -j route show 172.16.1.79 | jq -e '.[0].nexthops | length == 2'", timeout=300)
         print("K3S_CLUSTERMESH_NATIVE_OK")
+        print("K3S_CLUSTERMESH_OK")
     except Exception:
         for m in [alpha, beta, gamma, delta]:
             try:
