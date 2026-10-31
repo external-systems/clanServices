@@ -1387,52 +1387,69 @@ unless noted) — revoked entries keep one-line reasons for history.
   missing value throws the exact `clan vars generate <machine> --generator
   <generator>` remedy rather than flowing into an address as null.
 
-  `routed-fabric-<inst>-prefixes` is shared and writes `ula48`,
-  `loopback4-pool`, and `transfer4-pool`. The ULA is a random RFC 4193
-  `fdXX:XXXX:XXXX::/48`; the pool defaults are `198.18.0.0/17` and
-  `198.19.0.0/16`. Member settings `loopback4Pool` and `transfer4Pool` feed
-  the generator through string-only `validation` and must be equal on every
-  member. `routed-fabric-<inst>-node` is per machine, depends on the prefix
-  generator, and writes `ipv4` (a random non-network/non-broadcast host in
-  the loopback pool), `ipv6` (a random host in `<ula48>:0::/64`), and `asn`
-  (random in 4200000000..4294967294).
+  `routed-fabric-<inst>-ula` is shared, has no validation, and is the only
+  generator that writes the random RFC 4193 `fdXX:XXXX:XXXX::/48` `ula48`.
+  `routed-fabric-<inst>-prefixes` is a separate shared generator writing only
+  `loopback4-pool` and `transfer4-pool`; pool defaults are `198.18.0.0/17`
+  and `198.19.0.0/16`. Member settings `loopback4Pool` and `transfer4Pool`
+  feed that generator through string-only `validation`, must be equal on
+  every member, and must equal the recorded pool vars. Changing an IPv4 pool
+  therefore cannot re-roll the ULA. `routed-fabric-<inst>-node` is per
+  machine, depends on both generators, and writes `ipv4` (a random
+  non-network/non-broadcast host in the loopback pool) and `ipv6` (a random
+  host in `<ula48>:0::/64`). `routed-fabric-<inst>-asn` is an independent
+  per-machine generator writing `asn` randomly in
+  4200000000..4294967294, so repairing an address collision cannot reset BGP
+  sessions or ASN-derived source-return defaults.
 
   Each sorted adjacency `<a>`, `<b>` declares a byte-identical shared
-  `routed-fabric-<inst>-adj-<a>-<b>` generator on both endpoints. It depends
-  on the prefix generator and writes `port`, a `/31` `transfer4` from the
-  transfer pool, and a `/127` `transfer6` from `<ula48>:1::/64`. The
-  `portRange` setting defaults to 10000–32767, below the kernel ephemeral
-  range, and is member-uniform. No machine name or machine-local value may
-  differ in a shared generator's script, files, dependencies, or validation.
+  `routed-fabric-<inst>-adj-<hash>` generator on both endpoints, where the
+  short hash names the canonical adjacency key and cannot alias hyphenated
+  machine-name pairs. It depends on the ULA and pool generators and writes
+  `port`, a `/31` `transfer4` from the transfer pool, and a `/127`
+  `transfer6` from `<ula48>:1::/64`. The `portRange` setting defaults to
+  10000–29999, below both the Kubernetes NodePort range and the kernel
+  ephemeral range, and is member-uniform. Custom ranges must be disjoint
+  from `clanServices.networking.reservedPorts` and, on Kubernetes members,
+  30000–32767. No machine name or machine-local value may differ in a shared
+  generator's script, files, dependencies, or validation.
 
-  `wireguard-mesh-<inst>-prefixes` is shared and writes `ula48` and
-  `ipv4-pool`; its pool defaults to `198.18.128.0/17`, disjoint from the
-  routed-fabric loopback default. Its per-machine
-  `wireguard-mesh-<inst>-node` depends on those prefixes and writes `ipv4`
+  `wireguard-mesh-<inst>-ula` and `wireguard-mesh-<inst>-prefixes` have the
+  same independent lifecycle; the latter writes `ipv4-pool`, defaulting to
+  `198.18.128.0/17`, disjoint from the routed-fabric loopback default. The
+  per-machine `wireguard-mesh-<inst>-node` depends on both and writes `ipv4`
   and `ipv6`. Explicit `ipv4`, `ipv6`, and `adjacencies.<remote>.port`
   settings override vars and remain the collision escape. Source-return
   table and rule-priority defaults use the allocated remote ASN with their
-  existing formulas and retain all D63 collision assertions. The generic
-  `node_transport` export carries that allocated host ASN for local-router
-  consumers, so k3s/RKE2 never recompute it.
+  existing formulas and retain all D63 collision assertions; their collision
+  remedies name the existing per-adjacency pins rather than ASN
+  regeneration. The generic `node_transport` export carries that allocated
+  host ASN for local-router consumers, so k3s/RKE2 never recompute it.
 
-  Eval rejects missing allocations; fleet-wide duplicate loopback IPv4,
-  loopback IPv6, and ASNs within an instance; per-host adjacency-port
-  collisions with every other rendered WireGuard port; per-host duplicate
-  transfer prefixes; unequal member pools; and allocation-pool overlap with
-  each other, the ULA-derived `/64`s, member netif static underlay prefixes,
-  and member kube-cluster pod/service/fabric-pool CIDRs. Duplicate transfer
-  prefixes on unrelated hosts are valid. Duplicate messages name the other
-  owner and the targeted `clan vars generate <machine> --generator
-  <generator> --regenerate` command; an adjacency command may name either
-  endpoint. Orphaned `vars/shared/routed-fabric-*-adj-*` directories require
-  an operator cleanup check because eval cannot enumerate the vars tree.
+  Eval rejects missing allocations; allocated values outside their recorded
+  pool or ULA `/64`; recorded pools that differ from current settings;
+  fleet-wide duplicate loopback IPv4, loopback IPv6, and ASNs within an
+  instance; per-host adjacency-port collisions with every other rendered
+  WireGuard port; per-host duplicate transfer prefixes; unequal member
+  pools; and allocation-pool overlap with each other, the ULA-derived `/64`s,
+  member netif static underlay prefixes, and member kube-cluster
+  pod/service/fabric-pool CIDRs. Network facts publish allocation pools and
+  adjacency generator names so same-host checks also reject overlaps across
+  instances and services and explicit addresses in foreign pools. Duplicate
+  transfer prefixes on unrelated hosts are valid. k3s/RKE2 reject a
+  local-router host ASN equal to their Cilium ASN. Duplicate messages name
+  both owners and direct regeneration at the newer machine; an adjacency
+  command may name either endpoint. Regenerating a ULA is an explicit
+  instance-wide IPv6 loopback/transfer renumber, never the remedy for an
+  IPv4 pool edit. Orphaned `vars/shared/routed-fabric-*-adj-*` directories
+  require an operator cleanup check because eval cannot enumerate the vars
+  tree; the exported generator names provide the expected set.
 
   Random collisions are resolved once at generation time and then remain
   stable. With `k` random picks among `N` slots, the birthday approximation
   is `P(any collision) ≈ 1 − exp(−k(k−1)/2N)`: 102 loopbacks in a `/17` have
   about a 15% collision probability; a spine with 100 adjacencies has about
-  20% for ports in 22768 slots and 14% for transfer `/31`s in 32768 slots.
+  22% for ports in 20000 slots and 14% for transfer `/31`s in 32768 slots.
   A generator cannot enforce cross-machine uniqueness because it sees only
   declared dependencies; a single whole-instance allocator is forbidden
   because adding a member would renumber everyone. Renaming a machine creates
@@ -1440,9 +1457,10 @@ unless noted) — revoked entries keep one-line reasons for history.
 
   Hash-derived by design, and therefore outside D64: `adjacencyName`,
   `rflo<hash>`, FRR symbol names, per-adjacency IPv6 link-local addresses,
-  the kube-cluster Cilium cluster id, Cilium/local-router host ASNs, and
-  pod/service CIDRs. These are names or cluster-level values with separate
-  pins and fleet checks, not per-machine fabric/mesh allocations.
+  the kube-cluster Cilium cluster id, Cilium ASNs, fallback local-router host
+  ASNs, and pod/service CIDRs. Fabric-member local-router ASNs are allocated
+  vars, not hashes. These remaining names and cluster-level values have
+  separate pins and fleet checks.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -2126,11 +2144,12 @@ never `checks`); artifact source/hash/render gates (incl.
 committed-manifest inflation proofs and publish-freshness checks,
 D26/D40). Standard internal HTTP test workload: **go-httpbin** (pinned,
 airgap-carried as a test-fixture artifact). Rules: hermetic/offline;
-committed-var or fixture-pinned eval-deterministic addresses; dual-stack
-asserted in every boot test; round-trips + failure behavior (BGP withdrawal
-keeps VIP via healthy nodes); negative assertions; operational
-postconditions; fail fast. Minimal airgapped artifacts for hermetic VM tests
-is a hard requirement.
+committed-var or fixture-pinned eval-deterministic addresses; VM allocations
+are freshly generated, printed for diagnosis, and asserted through network
+facts in the routed-fabric and wireguard-mesh suites; dual-stack asserted in
+every boot test; round-trips + failure behavior (BGP withdrawal keeps VIP via
+healthy nodes); negative assertions; operational postconditions; fail fast.
+Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
 
 Eval tests commit readable public allocation fixtures under
 `services/<svc>/tests/fixtures/vars/{per-machine,shared}` and never recompute

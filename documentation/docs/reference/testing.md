@@ -23,9 +23,10 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   log-creation errors stop the run. `.baton-pass/` is gitignored and never
   committed.
 - Artifact source/hash/render and publish-freshness gates.
-- Offline execution, committed-var or fixture-pinned deterministic addresses,
-  dual-stack in every boot test, round trips and failure behavior, negative
-  assertions, operational postconditions, and fail-fast diagnostics.
+- Offline execution, dual-stack in every boot test, round trips and failure
+  behavior, negative assertions, operational postconditions, and fail-fast
+  diagnostics. Eval fixtures are deterministic; VM allocations are generated
+  fresh and printed at suite startup for diagnosis.
 
 go-httpbin is the standard airgapped HTTP workload. Minimal local
 artifacts are mandatory.
@@ -49,9 +50,12 @@ result into a temporary directory. `clan.varsDirectory` and each node's
 `getPublicValue` reads the newly generated values. The merge removes the
 source suite's `vars/` tree and replaces it with generated vars. Consequently
 `nix run .#vm-test -- <suite>` is sufficient for the suites in this
-repository: do not run a separate `update-vars` command and do not commit new
-VM allocation files. Public keys already present under some VM directories
-are legacy fixtures, not the values used by this harness.
+repository: do not run a separate `update-vars` command and do not commit VM
+allocation files or obsolete public-key fixtures. Each run draws fresh values;
+routed-fabric and wireguard-mesh print their allocated addresses at startup
+and assert those exact values with `ROUTED_FABRIC_ALLOCATED_OK` and
+`WIREGUARD_MESH_ALLOCATED_OK` markers. Other suites retain explicit address
+pins where they exercise override behavior.
 
 ## Current suites
 

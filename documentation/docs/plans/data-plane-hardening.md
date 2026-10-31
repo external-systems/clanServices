@@ -22,7 +22,7 @@ Reviewed at `clanServices` `9e704ea` and `pkgs` `9d3976c`.
 | Materialized `inventory.<env>.nix` | build artifact of a run, never committed |
 | Address, ASN and port derivation | allocate-once clan vars instead of name hashing |
 | Default ranges | routed-fabric loopbacks `198.18.0.0/17`, transfer /31s `198.19.0.0/16`, wireguard-mesh `198.18.128.0/17`; one random ULA /48 per service instance; member-uniform overrides; disjointness from the declared underlay and cluster CIDRs is asserted |
-| Adjacency ports | random allocation from the member-uniform `portRange`, default `10000–32767`, below the kernel ephemeral range |
+| Adjacency ports | random allocation from the member-uniform `portRange`, default `10000–29999`, below Kubernetes NodePorts and the kernel ephemeral range |
 | Route behavior | stability over failover speed (clause C1) |
 | NAT egress | a single NAT gateway is supported from day one; HA NAT is planned but lives outside clanServices |
 | Floating IPs | supported from day one (Hetzner); clanServices declares and coexists with them, a supporting NixOS module or Kubernetes operator moves them |
@@ -192,27 +192,35 @@ missing values throw the targeted generation command.
 
 | Generator | Scope | Files (public) | Notes |
 | --- | --- | --- | --- |
-| `routed-fabric-<inst>-prefixes` | shared | `ula48`, `loopback4-pool`, `transfer4-pool` | random RFC 4193 ULA; pools default to `198.18.0.0/17` and `198.19.0.0/16`; member settings feed string-only validation |
-| `routed-fabric-<inst>-node` | per machine | `ipv4`, `ipv6`, `asn` | depends on prefixes; random host in loopback pool or ULA `:0::/64`; ASN in 4200000000..4294967294 |
-| `routed-fabric-<inst>-adj-<a>-<b>` | shared, one per sorted adjacency | `port`, `transfer4`, `transfer6` | byte-identical on both endpoints; port from `portRange` (default 10000–32767), transfer /31 from the pool and /127 from ULA `:1::/64` |
-| `wireguard-mesh-<inst>-prefixes` | shared | `ula48`, `ipv4-pool` | pool defaults to `198.18.128.0/17`, disjoint from routed-fabric loopbacks |
-| `wireguard-mesh-<inst>-node` | per machine | `ipv4`, `ipv6` | depends on mesh prefixes |
+| `routed-fabric-<inst>-ula` | shared | `ula48` | random RFC 4193 ULA; no validation, so pool edits cannot re-roll IPv6 |
+| `routed-fabric-<inst>-prefixes` | shared | `loopback4-pool`, `transfer4-pool` | pools default to `198.18.0.0/17` and `198.19.0.0/16`; member settings feed string-only validation and must match the committed records |
+| `routed-fabric-<inst>-node` | per machine | `ipv4`, `ipv6` | depends on ULA and prefixes; random host in loopback pool or ULA `:0::/64` |
+| `routed-fabric-<inst>-asn` | per machine | `asn` | independent random ASN in 4200000000..4294967294 |
+| `routed-fabric-<inst>-adj-<hash>` | shared, one per canonical adjacency key | `port`, `transfer4`, `transfer6` | byte-identical on both endpoints; port from `portRange` (default 10000–29999), transfer /31 from the pool and /127 from ULA `:1::/64` |
+| `wireguard-mesh-<inst>-ula` | shared | `ula48` | independent of pool validation |
+| `wireguard-mesh-<inst>-prefixes` | shared | `ipv4-pool` | pool defaults to `198.18.128.0/17`, disjoint from routed-fabric loopbacks |
+| `wireguard-mesh-<inst>-node` | per machine | `ipv4`, `ipv6` | depends on mesh ULA and prefixes |
 
 Explicit `ipv4`/`ipv6` and per-adjacency `port` settings remain overrides.
 Interface names, FRR symbols, link-local addresses, Cilium cluster ids,
-Cilium/local-router ASNs, and pod/service CIDRs remain hash-derived by design.
+Cilium/fallback host ASNs, and pod/service CIDRs remain hash-derived by design.
 A generator sees only its dependencies, so uniqueness is enforced by eval
-assertions plus a targeted `--regenerate`; never one allocator per instance
-(membership changes would renumber everyone). Vars must exist before eval, and
-renaming a machine creates a new identity with new vars. Orphaned adjacency
-vars need a cleanup check.
+assertions plus a targeted `--regenerate` on the newer machine; never one
+allocator per instance (membership changes would renumber everyone). Vars must
+exist before eval, and renaming a machine creates a new identity with new vars.
+Orphaned adjacency vars need a cleanup check against exported generator names.
+Eval also checks allocated-value pool membership, settings/record drift,
+cross-instance and cross-service pools on each host, Cilium/host ASN equality,
+and reserved/NodePort range overlap. Source-return collisions use their pins.
 
 Collisions are resolved once, then committed values stay stable. For `k`
 picks among `N` slots, `P(any collision) ≈ 1 − exp(−k(k−1)/2N)`: 102
 loopbacks in a /17 collide with about 15% probability; 100 adjacencies on one
-spine have about 20% port and 14% transfer-/31 collision probabilities. Eval
-also rejects unequal pools and overlap with member underlay or cluster CIDRs.
-Duplicate transfer prefixes on unrelated hosts are valid.
+spine have about 22% port (20000 slots) and 14% transfer-/31 collision
+probabilities. Eval also rejects unequal pools and overlap with member
+underlay or cluster CIDRs. Duplicate transfer prefixes on unrelated hosts are
+valid. Regenerating a ULA deliberately renumbers every IPv6 loopback and
+transfer in that instance.
 
 ## VM test scenarios
 

@@ -81,33 +81,42 @@ native routing forwards remote pod traffic through the kernel FIB.
 
 Run `clan vars generate <machine>` after adding a machine or adjacency and
 before evaluation or deployment. Public, non-deployed vars allocate each
-machine's loopback IPv4/IPv6 and ASN, and each sorted adjacency's port and
-transfer prefixes. The shared prefix generator creates an RFC 4193 ULA /48
-and records the member-uniform `loopback4Pool` (default `198.18.0.0/17`) and
-`transfer4Pool` (default `198.19.0.0/16`). Loopback IPv6 uses the ULA's
-`:0::/64`; transfer IPv6 uses `:1::/64`. `portRange` defaults to 10000–32767
-and must also be equal on every member.
+machine's loopback IPv4/IPv6 and ASN, and each adjacency's port and transfer
+prefixes. The shared ULA generator creates an RFC 4193 ULA /48 and has no
+settings validation, so an IPv4 pool edit cannot re-roll it. A separate
+prefix generator records the member-uniform `loopback4Pool` (default
+`198.18.0.0/17`) and `transfer4Pool` (default `198.19.0.0/16`). Evaluation
+asserts that those records still equal the settings and that every allocated
+address or transfer lies inside its pool or ULA `/64`. Loopback IPv6 uses the
+ULA's `:0::/64`; transfer IPv6 uses `:1::/64`. The ASN has its own generator,
+so repairing an address collision does not reset BGP sessions.
 
-Explicit `ipv4`, `ipv6`, and `adjacencies.<remote>.port` settings override
-allocated values. Evaluation rejects missing values, fleet-wide duplicate
-loopbacks/ASNs, same-host port/transfer collisions, unequal pools, and overlap
-with member netif underlay or kube-cluster CIDRs. A duplicate message names
-the other owner and the exact targeted command:
+`portRange` defaults to 10000–29999 and must be equal on every member. Custom
+ranges must avoid `clanServices.networking.reservedPorts` and, on Kubernetes
+members, NodePorts 30000–32767. Explicit `ipv4`, `ipv6`, and
+`adjacencies.<remote>.port` settings override allocated values. Evaluation
+rejects missing values, fleet-wide duplicate loopbacks/ASNs, same-host
+port/transfer collisions, unequal pools, and overlap with member netif
+underlay, kube-cluster CIDRs, or another instance/service pool on the host.
+A duplicate message names both owners and directs regeneration at the newer
+machine:
 
 ```console
-clan vars generate <machine> --generator <generator> --regenerate
+clan vars generate <newer-machine> --generator <generator> --regenerate
 ```
 
 For a shared adjacency generator, either endpoint can run that command.
 Collisions are possible at initial random allocation; regeneration fixes them
-once and the committed values then stay stable. Renaming a machine creates a
-new clan identity with new allocations; no migration shim preserves the old
-identity.
+once and the committed values then stay stable. Regenerating the ULA is an
+instance-wide IPv6 loopback and transfer renumber, not an IPv4 pool remedy.
+Renaming a machine creates a new clan identity with new allocations; no
+migration shim preserves the old identity.
 
-Remove orphaned shared adjacency vars after confirming that their sorted pair
-is no longer present in the inventory. This command lists candidate orphan
-names; supply the current expected generator names, one per line, in
-`expected-adjacencies` and review the `comm` output before deleting anything:
+Remove orphaned shared adjacency vars after confirming that their adjacency
+is no longer present in the inventory. Each network-facts adjacency exports
+its `generator`; collect those names from every fabric member into
+`expected-adjacencies`, one per line, then review this command's output before
+deleting anything:
 
 ```console
 comm -23 \

@@ -82,13 +82,14 @@ clan vars generate beta
 clan vars generate gamma
 ```
 
-The shared prefix generator allocates an RFC 4193 ULA /48 and records the
-member-uniform `ipv4Pool` (default `198.18.128.0/17`). Each node generator
-allocates IPv4 from that pool and IPv6 from the ULA's `:0::/64`; all are
-public, non-deployed vars read during evaluation. Explicit `ipv4`/`ipv6`
-settings override them. Duplicate messages name the other machine and the
-targeted `--regenerate` command. A machine rename is a new clan identity with
-new vars; there is no migration shim.
+Independent shared generators allocate an RFC 4193 ULA /48 and record the
+member-uniform `ipv4Pool` (default `198.18.128.0/17`), so a pool edit cannot
+re-roll the ULA. Each node generator allocates IPv4 from that pool and IPv6
+from the ULA's `:0::/64`; all are public, non-deployed vars read during
+evaluation. Explicit `ipv4`/`ipv6` settings override them. Evaluation checks
+pool/ULA membership and cross-service pool disjointness. Duplicate messages
+name both machines and direct regeneration at the newer machine. A machine
+rename is a new clan identity with new vars; there is no migration shim.
 
 The private key is deployed only to its own machine. Peer public keys are
 public vars consumed during evaluation.
