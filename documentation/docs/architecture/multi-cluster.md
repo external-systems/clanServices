@@ -51,6 +51,16 @@ export, and never a service name.
 
 Every cluster in a mesh group uses the same datapath mode, the same tunnel
 protocol, and the same `maxConnectedClusters` (D54 revised round 17).
+
+On a local-router member, routed-fabric owns FRR's `router bgp` ASN through its
+`routed-fabric-<inst>-asn` allocation. The cluster's `bgp.hostASN` setting is
+only a consistency pin: leave it null or set it exactly to the transport
+fact's `asn`. A different value changes only the ASN Cilium dials and is
+rejected at evaluation. Remove the pin or regenerate that machine's ASN
+generator to repair drift. If the allocated host ASN collides with the Cilium
+ASN, either pin `bgp.ciliumASN` to a different value or regenerate the real
+fabric instance's `-asn` generator; pinning `bgp.hostASN` is not a remedy.
+
 Native members keep non-overlapping pod CIDRs: dual-stack
 native-routing CIDRs cover every pod CIDR of every peered cluster, and FRR
 must install cross-cluster pod routes before ClusterMesh is ready. Tunnel

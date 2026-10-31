@@ -1424,7 +1424,14 @@ unless noted) — revoked entries keep one-line reasons for history.
   existing formulas and retain all D63 collision assertions; their collision
   remedies name the existing per-adjacency pins rather than ASN
   regeneration. The generic `node_transport` export carries that allocated
-  host ASN for local-router consumers, so k3s/RKE2 never recompute it.
+  host ASN for local-router consumers, so k3s/RKE2 never recompute it. On a
+  local-router member, `bgp.hostASN` is only a consistency pin: it must be
+  null or exactly equal to the transport's allocated `asn`. It cannot renumber
+  FRR, whose `router bgp` always uses the routed-fabric allocation. A differing
+  pin is an eval error naming the machine, both ASNs, and the remedies (remove
+  the pin or regenerate `routed-fabric-<inst>-asn`). A Cilium/host ASN
+  collision remedy offers `bgp.ciliumASN` or that same targeted ASN
+  regeneration, never a `bgp.hostASN` pin.
 
   Eval rejects missing allocations; allocated values outside their recorded
   pool or ULA `/64`; recorded pools that differ from current settings;
