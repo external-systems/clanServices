@@ -1393,32 +1393,41 @@ unless noted) — revoked entries keep one-line reasons for history.
   `loopback4-pool` and `transfer4-pool`; pool defaults are `198.18.0.0/17`
   and `198.19.0.0/16`. Member settings `loopback4Pool` and `transfer4Pool`
   feed that generator through string-only `validation`, must be equal on
-  every member, and must equal the recorded pool vars. Changing an IPv4 pool
-  therefore cannot re-roll the ULA. `routed-fabric-<inst>-node` is per
-  machine, depends on both generators, and writes `ipv4` (a random
-  non-network/non-broadcast host in the loopback pool) and `ipv6` (a random
-  host in `<ula48>:0::/64`). `routed-fabric-<inst>-asn` is an independent
-  per-machine generator writing `asn` randomly in
+  every member, and must equal the recorded pool vars. Each per-machine
+  `routed-fabric-<inst>-node4` depends only on `-prefixes` and writes `ipv4`
+  (a random non-network/non-broadcast host in the loopback pool);
+  `routed-fabric-<inst>-node6` depends only on `-ula` and writes `ipv6` (a
+  random host in `<ula48>:0::/64`). `routed-fabric-<inst>-asn` is an
+  independent per-machine generator writing `asn` randomly in
   4200000000..4294967294, so repairing an address collision cannot reset BGP
   sessions or ASN-derived source-return defaults.
 
-  Each sorted adjacency `<a>`, `<b>` declares a byte-identical shared
-  `routed-fabric-<inst>-adj-<hash>` generator on both endpoints, where the
-  short hash names the canonical adjacency key and cannot alias hyphenated
-  machine-name pairs. It depends on the ULA and pool generators and writes
-  `port`, a `/31` `transfer4` from the transfer pool, and a `/127`
-  `transfer6` from `<ula48>:1::/64`. The `portRange` setting defaults to
-  10000–29999, below both the Kubernetes NodePort range and the kernel
-  ephemeral range, and is member-uniform. Custom ranges must be disjoint
-  from `clanServices.networking.reservedPorts` and, on Kubernetes members,
-  30000–32767. No machine name or machine-local value may differ in a shared
-  generator's script, files, dependencies, or validation.
+  Each sorted adjacency `<a>`, `<b>` declares three byte-identical shared
+  generators on both endpoints, where the short hash names the canonical
+  adjacency key and cannot alias hyphenated machine-name pairs:
+  `routed-fabric-<inst>-adj-<hash>-port` has no dependencies, validates only
+  `portStart`/`portEnd`, and writes `port`;
+  `routed-fabric-<inst>-adj-<hash>-transfer4` depends only on `-prefixes` and
+  writes a `/31` `transfer4` from the transfer pool;
+  `routed-fabric-<inst>-adj-<hash>-transfer6` depends only on `-ula` and
+  writes a `/127` `transfer6` from `<ula48>:1::/64`. The `portRange` setting
+  defaults to 10000–29999, below both the Kubernetes NodePort range and the
+  kernel ephemeral range, and is member-uniform. Custom ranges must be
+  disjoint from `clanServices.networking.reservedPorts` and, on Kubernetes
+  members, 30000–32767. No machine name or machine-local value may differ in
+  a shared generator's script, files, dependencies, or validation.
 
   `wireguard-mesh-<inst>-ula` and `wireguard-mesh-<inst>-prefixes` have the
   same independent lifecycle; the latter writes `ipv4-pool`, defaulting to
   `198.18.128.0/17`, disjoint from the routed-fabric loopback default. The
-  per-machine `wireguard-mesh-<inst>-node` depends on both and writes `ipv4`
-  and `ipv6`. Explicit `ipv4`, `ipv6`, and `adjacencies.<remote>.port`
+  per-machine `wireguard-mesh-<inst>-node4` depends only on `-prefixes` and
+  writes `ipv4`; `wireguard-mesh-<inst>-node6` depends only on `-ula` and
+  writes `ipv6`. A `loopback4Pool` or mesh `ipv4Pool` change therefore
+  re-rolls only unpinned IPv4 loopbacks through `node4`; a `transfer4Pool`
+  change re-rolls only adjacency `transfer4` prefixes; a `portRange` change
+  re-rolls only adjacency ports. None re-rolls ULA, IPv6, ASNs, or unrelated
+  adjacency values. Drift remedies state these exact effects. Explicit
+  `ipv4`, `ipv6`, and `adjacencies.<remote>.port`
   settings override vars and remain the collision escape. Source-return
   table and rule-priority defaults use the allocated remote ASN with their
   existing formulas and retain all D63 collision assertions; their collision
@@ -1440,8 +1449,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   WireGuard port; per-host duplicate transfer prefixes; unequal member
   pools; and allocation-pool overlap with each other, the ULA-derived `/64`s,
   member netif static underlay prefixes, and member kube-cluster
-  pod/service/fabric-pool CIDRs. Network facts publish allocation pools and
-  adjacency generator names so same-host checks also reject overlaps across
+  pod/service/fabric-pool CIDRs. Network facts publish allocation pools and,
+  in each adjacency's `generator` list, all three adjacency generator names
+  (port, transfer4, transfer6) so same-host checks also reject overlaps across
   instances and services and explicit addresses in foreign pools. Duplicate
   transfer prefixes on unrelated hosts are valid. k3s/RKE2 reject a
   local-router host ASN equal to their Cilium ASN. Duplicate messages name
@@ -1658,10 +1668,10 @@ when it matches any declared fabric or tunnel address.
 transport is `wireguard-mesh`, D58). Its `leaf`/`spine` symmetric graph is
 implemented and VM-proven (D59). Every fabric machine gets stable dual-stack
 host addresses on a fabric loopback/dummy interface from its public
-`routed-fabric-<inst>-node` vars (default pool `198.18.0.0/17` plus the shared
-ULA's `:0::/64`; explicit pins win). Wireguard-mesh likewise reads its node
-addresses from public vars (default pool `198.18.128.0/17` plus its own shared
-ULA). For each fabric adjacency — every leaf↔spine attachment (every leaf
+`routed-fabric-<inst>-node4` and `-node6` vars (default pool `198.18.0.0/17`
+plus the shared ULA's `:0::/64`; explicit pins win). Wireguard-mesh likewise
+reads its `-node4` and `-node6` vars (default pool `198.18.128.0/17` plus its
+own shared ULA). For each fabric adjacency — every leaf↔spine attachment (every leaf
 attaches every spine by default; a leaf may declare an explicit spine subset
 via `settings.spines`) plus every unordered spine pair, adjacent automatically
 — it renders exactly one point-to-point WG interface with a deterministic

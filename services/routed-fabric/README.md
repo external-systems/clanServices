@@ -74,11 +74,14 @@ Run `clan vars generate <machine>` after changing machines or adjacencies and
 before evaluation. Public non-deployed vars allocate loopback IPv4/IPv6,
 node ASNs, and each adjacency's port and transfer prefixes. Defaults are
 `198.18.0.0/17` for loopbacks, `198.19.0.0/16` for transfers, a random RFC
-4193 ULA /48, and ports 10000–29999. The ULA and IPv4 pools have independent
-generators, and the ASN is independent of the node addresses. Member-uniform
-`loopback4Pool`, `transfer4Pool`, and `portRange` settings override those
-defaults; custom port ranges avoid reserved ports and Kubernetes NodePorts.
-Explicit `ipv4`, `ipv6`, and per-adjacency `port` settings win over vars.
+4193 ULA /48, and ports 10000–29999. Independent `node4`/`node6` and
+adjacency `port`/`transfer4`/`transfer6` generators depend only on the pool,
+ULA, or port range from which each value is cut; the ASN is independent too.
+Thus an IPv4 pool, port range, or ULA edit cannot re-roll unrelated values.
+Member-uniform `loopback4Pool`, `transfer4Pool`, and `portRange` settings
+override those defaults; custom port ranges avoid reserved ports and
+Kubernetes NodePorts. Explicit `ipv4`, `ipv6`, and per-adjacency `port`
+settings win over vars.
 
 Eval rejects missing or duplicate allocations and pool collisions with a
 targeted `clan vars generate <machine> --generator <generator> --regenerate`

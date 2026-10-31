@@ -83,13 +83,22 @@ Run `clan vars generate <machine>` after adding a machine or adjacency and
 before evaluation or deployment. Public, non-deployed vars allocate each
 machine's loopback IPv4/IPv6 and ASN, and each adjacency's port and transfer
 prefixes. The shared ULA generator creates an RFC 4193 ULA /48 and has no
-settings validation, so an IPv4 pool edit cannot re-roll it. A separate
-prefix generator records the member-uniform `loopback4Pool` (default
-`198.18.0.0/17`) and `transfer4Pool` (default `198.19.0.0/16`). Evaluation
-asserts that those records still equal the settings and that every allocated
-address or transfer lies inside its pool or ULA `/64`. Loopback IPv6 uses the
-ULA's `:0::/64`; transfer IPv6 uses `:1::/64`. The ASN has its own generator,
-so repairing an address collision does not reset BGP sessions.
+settings validation. A separate prefix generator records the member-uniform
+`loopback4Pool` (default `198.18.0.0/17`) and `transfer4Pool` (default
+`198.19.0.0/16`). Each machine has independent `node4` and `node6` generators:
+`node4` depends only on the prefix records and `node6` only on the ULA. Each
+adjacency likewise has independent `-port`, `-transfer4`, and `-transfer6`
+generators. Ports validate only `portRange`; transfer4 depends only on the
+prefix records; transfer6 depends only on the ULA. Evaluation asserts that
+pool records still equal the settings and that every allocated address or
+transfer lies inside its pool or ULA `/64`. Loopback IPv6 uses the ULA's
+`:0::/64`; transfer IPv6 uses `:1::/64`. The ASN has its own generator, so
+repairing an address collision does not reset BGP sessions.
+
+A `loopback4Pool` change re-rolls only unpinned IPv4 loopbacks when `node4`
+is regenerated. A `transfer4Pool` change re-rolls only `transfer4`; a
+`portRange` change re-rolls only ports. These edits never re-roll the ULA,
+IPv6 loopbacks, transfer6, ASNs, or unrelated adjacency values.
 
 `portRange` defaults to 10000–29999 and must be equal on every member. Custom
 ranges must avoid `clanServices.networking.reservedPorts` and, on Kubernetes
@@ -113,10 +122,10 @@ Renaming a machine creates a new clan identity with new allocations; no
 migration shim preserves the old identity.
 
 Remove orphaned shared adjacency vars after confirming that their adjacency
-is no longer present in the inventory. Each network-facts adjacency exports
-its `generator`; collect those names from every fabric member into
-`expected-adjacencies`, one per line, then review this command's output before
-deleting anything:
+is no longer present in the inventory. Each network-facts adjacency exports a
+`generator` list containing its port, transfer4, and transfer6 generator names.
+Flatten those lists from every fabric member into `expected-adjacencies`, one
+name per line, then review this command's output before deleting anything:
 
 ```console
 comm -23 \

@@ -31,11 +31,13 @@ the generic `node_transport` export carry the facts to the distro services.
 Run `clan vars generate <machine>` after changing membership and before eval.
 Independent shared generators hold an RFC 4193 ULA /48 and the member-uniform
 `ipv4Pool` (default `198.18.128.0/17`, disjoint from routed-fabric's default
-loopback pool). Pool edits cannot re-roll the ULA. Evaluation checks that the
-recorded pool equals the setting and that allocated hosts remain inside their
-pool or ULA `/64`. Each machine's public node generator allocates its IPv4
-host from that pool and its IPv6 host from the ULA's `:0::/64`. Explicit
-`ipv4` and `ipv6` settings win. Evaluation rejects missing values, duplicate
+loopback pool). Evaluation checks that the recorded pool equals the setting
+and that allocated hosts remain inside their pool or ULA `/64`. Each machine's
+public `node4` generator depends only on the prefix records and allocates its
+IPv4 host from that pool; `node6` depends only on the ULA and allocates its
+IPv6 host from `:0::/64`. An `ipv4Pool` edit therefore re-rolls only unpinned
+IPv4 hosts when `node4` is regenerated, never IPv6 or the ULA. Explicit `ipv4`
+and `ipv6` settings win. Evaluation rejects missing values, duplicate
 addresses, unequal pools, foreign-pool and underlay/cluster overlaps, and
 collisions with other rendered WireGuard configuration. Duplicate messages
 name both machines and direct `--regenerate` at the newer machine. Renaming a

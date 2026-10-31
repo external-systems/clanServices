@@ -83,10 +83,11 @@ clan vars generate gamma
 ```
 
 Independent shared generators allocate an RFC 4193 ULA /48 and record the
-member-uniform `ipv4Pool` (default `198.18.128.0/17`), so a pool edit cannot
-re-roll the ULA. Each node generator allocates IPv4 from that pool and IPv6
-from the ULA's `:0::/64`; all are public, non-deployed vars read during
-evaluation. Explicit `ipv4`/`ipv6` settings override them. Evaluation checks
+member-uniform `ipv4Pool` (default `198.18.128.0/17`). Each `node4` generator
+depends only on the pool; each `node6` generator depends only on the ULA, so
+a pool edit cannot re-roll IPv6 or the ULA. They allocate IPv4 from that pool
+and IPv6 from the ULA's `:0::/64`; all are public, non-deployed vars read
+during evaluation. Explicit `ipv4`/`ipv6` settings override them. Evaluation checks
 pool/ULA membership and cross-service pool disjointness. Duplicate messages
 name both machines and direct regeneration at the newer machine. A machine
 rename is a new clan identity with new vars; there is no migration shim.
