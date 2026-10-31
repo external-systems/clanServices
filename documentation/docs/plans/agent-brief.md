@@ -70,6 +70,12 @@ nix build .#legacyPackages.x86_64-linux.vmTests.<suite>.driver && ./result/bin/n
 statix check . && deadnix -l -L --fail . && git diff --check
 ```
 
+After a successful cached build with no live marker, `vm-test` appends `nix log
+<target>` under a `--- cached build log ---` header and checks that log. It
+prints `marker found in cached build log` on success. If no cached log exists,
+it fails closed and asks for `--rebuild`; it never passes without seeing the
+expected marker in either log.
+
 Registered suites today (24): `netif`, `netif-dhcp`, `routed-fabric`,
 `wireguard-mesh`, and for each of `k3s` and `rke2`: `-single`, `-join`,
 `-ha`, `-data-plane`, `-clustermesh`, `-clustermesh-tunnel`,

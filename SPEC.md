@@ -2179,8 +2179,13 @@ Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
 Every registered VM suite prints exactly one final `<SUITE>_OK` marker (suite
 name upper-cased, `-` → `_`) as the last statement of its `testScript`, after
 every assertion. Intermediate markers remain. `vm-test --list` shows the
-expected marker, and a zero-exit run whose log lacks it fails with `suite
-<name> exited 0 but did not print <SUITE>_OK`.
+expected marker. When a successful cached build produces no live marker, the
+runner appends `nix log <target>` under a `--- cached build log ---` header and
+checks that log; a marker found there passes. If no cached build log is
+available, the run fails with `suite <name>: cached result has no build log;
+rerun with: nix run .#vm-test -- --rebuild <name>`. A run whose live and cached
+logs both lack the marker still fails with `suite <name> exited 0 but did not
+print <SUITE>_OK`; the runner never passes without seeing the marker.
 
 Eval tests commit readable public allocation fixtures under
 `services/<svc>/tests/fixtures/vars/{per-machine,shared}` and never recompute

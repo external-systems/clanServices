@@ -21,10 +21,16 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   build log there, and prints the log path. Every suite prints exactly one
   final `<SUITE>_OK` (suite name upper-cased, `-` → `_`) as the last statement
   of its `testScript`, after every assertion; intermediate markers remain.
-  `--list` shows each expected marker. A zero-exit run without it fails with
-  `suite <name> exited 0 but did not print <SUITE>_OK`. Cached builds record
-  their output path instead of leaving an empty log; log-creation errors stop
-  the run. `.baton-pass/` is gitignored and never committed.
+  `--list` shows each expected marker. Cached builds record their output path
+  instead of leaving an empty log. If the live log lacks the marker after a
+  successful build, the runner appends `nix log <target>` under a
+  `--- cached build log ---` header and checks it. A marker found there passes
+  with `marker found in cached build log`. If no cached build log is available,
+  the run fails with `suite <name>: cached result has no build log; rerun with:
+  nix run .#vm-test -- --rebuild <name>`. If both logs lack the marker, the run
+  fails with `suite <name> exited 0 but did not print <SUITE>_OK`; it never
+  passes without seeing the marker. Log-creation errors stop the run.
+  `.baton-pass/` is gitignored and never committed.
 - Artifact source/hash/render and publish-freshness gates.
 - Offline execution, dual-stack in every boot test, round trips and failure
   behavior, negative assertions, operational postconditions, and fail-fast

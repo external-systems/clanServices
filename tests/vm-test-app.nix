@@ -79,8 +79,19 @@
         if [[ $status -eq 0 ]]; then
           marker=$(expected_marker "$suite")
           if ! grep -F -- "$marker" "$log" > /dev/null; then
-            printf 'suite %s exited 0 but did not print %s\n' "$suite" "$marker" >&2
-            status=1
+            cached_log=$(nix log "$target" 2>/dev/null || true)
+            if [[ -z $cached_log ]]; then
+              printf 'suite %s: cached result has no build log; rerun with: nix run .#vm-test -- --rebuild %s\n' "$suite" "$suite" >&2
+              status=1
+            else
+              printf '\n--- cached build log ---\n%s\n' "$cached_log" >> "$log"
+              if grep -F -- "$marker" "$log" > /dev/null; then
+                printf 'marker found in cached build log\n'
+              else
+                printf 'suite %s exited 0 but did not print %s\n' "$suite" "$marker" >&2
+                status=1
+              fi
+            fi
           fi
         fi
         printf 'VM build log: %s\n' "$log"
