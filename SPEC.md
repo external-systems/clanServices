@@ -1488,6 +1488,19 @@ unless noted) — revoked entries keep one-line reasons for history.
   vars, not hashes. These remaining names and cluster-level values have
   separate pins and fleet checks.
 
+### Round 23 decisions (2026-11-02) — active
+
+- **D65 `remote-builder` is a fleet utility outside the cluster contracts.**
+  Moved from external-systems/home. A `server` serves its store over
+  `ssh-ng` to the restricted `nix-ssh` user (trusted, write) for every
+  client key and an optional shared CI key whose private half is never
+  deployed; `client`s get `nix.buildMachines`, a fail-fast ssh alias and the
+  server's pinned host key. Every generator, alias and known-hosts entry is
+  named `<instance>-…` (rule 5), so an instance named `remote-builder` keeps
+  the vars it had in home. It touches no network renderer, FRR, Cilium or
+  cluster object, and no D1–D64 decision constrains it. Eval-tested
+  (`tests.systems.<system>.remote-builder`); no VM suite.
+
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
 1. One declarative fleet: instance declaration ⇒ stable identity,

@@ -15,6 +15,7 @@ IfState 2.5.1 is the exclusive static networking renderer.
 | [netif](netif.md) | host links and static routes | implemented with IfState; live apply and DHCP/RA VM-proven |
 | [routed-fabric](routed-fabric.md) | flat-L3 WG/FRR fabric | `leaf`/`spine` + generic schema implemented; transport and HA VM-proven |
 | [wireguard-mesh](wireguard-mesh.md) | host transport | supported tunnel/VXLAN profile; handshake and dependent VM suites green |
+| [remote-builder](remote-builder.md) | fleet utility (nix builds over ssh-ng) | implemented; eval-tested, outside the cluster contracts (D65) |
 
 The obsolete `services/fleet-routing/` code (full-mesh target, BIRD-era
 checkpoint) and the legacy `lib/import-flake/` adapter were deleted in the
