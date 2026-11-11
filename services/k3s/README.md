@@ -169,14 +169,15 @@ a custom airgap set.
 
 Single/join/HA suites run on `wireguard-mesh`; the data-plane and native
 ClusterMesh suites run on `routed-fabric`. Additional tunnel, selective,
-and external-LB suites cover both profiles. All are exposed as
-`clan.nixosTests`, exposed under `legacyPackages.x86_64-linux.vmTests`:
+and external-LB suites cover both profiles. All are registered as
+`clanTests` and exposed under `legacyPackages.x86_64-linux.vmTests`. Run them
+one at a time on the remote builder:
 
 ```bash
-nix build .#legacyPackages.x86_64-linux.vmTests.k3s-single
-nix build .#legacyPackages.x86_64-linux.vmTests.k3s-join
-nix build .#legacyPackages.x86_64-linux.vmTests.k3s-ha
-nix build .#legacyPackages.x86_64-linux.vmTests.k3s-data-plane
+vm-test k3s-single --remote
+vm-test k3s-join --remote
+vm-test k3s-ha --remote
+vm-test k3s-data-plane --remote
 ```
 
 - `k3s-single` — one server: initial PKI seed, haproxy LB, admin kubeconfig

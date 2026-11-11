@@ -55,7 +55,7 @@ in {
   nodes = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
-        ifstateOverlay = inputs.pkgs.overlays.ifstate;
+        ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         addresses = [
           "192.168.1.${
             toString

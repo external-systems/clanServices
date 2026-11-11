@@ -4,7 +4,7 @@
   ...
 }: let
   module = ./default.nix;
-in rec {
+in {
   clan.modules.remote-builder = module;
 
   perSystem = _: {

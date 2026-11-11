@@ -1,5 +1,5 @@
 {inputs, ...}: let
-  ifstateOverlay = inputs.pkgs.overlays.ifstate;
+  ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
 in {
   name = "netif-dhcp";
 

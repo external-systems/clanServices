@@ -715,7 +715,7 @@
         && (remoteOverride.timerProfile or null) != null
         && localOverride.timerProfile != remoteOverride.timerProfile;
       remoteRole = roleFor roles remoteName;
-      import =
+      importRoutes =
         if ownRole == "spine" && remoteRole == "spine"
         then consumptionRoutes machine.name
         else if ownRole == "spine"
@@ -735,7 +735,7 @@
         then consumptionRoutes remoteName
         else localRoutes;
       cryptoRoutes = frr.mergeRoutes [
-        import
+        importRoutes
         export
         {
           hosts =
@@ -771,6 +771,8 @@
         then localOverride.sourceReturnPriority
         else 10000 + lib.mod (asnOf remoteName) 20000;
     in {
+      # `import` shadows the builtin as a binding name; keep it as the attribute.
+      import = importRoutes;
       inherit
         addressFamilyMismatch
         allowedIPs
@@ -779,7 +781,6 @@
         externalTransit
         generator
         hostnameEndpoint
-        import
         key
         linkLocal
         mtu

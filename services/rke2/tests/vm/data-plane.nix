@@ -33,9 +33,9 @@
   betaTransfer = nodes.beta.config.clan.networkFacts.fabric.mesh.adjacencies.alpha.ipv4;
   fabricPort = nodes.alpha.config.clan.networkFacts.fabric.mesh.adjacencies.beta.port;
 
-  httpbinVersions = import (inputs.pkgs + "/pkgs/go-httpbin/versions.nix");
+  httpbinVersions = import (inputs.org-pkgs + "/pkgs/go-httpbin/versions.nix");
   httpbinImageRef = "go-httpbin:v${httpbinVersions.version}";
-  httpbinImage = inputs.pkgs.packages.x86_64-linux.image-go-httpbin;
+  httpbinImage = inputs.org-pkgs.packages.x86_64-linux.image-go-httpbin;
 
   instanceName = "rke2";
   manifestLabels = kube.render.mkManifestLabels {
@@ -357,7 +357,7 @@ in {
     test.useContainers = false;
 
     modules.routed-fabric = lib.modules.importApply ../../../routed-fabric/default.nix {
-      ifstateOverlay = inputs.pkgs.overlays.ifstate;
+      ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
     };
     exportInterfaces = {
       routed_fabric = ../../../routed-fabric/routed-fabric-interface.nix;
@@ -499,7 +499,7 @@ in {
       imports = [
         commonNode
         (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
           addresses = [
             "192.168.1.1/24"
             "2001:db8:1::1/64"
@@ -521,7 +521,7 @@ in {
       imports = [
         commonNode
         (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
           addresses = [
             "192.168.1.2/24"
             "2001:db8:1::2/64"
@@ -541,7 +541,7 @@ in {
     router = {pkgs, ...}: {
       imports = [
         (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
           addresses = [
             "192.168.1.3/24"
             "2001:db8:1::3/64"

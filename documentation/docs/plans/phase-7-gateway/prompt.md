@@ -39,7 +39,7 @@ Do:
    - 20 home edge router: an ISP emulator (DHCPv4, DHCPv6 with PD, RA); LAN clients get v4 via kea and v6 via RA from the delegated prefix; the ISP changes the delegated prefix and LAN clients renumber; reboot the gateway and everything returns. SCENARIO_20_HOME_EDGE_OK.
    - 21 floating IP coexistence: a stub mover (a shell loop with `ip addr add/del`) moves the address between two candidates; `ifstatecli apply` on the holder keeps it; FRR advertises it only from the holder. SCENARIO_21_FLOATING_IP_OK.
 
-Verify: `nix fmt . && nix flake check --show-trace`; the three scenarios; regressions: routed-fabric, scenario 9 (exposure) and netif-dhcp. Report markers and log paths.
+Verify: `fmt && check` (`nix fmt`, `nix flake check --show-trace`); the three scenarios; regressions: routed-fabric, scenario 9 (exposure) and netif-dhcp. Report markers and results.
 
 Pitfalls:
 - A default route in main on a WireGuard leaf breaks its own endpoint reachability; that is why the egress default lives in a policy table behind a fwmark rule.

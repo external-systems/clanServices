@@ -14,17 +14,17 @@ Read first, in this order:
 1. documentation/docs/plans/agent-brief.md.
 2. AGENTS.md.
 3. documentation/docs/plans/data-plane-hardening.md: "OpenTofu workflow", "Terranix", "Flake inputs", the cost and expiry decisions in "Decisions".
-4. flake.nix (`partitionedAttrs`, `partitions.dev`), dev/flake.nix, dev/flake-module.nix: how the dev partition gets its own inputs and lock.
+4. flake.nix and flake-parts/: the org-standard wiring (SPEC.md D66). There is no dev partition; root modules live in flake-parts/ (import-tree).
 5. lib/underlay-facts.nix, lib/materialize.nix, the `materialize` app, tests/clans/triad and tests/clans/arm-mix (phase 5).
 
 Load skills: terranix (SKILL.md, then references/flake-parts.md, providers.md, state-and-operations.md), flakeparts, clan-core (vars, `clan machines install`), disko, nix-style.
 
 Goal: `nix build .#tf-triad` and `.#tf-arm-mix` produce config.tf.json from the clan's own evaluation, `tofu validate` runs offline in checks, and a run app can drive a full ephemeral deployment.
 
-Partition decision (record it in SPEC.md and the plan before coding): `partitionedAttrs` maps each flake attribute (`apps`, `checks`, `packages`, ...) to exactly one partition, and today they all map to `dev`. A separate `tf` partition therefore cannot also expose `packages.tf-*`, `apps.tf-run`, or `checks`. Add terranix as an input in dev/flake.nix (dev-only, consumers never lock it) and keep the tf code in tf/, imported from dev/flake-module.nix. AGENTS.md's "root and dev locks are the only lockfiles" stays true; update the plan's "Flake inputs" table, which still says "separate tf partition".
+Input decision (ask the owner first, then record it in SPEC.md and the plan before coding): the org standard has no dev partition, and a heavy test-only input needs the owner's yes. The options are terranix as a root input (follows nixpkgs and flake-parts; consumers lock it but fetch it only if they evaluate tf outputs), or a partition holding terranix alone. Either way the tf code lives in tf/ and is imported from flake-parts/tf.nix; update the plan's "Flake inputs" table.
 
 Do:
-1. dev/flake.nix: add `terranix` (inputs.nixpkgs.follows = "dev-nixpkgs"); `nix flake lock ./dev`. Use `inputs.terranix.flakeModule` (not `flakeModules.default`) or `terranix.lib.terranixConfiguration` directly. Never name a configuration `default` (its apps break `nix flake check`).
+1. Add `terranix` where the owner decided (inputs.nixpkgs.follows = "nixpkgs"); `nix flake lock`, then `sync-locks` if org-pkgs moved. Use `inputs.terranix.flakeModule` (not `flakeModules.default`) or `terranix.lib.terranixConfiguration` directly. Never name a configuration `default` (its apps break `nix flake check`).
 2. tf/modules/hcloud-node.nix and tf/modules/gcp-node.nix: typed options for the fields we use (name, site/location, server type or machine type, arch x86_64 | aarch64, image, labels, firewall rules, ssh key), emitting `output.facts` in the phase-5 facts schema shape. Hetzner arm64 types are CAX*, GCP arm64 is t2a/c4a; pick the cheapest that boots NixOS via nixos-anywhere.
 3. tf/envs/<clan>.nix reads the evaluated clan directly (machine list, sites, arch, WireGuard ports from the allocated vars, firewall rules from routed-fabric's rendered listen ports). No hand-written HCL, no plan.json, no tf variables for values the inventory already holds.
 4. Providers through `opentofu.withPlugins (p: [ p.hcloud p.google ])` from nixpkgs (check the attribute names exist in the locked nixpkgs); `tofu init` must download nothing.
@@ -43,7 +43,7 @@ Do:
 7. Cost guards in the modules: every resource labelled `run-id` and `expires` (unix seconds as a string; GCP label values are lowercase, at most 63 chars), default expiry 4 h, maximum 24 h asserted at eval; apps.tf-janitor deletes expired servers, networks, firewalls and state keys by label using hcloud and gcloud CLIs; a `google_billing_budget` module for the $100/month alert (behind an option, since it needs billing-account permissions).
 8. Docs: documentation/docs/guides/cloud-runs.md (prerequisites, env vars, run, keep, janitor) and a nav entry.
 
-Verify: `nix fmt . && nix flake check --show-trace` (includes tf-validate checks); `nix build .#tf-triad .#tf-arm-mix` and `jq` the JSON; a consumer flake `nix flake metadata` shows no terranix; `nix run .#tf-run -- triad` without credentials fails early with a message naming the missing variables.
+Verify: `fmt && check` (`nix fmt`, `nix flake check --show-trace`) (includes tf-validate checks); `nix build .#tf-triad .#tf-arm-mix` and `jq` the JSON; a consumer flake `nix flake metadata` shows no terranix; `nix run .#tf-run -- triad` without credentials fails early with a message naming the missing variables.
 
 Pitfalls:
 - Terranix knows no provider schemas: a typo is caught by `tofu validate`, not by Nix. That is why the check exists.

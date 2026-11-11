@@ -2,7 +2,11 @@
 
 Canonical standalone flake for External Systems' clan services. Consumers
 must NOT need `clan-community`. Upstream (`git.clan.lol/clan/clan-community`)
-is a review destination, not a dependency.
+is a review destination, not a dependency. The repo follows the
+external-systems org standard (SPEC.md D66): one `org-pkgs` input, whose
+`flakeModules.default` supplies formatting, docs, lock sync and the VM-test
+runner; a devenv shell; the org CI. external-systems/home consumes it
+(`remote-builder` today).
 
 ## Layout
 
@@ -16,16 +20,24 @@ is a review destination, not a dependency.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
-- `tests/` — eval-test wiring and the VM output adapter; every
-  `clan.modules` entry must have a nix-unit test (enforced by
-  `checks.coverage`). `clan.nixosTests` definitions are emitted under
-  `legacyPackages.<system>.vmTests`, never `checks`. Run one with
-  `nix run .#vm-test -- <suite>` (`--list` enumerates suites; `--rebuild`
-  forces a fresh run).
-- `dev/` — development-only flake inputs and their lock, plus the
-  flake-parts partition module for checks, formatting, documentation, slides,
-  the dev shell, and apps. The root and dev locks are the only lockfiles;
-  nix-unit evaluates the root `tests.systems` output directly.
+- `flake-parts/` — root flake-parts modules, auto-imported (import-tree):
+  - `clan-tests.nix`: the `clanTests` option and the org `vmTests` settings
+    (limits, timeout, `flakeChecks`);
+  - `nix-unit.nix`: `nix-unit.tests`, `tests.systems` and `checks.nix-unit`;
+  - `coverage.nix`: every `clan.modules` entry needs a nix-unit test;
+  - `docs.nix`: the site nav and deck settings;
+  - `overlays.nix`: re-exports the org-pkgs overlays.
+- `tests/ifstate-vm.nix` — the shared IfState node fixture for VM suites.
+  Each service registers its suites in its `flake-module.nix` under the
+  top-level `clanTests.<suite>`. They land in
+  `legacyPackages.<system>.vmTests`, never `checks`.
+- `devenv.yaml`/`devenv.nix` — the org dev shell (`fmt`, `check`,
+  `sync-locks`, `docs-build`, `docs`, `slides`, `vm-test`). `flake.lock`
+  and `devenv.lock` must pin the same nixpkgs (`checks.lock-sync`). After
+  `nix flake update org-pkgs`, run `sync-locks` in the same commit.
+- `.github/` — the org `ci.yml` (calls pkgs `org-ci.yml`; required check
+  `ci / flake-check`) and the branch ruleset. Never add steps or jobs here;
+  CI changes are pkgs PRs.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Round 14
   (2026-10-24) makes FRR + per-pair host WireGuard + native-routed
@@ -56,27 +68,31 @@ is a review destination, not a dependency.
   are stable before fast. Round 22 (2026-10-30, D64) allocates every fabric
   and mesh address, node ASN, and adjacency port/transfer prefix once in
   public clan vars; names, link-locals, and cluster-level identities remain
-  hash-derived by design.
+  hash-derived by design. Round 23 (D65) adds `remote-builder`. Round 24
+  (2026-11-11, D66) brings the repo onto the org standard without changing
+  service behavior.
   Round 13's Bootstrap +
   Data-plane scope remains: Envoy Gateway, cert-manager, Flux install,
   external-dns, Sealed Secrets, OpenEBS, KubeVirt, Multus are day-2 GitOps
   patterns, never clan-rendered (SPEC.md §3.3, D39–D45).
-- `documentation/` — MkDocs site + reveal.js slides (human record, built
-  via the `external-systems/presenting` flake). **Edit SPEC.md and
+- `documentation/` — the human record: `docs/*.md` (the MkDocs site) and
+  `slides/slides.md` (the deck, plus `custom.css` for its own blocks).
+  org-pkgs `flakeModules.docs` builds them (`docs-build`); there is no
+  `mkdocs.yml` or deck `index.html`. **Edit SPEC.md and
   `documentation/` together.** The old `services/rancher-cluster-spec.*`
   pair is retired.
 
 ## Hard rules
 
 1. `git add` new files BEFORE any nix eval — Nix reads the git tree.
-2. Static gates before commit: `nix fmt .` then `nix flake check
-   --show-trace`. `checks` is static-only since round 19 (eval tests,
-   coverage, formatting), so a full `nix flake check` is part of every
-   verification; keep statix/deadnix clean and fix all eval warnings.
-   Formatting is alejandra, always; `formatter.nix` also enables statix,
-   deadnix, shellcheck, sizelint, and nixf-diagnose through treefmt-nix.
-   Remove `builtins.` prefixes when the prelude builtin is unshadowed
-   (`sema-primop-removed-prefix`).
+2. Static gates before commit: `fmt` (`nix fmt`) then `check`
+   (`nix flake check --show-trace`). `checks` is static-only: treefmt,
+   nix-unit, coverage, lock-sync, the docs and deck builds, and the KVM
+   guard. Run a full `nix flake check` for every verification, and fix all
+   eval warnings. Formatting comes from org-pkgs treefmt: alejandra,
+   statix, deadnix, shellcheck, sizelint and nixf-diagnose with every rule.
+   Fix nixf findings by hand (`nix-style` skill). Formatter changes are
+   pkgs PRs.
 3. No spec-implementation drift: amend the spec BEFORE implementing when a
    test disproves an assumption; never weaken a test to fit code.
 4. Distro-specific config lives in the thin `rke2`/`k3s` services; shared
@@ -89,15 +105,16 @@ is a review destination, not a dependency.
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
 7. Do not implement Planned/Reserved spec rows without reading SPEC.md's
-   decision record (D1–D64) first — round 13 revoked the Gateway/Envoy
+   decision record (D1–D66) first — round 13 revoked the Gateway/Envoy
    layer and other day-2 suites; round 14 superseded BIRD/VXLAN with
    FRR/per-pair WireGuard/native routing; round 15 renamed the fabric
    `routed-fabric` and made `netif` multi-instance/multi-link; round 16
    added orthogonal access/border and `clan.networkFacts`; round 17
    implemented `leaf`/`spine`, generic `node_transport`, and ClusterMesh
    placement/exposure; round 18 made IfState 2.5.1 the only static network
-   renderer (D61); round 19 made `pkgs` the artifact/shared-input authority
-   and moved VM suites out of `checks` (D62). Do not reintroduce
+   renderer (D61); round 19 made `pkgs` (the `org-pkgs` input since round
+   24) the artifact/shared-input authority and moved VM suites out of
+   `checks` (D62); round 24 adopted the org standard (D66). Do not reintroduce
    systemd-networkd, netdevs, scripted network units, or a second owner for
    Cilium/FRR objects. `wireguard-mesh` is a supported tunnel transport and
    breaking changes carry no compatibility burden (no external consumers or
@@ -110,9 +127,14 @@ is a review destination, not a dependency.
    `legacyPackages.<system>.vmTests`. If a VM derivation ever appears in
    `checks`, fix the output boundary; never work around it with
    `--no-build`.
-10. VM test logs go to `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0, 1,
-    … per run). `.baton-pass/` is gitignored and never committed; SPEC.md
-    cites the suite and its `*_OK` marker, not a log file in git.
+10. VM suites run one at a time, on euc-hel-0: `vm-test <suite> --remote`,
+    or `vm-test --all --serial --remote` for every suite. Never use plain
+    `--all`: it builds suites side by side and can exhaust the builder.
+    Never evaluate every suite in one Nix process on a laptop either (it
+    needs about 3 GB per suite; beelink has 24 GiB): `vm-test --check`
+    checks one suite per process. Logs go to `.vm-tests/<suite>/`
+    (gitignored). SPEC.md cites the suite and its `*_OK` marker, never a
+    log file.
 11. Breaking changes carry no compatibility burden: there are no external
     consumers or deployments and no real machines use these flakes, so
     never add migration shims, deprecation aliases, or renamed-option
@@ -120,11 +142,13 @@ is a review destination, not a dependency.
 12. Keep the deploy target (`clan.core.networking.targetHost`) on the
     underlay address, never a fabric or tunnel address, so a fabric change
     cannot lock out its own deployment.
-13. Every registered VM suite prints exactly one final `<SUITE>_OK` marker
-    (suite name upper-cased, `-` → `_`) as the last statement of its
-    `testScript`, after every assertion. Intermediate markers stay. The
-    `vm-test` runner rejects a zero-exit run whose log lacks that marker;
-    `--list` shows each suite's expected marker.
+13. A suite passes when its sandboxed build exits 0. Every suite still
+    prints one final `<SUITE>_OK` marker (suite name upper-cased, `-` → `_`)
+    as the last statement of its `testScript`, after every assertion, and
+    intermediate markers stay. Readers use them to follow a log; the runner
+    does not check them. The repo's resource limits (96 GiB and 36 vCPUs per
+    suite, 16 GiB and 8 vCPUs per VM, 2 h timeout) are owner-approved for
+    euc-hel-0. Raising them needs the owner's yes.
 
 ## Verified upstream facts the spec depends on
 
@@ -154,4 +178,4 @@ is a review destination, not a dependency.
   `kubectl apply --server-side` avoids CSA→SSA field-ownership friction;
   `cilium install` (CLI) auto-detects hidden values and skews cert
   generation — rejected as the bootstrap mechanism.
-- `nix fmt` uses the repo `formatter.nix` (alejandra; see rule 2).
+- `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).

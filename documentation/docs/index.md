@@ -1,5 +1,11 @@
 # Kubernetes cluster clanServices
 
+[![ci](https://img.shields.io/github/actions/workflow/status/external-systems/clanServices/ci.yml?branch=main&label=ci&logo=github)](https://github.com/external-systems/clanServices/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/external-systems/clanServices?label=release&color=d97757)](https://github.com/external-systems/clanServices/releases/latest)
+[![docs](https://img.shields.io/website?url=https%3A%2F%2Fclanservices.external.systems%2F&label=docs&up_message=online&down_message=offline)](https://clanservices.external.systems/)
+[![license](https://img.shields.io/github/license/external-systems/clanServices)](https://github.com/external-systems/clanServices/blob/main/LICENSE)
+[![built with Nix](https://img.shields.io/badge/built_with-Nix-5277C3?logo=nixos&logoColor=white)](https://nixos.org)
+
 You declare machines and cluster instances in one `inventory.nix`. You get
 working, secure, interconnected Kubernetes clusters — rke2, k3s, or upstream
 kubeadm — whose **bootstrap** and **data plane** are a verifiable contract.

@@ -15,10 +15,10 @@ Read first, in this order:
 2. AGENTS.md.
 3. documentation/docs/plans/data-plane-hardening.md: "VM test scenarios", "Proposed contract additions" (S1, C1, U1–U4), "Synthetic inventories", "OpenTofu workflow" (facts.json is emitted by this harness too).
 4. SPEC.md §7 and D63 (exposure and timer profiles).
-5. The existing harness pieces: tests/ifstate-vm.nix (a reusable VM fixture with addresses and a DHCP server), tests/clan-nixos-test.nix (how clan.nixosTests become legacyPackages.vmTests), services/routed-fabric/tests/vm/default.nix (the most complete suite: endpoints from the clan-core `internet` service, networkFacts reads, RIB/FIB checks, DelayOpen-aware waits), services/netif/tests/vm/dhcp.nix.
+5. The existing harness pieces: tests/ifstate-vm.nix (a reusable VM fixture with addresses and a DHCP server), flake-parts/clan-tests.nix (how `clanTests` become legacyPackages.vmTests on the org runner, with this repo's resource limits), services/routed-fabric/tests/vm/default.nix (the most complete suite: endpoints from the clan-core `internet` service, networkFacts reads, RIB/FIB checks, DelayOpen-aware waits), services/netif/tests/vm/dhcp.nix.
 6. lib/underlay-facts.nix and tests/clans/*/ from phase 5.
 
-Load skills: vm-tests (the patterns and anti-patterns apply; its file layout and sm/md/lg wiring describe the home repo, not this one), ifstate, frr (references/operations.md for vtysh JSON), clanservices, clan-core.
+Load skills: vm-tests (the runner, rules, patterns and anti-patterns apply; here suites are clanTests, not vm-tests/*.nix files), ifstate, frr (references/operations.md for vtysh JSON), clanservices, clan-core.
 
 Goal: tests/lib/internet.nix exists and four scenarios boot tests/clans inventories on it and print unique markers.
 
@@ -32,14 +32,14 @@ Do:
    - a probe helper (a small Python script installed on nodes) that timestamps route and session changes from `ip -j monitor route` and `vtysh -c 'show bgp neighbors json'`, so convergence is measured, never slept;
    - a facts.json emitter that writes the phase-5 schema from the running VMs (real MACs, addresses, MTU) and validates it against the schema package.
    Routing-only nodes use virtualisation.memorySize = 1024 and cores = 1.
-3. Scenario suites, each in tests/scenarios/<n>-<name>.nix and registered under clan.nixosTests (legacyPackages.<system>.vmTests), each booting a tests/clans inventory through the materializer with harness facts:
+3. Scenario suites, each in tests/scenarios/<n>-<name>.nix and registered under the top-level `clanTests.<suite>` (legacyPackages.<system>.vmTests), each booting a tests/clans inventory through the materializer with harness facts:
    - 9 exposure (S1): only WireGuard UDP ports answer on untrusted links; TCP 179 and UDP 3784/4784 are closed from the scanner and open only on fabric interfaces. Marker SCENARIO_9_EXPOSURE_OK.
    - 4 SLAAC on forwarding nodes: a spine and a k3s-free forwarding leaf keep their IPv6 default route past three short RA lifetimes. Marker SCENARIO_4_SLAAC_FORWARDING_OK.
    - 19 match.mac: a NIC renamed between boots is still found; the old name is not used. Marker SCENARIO_19_MATCH_MAC_OK.
    - 22 Proxmox guest shape: virtio NICs with fixed MACs on a VLAN-aware bridge in the host test network, VLAN links from netif, never Proxmox VE itself. Marker SCENARIO_22_PROXMOX_SHAPE_OK.
 4. Update SPEC.md §7 so each claim names its test file and marker.
 
-Verify: `nix fmt . && nix flake check --show-trace`, then each scenario through `nix run .#vm-test -- <suite>`, plus `routed-fabric` and `netif-dhcp` as regressions. Report markers, log paths, wall time, and peak memory (sum of memorySize).
+Verify: `fmt && check`, `vm-test --check <suite>` for each new scenario, then each scenario one at a time through `vm-test <suite> --remote`, plus `routed-fabric` and `netif-dhcp` as regressions. Report markers, results, wall time, and peak memory (sum of memorySize; the repo limit is 96 GiB and 36 vCPUs per suite).
 
 Budget: one suite at most 30 GiB of VM memory in total.
 
@@ -74,7 +74,7 @@ Do:
 5. Scenario 6 (WAN soak, C1): the Texas–Helsinki netem profile for 30 minutes on a wan adjacency: zero BGP session flaps and zero FIB changes (from the probe helper's log); then cut the link: withdrawal within 15 s on wan and within 3 s on a site adjacency; restore: the path returns only after the DelayOpen hold-down. Make the soak duration a parameter so a 3-minute variant runs during development; the PR must include one full 30-minute run. Marker SCENARIO_6_WAN_SOAK_OK.
 6. SPEC.md §7: each claim names its file and marker; move C1/C2 from planned to VM-proven only for what the logs show.
 
-Verify: each scenario through the vm-test app, plus the four 6a scenarios and `routed-fabric` as regressions. Report markers, log paths, and wall time.
+Verify: each scenario one at a time through `vm-test <suite> --remote`, plus the four 6a scenarios and `routed-fabric` as regressions. Report markers, results, and wall time.
 
 Pitfalls:
 - A 2% loss profile will drop single BFD packets; the wan BFD profile (1000 ms x5) is designed to tolerate that. If the soak flaps, report it as a finding with the probe log; do not loosen timers without amending D63 first.

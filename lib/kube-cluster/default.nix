@@ -183,7 +183,7 @@
       };
     };
   };
-in rec {
+in {
   inherit
     cidrs
     hashCiliumId

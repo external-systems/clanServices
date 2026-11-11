@@ -127,10 +127,10 @@
 
   # --- Bundle rendering (D26/D40) --------------------------------------
 
-  ciliumVersions = import (inputs.pkgs + "/pkgs/cilium/versions.nix");
-  baseManifest = inputs.pkgs + "/manifests/cilium/${ciliumVersions.chartVersion}.yaml";
+  ciliumVersions = import (inputs.org-pkgs + "/pkgs/cilium/versions.nix");
+  baseManifest = inputs.org-pkgs + "/manifests/cilium/${ciliumVersions.chartVersion}.yaml";
 
-  corednsVersions = import (inputs.pkgs + "/pkgs/coredns/versions.nix");
+  corednsVersions = import (inputs.org-pkgs + "/pkgs/coredns/versions.nix");
 
   members = [
     {

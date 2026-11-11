@@ -33,7 +33,7 @@
     test.useContainers = false;
 
     modules.routed-fabric = lib.modules.importApply ../../../routed-fabric/default.nix {
-      ifstateOverlay = inputs.pkgs.overlays.ifstate;
+      ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
     };
     exportInterfaces = {
       node_transport = ../../../../lib/node-transport-interface.nix;
@@ -166,7 +166,7 @@
     commonNode = name: {pkgs, ...}: {
       imports = [
         (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
           addresses = [
             "192.168.1.${
               toString

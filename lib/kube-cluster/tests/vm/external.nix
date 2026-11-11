@@ -84,7 +84,7 @@
   mkNode = name: {pkgs, ...}: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
-        ifstateOverlay = inputs.pkgs.overlays.ifstate;
+        ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         addresses = ["${underlayIp name}/24"];
       })
     ];
@@ -155,12 +155,12 @@ in {
     modules =
       lib.optionalAttrs native {
         routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         };
       }
       // lib.optionalAttrs (!native) {
         wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         };
       };
     exportInterfaces =
@@ -260,7 +260,7 @@ in {
       dns = {
         imports = [
           (import ../../../../tests/ifstate-vm.nix {
-            ifstateOverlay = inputs.pkgs.overlays.ifstate;
+            ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
             addresses = ["${underlayIp "dns"}/24"];
             routes = [
               {

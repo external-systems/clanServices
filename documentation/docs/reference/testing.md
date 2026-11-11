@@ -7,30 +7,35 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
 
 - Pure renderer nix-unit tests, including kubenix determinism.
 - Throwaway clans through `clanLib.clan` for the inventory boundary.
-- Hermetic `clan.nixosTests`, exposed as
-  `legacyPackages.<system>.vmTests` and run one at a time; sandboxed runs
-  are authoritative (interactive/driver mode is debug-only, and every
-  driver-mode fix is re-proven with a sandboxed rerun). VM suites never
-  enter `checks`, which remains a lightweight static gate. Run a suite with
-  `nix run .#vm-test -- <suite>`; use `--list` to list suite names and
-  `nix run .#vm-test -- --rebuild <suite>` to force a fresh run. Rebuild uses
-  Nix's rebuild-and-compare check for a cached output, so a non-reproducible
-  result fails; an uncached suite uses a plain build instead. The app
-  atomically claims the first unused
-  `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0, 1, …), writes the complete
-  build log there, and prints the log path. Every suite prints exactly one
-  final `<SUITE>_OK` (suite name upper-cased, `-` → `_`) as the last statement
-  of its `testScript`, after every assertion; intermediate markers remain.
-  `--list` shows each expected marker. Cached builds record their output path
-  instead of leaving an empty log. If the live log lacks the marker after a
-  successful build, the runner appends `nix log <target>` under a
-  `--- cached build log ---` header and checks it. A marker found there passes
-  with `marker found in cached build log`. If no cached build log is available,
-  the run fails with `suite <name>: cached result has no build log; rerun with:
-  nix run .#vm-test -- --rebuild <name>`. If both logs lack the marker, the run
-  fails with `suite <name> exited 0 but did not print <SUITE>_OK`; it never
-  passes without seeing the marker. Log-creation errors stop the run.
-  `.baton-pass/` is gitignored and never committed.
+- Hermetic clan VM suites, declared per service in `clanTests.<suite>` and
+  exposed as `legacyPackages.<system>.vmTests` by the org runner (org-pkgs
+  `flakeModules.vmTests`). VM suites never enter `checks` or CI; `checks`
+  stays a lightweight static gate.
+- **Running suites.** Run them one at a time on the remote builder:
+  - `vm-test <suite> --remote` runs one suite.
+  - `vm-test --all --serial --remote` runs every suite, one after another.
+    Never use plain `--all`, which builds suites side by side.
+  - `vm-test --list` lists the suites.
+  - `vm-test <suite> --rebuild` reruns a suite that already passed.
+  - `vm-test --check` checks that every suite evaluates and fits the
+    resource limits. It uses one Nix process per suite (about 3 GB each).
+- **Results and logs.** Sandboxed runs are authoritative: a suite passes
+  when its build exits 0. Driver and interactive modes (`--driver`,
+  `--interactive`) are for debugging only, and every fix found that way is
+  re-proven with a sandboxed run. Logs go to `.vm-tests/<suite>/build.log`
+  (gitignored).
+- **Markers.** Every suite prints one final `<SUITE>_OK` (suite name
+  upper-cased, `-` → `_`) as the last statement of its `testScript`, after
+  every assertion, and intermediate markers remain. They are for readers;
+  the runner does not check them.
+- **Resource limits,** owner-approved for euc-hel-0:
+
+  | Limit | Value |
+  |---|---|
+  | Per suite | 96 GiB and 36 vCPUs |
+  | Per VM | 16 GiB and 8 vCPUs |
+  | Default timeout | 2 hours |
+
 - Artifact source/hash/render and publish-freshness gates.
 - Offline execution, dual-stack in every boot test, round trips and failure
   behavior, negative assertions, operational postconditions, and fail-fast
@@ -189,10 +194,9 @@ k3s/RKE2 single/join/HA and native data planes; and all twelve
 native/tunnel/selective/external ClusterMesh variants. The selective proofs
 include symmetric A↔B and B↔C edges, non-transitive A/C global-Service
 isolation, and dual-stack route isolation on non-transit leaves. SPEC.md §7
-links the final logs and remains the status authority. A VM-proven status
+records the final runs and remains the status authority. A VM-proven status
 names its test file and a unique `*_OK` marker that the test prints.
-Save each VM run's log to `.baton-pass/vm-logs/<suite>/logs-<n>` (n = 0,
-1, … per run); `.baton-pass/` is gitignored and never committed.
+Run logs land in `.vm-tests/<suite>/` and are never committed.
 
 The imported baseline and BIRD checkpoint `2995ac3` (5 green / 7 red) are
 legacy evidence only. No full-mesh fabric suite exists or is required.

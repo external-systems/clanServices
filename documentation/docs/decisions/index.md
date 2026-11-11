@@ -1,7 +1,16 @@
-# Decision record (D1–D63)
+# Decision record (D1–D66)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
-the human rendering. Revoked entries remain for history.
+the human rendering. Revoked entries remain for history. D64 (allocations in
+clan vars) and D65 (`remote-builder`) are recorded in SPEC.md §4 only and
+are not yet rendered here.
+
+**Round 24 (2026-11-11) — org standard.** Added D66 and revised D62: the
+repo follows the external-systems org standard, with no change to service
+behavior. One `org-pkgs` input provides nixpkgs, formatting, docs, the
+lock-sync check and the VM-test runner. The dev shell is devenv and CI is
+the org workflow. VM suites run one at a time on the remote builder and
+pass on the build's exit status.
 
 **Round 21 (2026-10-29) — correctness and stable convergence.** D63 limits
 BGP/BFD exposure to fabric interfaces and declared literal upstream sources,
@@ -28,7 +37,7 @@ A no-op reload must have an empty dry-run diff, preserve peer uptimes, and
 leave the RIB immediately identical rather than waiting for recovery.
 
 **Round 19 (2026-10-28) — artifact authority and static-only checks.** Added
-D62: `pkgs` owns shared inputs, overlays, packages, and airgap artifacts; VM
+D62 (revised round 24): `pkgs` owns shared inputs, overlays, packages, and airgap artifacts; VM
 suites moved to `legacyPackages.<system>.vmTests`.
 
 **Round 18 (2026-10-27) — IfState-only static networking.** Added D61;
@@ -194,7 +203,40 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D59 | active (r17) | Fabric topology roles renamed leaf/spine; automatic symmetric adjacency graph (every spine pair adjacent, leaves default to all spines, explicit leaf subset allowed, no mutual lists); routed_fabric and networkFacts schemas bump to 2 |
 | D60 | active (r17, amended 2026-10-26) | ClusterMesh placement selectors (voters/workers/all/labels) and exposure enum auto\|internal-load-balancer\|node-port\|external-load-balancer; NodePort pins exactly one apiserver per selected node; internal exposure is ONE pinned IPv4 VIP (host offset `0x79`) from the existing `<instance>-fabric` pool — control plane IPv4-only on Cilium 1.20.3, data plane stays dual-stack; external always wins with explicit non-clan class + DNS name |
 | D61 | active (r18) | IfState 2.5.1 is the exclusive static network renderer; live reconciliation, no networkd/netdev/scripted networking, per-link DHCP hooks, runtime-secret includes, FRR/Cilium ownership boundaries |
-| D62 | active (r19) | `pkgs` owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
+| D62 | revised (r24) | `org-pkgs` (external-systems/pkgs) owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
+| D66 | active (r24) | Org standard: one `org-pkgs` input and `flakeModules.default` (treefmt, docs, lock-sync, VM runner), no dev partition, devenv shell, org CI; VM suites in `clanTests`, one at a time on euc-hel-0 (96 GiB / 36 vCPUs per suite, 2 h), exit status is the result |
+
+## Round 24 decisions in detail
+
+### D66 — The org standard
+
+The repo has the same shape as every other external-systems repo:
+
+- **`flake.nix`** has one org input, `org-pkgs`; nixpkgs, flake-parts and
+  import-tree follow it.
+- **`inputs.org-pkgs.flakeModules.default`** provides:
+  - the formatter, with every nixf-diagnose rule;
+  - the docs site and deck from plain Markdown;
+  - the lock-sync check;
+  - the `vm-test` runner.
+- **Root modules** live in `flake-parts/`.
+- **The dev shell** is devenv; **CI** is the org `ci.yml`, which runs
+  `nix flake check`, publishes the docs to GitHub Pages and tags releases.
+
+VM suites are declared next to their service in `clanTests.<suite>` and
+wrapped in clan-core's `clanTest`. The owner approved larger resource
+limits for this repo, because its suites boot whole topologies:
+
+| Limit | Value |
+|---|---|
+| Per suite | 96 GiB and 36 vCPUs |
+| Per VM | 16 GiB and 8 vCPUs |
+| Default timeout | 2 hours |
+
+The limits are sized for euc-hel-0, which runs one suite at a time.
+Evaluating every suite's derivation is too heavy for CI, so that check runs
+by hand with `vm-test --check`, one suite per process. A suite passes when
+its sandboxed build exits 0. Its log is `.vm-tests/<suite>/build.log`.
 
 ## Round 19 decisions in detail
 
@@ -207,8 +249,9 @@ overlays, and consumes published artifacts instead of rebuilding them. The
 `pkgs` input remains replaceable by downstream users, but consumers do not
 need to declare it directly.
 
-`clan.nixosTests` is still the declaration interface. The local output adapter
-places every suite under `legacyPackages.<system>.vmTests`; `checks` contains
+Since round 24 (D66) the input is named `org-pkgs`, suites are declared in
+`clanTests`, and org-pkgs `flakeModules.vmTests` places every suite under
+`legacyPackages.<system>.vmTests`; `checks` contains
 only lightweight static checks. VM derivations must never return to `checks`.
 
 ## Round 18 decisions in detail

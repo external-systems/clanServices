@@ -1,4 +1,4 @@
-{lib}: rec {
+{lib}: {
   adjacencyKey = instanceName: a: b: "${instanceName}:${
     lib.concatStringsSep ":" (
       lib.sort builtins.lessThan [

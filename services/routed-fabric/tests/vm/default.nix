@@ -112,7 +112,7 @@ in {
       };
       imports = [
         (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
           addresses = ["${address}/24"];
         })
       ];
