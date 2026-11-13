@@ -20,7 +20,7 @@ Load skills: clanservices (new service skeleton, manifest, roles, eval tests), i
 Goal: a NixOS machine can be the single home NAT gateway, opted-in leaves can egress through one border, and floating IPs coexist with clanServices networking.
 
 Do:
-1. SPEC.md and docs first: new decision(s) for border egress, the gateway service, and floating addresses. HA NAT and floating-IP movement are explicitly out of scope (a supporting NixOS module or Kubernetes operator moves floating IPs; HA NAT is a live-migratable gateway VM or state sync outside clanServices). Add documentation/docs/services/gateway.md and a nav entry in documentation/mkdocs.yml.
+1. SPEC.md and docs first: new decision(s) for border egress, the gateway service, and floating addresses. HA NAT and floating-IP movement are explicitly out of scope (a supporting NixOS module or Kubernetes operator moves floating IPs; HA NAT is a live-migratable gateway VM or state sync outside clanServices). Add documentation/docs/services/gateway.md and a nav entry in flake-parts/docs.nix (there is no mkdocs.yml).
 2. routed-fabric border egress:
    - `border.egress.enable` on exactly one border per instance (assert); leaves opt in with `defaultRoute = "egress"` (default "none").
    - The border originates 0.0.0.0/0 and ::/0 only toward opted-in leaves (route-map per adjacency); every other adjacency still filters defaults out (keep the D63 negatives green).
@@ -39,7 +39,7 @@ Do:
    - 20 home edge router: an ISP emulator (DHCPv4, DHCPv6 with PD, RA); LAN clients get v4 via kea and v6 via RA from the delegated prefix; the ISP changes the delegated prefix and LAN clients renumber; reboot the gateway and everything returns. SCENARIO_20_HOME_EDGE_OK.
    - 21 floating IP coexistence: a stub mover (a shell loop with `ip addr add/del`) moves the address between two candidates; `ifstatecli apply` on the holder keeps it; FRR advertises it only from the holder. SCENARIO_21_FLOATING_IP_OK.
 
-Verify: `nix fmt . && nix flake check --show-trace`; the three scenarios; regressions: routed-fabric, scenario 9 (exposure) and netif-dhcp. Report markers and log paths.
+Verify: `fmt && check` (`nix fmt`, `nix flake check --show-trace`); the three scenarios; regressions: routed-fabric, scenario 9 (exposure) and netif-dhcp. Report markers and results.
 
 Pitfalls:
 - A default route in main on a WireGuard leaf breaks its own endpoint reachability; that is why the egress default lives in a policy table behind a fwmark rule.

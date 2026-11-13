@@ -27,7 +27,8 @@ matrices in your GitOps repos.
 - **Distro runtime upgrades.** Bump the artifact flake, rebuild, and roll the
   fleet servers-first per the skew policy. Its nixpkgs, package, overlay, and
   image updates publish independently; clanServices needs only a deliberate
-  `nix flake update pkgs` lock refresh, not parallel packaging edits (D62).
+  `nix flake update org-pkgs` lock refresh (then `sync-locks` in the same
+  commit), not parallel packaging edits (D62, D66).
 - **Cilium upgrades after handoff.** pkgs bump → rebuild → republish →
   GitOps applies (D40). The bootstrap apply itself is a one-time event; post
   adoption your GitOps owns the bundle's lifecycle, and a publish-freshness

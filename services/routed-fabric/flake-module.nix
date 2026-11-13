@@ -5,7 +5,7 @@
   ...
 }: let
   module = lib.modules.importApply ./default.nix {
-    ifstateOverlay = inputs.pkgs.overlays.ifstate;
+    ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   };
   clanLib = inputs.clan-core.lib;
 in rec {
@@ -30,9 +30,10 @@ in rec {
         ;
       inherit (clan) exportInterfaces;
     };
-    clan.nixosTests.routed-fabric = {
-      imports = [./tests/vm/default.nix];
-      inherit clan;
-    };
+  };
+
+  clanTests.routed-fabric = {
+    imports = [./tests/vm/default.nix];
+    inherit clan;
   };
 }

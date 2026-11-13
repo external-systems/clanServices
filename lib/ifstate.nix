@@ -74,7 +74,7 @@ in {
       }
       {
         assertion = lib.versionAtLeast config.networking.ifstate.package.version "2.5";
-        message = "clanServices requires IfState >= 2.5; apply inputs.pkgs.overlays.ifstate or provide an equivalent newer package";
+        message = "clanServices requires IfState >= 2.5; apply inputs.org-pkgs.overlays.ifstate or provide an equivalent newer package";
       }
       {
         assertion = lib.length wireguardPortClaims == lib.length wireguardPorts;

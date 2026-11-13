@@ -3,14 +3,13 @@
   module,
   clanLib,
   exportInterfaces,
-  self,
   inputs,
   ...
 }: let
   rke2Module = module;
-  k3sModule = lib.modules.importApply ../../k3s/default.nix {inherit self inputs;};
+  k3sModule = lib.modules.importApply ../../k3s/default.nix {inherit inputs;};
   wgModule = lib.modules.importApply ../../wireguard-mesh/default.nix {
-    ifstateOverlay = inputs.pkgs.overlays.ifstate;
+    ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   };
   kube = import ../../../lib/kube-cluster {inherit lib;};
 

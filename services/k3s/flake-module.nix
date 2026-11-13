@@ -4,7 +4,7 @@
   lib,
   ...
 }: let
-  module = lib.modules.importApply ./default.nix {inherit self inputs;};
+  module = lib.modules.importApply ./default.nix {inherit inputs;};
   clanLib = inputs.clan-core.lib;
 in rec {
   clan = {
@@ -29,47 +29,48 @@ in rec {
         ;
       inherit (clan) exportInterfaces;
     };
-    clan.nixosTests = {
-      k3s-single = {
-        imports = [./tests/vm/single.nix];
-        inherit clan;
-      };
-      k3s-join = {
-        imports = [./tests/vm/join.nix];
-        inherit clan;
-      };
-      k3s-ha = {
-        imports = [./tests/vm/ha.nix];
-        inherit clan;
-      };
-      k3s-data-plane = {
-        imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
-        inherit clan;
-      };
-      k3s-clustermesh = {
-        imports = [./tests/vm/clustermesh.nix];
-        inherit clan;
-      };
-      k3s-clustermesh-tunnel = {
-        imports = [./tests/vm/clustermesh-tunnel.nix];
-        inherit clan;
-      };
-      k3s-clustermesh-external = {
-        imports = [./tests/vm/clustermesh-external.nix];
-        inherit clan;
-      };
-      k3s-clustermesh-external-native = {
-        imports = [./tests/vm/clustermesh-external-native.nix];
-        inherit clan;
-      };
-      k3s-clustermesh-selective = {
-        imports = [./tests/vm/clustermesh-selective.nix];
-        inherit clan;
-      };
-      k3s-clustermesh-selective-tunnel = {
-        imports = [./tests/vm/clustermesh-selective-tunnel.nix];
-        inherit clan;
-      };
+  };
+
+  clanTests = {
+    k3s-single = {
+      imports = [./tests/vm/single.nix];
+      inherit clan;
+    };
+    k3s-join = {
+      imports = [./tests/vm/join.nix];
+      inherit clan;
+    };
+    k3s-ha = {
+      imports = [./tests/vm/ha.nix];
+      inherit clan;
+    };
+    k3s-data-plane = {
+      imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
+      inherit clan;
+    };
+    k3s-clustermesh = {
+      imports = [./tests/vm/clustermesh.nix];
+      inherit clan;
+    };
+    k3s-clustermesh-tunnel = {
+      imports = [./tests/vm/clustermesh-tunnel.nix];
+      inherit clan;
+    };
+    k3s-clustermesh-external = {
+      imports = [./tests/vm/clustermesh-external.nix];
+      inherit clan;
+    };
+    k3s-clustermesh-external-native = {
+      imports = [./tests/vm/clustermesh-external-native.nix];
+      inherit clan;
+    };
+    k3s-clustermesh-selective = {
+      imports = [./tests/vm/clustermesh-selective.nix];
+      inherit clan;
+    };
+    k3s-clustermesh-selective-tunnel = {
+      imports = [./tests/vm/clustermesh-selective-tunnel.nix];
+      inherit clan;
     };
   };
 }

@@ -1,4 +1,12 @@
 result
+result-*
+.devenv*
 .direnv
-
+devenv.local.nix
+# Pages builds happen in CI only; never commit them.
+_site/
+site/
+# vm-test logs and driver output.
+.vm-tests/
+# Agent hand-off notes (baton-pass skill); never committed.
 .baton-pass/

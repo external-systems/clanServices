@@ -1,3 +1,5 @@
+# Every clan service in `clan.modules` must have a nix-unit suite in
+# `tests.systems.<system>.<moduleName>`; evaluation throws otherwise.
 {
   lib,
   self,
@@ -23,7 +25,8 @@
           ${lib.concatMapStringsSep "\n" (n: "  - ${n}") untested}
 
           Every service in `clan.modules` must have a nix-unit test registered at
-          `tests.systems.${system}.<moduleName>`. See services/wifi for an example.
+          `tests.systems.${system}.<moduleName>` (perSystem `nix-unit.tests.<moduleName>`
+          in the service's flake-module.nix; services/netif is an example).
         ''
       else
         pkgs.runCommand "service-test-coverage-${system}"

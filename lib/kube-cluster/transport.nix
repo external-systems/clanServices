@@ -19,7 +19,7 @@
   minOf = xs: lib.foldl' lib.min 65535 xs;
 
   sorted = lib.sort builtins.lessThan;
-in rec {
+in {
   # Validate one machine's node_transport export and derive the facts.
   # transport: the export value (node_transport subtree), or null.
   resolve = {

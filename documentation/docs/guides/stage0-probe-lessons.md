@@ -420,7 +420,7 @@ hard way.
   otherwise validation fails with `invalid object to validate`. Raw API
   fixtures must also use arrays for `containers` and `ports`, not kubenix's
   name-keyed merge-map form.
-- Keep probe logs under `.baton-pass/vm-logs/`; `/tmp` is wiped on reboot.
+- Keep probe logs in the repo (VM runs: `.vm-tests/<suite>/`); `/tmp` is wiped on reboot.
 - Run one probe at a time. Remove scratch registrations and probe files after
   extracting the lesson so they cannot leak into a final commit.
 - A dirty-tree VM run can invalidate clan-core `merged-test-dir-*` IFD

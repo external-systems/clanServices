@@ -31,7 +31,7 @@ Do:
 7. Eval tests, positive and negative, for: mac format, interface/mac exclusivity, name length, PD option rendering, pathMtu < 1280 rejected, pathMtu winning in routed-fabric and wireguard-mesh, the DHCP-without-MTU warning.
 8. Extend the netif-dhcp VM suite (or add `netif-dhcp6` if the runtime exceeds about 10 minutes) with: a DHCPv6 server that delegates a /56 (kea or dnsmasq in the server node; the netif VM fixture already runs a DHCPv4 server), a client receiving an address and a prefix, an RA-only link on a forwarding machine (accept_ra = 2) whose default route survives at least two RA lifetimes (set a short AdvDefaultLifetime, poll with a deadline, no sleeps), and a match.mac link whose kernel name differs from the logical name (set the MAC with `virtualisation.interfaces` or a udev rename). Print a new marker, for example NETIF_DHCP6_PD_OK, alongside NETIF_DHCP_RA_IFSTATE_OK.
 
-Verify: `nix fmt . && nix flake check --show-trace`; `nix run .#vm-test -- netif`, `netif-dhcp` (and the new suite), `routed-fabric`, `wireguard-mesh`, `k3s-data-plane`. Report markers and log paths.
+Verify: `fmt && check` (`nix fmt`, `nix flake check --show-trace`); `vm-test netif --remote --quiet`, `netif-dhcp` (and the new suite), `routed-fabric`, `wireguard-mesh`, `k3s-data-plane`. Report markers and results.
 
 Pitfalls:
 - QEMU NICs in VM tests have deterministic MACs; read the actual MAC from the node (`cat /sys/class/net/eth1/address`) at test time or set it explicitly; do not guess.

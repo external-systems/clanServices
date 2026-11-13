@@ -1,5 +1,5 @@
 {inputs, ...}: let
-  ifstateOverlay = inputs.pkgs.overlays.ifstate;
+  ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
 in {
   name = "netif-dhcp";
 
@@ -81,18 +81,20 @@ in {
   testScript = ''
     try:
         start_all()
-        server.wait_for_unit("dnsmasq.service", timeout=120)
-        server.wait_for_unit("radvd.service", timeout=120)
-        client.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
-        client.wait_until_succeeds("ip addr show eth1 | grep -q '10.99.0.5[0-9]/24'", timeout=120)
-        client.wait_until_succeeds("ip route show default | grep -q 'via 10.99.0.1'", timeout=60)
-        client.wait_until_succeeds("ip -6 addr show eth1 | grep -q 'fd00:99::.*dynamic'", timeout=120)
-        client.wait_until_succeeds("ip -6 route show default | grep -q 'via fe80::'", timeout=60)
-        client.succeed("systemctl start ifstate.service")
-        client.succeed("pgrep -fc 'dhcpcd.* eth1( |$)' | grep -qx 1")
-        client.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
-        client.fail("systemctl is-active systemd-networkd.service")
-        print("NETIF_DHCP_RA_IFSTATE_OK")
+        with subtest("DHCPv4 lease and RA address"):
+            server.wait_for_unit("dnsmasq.service", timeout=120)
+            server.wait_for_unit("radvd.service", timeout=120)
+            client.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
+            client.wait_until_succeeds("ip addr show eth1 | grep '10.99.0.5[0-9]/24' >/dev/null", timeout=120)
+            client.wait_until_succeeds("ip route show default | grep 'via 10.99.0.1' >/dev/null", timeout=60)
+            client.wait_until_succeeds("ip -6 addr show eth1 | grep 'fd00:99::.*dynamic' >/dev/null", timeout=120)
+            client.wait_until_succeeds("ip -6 route show default | grep 'via fe80::' >/dev/null", timeout=60)
+        with subtest("one dhcpcd per link under IfState"):
+            client.succeed("systemctl start ifstate.service")
+            client.succeed("pgrep -fc 'dhcpcd.* eth1( |$)' | grep -x 1 >/dev/null")
+            client.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
+            client.fail("systemctl is-active systemd-networkd.service")
+            print("NETIF_DHCP_RA_IFSTATE_OK")
         print("NETIF_DHCP_OK")
     except Exception:
         for machine in [client, server]:

@@ -55,7 +55,7 @@ in {
   nodes = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
     imports = [
       (import ../../../../tests/ifstate-vm.nix {
-        ifstateOverlay = inputs.pkgs.overlays.ifstate;
+        ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         addresses = [
           "192.168.1.${
             toString
@@ -96,40 +96,44 @@ in {
         start_all()
         print("ALLOCATIONS " + json.dumps(addresses, sort_keys=True))
 
-        for machine in machines:
-            machine.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
-            machine.wait_until_succeeds("ip link show wg-mesh", timeout=60)
-            allocated = addresses[machine.name]
-            ipv4, ipv6 = allocated["ipv4"], allocated["ipv6"]
-            machine.succeed(f"ip -br addr show wg-mesh | grep -F '{ipv4}/32'")
-            machine.succeed(f"ip -br addr show wg-mesh | grep -F '{ipv6}/128'")
-            peers = machine.succeed("wg show wg-mesh peers").strip().splitlines()
-            assert len(peers) == 2, f"{machine.name} has {len(peers)} peers instead of 2"
-        print("WIREGUARD_MESH_ALLOCATED_OK")
-
-        for source in machines:
-            for target in machines:
-                if source.name == target.name:
-                    continue
-                allocated = addresses[target.name]
+        with subtest("allocated mesh addresses and peers"):
+            for machine in machines:
+                machine.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
+                machine.wait_until_succeeds("ip link show wg-mesh", timeout=60)
+                allocated = addresses[machine.name]
                 ipv4, ipv6 = allocated["ipv4"], allocated["ipv6"]
-                source.wait_until_succeeds(f"ping -c2 -W2 {ipv4}", timeout=120)
-                source.wait_until_succeeds(f"ping -6 -c2 -W2 {ipv6}", timeout=120)
+                machine.succeed(f"ip -br addr show wg-mesh | grep -F '{ipv4}/32'")
+                machine.succeed(f"ip -br addr show wg-mesh | grep -F '{ipv6}/128'")
+                peers = machine.succeed("wg show wg-mesh peers").strip().splitlines()
+                assert len(peers) == 2, f"{machine.name} has {len(peers)} peers instead of 2"
+            print("WIREGUARD_MESH_ALLOCATED_OK")
 
-        for machine in machines:
-            handshakes = machine.succeed("wg show wg-mesh latest-handshakes").strip().splitlines()
-            assert len(handshakes) == 2, f"{machine.name} has incomplete handshake state: {handshakes}"
-            assert all(int(line.split()[-1]) > 0 for line in handshakes), (
-                f"{machine.name} has a zero handshake: {handshakes}"
-            )
+        with subtest("full-mesh ping and handshakes"):
+            for source in machines:
+                for target in machines:
+                    if source.name == target.name:
+                        continue
+                    allocated = addresses[target.name]
+                    ipv4, ipv6 = allocated["ipv4"], allocated["ipv6"]
+                    source.wait_until_succeeds(f"ping -c2 -W2 {ipv4}", timeout=120)
+                    source.wait_until_succeeds(f"ping -6 -c2 -W2 {ipv6}", timeout=120)
 
-        alpha.succeed("getent ahosts beta.mesh | grep -Eq '^${addresses.beta.ipv4}( |$)'")
-        alpha.succeed("getent ahosts beta.mesh | grep -Eq '^${addresses.beta.ipv6}( |$)'")
-        alpha.wait_until_succeeds("ping -c2 -W2 beta.mesh", timeout=60)
+            for machine in machines:
+                handshakes = machine.succeed("wg show wg-mesh latest-handshakes").strip().splitlines()
+                assert len(handshakes) == 2, f"{machine.name} has incomplete handshake state: {handshakes}"
+                assert all(int(line.split()[-1]) > 0 for line in handshakes), (
+                    f"{machine.name} has a zero handshake: {handshakes}"
+                )
 
-        for machine in machines:
-            code, _ = machine.execute("systemctl list-unit-files | grep -Eq '^(k3s|rke2)'")
-            assert code != 0, f"{machine.name} unexpectedly contains a Kubernetes service"
+        with subtest("mesh DNS names resolve"):
+            alpha.succeed("getent ahosts beta.mesh | grep -E '^${addresses.beta.ipv4}( |$)' >/dev/null")
+            alpha.succeed("getent ahosts beta.mesh | grep -E '^${addresses.beta.ipv6}( |$)' >/dev/null")
+            alpha.wait_until_succeeds("ping -c2 -W2 beta.mesh", timeout=60)
+
+        with subtest("no Kubernetes service on the mesh"):
+            for machine in machines:
+                code, _ = machine.execute("systemctl list-unit-files | grep -E '^(k3s|rke2)' >/dev/null")
+                assert code != 0, f"{machine.name} unexpectedly contains a Kubernetes service"
         print("WIREGUARD_MESH_OK")
     except Exception:
         for machine in machines:

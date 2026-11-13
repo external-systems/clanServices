@@ -199,10 +199,10 @@
       modules = {
         routed-fabric = module;
         netif = lib.modules.importApply ../../netif/default.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         };
         wireguard-mesh = lib.modules.importApply ../../wireguard-mesh/default.nix {
-          ifstateOverlay = inputs.pkgs.overlays.ifstate;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         };
         k3s = clusterModule;
       };

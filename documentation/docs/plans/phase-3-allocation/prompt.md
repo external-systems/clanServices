@@ -1,7 +1,11 @@
 # Phase 3: allocation with clan vars
 
 Part of the [data-plane hardening plan](../data-plane-hardening.md).
-Paste the block below into a fresh agent session.
+Status: **merged** in PR #5 (round 22, SPEC.md D64). Kept as the record of
+what was asked; do not paste it again. Its VM steps predate round 24:
+test vars are now generated during evaluation (no `update-vars`), and
+suites run as AGENTS.md (Tool loop) and
+[Testing](../../reference/testing.md) describe.
 
 ```text
 Repo: external-systems/clanServices (main includes phases 1 and 2).

@@ -34,9 +34,9 @@ Reviewed at `clanServices` `9e704ea` and `pkgs` `9d3976c`.
 | IaC tool | OpenTofu only |
 | netif interface matching | add `match.mac` |
 | Cloud budget | $100/month for ephemeral runs |
-| Formatter | alejandra, always (`nix fmt`), plus statix and deadnix |
-| Verification | full `nix flake check` (static-only `checks`) plus the affected VM suites |
-| VM test logs | `.baton-pass/vm-logs/<suite>/logs-<n>`, gitignored, never committed |
+| Formatter | org-pkgs treefmt (`fmt`): alejandra, statix, deadnix, every nixf rule |
+| Verification | full `nix flake check` (static-only `checks`) plus the affected VM suites on euc-hel-0 (`vm-test <suite> --remote`; several side by side within `vmTests.parallel` with `vm-test --all --remote --rebuild`) |
+| VM test logs | `.vm-tests/<suite>/`, gitignored, never committed; a suite passes on exit 0 (D66) |
 | Compatibility | breaking changes carry no burden: no consumers, deployments or real machines; no migration shims |
 | Deploy target | `targetHost` stays on the underlay address so a fabric change cannot lock out its own deployment |
 
@@ -341,45 +341,42 @@ and errors point at generated JSON. Mitigations: a `tofu validate` check on
 every generated env, and a few typed wrapper options for the fields we
 actually use.
 
-How to wire it: add `terranix` to the existing `dev` partition's
-`dev/flake.nix` (see [Flake inputs](#flake-inputs)); the tf modules live in
-`tf/` and are imported from `dev/flake-module.nix`. A separate `tf`
-partition does not work while `partitionedAttrs` routes `apps`, `checks`
-and `packages` to `dev`, and a subflake cannot use `follows` to inherit the
-parent flake's inputs. The dev partition exposes `packages.<system>.tf-<env>` (via
-`terranix.lib.terranixConfiguration`) plus an `apps.<system>.tf-run` wrapper
-that writes `config.tf.json` into the throwaway run directory and calls
-`tofu`. Recommendation: adopt it in phase 8; it costs one dev-only input and
-removes the `plan.json` step.
+How to wire it: round 24 (D66) removed the `dev` partition, so where
+`terranix` lives is an **open decision for the owner** before phase 8. The
+org standard says a heavy test-only input needs the owner's yes. The two
+options are:
+
+- **A root input** (`terranix`, following `nixpkgs` and `flake-parts`).
+  Consumers lock it, but they only fetch it if they evaluate the `tf-*`
+  outputs.
+- **A partition for `terranix` alone.** The org standard allows this with
+  the owner's yes, but never for formatting or docs.
+
+Either way, the tf modules live in `tf/` and are imported from a
+`flake-parts/tf.nix` module. It exposes `packages.<system>.tf-<env>` (via
+`terranix.lib.terranixConfiguration`) plus an `apps.<system>.tf-run`
+wrapper, which writes `config.tf.json` into the throwaway run directory and
+calls `tofu`. Recommendation: adopt terranix in phase 8. It costs one input
+and removes the `plan.json` step.
 
 ## Flake inputs
 
-Phase 1 leaves this input layout:
+Since round 24 (D66) the inputs follow the org standard:
 
-| Input | Role and location |
+| Input | Role |
 | --- | --- |
-| `pkgs` | root; artifact and shared-input authority (D62) |
-| `nixpkgs`, `flake-parts` | root; follow `pkgs` |
-| `clan-core` | root; clanServices framework, inventory, vars, test harness |
-| `kubenix` | root; renders the bootstrap bundle |
-| `treefmt-nix` | root; shared follow target and the alejandra/statix/deadnix/nixf-diagnose/shellcheck/sizelint wrapper |
-| `nix-unit` | `dev/flake.nix`; eval tests in partitioned `checks` |
-| `presenting` | `dev/flake.nix`; MkDocs site and reveal.js deck in partitioned `packages` |
-| `terranix` (proposed) | `dev/flake.nix` in phase 8: `partitionedAttrs` maps `apps`, `checks` and `packages` to one partition (`dev`), so a separate `tf` partition could not expose `tf-*` packages, apps or checks |
+| `org-pkgs` | artifact and shared-input authority (D62); its `flakeModules.default` gives treefmt, docs and slides, lock-sync and the VM-test runner |
+| `nixpkgs`, `flake-parts`, `import-tree` | follow `org-pkgs` |
+| `clan-core` | clanServices framework, inventory, vars, test harness; follows the above and `org-pkgs/treefmt-nix` |
+| `kubenix` | renders the bootstrap bundle; follows the above |
+| `terranix` (proposed) | phase 8; root input or its own partition, the owner decides (see [Terranix](#terranix)) |
 
-The six former test-only root follows (`data-mesher`, `disko`, `nix-darwin`,
-`nix-select`, `sops-nix`, `systems`) and unused `nix-github-actions` are
-removed. Development inputs moved into flake-parts
-[partitions](https://flake.parts/options/flake-parts-partitions.html), so
-consumers never lock or fetch them. `apps`, `checks`, `devShells`,
-`formatter`, and `packages` (documentation and slides) use
-`partitionedAttrs`; the unpartitioned root `tests.systems` output lets
-nix-unit run directly without a wrapper flake or third lockfile. Removing the
-wrapper exposed two malformed fleet-check diagnostic messages; only their
-attribute-set/list rendering changed, not the assertions. The devShell uses
-`config.treefmt.build.wrapper`. Development URLs are not revision-pinned
-in `dev/flake.nix`: `dev/flake.lock` pins them and `nix flake update` can
-advance them.
+There is no dev partition and no `dev/flake.lock`. `nix-unit` comes from
+nixpkgs, and `checks.nix-unit` evaluates the root `tests.systems` output
+offline. Its `--override-input` list is walked from `flake.lock`, so a new
+input needs no edit there. The phase-1 partition layout (`dev/flake.nix`
+with `nix-unit` and `presenting`) is superseded. The dev shell is devenv,
+and `flake.lock` and `devenv.lock` pin one nixpkgs (`checks.lock-sync`).
 
 ## Phases
 

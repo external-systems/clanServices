@@ -1,0 +1,25 @@
+{
+  "nix.enableLanguageServer": true,
+  "nix.serverPath": "nixd",
+  "nix.serverSettings": {
+    "nixd": {
+      "nixpkgs": {
+        "expr": "import (builtins.getFlake (builtins.toString ./.)).inputs.nixpkgs { }"
+      },
+      "formatting": {
+        "command": ["alejandra", "--quiet"]
+      },
+      "options": {
+        "flake-parts": {
+          "expr": "(builtins.getFlake (builtins.toString ./.)).debug.options"
+        },
+        "flake-parts-perSystem": {
+          "expr": "(builtins.getFlake (builtins.toString ./.)).currentSystem.options"
+        },
+        "nixos": {
+          "expr": "((builtins.getFlake (builtins.toString ./.)).inputs.nixpkgs.lib.nixosSystem { modules = [ { nixpkgs.hostPlatform = builtins.currentSystem; } ]; }).options"
+        }
+      }
+    }
+  }
+}

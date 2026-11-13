@@ -4,6 +4,23 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 24 (2026-11-11): **the repo follows the external-systems org standard
+(D66); no service behavior change.** The artifact flake is the input
+`org-pkgs` (never `pkgs`), and `nixpkgs`, `flake-parts` and `import-tree`
+follow it. `org-pkgs` `flakeModules.default` provides treefmt (every nixf
+rule), the docs site and deck, the lock-sync check and the VM-test runner,
+so the `dev` partition, `formatter.nix`, the `presenting` docs builder, the
+local VM adapter and the local `vm-test` app are gone. Root modules live in
+`flake-parts/` (import-tree). The dev shell is devenv. CI is the org
+`ci.yml`. VM suites are registered in `clanTests` and run through the org
+`vm-test` on euc-hel-0: one suite per sandboxed build, and `vm-test --all`
+runs suites side by side within the `vmTests.parallel` budget, rerunning a
+suite that failed under load alone (`PASS(!)`). A run passes on a zero exit
+status, and logs go to `.vm-tests/<suite>/`. Test scripts group steps in
+`subtest` phases; `*_OK` markers stay as progress lines that the runner no
+longer reads. k3s and RKE2 suites testing one contract share one body in
+`lib/kube-cluster/tests/vm/`.
+
 Round 22 (2026-10-30): **allocate fabric and mesh values once with clan vars
 (D64).** Public, non-deployed generators allocate routed-fabric loopbacks,
 node ASNs, adjacency ports and transfer prefixes, and wireguard-mesh node
@@ -402,7 +419,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D64)
+## 4. Decision record (D1–D66)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1281,7 +1298,7 @@ unless noted) — revoked entries keep one-line reasons for history.
   static and policy routes, rules, and network sysctls for every machine
   managed by these clanServices. `netif`, `routed-fabric`, and
   `wireguard-mesh` compose one shared per-machine base through
-  `lib/ifstate.nix`; `inputs.pkgs.overlays.ifstate` supplies the pinned
+  `lib/ifstate.nix`; `inputs.org-pkgs.overlays.ifstate` supplies the pinned
   pure-pyroute2 package and the base asserts IfState >= 2.5. systemd-networkd, netdevs, scripted network units,
   NetworkManager, global `networking.useDHCP`, and parallel
   `networking.interfaces` ownership are forbidden — no compatibility
@@ -1303,17 +1320,19 @@ unless noted) — revoked entries keep one-line reasons for history.
 ### Round 19 decisions (2026-10-28) — active
 
 - **D62 `pkgs` owns artifacts and shared inputs; VM tests stay out of
-  `checks`.** `external-systems/pkgs` pins nixpkgs and flake-parts;
-  clanServices follows `pkgs/nixpkgs` and `pkgs/flake-parts` so artifact and
+  `checks`** (REVISED round 24, D66: the input is named `org-pkgs`; suites
+  are declared in `clanTests` and run on the org runner).
+  `external-systems/pkgs` pins nixpkgs and flake-parts;
+  clanServices follows `org-pkgs/nixpkgs` and `org-pkgs/flake-parts` so artifact and
   nixpkgs updates do not require an independent clanServices update. The
   artifact flake owns the composed/default, Kubernetes, and IfState overlays,
   the committed Cilium manifest, distro runtime packages, and amd64/arm64
   airgap outputs for x86_64-linux and aarch64-linux. clanServices re-exports
   those overlays and consumes the published manifest and per-system image
-  outputs; consumers may replace the transitive `pkgs` input but do not need
+  outputs; consumers may replace the transitive `org-pkgs` input but do not need
   to declare it. Distro defaults come from the receiving machine's overlaid
   `pkgs.k3s`/`pkgs.rke2`, with explicit package and image overrides retained.
-  `clan.nixosTests` remains the declaration interface, but the local adapter
+  `clanTests` is the declaration interface, and org-pkgs `flakeModules.vmTests`
   emits `legacyPackages.<system>.vmTests`; `checks` contains only lightweight
   static checks. VM derivations must never return to `checks`.
 
@@ -1500,6 +1519,61 @@ unless noted) — revoked entries keep one-line reasons for history.
   the vars it had in home. It touches no network renderer, FRR, Cilium or
   cluster object, and no D1–D64 decision constrains it. Eval-tested
   (`tests.systems.<system>.remote-builder`); no VM suite.
+
+### Round 24 decisions (2026-11-11) — active
+
+- **D66 The repo follows the external-systems org standard.**
+  - **Inputs.** One org input, `org-pkgs` (`github:external-systems/pkgs`).
+    `nixpkgs`, `flake-parts` and `import-tree` follow it; clan-core and
+    kubenix follow those and `org-pkgs/treefmt-nix`.
+  - **No dev partition.** `inputs.org-pkgs.flakeModules.default` supplies:
+    - the formatter (`checks.treefmt`, every nixf-diagnose rule);
+    - the docs site and deck (`documentation/docs`, `documentation/slides`,
+      settings in `flake-parts/docs.nix`);
+    - `checks.lock-sync`;
+    - the VM-test runner.
+
+    `checks.nix-unit` uses nixpkgs' `nix-unit` and walks `flake.lock` for its
+    offline overrides.
+  - **VM suites.** Each service registers its suites in the top-level
+    `clanTests.<suite>` (24 today). `flake-parts/clan-tests.nix` wraps each
+    one in clan-core's `clanTest` and passes it to `vmTests.tests`, so
+    suites stay under `legacyPackages.<system>.vmTests` (D62). k3s and RKE2
+    suites that test one contract (`single`, `join`, `ha`, `data-plane`,
+    `clustermesh`, `clustermesh-tunnel`, `external`, `selective`) share one
+    body in `lib/kube-cluster/tests/vm/<suite>.nix` behind thin per-service
+    wrappers; every distro difference is an explicit `distro` branch. Test
+    scripts group their steps in `with subtest(...)` phases, so a run
+    summary names the failing phase, and still end with their `<SUITE>_OK`
+    marker. Test vars are generated during evaluation by clan-core's
+    `clanTest`; there is no update-vars step.
+  - **Owner-approved limits for this repo,** sized for euc-hel-0 (128 GiB,
+    36 threads):
+    - 96 GiB and 36 vCPUs per suite;
+    - 16 GiB and 8 vCPUs per VM;
+    - a 2-hour default timeout.
+
+    RKE2 nodes need at least 4 GiB and 2 vCPUs, and planned topologies are
+    larger than today's. Raising the limits needs the owner's yes.
+  - **Parallel runs.** `vm-test --all --remote` boots suites side by side,
+    largest first, while their VMs fit `vmTests.parallel` (24 vCPUs and
+    96 GiB); a suite larger than the budget runs alone. A suite that fails
+    beside others is rerun alone; passing then is `PASS(!)`, a pass with a
+    warning that it is timing-sensitive under load. A result already in the
+    store is `CACHED`: nothing booted, so it is not a pass of this run.
+    `--rebuild` boots a fresh copy and works with `--remote`; `--serial`
+    runs one suite at a time.
+  - **Eval checks off in CI.** `vmTests.flakeChecks.enable = false` keeps the
+    whole-suite evaluation out of CI. `vm-test --check` runs the same checks
+    one suite per process.
+  - **Results.** The result is the exit status of the sandboxed build. Each
+    suite writes `.vm-tests/<suite>/{build.log,summary.txt,result.txt}`
+    (gitignored). This replaces the
+    `.baton-pass/vm-logs` path and the runner's marker check from round 20.
+  - **Editor, CI and dev shell.** The dev shell is devenv (`devenv.yaml`
+    imports `org-pkgs/devenv`). CI is the org `ci.yml` (`ci / flake-check`;
+    Pages at `clanservices.external.systems`; `0.0.<commits>` releases).
+    nixd settings are in `.vscode/`.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -2181,9 +2255,9 @@ of inventing addresses or runtime edges.
 
 Seams: pure renderer nix-unit tests (kubenix render determinism
 included); throwaway clans via `clanLib.clan` (inventory boundary);
-`clan.nixosTests` hermetic VM suites exposed only through
-`legacyPackages.<system>.vmTests` (one at a time, sandboxed authoritative;
-never `checks`); artifact source/hash/render gates (incl.
+`clanTests` hermetic VM suites exposed only through
+`legacyPackages.<system>.vmTests` (sandboxed authoritative, side by side
+only within `vmTests.parallel`; never `checks`, D66); artifact source/hash/render gates (incl.
 committed-manifest inflation proofs and publish-freshness checks,
 D26/D40). Standard internal HTTP test workload: **go-httpbin** (pinned,
 airgap-carried as a test-fixture artifact). Rules: hermetic/offline;
@@ -2193,16 +2267,18 @@ facts in the routed-fabric and wireguard-mesh suites; dual-stack asserted in
 every boot test; round-trips + failure behavior (BGP withdrawal keeps VIP via
 healthy nodes); negative assertions; operational postconditions; fail fast.
 Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
-Every registered VM suite prints exactly one final `<SUITE>_OK` marker (suite
-name upper-cased, `-` → `_`) as the last statement of its `testScript`, after
-every assertion. Intermediate markers remain. `vm-test --list` shows the
-expected marker. When a successful cached build produces no live marker, the
-runner appends `nix log <target>` under a `--- cached build log ---` header and
-checks that log; a marker found there passes. If no cached build log is
-available, the run fails with `suite <name>: cached result has no build log;
-rerun with: nix run .#vm-test -- --rebuild <name>`. A run whose live and cached
-logs both lack the marker still fails with `suite <name> exited 0 but did not
-print <SUITE>_OK`; the runner never passes without seeing the marker.
+A suite passes when its sandboxed build exits 0 (`vm-test <suite>
+--remote`, or `PASS`/`PASS(!)` in a `vm-test --all --remote --rebuild`
+run; `CACHED` booted nothing and proves nothing new); the build log is
+`.vm-tests/<suite>/build.log` and the run summary (subtests, `!!!`
+failures, first build errors) is `.vm-tests/<suite>/summary.txt`. Test
+scripts group their steps in `with subtest(...)` phases, and pipelines in
+them read whole streams (`grep PAT >/dev/null`, never `grep -q`). Every suite
+still prints a final `<SUITE>_OK` marker (suite name upper-cased, `-` →
+`_`) as the last statement of its `testScript`, after every assertion, and
+intermediate markers remain. They help a reader follow the log, but the
+runner does not check them (D66). A *VM-proven* status names the suite and
+its marker.
 
 Eval tests commit readable public allocation fixtures under
 `services/<svc>/tests/fixtures/vars/{per-machine,shared}` and never recompute

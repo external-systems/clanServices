@@ -77,7 +77,6 @@
   # directRoutingDevice or MTU, and cannot disable the ClusterMesh subsystem
   # or desync maxConnectedClusters from the mesh setting (D60 uniformity).
   contradictions = {
-    instanceName,
     merged,
     transportFacts,
     maxConnectedClusters,
@@ -191,7 +190,7 @@ in {
       settings.cilium.helmValues;
 
     bad = contradictions {
-      inherit instanceName merged transportFacts;
+      inherit merged transportFacts;
       maxConnectedClusters = settings.mesh.maxConnectedClusters;
     };
   in

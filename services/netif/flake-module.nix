@@ -4,7 +4,7 @@
   ...
 }: let
   module = lib.modules.importApply ./default.nix {
-    ifstateOverlay = inputs.pkgs.overlays.ifstate;
+    ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   };
   clanLib = inputs.clan-core.lib;
 in rec {
@@ -22,15 +22,16 @@ in rec {
         ;
       inherit (clan) exportInterfaces;
     };
-    clan.nixosTests = {
-      netif = {
-        imports = [./tests/vm/default.nix];
-        inherit clan;
-      };
-      netif-dhcp = {
-        imports = [./tests/vm/dhcp.nix];
-        inherit clan;
-      };
+  };
+
+  clanTests = {
+    netif = {
+      imports = [./tests/vm/default.nix];
+      inherit clan;
+    };
+    netif-dhcp = {
+      imports = [./tests/vm/dhcp.nix];
+      inherit clan;
     };
   };
 }
