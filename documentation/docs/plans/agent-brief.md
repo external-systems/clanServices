@@ -69,6 +69,8 @@ nix build .#checks.x86_64-linux.nix-unit -L   # only the eval tests, with output
 vm-test --list                    # registered VM suites
 vm-test --check [<suite>]         # suites evaluate and fit the caps, one Nix process each
 vm-test <suite> --remote          # one suite on euc-hel-0; log in .vm-tests/<suite>/build.log
+vm-test <suite> --remote --quiet  # same, printing only the run summary (.vm-tests/<suite>/summary.txt)
+vm-test --summary <suite>         # the last run's summary again, without building
 vm-test --all --serial --remote   # every suite, one at a time (never plain --all)
 vm-test <suite> --rebuild         # rerun a suite that already passed
 vm-test <suite> --driver --interactive   # debug only, runs VMs locally

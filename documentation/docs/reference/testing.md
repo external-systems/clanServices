@@ -17,13 +17,18 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
     Never use plain `--all`, which builds suites side by side.
   - `vm-test --list` lists the suites.
   - `vm-test <suite> --rebuild` reruns a suite that already passed.
+  - `vm-test <suite> --remote --quiet` keeps the full log in `build.log`
+    and prints only the run summary; `vm-test --summary <suite>` prints the
+    last run's summary again without building.
   - `vm-test --check` checks that every suite evaluates and fits the
     resource limits. It uses one Nix process per suite (about 3 GB each).
 - **Results and logs.** Sandboxed runs are authoritative: a suite passes
   when its build exits 0. Driver and interactive modes (`--driver`,
   `--interactive`) are for debugging only, and every fix found that way is
-  re-proven with a sandboxed run. Logs go to `.vm-tests/<suite>/build.log`
-  (gitignored).
+  re-proven with a sandboxed run. Every run ends with a summary (subtests
+  started, `!!!` failures, first build errors such as the test-script
+  linter), saved as `.vm-tests/<suite>/summary.txt`; read it before the full
+  log in `.vm-tests/<suite>/build.log` (both gitignored).
 - **Markers.** Every suite prints one final `<SUITE>_OK` (suite name
   upper-cased, `-` → `_`) as the last statement of its `testScript`, after
   every assertion, and intermediate markers remain. They are for readers;

@@ -2248,7 +2248,9 @@ every boot test; round-trips + failure behavior (BGP withdrawal keeps VIP via
 healthy nodes); negative assertions; operational postconditions; fail fast.
 Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
 A suite passes when its sandboxed build exits 0 (`vm-test <suite>
---remote`); the build log is `.vm-tests/<suite>/build.log`. Every suite
+--remote`); the build log is `.vm-tests/<suite>/build.log` and the run
+summary (subtests, `!!!` failures, first build errors) is
+`.vm-tests/<suite>/summary.txt`. Every suite
 still prints a final `<SUITE>_OK` marker (suite name upper-cased, `-` →
 `_`) as the last statement of its `testScript`, after every assertion, and
 intermediate markers remain. They help a reader follow the log, but the

@@ -82,6 +82,19 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `documentation/` together.** The old `services/rancher-cluster-spec.*`
   pair is retired.
 
+## Tool loop
+
+- The shell is devenv. If `DEVENV_ROOT` is unset, run commands with
+  `devenv shell -- <cmd>`, or the flake apps (`nix run .#vm-test -- ...`).
+- `git add -A`, then `fmt`, then `check`. Both must pass before a change is
+  done.
+- Bump the org input with `nix flake update org-pkgs`, then `sync-locks`
+  in the same commit.
+- VM suites: `vm-test --check <suite>` before booting anything, then
+  `vm-test <suite> --remote --quiet` and read the printed summary
+  (`vm-test --summary <suite>` reprints it). The exit status is the result;
+  open `.vm-tests/<suite>/build.log` only where the summary points.
+
 ## Hard rules
 
 1. `git add` new files BEFORE any nix eval — Nix reads the git tree.

@@ -94,6 +94,7 @@ docs-build               # static docs to ./result-docs; open index.html from di
 devenv up                # live docs on :8981 and slides on :8982
 vm-test --list           # the VM suites
 vm-test <suite> --remote # one suite on the remote builder
+vm-test --summary <suite>  # the last run's summary (subtests, failures)
 vm-test --all --serial --remote  # every suite, one at a time
 vm-test --check          # every suite evaluates and fits the caps, one per process
 ```

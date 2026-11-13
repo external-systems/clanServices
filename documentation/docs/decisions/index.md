@@ -259,7 +259,7 @@ only lightweight static checks. VM derivations must never return to `checks`.
 ### D61 — IfState-only static networking
 
 `netif`, `routed-fabric`, and `wireguard-mesh` render one composed
-`networking.ifstate.settings` tree. `inputs.pkgs.overlays.ifstate` supplies
+`networking.ifstate.settings` tree. `inputs.org-pkgs.overlays.ifstate` supplies
 IfState 2.5.1; `lib/ifstate.nix` supplies the per-machine base, package
 overlay, version assertion, competing-manager assertions, and
 Cilium/table-200 ignores. The service
