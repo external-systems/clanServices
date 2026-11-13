@@ -105,6 +105,34 @@ and assert those exact values with `ROUTED_FABRIC_ALLOCATED_OK` and
 `WIREGUARD_MESH_ALLOCATED_OK` markers. Other suites retain explicit address
 pins where they exercise override behavior.
 
+## Proving a test refactor faithful
+
+A change to how suites are written (subtest phases, shared k3s/RKE2
+bodies, `grep` rewrites) must not change what they test. Prove it before
+booting anything:
+
+```bash
+nix run .#suite-snapshot -- /tmp/base            # before editing (or in a worktree of main)
+# ... edit, git add ...
+nix run .#suite-snapshot -- /tmp/after --pin /tmp/base
+nix run .#suite-compare -- /tmp/base /tmp/after   # exit 0: every suite faithful
+```
+
+- `suite-snapshot` records, per suite, every node's system derivation,
+  the rendered test script and the `clan.directory` store path, four
+  suites at a time (about 3 GB of evaluation each).
+- `--pin BASE` evaluates with each suite's `clan.directory` forced to the
+  baseline copy (`VM_SUITE_DIR`, impure, set in
+  `flake-parts/clan-tests.nix`). `clan.directory = ./.` copies the whole
+  test directory into every node closure, so without the pin any edit in
+  that directory changes every node.
+- `suite-compare` requires equal node derivations and equal test scripts
+  once `with subtest(...)` lines (and the indent under them) and
+  `| grep -<flags>q PAT` → `| grep -<flags> PAT >/dev/null` rewrites are
+  normalized away. Anything else is printed for review and fails.
+
+Then run the changed suites (`vm-test --all --remote --rebuild`).
+
 ## Current suites
 
 - Existing single/join/HA per distro run on **wireguard-mesh** and assert

@@ -421,5 +421,5 @@ No phase needs a cloud account before phase 8.
   cloud machines would hairpin through Europe; add a North American spine
   when the first one arrives.
 - The deploy-target rule (`targetHost` on the underlay) is now AGENTS.md
-  rule 12; phase 2 adds an eval assertion that `targetHost` never resolves
+  rule 11; phase 2 adds an eval assertion that `targetHost` never resolves
   to a fabric, transfer or tunnel address.

@@ -251,7 +251,12 @@ side by side, largest first, while their VMs fit `vmTests.parallel`
 beside others is rerun alone, and passing then is `PASS(!)`: a pass with a
 warning that the suite is timing-sensitive under load. A result already in
 the store is `CACHED` and booted nothing; `--rebuild` boots a fresh copy,
-also on the remote builder. Evaluating every suite's derivation is too
+also on the remote builder, and `--resume` continues an interrupted
+`--all` run. A refactor of the suites is proven faithful with
+`nix run .#suite-snapshot` and `nix run .#suite-compare` (equal node
+derivations and normalized test scripts). `check` and CI fail on
+dangerous evaluation warnings (org-pkgs `evalWarnings.deny`) and list the
+rest. Evaluating every suite's derivation is too
 heavy for CI, so that check runs by hand with `vm-test --check`, one suite
 per process. A suite passes when its sandboxed build exits 0. Each suite
 writes `.vm-tests/<suite>/{build.log,summary.txt,result.txt}`.

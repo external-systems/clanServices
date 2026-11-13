@@ -29,6 +29,11 @@
           test
         ];
         defaults._module.args.clan-core = inputs.clan-core;
+        # suite-snapshot --pin: evaluate against a baseline copy of the
+        # test directory (impure only; pure evaluation reads "").
+        clan.directory = lib.mkIf (builtins.getEnv "VM_SUITE_DIR" != "") (
+          lib.mkForce (builtins.storePath (builtins.getEnv "VM_SUITE_DIR"))
+        );
       })
       config.clanTests;
 
