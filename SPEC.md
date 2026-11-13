@@ -61,7 +61,7 @@ marker the test prints; VM logs live in
 `.baton-pass/vm-logs/<suite>/logs-<n>` (never committed). Verification is a
 full `nix flake check` (`checks` is static-only), formatting is alejandra,
 breaking changes need no shims, and `targetHost` stays on the underlay
-(AGENTS.md rules 2 and 10–12).
+(AGENTS.md rules 2 and 9–11).
 
 Phase 1 is implemented on PR #2 (pending merge). It uses alejandra, statix,
 deadnix, and nixf-diagnose through treefmt-nix. The nixf-diagnose gate is
@@ -1562,7 +1562,18 @@ unless noted) — revoked entries keep one-line reasons for history.
     warning that it is timing-sensitive under load. A result already in the
     store is `CACHED`: nothing booted, so it is not a pass of this run.
     `--rebuild` boots a fresh copy and works with `--remote`; `--serial`
-    runs one suite at a time.
+    runs one suite at a time; `--resume` continues an interrupted `--all`
+    run, skipping suites whose last result passed for the same test
+    derivation.
+  - **Faithful test refactors.** A refactor of suites (subtests, shared
+    k3s/RKE2 bodies, rewrites) is proven with `nix run .#suite-snapshot`
+    before and after (`--pin` the baseline's `clan.directory`) and
+    `nix run .#suite-compare`: every node derivation and every normalized
+    test script equal the baseline. `vm-test --check` rejects `| grep -q`
+    in test scripts.
+  - **Evaluation warnings.** `check` and CI run `nix run .#flake-check`:
+    warnings matching org-pkgs `evalWarnings.deny` (ignored, removed or
+    insecure config) fail; the rest are listed.
   - **Eval checks off in CI.** `vmTests.flakeChecks.enable = false` keeps the
     whole-suite evaluation out of CI. `vm-test --check` runs the same checks
     one suite per process.
