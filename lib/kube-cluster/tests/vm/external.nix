@@ -323,81 +323,86 @@ in {
 
     try:
         start_all()
-        dns.wait_for_unit("dnsmasq.service", timeout=120)
-        machines = [alpha, beta, gamma, delta]
-        for m in machines:
-            m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
-            m.wait_until_succeeds(
-                "wg show all latest-handshakes | awk 'NF > 0 {n++; if ($3 == 0) bad=1} END {exit !(n > 0 && !bad)}'",
-                timeout=120,
-            )
-            m.wait_for_unit("haproxy.service", timeout=240)
-            m.wait_for_unit("${runtimeUnit}", timeout=600)
+        with subtest("underlay, tunnels and runtime up"):
+            dns.wait_for_unit("dnsmasq.service", timeout=120)
+            machines = [alpha, beta, gamma, delta]
+            for m in machines:
+                m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
+                m.wait_until_succeeds(
+                    "wg show all latest-handshakes | awk 'NF > 0 {n++; if ($3 == 0) bad=1} END {exit !(n > 0 && !bad)}'",
+                    timeout=120,
+                )
+                m.wait_for_unit("haproxy.service", timeout=240)
+                m.wait_for_unit("${runtimeUnit}", timeout=600)
 
-        for m, cluster in [(alpha, "${clusterA}"), (gamma, "${clusterB}")]:
-            m.wait_until_succeeds(
-                f"systemctl show -p Result --value ${distro}-{cluster}-bootstrap-apply | grep -q '^success$'",
-                timeout=900,
-            )
-            m.wait_until_succeeds(
-                f"systemctl show -p Result --value ${distro}-{cluster}-clustermesh-secrets | grep -q '^success$'",
-                timeout=300,
-            )
+        with subtest("both clusters bootstrap"):
+            for m, cluster in [(alpha, "${clusterA}"), (gamma, "${clusterB}")]:
+                m.wait_until_succeeds(
+                    f"systemctl show -p Result --value ${distro}-{cluster}-bootstrap-apply | grep '^success$' >/dev/null",
+                    timeout=900,
+                )
+                m.wait_until_succeeds(
+                    f"systemctl show -p Result --value ${distro}-{cluster}-clustermesh-secrets | grep '^success$' >/dev/null",
+                    timeout=300,
+                )
 
-        alpha.wait_until_succeeds("kubectl wait --for=condition=Ready node/alpha node/beta --timeout=120s", timeout=300)
-        gamma.wait_until_succeeds("kubectl wait --for=condition=Ready node/gamma node/delta --timeout=120s", timeout=300)
-        alpha.wait_until_succeeds("cilium status", timeout=180)
-        gamma.wait_until_succeeds("cilium status", timeout=180)
+            alpha.wait_until_succeeds("kubectl wait --for=condition=Ready node/alpha node/beta --timeout=120s", timeout=300)
+            gamma.wait_until_succeeds("kubectl wait --for=condition=Ready node/gamma node/delta --timeout=120s", timeout=300)
+            alpha.wait_until_succeeds("cilium status", timeout=180)
+            gamma.wait_until_succeeds("cilium status", timeout=180)
 
-        if ${
+            if ${
       if native
       then "False"
       else "True"
     }:
+                for m in [alpha, gamma]:
+                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -x tunnel >/dev/null")
+                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.tunnel-protocol}' | grep -x vxlan >/dev/null")
+                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.mtu}' | grep -x 1370 >/dev/null")
+
+        with subtest("apiserver exposed by external LoadBalancer"):
+            for m, cluster in [(alpha, "${clusterA}"), (gamma, "${clusterB}")]:
+                m.succeed(f"systemctl start fake-external-lb-{cluster}.service")
+
             for m in [alpha, gamma]:
-                m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -qx tunnel")
-                m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.tunnel-protocol}' | grep -qx vxlan")
-                m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.mtu}' | grep -qx 1370")
+                m.wait_until_succeeds(
+                    "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
+                    timeout=300,
+                )
+                m.succeed("kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.type}' | grep '^LoadBalancer$' >/dev/null")
+                m.succeed("kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.loadBalancerClass}' | grep '^cloud.fake/mesh-lb$' >/dev/null")
+                m.succeed("kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.externalTrafficPolicy}' | grep '^Local$' >/dev/null")
+                m.succeed("test -z \"$(kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.metadata.annotations.lbipam\\.cilium\\.io/ips}')\"")
 
-        for m, cluster in [(alpha, "${clusterA}"), (gamma, "${clusterB}")]:
-            m.succeed(f"systemctl start fake-external-lb-{cluster}.service")
-
-        for m in [alpha, gamma]:
-            m.wait_until_succeeds(
-                "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
-                timeout=300,
-            )
-            m.succeed("kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.type}' | grep -q '^LoadBalancer$'")
-            m.succeed("kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.loadBalancerClass}' | grep -q '^cloud.fake/mesh-lb$'")
-            m.succeed("kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.spec.externalTrafficPolicy}' | grep -q '^Local$'")
-            m.succeed("test -z \"$(kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{.metadata.annotations.lbipam\\.cilium\\.io/ips}')\"")
-
-        for m, fqdn, ip in [(alpha, "${dnsA}", "${ipA}"), (gamma, "${dnsB}", "${ipB}")]:
-            m.wait_until_succeeds(
-                f"kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{{.status.loadBalancer.ingress[0].ip}}' | grep -q '^{ip}$'",
-                timeout=240,
-            )
-            m.wait_until_succeeds(
-                f"kubectl get secret -n kube-system clustermesh-apiserver-server-cert -o jsonpath='{{.data.tls\\.crt}}' | base64 -d | openssl x509 -noout -text | grep -q 'DNS:{fqdn}'",
-                timeout=120,
-            )
+            for m, fqdn, ip in [(alpha, "${dnsA}", "${ipA}"), (gamma, "${dnsB}", "${ipB}")]:
+                m.wait_until_succeeds(
+                    f"kubectl -n kube-system get service clustermesh-apiserver -o jsonpath='{{.status.loadBalancer.ingress[0].ip}}' | grep '^{ip}$' >/dev/null",
+                    timeout=240,
+                )
+                m.wait_until_succeeds(
+                    f"kubectl get secret -n kube-system clustermesh-apiserver-server-cert -o jsonpath='{{.data.tls\\.crt}}' | base64 -d | openssl x509 -noout -text | grep 'DNS:{fqdn}' >/dev/null",
+                    timeout=120,
+                )
 
         # Real DNS resolution and data-plane traffic through the fake
         # provider's DNS-published external LoadBalancer address.
-        for source in machines:
-            source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
-            source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.crt}' | base64 -d > /tmp/clustermesh-client.crt")
-            source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.key}' | base64 -d > /tmp/clustermesh-client.key")
-            source.wait_until_succeeds("ping -c 2 -W 3 ${dnsServerIp}", timeout=120)
-            for fqdn, ip in [("${dnsA}", "${ipA}"), ("${dnsB}", "${ipB}")]:
-                source.succeed(f"getent ahostsv4 {fqdn} | grep -q '^{ip} '")
-                source.wait_until_succeeds(
-                    f"curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://{fqdn}:2379/health -o /dev/null -w '%{{http_code}}' | grep -qx 200",
-                    timeout=240,
-                )
+        with subtest("DNS-published LoadBalancer serves mTLS health"):
+            for source in machines:
+                source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
+                source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.crt}' | base64 -d > /tmp/clustermesh-client.crt")
+                source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.key}' | base64 -d > /tmp/clustermesh-client.key")
+                source.wait_until_succeeds("ping -c 2 -W 3 ${dnsServerIp}", timeout=120)
+                for fqdn, ip in [("${dnsA}", "${ipA}"), ("${dnsB}", "${ipB}")]:
+                    source.succeed(f"getent ahostsv4 {fqdn} | grep '^{ip} ' >/dev/null")
+                    source.wait_until_succeeds(
+                        f"curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://{fqdn}:2379/health -o /dev/null -w '%{{http_code}}' | grep -x 200 >/dev/null",
+                        timeout=240,
+                    )
 
-        alpha.wait_until_succeeds("cilium clustermesh status | grep -q '${clusterB}'", timeout=300)
-        gamma.wait_until_succeeds("cilium clustermesh status | grep -q '${clusterA}'", timeout=300)
+        with subtest("clusters mesh through the external LoadBalancer"):
+            alpha.wait_until_succeeds("cilium clustermesh status | grep '${clusterB}' >/dev/null", timeout=300)
+            gamma.wait_until_succeeds("cilium clustermesh status | grep '${clusterA}' >/dev/null", timeout=300)
         print("${marker}")
     except Exception:
         for cmd in [

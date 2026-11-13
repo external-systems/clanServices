@@ -218,117 +218,123 @@ in {
 
     try:
         start_all()
-        machines = [alpha, beta, gamma]
-        for m in machines${lib.optionalString native " + [delta]"}:
-            m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep -q '^success$'", timeout=120)
-        for m in machines:
-            m.wait_for_unit("haproxy.service", timeout=240)
-            m.wait_for_unit("${runtimeUnit}", timeout=600)
+        with subtest("underlay and runtime up"):
+            machines = [alpha, beta, gamma]
+            for m in machines${lib.optionalString native " + [delta]"}:
+                m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
+            for m in machines:
+                m.wait_for_unit("haproxy.service", timeout=240)
+                m.wait_for_unit("${runtimeUnit}", timeout=600)
 
-        for m, cluster in [(alpha, "${clusterA}"), (beta, "${clusterB}"), (gamma, "${clusterC}")]:
-            m.wait_until_succeeds(
-                f"systemctl show -p Result --value ${distro}-{cluster}-bootstrap-apply | grep -q '^success$'",
-                timeout=900,
-            )
-            m.wait_until_succeeds(
-                f"systemctl show -p Result --value ${distro}-{cluster}-clustermesh-secrets | grep -q '^success$'",
-                timeout=300,
-            )
-            m.wait_until_succeeds("cilium status", timeout=240)
-            m.wait_until_succeeds(
-                "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
-                timeout=300,
-            )
+        with subtest("three clusters bootstrap"):
+            for m, cluster in [(alpha, "${clusterA}"), (beta, "${clusterB}"), (gamma, "${clusterC}")]:
+                m.wait_until_succeeds(
+                    f"systemctl show -p Result --value ${distro}-{cluster}-bootstrap-apply | grep '^success$' >/dev/null",
+                    timeout=900,
+                )
+                m.wait_until_succeeds(
+                    f"systemctl show -p Result --value ${distro}-{cluster}-clustermesh-secrets | grep '^success$' >/dev/null",
+                    timeout=300,
+                )
+                m.wait_until_succeeds("cilium status", timeout=240)
+                m.wait_until_succeeds(
+                    "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
+                    timeout=300,
+                )
+                if ${
+      if native
+      then "True"
+      else "False"
+    }:
+                    m.wait_until_succeeds("test $(kubectl get ciliumbgpclusterconfig --no-headers | wc -l) -eq 1", timeout=180)
+                    m.wait_until_succeeds("test $(kubectl get ciliumbgppeerconfig --no-headers | wc -l) -eq 1", timeout=180)
+                    m.wait_until_succeeds("test $(kubectl get ciliumbgpadvertisement --no-headers | wc -l) -eq 2", timeout=180)
+                    m.wait_until_succeeds("test $(cilium bgp peers | grep -c established) -eq 1", timeout=240)
+
+        with subtest("exposed apiserver serves mTLS health"):
             if ${
       if native
       then "True"
       else "False"
     }:
-                m.wait_until_succeeds("test $(kubectl get ciliumbgpclusterconfig --no-headers | wc -l) -eq 1", timeout=180)
-                m.wait_until_succeeds("test $(kubectl get ciliumbgppeerconfig --no-headers | wc -l) -eq 1", timeout=180)
-                m.wait_until_succeeds("test $(kubectl get ciliumbgpadvertisement --no-headers | wc -l) -eq 2", timeout=180)
-                m.wait_until_succeeds("test $(cilium bgp peers | grep -c established) -eq 1", timeout=240)
-
-        if ${
-      if native
-      then "True"
-      else "False"
-    }:
-            # Prove the exposed apiserver path independently of peering state.
-            for m in machines:
-                m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
-                m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.crt}' | base64 -d > /tmp/clustermesh-client.crt")
-                m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.key}' | base64 -d > /tmp/clustermesh-client.key")
-            alpha.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -qx 200", timeout=240)
-            beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.1.79:2379/health -o /dev/null -w '%{http_code}' | grep -qx 200", timeout=240)
-            beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.3.79:2379/health -o /dev/null -w '%{http_code}' | grep -qx 200", timeout=240)
-            gamma.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -qx 200", timeout=240)
+                # Prove the exposed apiserver path independently of peering state.
+                for m in machines:
+                    m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
+                    m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.crt}' | base64 -d > /tmp/clustermesh-client.crt")
+                    m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.key}' | base64 -d > /tmp/clustermesh-client.key")
+                alpha.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
+                beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.1.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
+                beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.3.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
+                gamma.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
 
         # Symmetric selective edges A<->B and B<->C only; peering is not transitive.
-        alpha.wait_until_succeeds("cilium clustermesh status | grep -q '${clusterB}'", timeout=300)
-        alpha.fail("cilium clustermesh status | grep -q '${clusterC}'")
-        beta.wait_until_succeeds("cilium clustermesh status | grep -q '${clusterA}'", timeout=300)
-        beta.wait_until_succeeds("cilium clustermesh status | grep -q '${clusterC}'", timeout=300)
-        gamma.wait_until_succeeds("cilium clustermesh status | grep -q '${clusterB}'", timeout=300)
-        gamma.fail("cilium clustermesh status | grep -q '${clusterA}'")
+        with subtest("selective peering is not transitive"):
+            alpha.wait_until_succeeds("cilium clustermesh status | grep '${clusterB}' >/dev/null", timeout=300)
+            alpha.fail("cilium clustermesh status | grep '${clusterC}' >/dev/null")
+            beta.wait_until_succeeds("cilium clustermesh status | grep '${clusterA}' >/dev/null", timeout=300)
+            beta.wait_until_succeeds("cilium clustermesh status | grep '${clusterC}' >/dev/null", timeout=300)
+            gamma.wait_until_succeeds("cilium clustermesh status | grep '${clusterB}' >/dev/null", timeout=300)
+            gamma.fail("cilium clustermesh status | grep '${clusterA}' >/dev/null")
 
-        if ${
+        with subtest("datapath bounds remote clusters"):
+            if ${
       if native
       then "True"
       else "False"
     }:
-            # Native peering also bounds remote pod-route policy. Cilium
-            # advertises per-node /24 + /64 allocations, not the whole pool.
-            for m in machines:
-                m.wait_until_succeeds("ip route show 10.3.0.0/24 | grep -q .", timeout=240)
-                m.wait_until_succeeds("ip -6 route show fd10:3::/64 | grep -q .", timeout=240)
-            alpha.fail("ip route show 10.5.0.0/24 | grep -q .")
-            alpha.fail("ip -6 route show fd10:5::/64 | grep -q .")
-            gamma.fail("ip route show 10.1.0.0/24 | grep -q .")
-            gamma.fail("ip -6 route show fd10:1::/64 | grep -q .")
-            beta.wait_until_succeeds("ip route show 10.1.0.0/24 | grep -q .", timeout=240)
-            beta.wait_until_succeeds("ip route show 10.5.0.0/24 | grep -q .", timeout=240)
-            beta.wait_until_succeeds("ip -6 route show fd10:1::/64 | grep -q .", timeout=240)
-            beta.wait_until_succeeds("ip -6 route show fd10:5::/64 | grep -q .", timeout=240)
-        else:
-            # Tunnel mode has no remote pod-route policy; selective isolation is
-            # proved by ClusterMesh membership and global-Service backends below.
-            for m in machines:
-                m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -qx tunnel")
-                m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.tunnel-protocol}' | grep -qx vxlan")
+                # Native peering also bounds remote pod-route policy. Cilium
+                # advertises per-node /24 + /64 allocations, not the whole pool.
+                for m in machines:
+                    m.wait_until_succeeds("ip route show 10.3.0.0/24 | grep . >/dev/null", timeout=240)
+                    m.wait_until_succeeds("ip -6 route show fd10:3::/64 | grep . >/dev/null", timeout=240)
+                alpha.fail("ip route show 10.5.0.0/24 | grep . >/dev/null")
+                alpha.fail("ip -6 route show fd10:5::/64 | grep . >/dev/null")
+                gamma.fail("ip route show 10.1.0.0/24 | grep . >/dev/null")
+                gamma.fail("ip -6 route show fd10:1::/64 | grep . >/dev/null")
+                beta.wait_until_succeeds("ip route show 10.1.0.0/24 | grep . >/dev/null", timeout=240)
+                beta.wait_until_succeeds("ip route show 10.5.0.0/24 | grep . >/dev/null", timeout=240)
+                beta.wait_until_succeeds("ip -6 route show fd10:1::/64 | grep . >/dev/null", timeout=240)
+                beta.wait_until_succeeds("ip -6 route show fd10:5::/64 | grep . >/dev/null", timeout=240)
+            else:
+                # Tunnel mode has no remote pod-route policy; selective isolation is
+                # proved by ClusterMesh membership and global-Service backends below.
+                for m in machines:
+                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -x tunnel >/dev/null")
+                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.tunnel-protocol}' | grep -x vxlan >/dev/null")
 
         # Global Services synchronize only across the selected edges.
-        for m, cluster in [(alpha, "CLUSTER_A"), (beta, "CLUSTER_B"), (gamma, "CLUSTER_C")]:
-            m.succeed(f"kubectl create deployment global-web --image=busybox:1.36.1 -- /bin/sh -c 'echo {cluster} > /tmp/index.html; httpd -f -p 80 -h /tmp'")
-            m.succeed("kubectl expose deployment global-web --port=80")
-            m.succeed("kubectl annotate service global-web service.cilium.io/global=true")
-            m.wait_until_succeeds("kubectl rollout status deployment/global-web --timeout=180s", timeout=240)
-            m.succeed("kubectl run probe --image=busybox:1.36.1 --restart=Never --command -- sleep 3600")
-            m.wait_until_succeeds("kubectl get pod probe -o jsonpath='{.status.phase}' | grep -q Running", timeout=120)
+        with subtest("global Services sync only on selected edges"):
+            for m, cluster in [(alpha, "CLUSTER_A"), (beta, "CLUSTER_B"), (gamma, "CLUSTER_C")]:
+                m.succeed(f"kubectl create deployment global-web --image=busybox:1.36.1 -- /bin/sh -c 'echo {cluster} > /tmp/index.html; httpd -f -p 80 -h /tmp'")
+                m.succeed("kubectl expose deployment global-web --port=80")
+                m.succeed("kubectl annotate service global-web service.cilium.io/global=true")
+                m.wait_until_succeeds("kubectl rollout status deployment/global-web --timeout=180s", timeout=240)
+                m.succeed("kubectl run probe --image=busybox:1.36.1 --restart=Never --command -- sleep 3600")
+                m.wait_until_succeeds("kubectl get pod probe -o jsonpath='{.status.phase}' | grep Running >/dev/null", timeout=120)
 
-        alpha.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [2]' >/dev/null", timeout=600)
-        seen_a = set()
-        for _ in range(20):
-            seen_a.add(alpha.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
-            if seen_a == {"CLUSTER_A", "CLUSTER_B"}:
-                break
-        assert seen_a == {"CLUSTER_A", "CLUSTER_B"}, f"A selective peers: {seen_a!r}"
+            alpha.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [2]' >/dev/null", timeout=600)
+            seen_a = set()
+            for _ in range(20):
+                seen_a.add(alpha.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
+                if seen_a == {"CLUSTER_A", "CLUSTER_B"}:
+                    break
+            assert seen_a == {"CLUSTER_A", "CLUSTER_B"}, f"A selective peers: {seen_a!r}"
 
-        beta.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [3]' >/dev/null", timeout=600)
-        seen_b = set()
-        for _ in range(30):
-            seen_b.add(beta.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
-            if seen_b == {"CLUSTER_A", "CLUSTER_B", "CLUSTER_C"}:
-                break
-        assert seen_b == {"CLUSTER_A", "CLUSTER_B", "CLUSTER_C"}, f"B selective peers: {seen_b!r}"
+            beta.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [3]' >/dev/null", timeout=600)
+            seen_b = set()
+            for _ in range(30):
+                seen_b.add(beta.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
+                if seen_b == {"CLUSTER_A", "CLUSTER_B", "CLUSTER_C"}:
+                    break
+            assert seen_b == {"CLUSTER_A", "CLUSTER_B", "CLUSTER_C"}, f"B selective peers: {seen_b!r}"
 
-        gamma.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [2]' >/dev/null", timeout=600)
-        seen_c = set()
-        for _ in range(20):
-            seen_c.add(gamma.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
-            if seen_c == {"CLUSTER_B", "CLUSTER_C"}:
-                break
-        assert seen_c == {"CLUSTER_B", "CLUSTER_C"}, f"C selective peers: {seen_c!r}"
+            gamma.wait_until_succeeds("curl -sf --unix-socket /var/run/cilium/cilium.sock http://localhost/v1/service | jq -e --arg ip \"$(kubectl get service global-web -o jsonpath='{.spec.clusterIP}')\" '[.[] | select(.spec[\"frontend-address\"].ip == $ip) | .spec[\"backend-addresses\"] | length] == [2]' >/dev/null", timeout=600)
+            seen_c = set()
+            for _ in range(20):
+                seen_c.add(gamma.succeed("kubectl exec probe -- wget -qO- --timeout=5 http://global-web.default.svc.cluster.local").strip())
+                if seen_c == {"CLUSTER_B", "CLUSTER_C"}:
+                    break
+            assert seen_c == {"CLUSTER_B", "CLUSTER_C"}, f"C selective peers: {seen_c!r}"
         print("${marker}")
     except Exception:
         for m in [alpha, beta, gamma]${lib.optionalString native " + [delta]"}:
