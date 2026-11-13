@@ -33,13 +33,23 @@
       config.clanTests;
 
     # Topology suites boot whole clusters (two meshed clusters plus
-    # external peers), so they need more than the org defaults. Approved
-    # by the owner for this repo, sized for euc-hel-0 (128 GiB, 36
-    # threads), which runs one suite at a time: `vm-test --all --serial
-    # --remote`, never plain --all.
+    # external peers), and RKE2 nodes need at least 4 GiB and 2 vCPUs
+    # (more to run at a usable speed), so this repo's caps are above the
+    # org defaults and leave room for larger topologies. Approved by the
+    # owner, sized for euc-hel-0 (128 GiB, 36 threads).
     limits = {
       totalMemorySize = 96 * 1024;
       totalCores = 36;
+    };
+
+    # `vm-test --all --remote` runs suites side by side within this
+    # budget, below euc-hel-0's 36 threads and 128 GiB so the host keeps
+    # headroom and suites do not slow each other into timeouts
+    # (owner-approved). A suite that fails alongside others is rerun
+    # alone; passing then is a pass with a warning.
+    parallel = {
+      cores = 24;
+      memorySize = 96 * 1024;
     };
     globalTimeout = 2 * 60 * 60;
 
