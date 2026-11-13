@@ -615,7 +615,8 @@ follows those pins, and the home clan consumes clanServices.
 <ul>
 <li>hermetic, sandboxed</li>
 <li>each claim prints a <code>*_OK</code> marker</li>
-<li>logs in <code>.baton-pass/vm-logs/</code></li>
+<li>run with <code>vm-test</code>, side by side on euc-hel-0</li>
+<li>logs in <code>.vm-tests/&lt;suite&gt;/</code></li>
 </ul>
 </div>
 <div class="level">
@@ -634,7 +635,9 @@ follows those pins, and the home clan consumes clanServices.
 
 Note:
 checks stays static, so a full nix flake check is cheap and always run.
-VM suites live outside checks and are built one at a time. From now on
+VM suites live outside checks; vm-test runs them on euc-hel-0, side by
+side within the parallel budget, and reruns a suite that failed under
+load alone. Each phase is a subtest, so the summary names what failed. From now on
 SPEC.md only calls something VM-proven when it names the test and the
 marker that test prints.
 

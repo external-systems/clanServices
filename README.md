@@ -21,6 +21,8 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 - [wireguard-mesh](services/wireguard-mesh/README.md): supported tunnel transport
   (Cilium tunnel/VXLAN + nodePort, D58) — one shared multi-peer WireGuard
   interface per machine
+- [remote-builder](services/remote-builder/README.md): a Nix remote builder
+  served over `ssh-ng`, with pinned host keys for its clients (D65)
 - [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
 [SPEC.md](SPEC.md) is the canonical architecture, status, and delivery record — a single dense
@@ -59,8 +61,8 @@ Add this repository as a flake input and use the same `clan-core` instance:
 
 The locked transitive `external-systems/pkgs` input (named `org-pkgs`) supplies nixpkgs,
 flake-parts, runtime packages, overlays, and airgap artifacts; consumers do
-not need to declare it. Its overlays are re-exported as
-`clanServices.overlays.{default,kubernetes,ifstate}`. To use a different
+not need to declare it. Its overlays are re-exported unchanged as
+`clanServices.overlays` (`default`, `kubernetes`, `ifstate`, ...). To use a different
 artifact repository, or to share one with your own flake, declare it and set
 `clanServices.inputs.org-pkgs.follows = "org-pkgs";`.
 
@@ -92,16 +94,21 @@ fmt                      # treefmt: alejandra + org linters
 check                    # nix flake check: static gates, eval tests, docs
 docs-build               # static docs to ./result-docs; open index.html from disk
 devenv up                # live docs on :8981 and slides on :8982
-vm-test --list           # the VM suites
-vm-test <suite> --remote # one suite on the remote builder
+vm-test --list           # the 24 VM suites
+vm-test --check <suite>  # evaluates and fits the caps; boots nothing
+vm-test <suite> --remote --quiet  # one suite on the remote builder; prints the summary
 vm-test --summary <suite>  # the last run's summary (subtests, failures)
-vm-test --all --serial --remote  # every suite, one at a time
-vm-test --check          # every suite evaluates and fits the caps, one per process
+vm-test --all --remote --rebuild --quiet  # every suite, side by side, fresh
 ```
 
 `checks` is static-only (eval tests, coverage, formatting, lock sync, docs),
 so a full `nix flake check` is safe and required. VM suites live under
 `legacyPackages.x86_64-linux.vmTests.<suite>`, never in `checks` or CI. They
-boot whole clusters, so run them one at a time on the remote builder. The pinned
+boot whole clusters, so they run on the remote builder (euc-hel-0): `--all`
+runs as many side by side as fit the `vmTests.parallel` budget, largest
+first, and reruns a suite that failed under load alone (`PASS(!)` when it
+then passes); `--serial` runs one at a time. A `CACHED` result booted
+nothing; `--rebuild` boots it again. Each suite's log, summary and result
+land in `.vm-tests/<suite>/`. The pinned
 artifact flake supplies distro runtimes, IfState, the committed Cilium
 manifest, per-system Cilium/CoreDNS airgap images, and test fixtures.

@@ -111,6 +111,6 @@ deploy only to their owner.
 ## Tests
 
 ```console
-nix build .#legacyPackages.x86_64-linux.vmTests.routed-fabric   # hermetic VM suite
+vm-test routed-fabric --remote --quiet   # hermetic VM suite on euc-hel-0
 nix build .#checks.x86_64-linux.coverage
 ```

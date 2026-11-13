@@ -13,10 +13,13 @@ so the `dev` partition, `formatter.nix`, the `presenting` docs builder, the
 local VM adapter and the local `vm-test` app are gone. Root modules live in
 `flake-parts/` (import-tree). The dev shell is devenv. CI is the org
 `ci.yml`. VM suites are registered in `clanTests` and run through the org
-`vm-test`: one suite per sandboxed build on euc-hel-0, never several
-side by side. A run passes on a zero exit status, and logs go to
-`.vm-tests/<suite>/`. `*_OK` markers stay in test scripts as progress
-lines; the runner no longer reads them.
+`vm-test` on euc-hel-0: one suite per sandboxed build, and `vm-test --all`
+runs suites side by side within the `vmTests.parallel` budget, rerunning a
+suite that failed under load alone (`PASS(!)`). A run passes on a zero exit
+status, and logs go to `.vm-tests/<suite>/`. Test scripts group steps in
+`subtest` phases; `*_OK` markers stay as progress lines that the runner no
+longer reads. k3s and RKE2 suites testing one contract share one body in
+`lib/kube-cluster/tests/vm/`.
 
 Round 22 (2026-10-30): **allocate fabric and mesh values once with clan vars
 (D64).** Public, non-deployed generators allocate routed-fabric loopbacks,
@@ -1533,22 +1536,39 @@ unless noted) — revoked entries keep one-line reasons for history.
     `checks.nix-unit` uses nixpkgs' `nix-unit` and walks `flake.lock` for its
     offline overrides.
   - **VM suites.** Each service registers its suites in the top-level
-    `clanTests.<suite>`. `flake-parts/clan-tests.nix` wraps each one in
-    clan-core's `clanTest` and passes it to `vmTests.tests`, so suites stay
-    under `legacyPackages.<system>.vmTests` (D62).
+    `clanTests.<suite>` (24 today). `flake-parts/clan-tests.nix` wraps each
+    one in clan-core's `clanTest` and passes it to `vmTests.tests`, so
+    suites stay under `legacyPackages.<system>.vmTests` (D62). k3s and RKE2
+    suites that test one contract (`single`, `join`, `ha`, `data-plane`,
+    `clustermesh`, `clustermesh-tunnel`, `external`, `selective`) share one
+    body in `lib/kube-cluster/tests/vm/<suite>.nix` behind thin per-service
+    wrappers; every distro difference is an explicit `distro` branch. Test
+    scripts group their steps in `with subtest(...)` phases, so a run
+    summary names the failing phase, and still end with their `<SUITE>_OK`
+    marker. Test vars are generated during evaluation by clan-core's
+    `clanTest`; there is no update-vars step.
   - **Owner-approved limits for this repo,** sized for euc-hel-0 (128 GiB,
     36 threads):
     - 96 GiB and 36 vCPUs per suite;
     - 16 GiB and 8 vCPUs per VM;
     - a 2-hour default timeout.
 
-    Suites run one at a time (`vm-test <suite> --remote`, or `vm-test --all
-    --serial --remote`), never with plain `--all`.
+    RKE2 nodes need at least 4 GiB and 2 vCPUs, and planned topologies are
+    larger than today's. Raising the limits needs the owner's yes.
+  - **Parallel runs.** `vm-test --all --remote` boots suites side by side,
+    largest first, while their VMs fit `vmTests.parallel` (24 vCPUs and
+    96 GiB); a suite larger than the budget runs alone. A suite that fails
+    beside others is rerun alone; passing then is `PASS(!)`, a pass with a
+    warning that it is timing-sensitive under load. A result already in the
+    store is `CACHED`: nothing booted, so it is not a pass of this run.
+    `--rebuild` boots a fresh copy and works with `--remote`; `--serial`
+    runs one suite at a time.
   - **Eval checks off in CI.** `vmTests.flakeChecks.enable = false` keeps the
     whole-suite evaluation out of CI. `vm-test --check` runs the same checks
     one suite per process.
-  - **Results.** The result is the exit status of the sandboxed build. Logs
-    go to `.vm-tests/<suite>/` (gitignored). This replaces the
+  - **Results.** The result is the exit status of the sandboxed build. Each
+    suite writes `.vm-tests/<suite>/{build.log,summary.txt,result.txt}`
+    (gitignored). This replaces the
     `.baton-pass/vm-logs` path and the runner's marker check from round 20.
   - **Editor, CI and dev shell.** The dev shell is devenv (`devenv.yaml`
     imports `org-pkgs/devenv`). CI is the org `ci.yml` (`ci / flake-check`;
@@ -2236,8 +2256,8 @@ of inventing addresses or runtime edges.
 Seams: pure renderer nix-unit tests (kubenix render determinism
 included); throwaway clans via `clanLib.clan` (inventory boundary);
 `clanTests` hermetic VM suites exposed only through
-`legacyPackages.<system>.vmTests` (one at a time, sandboxed authoritative;
-never `checks`, D66); artifact source/hash/render gates (incl.
+`legacyPackages.<system>.vmTests` (sandboxed authoritative, side by side
+only within `vmTests.parallel`; never `checks`, D66); artifact source/hash/render gates (incl.
 committed-manifest inflation proofs and publish-freshness checks,
 D26/D40). Standard internal HTTP test workload: **go-httpbin** (pinned,
 airgap-carried as a test-fixture artifact). Rules: hermetic/offline;
@@ -2248,9 +2268,12 @@ every boot test; round-trips + failure behavior (BGP withdrawal keeps VIP via
 healthy nodes); negative assertions; operational postconditions; fail fast.
 Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
 A suite passes when its sandboxed build exits 0 (`vm-test <suite>
---remote`); the build log is `.vm-tests/<suite>/build.log` and the run
-summary (subtests, `!!!` failures, first build errors) is
-`.vm-tests/<suite>/summary.txt`. Every suite
+--remote`, or `PASS`/`PASS(!)` in a `vm-test --all --remote --rebuild`
+run; `CACHED` booted nothing and proves nothing new); the build log is
+`.vm-tests/<suite>/build.log` and the run summary (subtests, `!!!`
+failures, first build errors) is `.vm-tests/<suite>/summary.txt`. Test
+scripts group their steps in `with subtest(...)` phases, and pipelines in
+them read whole streams (`grep PAT >/dev/null`, never `grep -q`). Every suite
 still prints a final `<SUITE>_OK` marker (suite name upper-cased, `-` →
 `_`) as the last statement of its `testScript`, after every assertion, and
 intermediate markers remain. They help a reader follow the log, but the

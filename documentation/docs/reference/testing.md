@@ -11,35 +11,64 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   exposed as `legacyPackages.<system>.vmTests` by the org runner (org-pkgs
   `flakeModules.vmTests`). VM suites never enter `checks` or CI; `checks`
   stays a lightweight static gate.
-- **Running suites.** Run them one at a time on the remote builder:
-  - `vm-test <suite> --remote` runs one suite.
-  - `vm-test --all --serial --remote` runs every suite, one after another.
-    Never use plain `--all`, which builds suites side by side.
+- **Where suites live.** Each service registers its suites in its
+  `flake-module.nix` (24 in all); `flake-parts/clan-tests.nix` wraps each in
+  clan-core's `clanTest` and hands it to `vmTests.tests`. k3s and RKE2
+  suites that test one contract share a body in
+  `lib/kube-cluster/tests/vm/<suite>.nix` (`single`, `join`, `ha`,
+  `data-plane`, `clustermesh`, `clustermesh-tunnel`, `external`,
+  `selective`); the files under `services/{k3s,rke2}/tests/vm/` are thin
+  wrappers that pass `distro`, and every distro difference is an explicit
+  branch in the shared body.
+- **Running suites,** on the remote builder (euc-hel-0):
   - `vm-test --list` lists the suites.
-  - `vm-test <suite> --rebuild` reruns a suite that already passed.
-  - `vm-test <suite> --remote --quiet` keeps the full log in `build.log`
-    and prints only the run summary; `vm-test --summary <suite>` prints the
-    last run's summary again without building.
-  - `vm-test --check` checks that every suite evaluates and fits the
-    resource limits. It uses one Nix process per suite (about 3 GB each).
+  - `vm-test --check <suite>` checks that a suite evaluates and fits the
+    resource limits without booting it; `vm-test --check` checks every
+    suite, one Nix process per suite (about 3 GB each).
+  - `vm-test <suite> --remote --quiet` runs one suite, keeps the full log
+    in `build.log` and prints only the run summary;
+    `vm-test --summary <suite>` prints the last summary again without
+    building.
+  - `vm-test --all --remote --rebuild --quiet` runs every suite. Suites
+    run side by side, largest first, as long as their VMs fit the
+    `vmTests.parallel` budget (the vCPUs and memory of all running VMs);
+    a suite larger than the budget runs alone. A suite that failed while
+    others ran beside it is rerun alone: passing then is `PASS(!)`, a pass
+    with a warning that the suite is timing-sensitive under load (its first
+    log is `build-under-load.log`). The run ends with one line per suite
+    (`PASS`, `PASS(!)`, `CACHED` or `FAIL`) and exits non-zero on any
+    `FAIL`.
+  - `--serial` (with `--all`) runs one suite at a time.
+  - `--rebuild` boots a suite whose result is already in the store. It
+    builds a fresh copy of the test, so it works with `--remote` and
+    `--all`. Without it, such a suite reports `CACHED`: nothing booted, so
+    it is not a pass of this run.
 - **Results and logs.** Sandboxed runs are authoritative: a suite passes
   when its build exits 0. Driver and interactive modes (`--driver`,
   `--interactive`) are for debugging only, and every fix found that way is
-  re-proven with a sandboxed run. Every run ends with a summary (subtests
-  started, `!!!` failures, first build errors such as the test-script
-  linter), saved as `.vm-tests/<suite>/summary.txt`; read it before the full
-  log in `.vm-tests/<suite>/build.log` (both gitignored).
-- **Markers.** Every suite prints one final `<SUITE>_OK` (suite name
-  upper-cased, `-` → `_`) as the last statement of its `testScript`, after
-  every assertion, and intermediate markers remain. They are for readers;
-  the runner does not check them.
-- **Resource limits,** owner-approved for euc-hel-0:
+  re-proven with a sandboxed run. Every run ends with a summary (the
+  subtests started, `!!!` failures, first build errors such as the
+  test-script linter). Each suite writes `.vm-tests/<suite>/build.log`,
+  `summary.txt` and `result.txt` (gitignored); read the summary before the
+  full log.
+- **Subtests and markers.** Test scripts group their steps in
+  `with subtest("...")` phases, so the summary names the phase that failed.
+  Every suite still prints one final `<SUITE>_OK` (suite name upper-cased,
+  `-` → `_`) as the last statement of its `testScript`, after every
+  assertion, and intermediate markers remain. They are for readers; the
+  runner does not check them.
+- **Pipes.** Test scripts read whole streams: `cmd | grep PAT >/dev/null`,
+  never `grep -q`, whose early exit kills the writer with SIGPIPE under the
+  driver's `pipefail`.
+- **Resource limits,** owner-approved for euc-hel-0 because RKE2 nodes need
+  at least 4 GiB and 2 vCPUs and planned topologies are larger:
 
   | Limit | Value |
   |---|---|
   | Per suite | 96 GiB and 36 vCPUs |
   | Per VM | 16 GiB and 8 vCPUs |
   | Default timeout | 2 hours |
+  | `--all` budget (`vmTests.parallel`) | 24 vCPUs and 96 GiB |
 
 - Artifact source/hash/render and publish-freshness gates.
 - Offline execution, dual-stack in every boot test, round trips and failure
@@ -67,9 +96,9 @@ encrypts test secrets with the harness's fixed test recipient, and merges the
 result into a temporary directory. `clan.varsDirectory` and each node's
 `clan.core.settings.directory` point at that merged directory, so
 `getPublicValue` reads the newly generated values. The merge removes the
-source suite's `vars/` tree and replaces it with generated vars. Consequently
-`nix run .#vm-test -- <suite>` is sufficient for the suites in this
-repository: do not run a separate `update-vars` command and do not commit VM
+source suite's `vars/` tree and replaces it with generated vars. Test vars
+are therefore generated during evaluation, and `vm-test <suite>` is all a
+suite needs: there is no `update-vars` step. Do not run one and do not commit VM
 allocation files or obsolete public-key fixtures. Each run draws fresh values;
 routed-fabric and wireguard-mesh print their allocated addresses at startup
 and assert those exact values with `ROUTED_FABRIC_ALLOCATED_OK` and

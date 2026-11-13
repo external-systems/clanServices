@@ -35,7 +35,7 @@ Reviewed at `clanServices` `9e704ea` and `pkgs` `9d3976c`.
 | netif interface matching | add `match.mac` |
 | Cloud budget | $100/month for ephemeral runs |
 | Formatter | org-pkgs treefmt (`fmt`): alejandra, statix, deadnix, every nixf rule |
-| Verification | full `nix flake check` (static-only `checks`) plus the affected VM suites, one at a time on euc-hel-0 (`vm-test <suite> --remote`) |
+| Verification | full `nix flake check` (static-only `checks`) plus the affected VM suites on euc-hel-0 (`vm-test <suite> --remote`; several side by side within `vmTests.parallel` with `vm-test --all --remote --rebuild`) |
 | VM test logs | `.vm-tests/<suite>/`, gitignored, never committed; a suite passes on exit 0 (D66) |
 | Compatibility | breaking changes carry no burden: no consumers, deployments or real machines; no migration shims |
 | Deploy target | `targetHost` stays on the underlay address so a fabric change cannot lock out its own deployment |

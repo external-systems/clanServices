@@ -11,8 +11,8 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 ## Layout
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`, `netif`,
-  `routed-fabric`; `wireguard-mesh` is a supported tunnel transport,
-  D58 — not pending retirement). The obsolete `fleet-routing`,
+  `routed-fabric`, `remote-builder` (D65); `wireguard-mesh` is a supported
+  tunnel transport, D58 — not pending retirement). The obsolete `fleet-routing`,
   `lib/import-flake/`, `lib/inputs-module.nix`, BIRD helpers, and
   BIRD-specific VM fixtures were deleted in the round-17 cleanup;
   their former ghost failures no longer block eval gates. No archives.
@@ -22,15 +22,19 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
 - `flake-parts/` — root flake-parts modules, auto-imported (import-tree):
   - `clan-tests.nix`: the `clanTests` option and the org `vmTests` settings
-    (limits, timeout, `flakeChecks`);
+    (limits, `parallel` budget, timeout, `flakeChecks`);
   - `nix-unit.nix`: `nix-unit.tests`, `tests.systems` and `checks.nix-unit`;
   - `coverage.nix`: every `clan.modules` entry needs a nix-unit test;
   - `docs.nix`: the site nav and deck settings;
   - `overlays.nix`: re-exports the org-pkgs overlays.
 - `tests/ifstate-vm.nix` — the shared IfState node fixture for VM suites.
-  Each service registers its suites in its `flake-module.nix` under the
-  top-level `clanTests.<suite>`. They land in
-  `legacyPackages.<system>.vmTests`, never `checks`.
+  Each service registers its suites (24 in all) in its `flake-module.nix`
+  under the top-level `clanTests.<suite>`. They land in
+  `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
+  that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
+  (`single`, `join`, `ha`, `data-plane`, `clustermesh`, `clustermesh-tunnel`,
+  `external`, `selective`); `services/{k3s,rke2}/tests/vm/` hold thin
+  wrappers, and the body branches on `distro` explicitly.
 - `devenv.yaml`/`devenv.nix` — the org dev shell (`fmt`, `check`,
   `sync-locks`, `docs-build`, `docs`, `slides`, `vm-test`). `flake.lock`
   and `devenv.lock` must pin the same nixpkgs (`checks.lock-sync`). After
@@ -93,7 +97,10 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 - VM suites: `vm-test --check <suite>` before booting anything, then
   `vm-test <suite> --remote --quiet` and read the printed summary
   (`vm-test --summary <suite>` reprints it). The exit status is the result;
-  open `.vm-tests/<suite>/build.log` only where the summary points.
+  open `.vm-tests/<suite>/build.log` only where the summary points. Every
+  suite: `vm-test --all --remote --rebuild --quiet`. Add `--rebuild` to
+  boot a suite whose result is already in the store: a `CACHED` result
+  booted nothing and is not a pass of this run.
 
 ## Hard rules
 
@@ -140,14 +147,15 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
    `legacyPackages.<system>.vmTests`. If a VM derivation ever appears in
    `checks`, fix the output boundary; never work around it with
    `--no-build`.
-10. VM suites run one at a time, on euc-hel-0: `vm-test <suite> --remote`,
-    or `vm-test --all --serial --remote` for every suite. Never use plain
-    `--all`: it builds suites side by side and can exhaust the builder.
-    Never evaluate every suite in one Nix process on a laptop either (it
-    needs about 3 GB per suite; beelink has 24 GiB): `vm-test --check`
-    checks one suite per process. Logs go to `.vm-tests/<suite>/`
-    (gitignored). SPEC.md cites the suite and its `*_OK` marker, never a
-    log file.
+10. VM suites run on euc-hel-0 (`--remote`). `vm-test --all --remote`
+    runs them side by side within `vmTests.parallel` (the vCPUs and memory
+    of all running VMs), largest first; a suite that failed beside others
+    is rerun alone, and a pass then is `PASS(!)`: a pass with a warning
+    that the suite is timing-sensitive under load. `--serial` runs one at a
+    time. Each suite writes `.vm-tests/<suite>/{build.log,summary.txt,result.txt}`
+    (gitignored). Evaluate suites one per Nix process (`vm-test --check`):
+    one process for all of them needs about 3 GB per suite. SPEC.md cites
+    the suite and its `*_OK` marker, never a log file.
 11. Breaking changes carry no compatibility burden: there are no external
     consumers or deployments and no real machines use these flakes, so
     never add migration shims, deprecation aliases, or renamed-option
@@ -155,13 +163,20 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 12. Keep the deploy target (`clan.core.networking.targetHost`) on the
     underlay address, never a fabric or tunnel address, so a fabric change
     cannot lock out its own deployment.
-13. A suite passes when its sandboxed build exits 0. Every suite still
-    prints one final `<SUITE>_OK` marker (suite name upper-cased, `-` → `_`)
-    as the last statement of its `testScript`, after every assertion, and
-    intermediate markers stay. Readers use them to follow a log; the runner
-    does not check them. The repo's resource limits (96 GiB and 36 vCPUs per
-    suite, 16 GiB and 8 vCPUs per VM, 2 h timeout) are owner-approved for
-    euc-hel-0. Raising them needs the owner's yes.
+13. A suite passes when its sandboxed build exits 0. Test scripts group
+    their steps in `with subtest("...")` phases, so the summary names the
+    failing phase. Every suite still prints one final `<SUITE>_OK` marker
+    (suite name upper-cased, `-` → `_`) as the last statement of its
+    `testScript`, after every assertion, and intermediate markers stay.
+    Readers use them to follow a log; the runner does not check them. In
+    test scripts, pipe into `grep PAT >/dev/null`, never `grep -q` (an
+    early exit SIGPIPEs the writer under `pipefail`). Test vars are
+    generated during evaluation by clan-core's `clanTest`; there is no
+    update-vars step and nothing to commit. The repo's resource limits
+    (96 GiB and 36 vCPUs per suite, 16 GiB and 8 vCPUs per VM, 2 h timeout)
+    are owner-approved for euc-hel-0, because RKE2 nodes need at least
+    4 GiB and 2 vCPUs and planned topologies are larger. Raising them needs
+    the owner's yes.
 
 ## Verified upstream facts the spec depends on
 

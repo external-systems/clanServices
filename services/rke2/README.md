@@ -149,14 +149,16 @@ tarballs (matching the bundle's manifest exactly). Override
 Single/join/HA suites run on `wireguard-mesh`; the data-plane and native
 ClusterMesh suites run on `routed-fabric`. Additional tunnel, selective,
 and external-LB suites cover both profiles. All are registered as
-`clanTests` and exposed under `legacyPackages.x86_64-linux.vmTests`. Run them
-one at a time on the remote builder:
+`clanTests` and exposed under `legacyPackages.x86_64-linux.vmTests`. Their
+bodies are shared with k3s in `lib/kube-cluster/tests/vm/`; the files in
+`tests/vm/` pass `distro = "rke2"`. Run them on the remote builder (see
+[Testing](../../documentation/docs/reference/testing.md) for `--all`):
 
 ```bash
-vm-test rke2-single --remote
-vm-test rke2-join --remote
-vm-test rke2-ha --remote
-vm-test rke2-data-plane --remote
+vm-test rke2-single --remote --quiet
+vm-test rke2-join --remote --quiet
+vm-test rke2-ha --remote --quiet
+vm-test rke2-data-plane --remote --quiet
 ```
 
 - `rke2-single` — one server: PKI sync, haproxy LB, admin kubeconfig through

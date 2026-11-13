@@ -3,6 +3,10 @@
 Part of the [data-plane hardening plan](../data-plane-hardening.md).
 Status: **merged** in PR #3. Kept as the record of what was asked;
 later prompts build on [the agent brief](../agent-brief.md).
+The tooling it names (dev partition, `formatter.nix`, numbered logs in
+`.baton-pass/vm-logs`) was replaced by the org standard in round 24
+(SPEC.md D66); for today's workflow see AGENTS.md (Tool loop) and
+[Testing](../../reference/testing.md).
 
 ```text
 Repo: external-systems/clanServices. Read AGENTS.md, SPEC.md (§3.2, §5, §6.3, §6.12, §7, D47–D62) and documentation/docs/plans/data-plane-hardening.md ("Findings", "Proposed contract additions"). Load skills: clanservices, ifstate, frr, nix-style.

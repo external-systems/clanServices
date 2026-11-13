@@ -39,7 +39,7 @@ Do:
    - 22 Proxmox guest shape: virtio NICs with fixed MACs on a VLAN-aware bridge in the host test network, VLAN links from netif, never Proxmox VE itself. Marker SCENARIO_22_PROXMOX_SHAPE_OK.
 4. Update SPEC.md §7 so each claim names its test file and marker.
 
-Verify: `fmt && check`, `vm-test --check <suite>` for each new scenario, then each scenario one at a time through `vm-test <suite> --remote`, plus `routed-fabric` and `netif-dhcp` as regressions. Report markers, results, wall time, and peak memory (sum of memorySize; the repo limit is 96 GiB and 36 vCPUs per suite).
+Verify: `fmt && check`, `vm-test --check <suite>` for each new scenario, then each scenario through `vm-test <suite> --remote --quiet` (or together with `vm-test --all --remote --rebuild --quiet`), plus `routed-fabric` and `netif-dhcp` as regressions. Report markers, results, wall time, and peak memory (sum of memorySize; the repo limit is 96 GiB and 36 vCPUs per suite).
 
 Budget: one suite at most 30 GiB of VM memory in total.
 
@@ -74,7 +74,7 @@ Do:
 5. Scenario 6 (WAN soak, C1): the Texas–Helsinki netem profile for 30 minutes on a wan adjacency: zero BGP session flaps and zero FIB changes (from the probe helper's log); then cut the link: withdrawal within 15 s on wan and within 3 s on a site adjacency; restore: the path returns only after the DelayOpen hold-down. Make the soak duration a parameter so a 3-minute variant runs during development; the PR must include one full 30-minute run. Marker SCENARIO_6_WAN_SOAK_OK.
 6. SPEC.md §7: each claim names its file and marker; move C1/C2 from planned to VM-proven only for what the logs show.
 
-Verify: each scenario one at a time through `vm-test <suite> --remote`, plus the four 6a scenarios and `routed-fabric` as regressions. Report markers, results, and wall time.
+Verify: each scenario through `vm-test <suite> --remote --quiet`, plus the four 6a scenarios and `routed-fabric` as regressions. Report markers, results, and wall time.
 
 Pitfalls:
 - A 2% loss profile will drop single BFD packets; the wan BFD profile (1000 ms x5) is designed to tolerate that. If the soak flaps, report it as a finding with the probe log; do not loosen timers without amending D63 first.

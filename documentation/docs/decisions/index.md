@@ -9,8 +9,10 @@ are not yet rendered here.
 repo follows the external-systems org standard, with no change to service
 behavior. One `org-pkgs` input provides nixpkgs, formatting, docs, the
 lock-sync check and the VM-test runner. The dev shell is devenv and CI is
-the org workflow. VM suites run one at a time on the remote builder and
-pass on the build's exit status.
+the org workflow. VM suites run on the remote builder, side by side within
+a `vmTests.parallel` budget, and pass on the build's exit status; k3s and
+RKE2 suites testing one contract share one body, and test scripts are
+split into `subtest` phases.
 
 **Round 21 (2026-10-29) — correctness and stable convergence.** D63 limits
 BGP/BFD exposure to fabric interfaces and declared literal upstream sources,
@@ -204,7 +206,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D60 | active (r17, amended 2026-10-26) | ClusterMesh placement selectors (voters/workers/all/labels) and exposure enum auto\|internal-load-balancer\|node-port\|external-load-balancer; NodePort pins exactly one apiserver per selected node; internal exposure is ONE pinned IPv4 VIP (host offset `0x79`) from the existing `<instance>-fabric` pool — control plane IPv4-only on Cilium 1.20.3, data plane stays dual-stack; external always wins with explicit non-clan class + DNS name |
 | D61 | active (r18) | IfState 2.5.1 is the exclusive static network renderer; live reconciliation, no networkd/netdev/scripted networking, per-link DHCP hooks, runtime-secret includes, FRR/Cilium ownership boundaries |
 | D62 | revised (r24) | `org-pkgs` (external-systems/pkgs) owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
-| D66 | active (r24) | Org standard: one `org-pkgs` input and `flakeModules.default` (treefmt, docs, lock-sync, VM runner), no dev partition, devenv shell, org CI; VM suites in `clanTests`, one at a time on euc-hel-0 (96 GiB / 36 vCPUs per suite, 2 h), exit status is the result |
+| D66 | active (r24) | Org standard: one `org-pkgs` input and `flakeModules.default` (treefmt, docs, lock-sync, VM runner), no dev partition, devenv shell, org CI; VM suites in `clanTests` on euc-hel-0 (96 GiB / 36 vCPUs per suite, 2 h), side by side within `vmTests.parallel`, shared k3s/RKE2 bodies, `subtest` phases, exit status is the result |
 
 ## Round 24 decisions in detail
 
@@ -224,8 +226,18 @@ The repo has the same shape as every other external-systems repo:
   `nix flake check`, publishes the docs to GitHub Pages and tags releases.
 
 VM suites are declared next to their service in `clanTests.<suite>` and
-wrapped in clan-core's `clanTest`. The owner approved larger resource
-limits for this repo, because its suites boot whole topologies:
+wrapped in clan-core's `clanTest`; there are 24. k3s and RKE2 suites that
+test one contract (`single`, `join`, `ha`, `data-plane`, `clustermesh`,
+`clustermesh-tunnel`, `external`, `selective`) share one body in
+`lib/kube-cluster/tests/vm/<suite>.nix` behind thin per-service wrappers,
+with every distro difference an explicit branch. Test vars are generated
+during evaluation; there is no update-vars step. Test scripts group their
+steps in `with subtest(...)` phases, so the run summary names the phase
+that failed, and still end with their `<SUITE>_OK` marker.
+
+The owner approved larger resource limits for this repo, because its
+suites boot whole topologies, RKE2 nodes need at least 4 GiB and 2 vCPUs,
+and planned topologies are larger:
 
 | Limit | Value |
 |---|---|
@@ -233,10 +245,16 @@ limits for this repo, because its suites boot whole topologies:
 | Per VM | 16 GiB and 8 vCPUs |
 | Default timeout | 2 hours |
 
-The limits are sized for euc-hel-0, which runs one suite at a time.
-Evaluating every suite's derivation is too heavy for CI, so that check runs
-by hand with `vm-test --check`, one suite per process. A suite passes when
-its sandboxed build exits 0. Its log is `.vm-tests/<suite>/build.log`.
+The limits are sized for euc-hel-0. `vm-test --all --remote` boots suites
+side by side, largest first, while their VMs fit `vmTests.parallel`
+(24 vCPUs and 96 GiB); `--serial` runs one at a time. A suite that fails
+beside others is rerun alone, and passing then is `PASS(!)`: a pass with a
+warning that the suite is timing-sensitive under load. A result already in
+the store is `CACHED` and booted nothing; `--rebuild` boots a fresh copy,
+also on the remote builder. Evaluating every suite's derivation is too
+heavy for CI, so that check runs by hand with `vm-test --check`, one suite
+per process. A suite passes when its sandboxed build exits 0. Each suite
+writes `.vm-tests/<suite>/{build.log,summary.txt,result.txt}`.
 
 ## Round 19 decisions in detail
 

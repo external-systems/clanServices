@@ -10,6 +10,12 @@
 > tunnel/VXLAN profile (not retiring), and ClusterMesh placement/exposure
 > follows D60. Terminology below (`member`/`hub`, `settings.hubs`,
 > routed-hub) is round-16 vocabulary.
+>
+> **Historical tooling.** Do not follow its workflow steps either: the
+> `.baton-pass/vm-logs` tee, `nix build ... vmTests.<suite>` invocations
+> and one-at-a-time rule are round-15 practice. Today's loop is AGENTS.md
+> (Tool loop) and [Testing](../reference/testing.md): `vm-test` with logs
+> in `.vm-tests/<suite>/`.
 
 This page is a **self-contained copy-paste prompt**. Paste the fenced block
 below, verbatim, into a fresh AI coding agent session whose working
