@@ -35,6 +35,17 @@ One term per concept. Mirrors SPEC.md §10.
   2.5.1. It reconciles links, addresses, WireGuard, static/policy routes,
   rules, and sysctls live without reboot; no systemd-networkd, netdevs, or
   scripted network units. FRR/Zebra and Cilium retain dynamic ownership.
+- **netif contract** — `specs/netif.md` (decisions N1–N14): netif is the
+  only network contract in the inventory; IfState renders it in IfState
+  modes and NetworkManager in NetworkManager modes, never both in one
+  system configuration; iwd owns Wi-Fi in every mode.
+- **Mode** — a NixOS specialisation of a machine (gaming, developer,
+  kubernetes); the parent configuration is the default boot entry, and
+  switching is by reboot only (N3).
+- **Ownership registry** — `clanServices.networking.owners`: interfaces,
+  namespaces, tables and rules owned by other software (iwd, Tailscale,
+  Cilium, VM taps), rendered into IfState ignores and NetworkManager
+  unmanaged devices (N6).
 - **netif** — inventory-owned, multi-instance/multi-link host attachments:
   physical/VLAN/bond/bridge links, addressing, routes, MTU, DNS, firewall
   trust, and endpoint/deploy-target exports, rendered through IfState.

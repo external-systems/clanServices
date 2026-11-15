@@ -20,6 +20,16 @@ _: {
             {Security = "architecture/security.md";}
           ];
         }
+        {
+          "Host networking (netif)" = [
+            {Overview = "netif/index.md";}
+            {"Modes and reboots" = "netif/modes.md";}
+            {Wi-Fi = "netif/wifi.md";}
+            {"Ownership and VPNs" = "netif/ownership.md";}
+            {"Home router" = "netif/router.md";}
+            {"Plan and evidence" = "netif/plan.md";}
+          ];
+        }
         {Decisions = [{"Decision record" = "decisions/index.md";}];}
         {
           Services = [
