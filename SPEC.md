@@ -4,6 +4,21 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 25 (2026-11-15): **host networking has its own contract,
+`specs/netif.md` (decisions N1–N14); docs only.** It is the status authority
+for netif, the shared IfState base and the ownership registry, and it
+supersedes D50, D53 and D61 where they conflict. In short:
+- each mode (a NixOS specialisation, switched by reboot) has one manager,
+  IfState or NetworkManager;
+- iwd owns Wi-Fi in every mode;
+- an ownership registry keeps IfState away from Tailscale, iwd, Cilium and
+  VM taps;
+- each mode provides `network-online.target` for session daemons.
+
+The model was probe-verified on euc-hel-0 before it was written down. netif
+stability work (phases N1–N6) comes before further cluster work. The
+data-plane hardening plan's phase 4 is folded into netif phase N3.
+
 Round 24 (2026-11-11): **the repo follows the external-systems org standard
 (D66); no service behavior change.** The artifact flake is the input
 `org-pkgs` (never `pkgs`), and `nixpkgs`, `flake-parts` and `import-tree`
@@ -978,7 +993,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   remains an explicit override. Cilium stays networking-only and no L7
   feature is enabled.
 - **D50 Inventory owns the core host data plane.** (REVISED round 15:
-  multi-link, multi-instance; round 18: IfState-only rendering, D61.)
+  multi-link, multi-instance; round 18: IfState-only rendering, D61;
+  round 25: `specs/netif.md` is the authority for host networking, and its
+  N5 replaces the Wi-Fi sentence below.)
   `netif` declares links, static/DHCP/RA addressing, gateways, routes,
   MTU, DNS, firewall trust, underlay policy routing, and deploy-target
   exports in `inventory.nix` — multi-link and multi-instance, including
@@ -1293,7 +1310,11 @@ unless noted) — revoked entries keep one-line reasons for history.
 
 ### Round 18 decisions (2026-10-27) — active
 
-- **D61 IfState is the only static host-network renderer.** IfState 2.5.1
+- **D61 IfState is the only static host-network renderer.** (REVISED
+  round 25: `specs/netif.md` N2/N5/N6 — IfState is the renderer in IfState
+  modes; NetworkManager renders NetworkManager modes and is never enabled
+  together with IfState; iwd owns Wi-Fi. The rest of D61 stands for IfState
+  modes.) IfState 2.5.1
   owns physical/VLAN/bond/bridge/dummy/WireGuard links, static addresses,
   static and policy routes, rules, and network sysctls for every machine
   managed by these clanServices. `netif`, `routed-fabric`, and
@@ -2750,6 +2771,16 @@ such as external-dns).
   and sysctls and reconciles them live without reboot; FRR/Zebra and
   Cilium retain dynamic ownership. No systemd-networkd, netdevs, or
   scripted network units.
+- **netif contract** — `specs/netif.md` (N1–N14): netif is the only
+  network contract in the inventory; IfState renders IfState modes and
+  NetworkManager renders NetworkManager modes, never both in one system
+  configuration; iwd owns Wi-Fi in every mode.
+- **Mode** — a NixOS specialisation (gaming, developer, kubernetes); the
+  parent configuration is the default boot entry; switching is by reboot
+  only (N3).
+- **Ownership registry** — `clanServices.networking.owners`: objects owned
+  by other software (iwd, Tailscale, Cilium, VM taps), rendered into IfState
+  ignores and NetworkManager unmanaged devices (N6).
 - **netif instance** — one site/segment declaration of the netif
   service with shared defaults and per-machine/link overrides; several
   may coexist on one host (D53).

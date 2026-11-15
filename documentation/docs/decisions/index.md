@@ -208,6 +208,19 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D62 | revised (r24) | `org-pkgs` (external-systems/pkgs) owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
 | D66 | active (r24) | Org standard: one `org-pkgs` input and `flakeModules.default` (treefmt, docs, lock-sync, VM runner), no dev partition, devenv shell, org CI; VM suites in `clanTests` on euc-hel-0 (96 GiB / 36 vCPUs per suite, 2 h), side by side within `vmTests.parallel`, shared k3s/RKE2 bodies, `subtest` phases, exit status is the result |
 
+## Round 25: host networking gets its own contract
+
+Host networking moved to `specs/netif.md`, with decisions N1–N14, and to the
+[Host networking](../netif/index.md) section. The contract:
+
+- adds modes (NixOS specialisations, switched by reboot);
+- uses one network manager per mode: IfState, or NetworkManager for gaming;
+- gives Wi-Fi to iwd in every mode;
+- adds an ownership registry for software such as Tailscale;
+- makes session daemons wait for `network-online.target`.
+
+It revises D50 and D61. Two VM probes checked the model first.
+
 ## Round 24 decisions in detail
 
 ### D66 — The org standard

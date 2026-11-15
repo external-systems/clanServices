@@ -1,6 +1,8 @@
 # Data-plane hardening plan
 
-Status: **phase 3 in progress**; phases 1–2 are complete. D64 locks the
+Status: phases 1–3 are complete. Phase 4 (netif underlay) is folded into
+netif phase N3 of the [netif plan](../netif/plan.md); netif stability comes
+before phases 5–9. D64 locks the
 clan-vars allocation contract before its implementation commits. SPEC.md
 stays the status authority, and each phase below amends SPEC.md before it
 changes code (AGENTS.md rule 3).

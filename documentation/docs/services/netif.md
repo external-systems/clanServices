@@ -3,8 +3,15 @@
 `netif` is the inventory-facing clanService for core host network
 configuration (D53/D61). It replaces static IP ownership by home's
 `hostSpec.networking` and `machines.json`; borg's `lan` service is the
-behavioral reference. IfState 2.5.1 is the only renderer and applies
+behavioral reference. Today IfState 2.5.1 is the only renderer and applies
 changes live without reboot.
+
+The netif contract now has its own spec, `specs/netif.md`, and its own
+section, [Host networking](../netif/index.md). It adds modes (gaming,
+developer, kubernetes) switched by reboot, a NetworkManager renderer for
+gaming modes, iwd for Wi-Fi in every mode, and an ownership registry. This
+page describes today's settings; where they differ, the netif section
+wins.
 
 ## Contract
 
@@ -47,9 +54,10 @@ repo may obtain sensitive public-topology values from its
 `secrets`/`not-secret` input; those values are public on the deployed NixOS
 machine and are not clan vars.
 
-Supporting NixOS modules may configure Wi-Fi association, driver quirks,
-or TCP tuning. They must not enable NetworkManager or become a second
-owner of the static data plane. Provider-MAC attachment for day-2 KubeVirt
+Supporting NixOS modules may configure driver quirks or TCP tuning. They
+never become a second owner of the static data plane. Wi-Fi belongs to iwd
+in every mode, and NetworkManager only runs as netif's renderer in
+NetworkManager modes ([Wi-Fi](../netif/wifi.md), [Modes](../netif/modes.md)). Provider-MAC attachment for day-2 KubeVirt
 (for example) is `netif` **bridge plumbing**, not a LoadBalancer pool
 concern.
 

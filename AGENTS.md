@@ -42,6 +42,11 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 - `.github/` — the org `ci.yml` (calls pkgs `org-ci.yml`; required check
   `ci / flake-check`) and the branch ruleset. Never add steps or jobs here;
   CI changes are pkgs PRs.
+- `specs/netif.md` — the host-networking contract and status authority
+  (decisions N1–N14): netif, the shared IfState base, modes, the
+  ownership registry. It supersedes SPEC.md D50/D53/D61 where they
+  conflict; its human pages are `documentation/docs/netif/`. Edit them
+  together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
   record (D1–D66) and dated round summaries hold the history; read them
