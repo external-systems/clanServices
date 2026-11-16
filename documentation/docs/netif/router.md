@@ -37,11 +37,18 @@ Two rules follow:
 - **Nothing configures LAN links but IfState and dhcpcd.** Kea, radvd and
   nftables only read them.
 
+## Ports by MAC
+
+Each SFP+ port is declared with `match.mac` and a short logical name
+(`wan`, `lan1`, …). IfState finds the NIC by its permanent MAC and renames
+it, so a kernel or driver change cannot swap ports. If a declared port is
+missing, `ifstate.service` fails and the journal names it
+(`netif-match` suite).
+
 ## Planned
 
-- `match.mac` (pick ports by MAC);
 - prefix-delegation settings;
 - the zone seam;
 - a full `netif-router` suite with a prefix change and a reboot.
 
-All in phases N3 and N5 of the [plan](plan.md).
+All in phases N3b and N5 of the [plan](plan.md).

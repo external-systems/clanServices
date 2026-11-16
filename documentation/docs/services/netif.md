@@ -27,11 +27,14 @@ each machine declares one or more logical links under
 - **segment defaults** (site/segment level): addressing mode, base MTU
   (effective per-link values are derived, not hand-set), nameservers,
   gateway, firewall trust;
-- **per-machine and per-link overrides**: physical interfaces, VLANs,
+- **per-machine and per-link overrides**: physical interfaces (by name or
+  by permanent MAC with `match.mac`), VLANs,
   bonds, and bridges, each with DHCP/RA or static IPv4/IPv6 addressing and
   prefixes;
 - gateways (on-link and default), static and policy routes, table
   selection, MTU, DNS, and firewall trust per link;
+- `extraSettings`, a checked IfState passthrough per link (a key netif
+  already renders is an eval error);
 - optional `clan.core.networking.targetHost` export and SSH user;
 - optional `peer` endpoint exports for fabric consumers.
 

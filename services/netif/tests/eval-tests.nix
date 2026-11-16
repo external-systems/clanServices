@@ -382,7 +382,100 @@
       clan._networkFacts.fabric.lab = {};
     }
     baseInventory);
+  # --- underlay coverage (specs/netif.md N3a) ---
+  withEdgeLinks = links:
+    (mkEvaled (
+      lib.recursiveUpdate baseInventory {
+        instances.dmz-net.roles.default.machines.edge-1.settings.links = links;
+      }
+    )).config.nixosConfigurations.edge-1.config;
+  macEdge = withEdgeLinks {
+    wan0 = {
+      match.mac = "52:54:00:12:01:02";
+      static.ipv4 = ["10.40.0.2/24"];
+      extraSettings.ethtool.features.rx-checksum = false;
+    };
+  };
+  macAndInterfaceEdge = withEdgeLinks {
+    wan0 = {
+      interface = "enp9s0";
+      match.mac = "52:54:00:12:01:02";
+    };
+  };
+  macOnVlanEdge = withEdgeLinks {
+    dmz10.match.mac = "52:54:00:12:01:02";
+  };
+  macLongNameEdge = withEdgeLinks {
+    uplink-to-the-isp.match.mac = "52:54:00:12:01:02";
+  };
+  badMacEdge = withEdgeLinks {
+    wan0.match.mac = "52-54-00-12-01-02";
+  };
+  extraCollisionEdge = withEdgeLinks {
+    vswitch.extraSettings = {
+      link.kind = "dummy";
+      addresses = ["192.0.2.99/32"];
+    };
+  };
 in {
+  underlay = {
+    test_matchMacRendersIdentify = {
+      expr = {
+        inherit (macEdge.networking.ifstate.settings.interfaces.wan0) identify link addresses;
+        ethtool = macEdge.networking.ifstate.settings.interfaces.wan0.ethtool;
+      };
+      expected = {
+        identify.perm_address = "52:54:00:12:01:02";
+        link = {
+          kind = "physical";
+          state = "up";
+        };
+        addresses = ["10.40.0.2/24"];
+        ethtool.features.rx-checksum = false;
+      };
+    };
+    test_matchMacCleanInventory = {
+      expr = failedAssertion macEdge "netif";
+      expected = false;
+    };
+    test_matchMacAndInterfaceRejected = {
+      expr = failedAssertion macAndInterfaceEdge "must set exactly one of 'interface' and 'match.mac'";
+      expected = true;
+    };
+    test_matchMacOnVlanRejected = {
+      expr = failedAssertion macOnVlanEdge "sets 'match.mac' but is not a physical link";
+      expected = true;
+    };
+    test_matchMacLongNameRejected = {
+      expr = failedAssertion macLongNameEdge "must be at most 15 characters";
+      expected = true;
+    };
+    test_badMacRejected = {
+      expr = (builtins.tryEval (builtins.deepSeq badMacEdge.networking.ifstate.settings.interfaces null)).success;
+      expected = false;
+    };
+    test_extraSettingsCollisionRejected = {
+      expr = map (needle: failedAssertion extraCollisionEdge needle) [
+        "vswitch: link.kind"
+        "vswitch: addresses"
+      ];
+      expected = [
+        true
+        true
+      ];
+    };
+    test_physicalPresenceCheck = {
+      expr = map (c: builtins.length (lib.toList (c.systemd.services.ifstate.serviceConfig.ExecStartPost or []))) [
+        edge
+        macEdge
+      ];
+      expected = [
+        1
+        1
+      ];
+    };
+  };
+
   registry = {
     test_noDaemonNoClaims = {
       expr = kam.networking.ifstate.settings.parameters.ignore.ifname or [];
@@ -839,7 +932,7 @@ in {
       expected = true;
     };
     test_physicalWithoutInterfaceRejected = {
-      expr = failedAssertion physicalNoInterfaceEval.config.nixosConfigurations.kamrui-h1.config "physical link 'foo' of machine 'kamrui-h1' must set 'interface'";
+      expr = failedAssertion physicalNoInterfaceEval.config.nixosConfigurations.kamrui-h1.config "physical link 'foo' of machine 'kamrui-h1' must set exactly one of 'interface' and 'match.mac'";
       expected = true;
     };
     test_dhcpStaticConflictRejected = {

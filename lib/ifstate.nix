@@ -1,6 +1,7 @@
 {ifstateOverlay}: {
   config,
   lib,
+  pkgs,
   ...
 }: let
   ip = import ./ip.nix {inherit lib;};
@@ -11,6 +12,22 @@
       then address
       else address.address
     );
+  # IfState 2.5.1 only warns when a declared physical NIC is missing and
+  # exits 0. netif makes that loud (specs/netif.md N3a): the unit fails
+  # and the journal names the link.
+  physicalNames = builtins.attrNames (
+    lib.filterAttrs (_: interface: (interface.link.kind or null) == "physical") config.networking.ifstate.settings.interfaces
+  );
+  physicalCheck = pkgs.writeShellScript "ifstate-physical-links-present" ''
+    missing=""
+    for name in ${lib.escapeShellArgs physicalNames}; do
+      [ -e "/sys/class/net/$name" ] || missing="$missing $name"
+    done
+    if [ -n "$missing" ]; then
+      echo "netif: declared physical links missing after IfState apply:$missing" >&2
+      exit 1
+    fi
+  '';
   wireguardInterfaces = builtins.filter (
     interface: (interface.link.kind or null) == "wireguard" && (interface.wireguard.listen_port or null) != null
   ) (builtins.attrValues config.networking.ifstate.settings.interfaces);
@@ -110,7 +127,10 @@ in {
 
     systemd = {
       network.enable = lib.mkForce false;
-      services.ifstate.serviceConfig.KillMode = "process";
+      services.ifstate.serviceConfig = {
+        KillMode = "process";
+        ExecStartPost = lib.mkIf (physicalNames != []) [physicalCheck];
+      };
     };
   };
 }
