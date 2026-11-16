@@ -55,6 +55,9 @@
 in {
   key = "clanServices:lib/ifstate.nix";
 
+  # The ownership registry renders parameters.ignore (specs/netif.md N6).
+  imports = [./ownership.nix];
+
   options.clanServices.networking.reservedPorts = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [];
@@ -97,24 +100,7 @@ in {
     );
 
     networking = {
-      ifstate = {
-        enable = true;
-        settings = {
-          parameters.ignore = {
-            ifname = [
-              "^cilium"
-              "^lxc"
-              "^tap"
-              "^vnet"
-            ];
-            routes = [
-              {dev = "^cilium";}
-              {dev = "^lxc";}
-            ];
-            rules = [{table = 200;}];
-          };
-        };
-      };
+      ifstate.enable = true;
 
       interfaces = lib.mkForce {};
       networkmanager.enable = lib.mkForce false;

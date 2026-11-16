@@ -36,8 +36,10 @@ with numbered decisions `N1`–`N14`, is
 The contract was split out of SPEC.md on 2026-11-15 and checked with two VM
 probes before it was written down: [Plan and evidence](plan.md). What runs
 in `main` today is IfState-only networking with multi-link,
-multi-instance links (D53/D61). Modes, the NetworkManager renderer and the
-ownership registry are planned in phases N1–N6.
+multi-instance links (D53/D61), plus the ownership registry with its
+presets, start ordering and Tailscale checks (phase N1, suite
+`netif-registry`). Modes and the NetworkManager renderer are planned in
+phases N2–N6.
 
 ## Pages
 

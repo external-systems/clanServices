@@ -9,6 +9,14 @@ rendering is `documentation/docs/netif/`. **Edit this file and those pages
 together.** Decisions are numbered `N1`… so they never collide with
 SPEC.md's `D1`–`D66`.
 
+Round N1 (2026-11-15): **the ownership registry is implemented and
+enforced.** `lib/ownership.nix` (imported by the shared IfState base)
+holds `clanServices.networking.owners`, the four presets, N7's ordering
+and N11's checks; ownership conflicts, IfState Wi-Fi links and daemons
+without a preset are eval errors. The suite `netif-registry` proves it
+(`NETIF_REGISTRY_OK`). NetworkManager rendering of the registry waits
+for N2.
+
 Round N0 (2026-11-15): **the contract is split out of SPEC.md and
 revised for the owner's machines** — a Steam Deck and kamrui-h1 that boot
 into a gaming mode and offer developer/kubernetes modes, a headless home
@@ -125,7 +133,8 @@ here.
     = true`. It does association, DHCP and roaming, and sends DNS to
     systemd-resolved (`NameResolvingService = systemd`). IfState never
     configures a Wi-Fi link: the link and the routes iwd installs are
-    registry-owned (N6).
+    registry-owned (N6). An IfState interface named `wl*` is an eval error
+    in every mode, whether or not iwd is enabled (implemented, N1).
   - **Known networks are shared through `/var/lib/iwd`.** NetworkManager's
     default `iwd-config-path = auto` writes each Wi-Fi profile there. With
     the iwd backend, iwd's own autoconnect picks among known networks, and
@@ -158,16 +167,27 @@ here.
   - whether its daemon holds long-lived network sessions (N7).
 
   The base renders every owner into IfState `parameters.ignore`
-  (`ifname`, `netns`, `rules`, `routes`) and into NetworkManager
-  `unmanaged-devices`. Presets switch on automatically from the NixOS option
-  that enables their daemon:
+  (`ifname`, `netns`, `rules`, `routes`) and, from phase N2, into
+  NetworkManager `unmanaged-devices`. Rendering per owner:
+  - each interface regex → `ignore.ifname` and a route ignore `{dev}`
+    (routes on an owned link are the owner's);
+  - each netns regex → `ignore.netns`;
+  - each table → a route ignore and a rule ignore `{table}`;
+  - each rule priority → a rule ignore `{priority}`;
+  - raw `routes`/`rules` selectors pass through;
+  - `sessionUnits` get N7's ordering.
+
+  Regexes are POSIX ERE matched from the start (IfState uses Python
+  `re.match`), so eval can test them. Presets switch on automatically from
+  the NixOS option that enables their daemon (each is `mkDefault`, so a
+  machine can switch one off):
 
   | Preset | Owns | Status |
   |---|---|---|
-  | `iwd` | Wi-Fi link names; its DHCP routes are `proto dhcp`, which IfState already ignores | probe-verified |
-  | `tailscale` | `^tailscale`; rules 5210/5230/5250/5270 and table 52 (both families) | probe-verified |
-  | `cilium` | `^cilium`, `^lxc`; routes on those; rules to table 200 | implemented (D61) |
-  | `vm` | `^tap`, `^vnet` | implemented |
+  | `iwd` (`networking.wireless.iwd.enable`) | `^wl` links and the routes on them | VM-proven |
+  | `tailscale` (`services.tailscale.enable`) | `^tailscale`; rules 5210/5230/5250/5270 and table 52 (both families); session unit `tailscaled.service` | VM-proven |
+  | `cilium` (`services.k3s.enable` or `services.rke2.enable`) | `^cilium`, `^lxc`; routes on those; table 200 | VM-proven (k3s/rke2 suites) |
+  | `vm` (`virtualisation.libvirtd.enable` or `virtualisation.incus.enable`) | `^tap`, `^vnet` | implemented |
   | netbird, cloudflare-warp, zerotier | — | not offered until VM-proven |
 
   The probe ran IfState with the registry stripped (dry run): it would have
@@ -176,10 +196,20 @@ here.
   - set the Wi-Fi link down;
   - deleted all eight Tailscale rules.
 
-  With the registry, the dry run and two applies changed nothing (§8). A
-  daemon enabled without a matching preset is an eval error naming the
-  daemon.
-  *(probe-verified; implementation planned, phase N1)*
+  With the registry, the dry run and two applies changed nothing (§8).
+
+  Eval errors (the base's assertions):
+  - an IfState interface or netns matching an enabled owner's regex, or an
+    IfState route/rule using an owner's table or rule priority;
+  - a daemon enabled without an owner of the same name: `netbird`,
+    `cloudflare-warp`, `zerotierone`, and scripted WireGuard
+    (`networking.wireguard.interfaces`, `networking.wg-quick.interfaces`;
+    D61 makes IfState the only renderer, so use `wireguard-mesh` or
+    `routed-fabric`). Declaring `clanServices.networking.owners.<name>`
+    by hand accepts the daemon; that is the owner's explicit choice and
+    unsupported until a preset is VM-proven.
+  *(implemented; VM-proven by `netif-registry` `NETIF_REGISTRY_OK`; the
+  NetworkManager side lands in N2)*
 
 - **N7 Each mode provides `network-online.target`; session daemons wait for
   it.**
@@ -195,7 +225,8 @@ here.
     tailnet answered at once after every reboot.
   - Roaming Wi-Fi is not part of "online": iwd reconnects on its own and
     tailscaled follows link changes.
-  *(probe-verified; planned, phase N1)*
+  *(IfState modes: implemented, VM-proven by `netif-registry`
+  `NETIF_REGISTRY_ORDER_OK`; NetworkManager modes: phase N2)*
 
 - **N8 IfState reconcile facts netif relies on** (IfState 2.5.1 source
   `libifstate/`, confirmed by the probes):
@@ -253,7 +284,12 @@ here.
     netif, fabric or cluster pool.
   - It warns when a fabric member accepts Tailscale routes
     (`--accept-routes`).
-  *(planned, phase N1)*
+  - Checked ranges: IfState interface addresses and route destinations
+    (default routes excluded), `clan.networkFacts.allocationPools`, and the
+    pod and Service CIDRs in `clan.networkFacts.clusters`; Tailscale's
+    ranges are `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. Both checks run
+    only when the `tailscale` owner is enabled.
+  *(implemented, eval tests in `services/netif/tests/eval-tests.nix`)*
 
 - **N12 Hot-plugged wired links in IfState modes** (a USB-C dock on the
   Deck). A physical link declared in IfState must exist when IfState runs,
@@ -304,13 +340,16 @@ here.
   - MTU, global DNS servers and firewall trust;
   - cross-instance checks;
   - reserved WireGuard ports;
-  - the Cilium and VM ignores;
   - live reconfiguration.
+- **Implemented and VM-proven in N1** (suite `netif-registry`
+  `NETIF_REGISTRY_OK`): the ownership registry and its presets (N6), the
+  ownership, Wi-Fi and unowned-daemon eval errors, IfState before
+  `network-online.target` with session units after it (N7), and the N11
+  range check and warning.
 - **Drift against this contract** (fixed by the phases in §9):
   - the base force-disables NetworkManager on every machine (conflicts N2);
-  - there are no modes (N3/N4) and no registry beyond the static Cilium and
-    VM ignores (N6);
-  - `ifstate.service` is not ordered before `network-online.target` (N7);
+  - there are no modes (N3/N4), and the registry does not render into
+    NetworkManager yet (N6, phase N2);
   - DNS uses global `networking.nameservers` (N9);
   - there is no `match.mac`, PD or zone seam (N10).
 
@@ -402,7 +441,7 @@ Each phase amends this file first, then code, then suites.
 | Phase | Work | Done when |
 |---|---|---|
 | N0 | This contract (docs only) | merged |
-| N1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green |
+| N1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | N2 | NetworkManager renderer, manager selection per mode, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | N3 | Underlay coverage: `match.mac`, DHCPv6-PD settings, `pathMtu`, per-link resolved DNS (N9), checked `extraSettings` passthrough (former hardening phase 4) | `netif-match` green; existing suites green |
 | N4 | `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
