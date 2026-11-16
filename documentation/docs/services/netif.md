@@ -107,7 +107,7 @@ inventory.instances = {
       nameservers = [ "192.168.10.1" ];
     };
     roles.default.machines = {
-      kamrui-h1.settings.links.wifi = { interface = "wlp2s0"; };  # Wi-Fi NIC
+      kamrui-h1.settings.links.dock = { interface = "enp4s0"; };  # dock NIC (Wi-Fi is iwd's, N5)
       nas.settings.links.eth = { interface = "enp3s0"; };  # different NIC, same defaults
     };
   };

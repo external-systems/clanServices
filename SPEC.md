@@ -4,6 +4,11 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 26 (2026-11-15): **netif phase N1 is implemented** (`specs/netif.md`
+round N1). The Cilium and VM ignores that D61 hard-coded in the shared
+IfState base are now presets of the ownership registry (`lib/ownership.nix`);
+the Cilium preset is on wherever k3s or RKE2 runs. Suite `netif-registry`.
+
 Round 25 (2026-11-15): **host networking has its own contract,
 `specs/netif.md` (decisions N1–N14); docs only.** It is the status authority
 for netif, the shared IfState base and the ownership registry, and it

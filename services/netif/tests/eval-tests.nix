@@ -20,7 +20,7 @@
 
   baseInventory = {
     instances = {
-      # Site LAN: DHCP wifi + static ethernet on one host, DHCP NAS.
+      # Site LAN: DHCP dock ethernet + static ethernet on one host, DHCP NAS.
       home-net = {
         module.name = "netif";
         module.input = "self";
@@ -33,8 +33,8 @@
             kamrui-h1.settings = {
               targetHost = true;
               links = {
-                wifi = {
-                  interface = "wlp2s0";
+                dock = {
+                  interface = "enp4s0";
                   dhcp.ipv4 = true; # inherits the site mtu default
                 };
                 eth = {
@@ -228,7 +228,7 @@
   );
   duplicateDefaultRouteEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
-      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.gateway.ipv4 = "192.168.10.1"; # wifi DHCP already owns the default
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.gateway.ipv4 = "192.168.10.1"; # dock DHCP already owns the default
     }
   );
   dnsConflictEval = mkEvaled (
@@ -325,13 +325,173 @@
       instances.home-net.roles.default.machines.nas.settings.links.eth.endpoint = true;
     }
   );
+  # --- ownership registry (specs/netif.md N6, N7, N11) ---
+  withKamrui = extra:
+    mkEvaledWith (
+      machineConfigs
+      // {
+        kamrui-h1 = {
+          imports = [extra];
+          nixpkgs.hostPlatform = "x86_64-linux";
+        };
+      }
+    );
+  kamOf = eval: eval.config.nixosConfigurations.kamrui-h1.config;
+  tailscaleKam = kamOf (withKamrui {services.tailscale.enable = true;} baseInventory);
+  iwdKam = kamOf (withKamrui {networking.wireless.iwd.enable = true;} baseInventory);
+  k3sKam = kamOf (withKamrui {services.k3s.enable = true;} baseInventory);
+  wifiLinkKam = kamOf (mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.wifi = {
+        interface = "wlan0";
+        dhcp.ipv4 = true;
+      };
+    }
+  ));
+  tailscaleTableKam = kamOf (withKamrui {services.tailscale.enable = true;} (
+    lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
+        table = 52;
+        from = ["192.168.10.10/32"];
+      };
+    }
+  ));
+  tailscaleCgnatKam = kamOf (withKamrui {services.tailscale.enable = true;} (
+    lib.recursiveUpdate baseInventory {
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.static.ipv4 = ["100.100.0.2/24"];
+    }
+  ));
+  zerotierKam = kamOf (withKamrui {services.zerotierone.enable = true;} baseInventory);
+  zerotierOwnedKam = kamOf (withKamrui {
+      services.zerotierone.enable = true;
+      clanServices.networking.owners.zerotierone.interfaces = ["^zt"];
+    }
+    baseInventory);
+  scriptedWireguardKam = kamOf (withKamrui {
+      networking.wireguard.interfaces.wg9 = {
+        ips = ["10.200.0.1/24"];
+        privateKeyFile = "/run/wg9.key";
+      };
+    }
+    baseInventory);
+  acceptRoutesKam = kamOf (withKamrui {
+      services.tailscale = {
+        enable = true;
+        extraUpFlags = ["--accept-routes"];
+      };
+      clan._networkFacts.fabric.lab = {};
+    }
+    baseInventory);
 in {
-  rendering = {
-    test_multiNicWifiDhcp = {
+  registry = {
+    test_noDaemonNoClaims = {
+      expr = kam.networking.ifstate.settings.parameters.ignore.ifname or [];
+      expected = [];
+    };
+    test_ifstateProvidesNetworkOnline = {
       expr = {
-        inherit (kamInterfaces.wlp2s0.link) kind mtu;
-        dhcp = kamInterfaces.wlp2s0.hooks;
-        ra = kamInterfaces.wlp2s0.sysctl.ipv6;
+        before = lib.elem "network-online.target" kam.systemd.services.ifstate.before;
+        wantedBy = lib.elem "network-online.target" kam.systemd.services.ifstate.wantedBy;
+      };
+      expected = {
+        before = true;
+        wantedBy = true;
+      };
+    };
+    test_tailscalePreset = {
+      expr = let
+        ignore = tailscaleKam.networking.ifstate.settings.parameters.ignore;
+      in {
+        inherit (ignore) ifname rules;
+        routes = builtins.filter (route: !(route ? proto)) ignore.routes;
+        after = lib.elem "network-online.target" tailscaleKam.systemd.services.tailscaled.after;
+        wants = lib.elem "network-online.target" tailscaleKam.systemd.services.tailscaled.wants;
+      };
+      expected = {
+        ifname = ["^tailscale"];
+        rules = [
+          {table = 52;}
+          {priority = 5210;}
+          {priority = 5230;}
+          {priority = 5250;}
+          {priority = 5270;}
+        ];
+        routes = [
+          {dev = "^tailscale";}
+          {table = 52;}
+        ];
+        after = true;
+        wants = true;
+      };
+    };
+    test_iwdPreset = {
+      expr = iwdKam.networking.ifstate.settings.parameters.ignore.ifname;
+      expected = ["^wl"];
+    };
+    test_ciliumPreset = {
+      expr = let
+        ignore = k3sKam.networking.ifstate.settings.parameters.ignore;
+      in {
+        inherit (ignore) ifname rules;
+      };
+      expected = {
+        ifname = [
+          "^cilium"
+          "^lxc"
+        ];
+        rules = [{table = 200;}];
+      };
+    };
+    test_presetsCleanOnBaseInventory = {
+      expr = map (c: failedAssertion c "clanServices:") [
+        tailscaleKam
+        iwdKam
+        zerotierOwnedKam
+      ];
+      expected = [
+        false
+        false
+        false
+      ];
+    };
+    test_wifiLinkRejected = {
+      expr = failedAssertion wifiLinkKam "Wi-Fi links belong to iwd, never IfState";
+      expected = true;
+    };
+    test_ownedTableRejected = {
+      expr = failedAssertion tailscaleTableKam "table 52 is owned by 'tailscale'";
+      expected = true;
+    };
+    test_unownedDaemonRejected = {
+      expr = failedAssertion zerotierKam "zerotierone (services.zerotierone.enable) has no ownership-registry preset";
+      expected = true;
+    };
+    test_scriptedWireguardRejected = {
+      expr = failedAssertion scriptedWireguardKam "wireguard (networking.wireguard.interfaces";
+      expected = true;
+    };
+    test_tailscaleCgnatOverlapRejected = {
+      expr = failedAssertion tailscaleCgnatKam "100.100.0.2/24 overlaps 100.64.0.0/10";
+      expected = true;
+    };
+    test_fabricAcceptRoutesWarns = {
+      expr = map (c: lib.any (lib.hasInfix "accepts Tailscale subnet routes") c.warnings) [
+        acceptRoutesKam
+        tailscaleKam
+      ];
+      expected = [
+        true
+        false
+      ];
+    };
+  };
+
+  rendering = {
+    test_multiNicDhcp = {
+      expr = {
+        inherit (kamInterfaces.enp4s0.link) kind mtu;
+        dhcp = kamInterfaces.enp4s0.hooks;
+        ra = kamInterfaces.enp4s0.sysctl.ipv6;
         dns = lib.unique kam.networking.nameservers;
       };
       expected = {
@@ -339,7 +499,7 @@ in {
         mtu = 1500;
         dhcp = [
           {
-            name = "netif-dhcp-home-net-wifi";
+            name = "netif-dhcp-home-net-dock";
             args = {
               ipv4 = "true";
               ipv6 = "false";
@@ -356,13 +516,13 @@ in {
     };
     test_dhcpHookRegistrationMatchesLinkReference = {
       expr = lib.attrNames kamIfstate.parameters.hooks;
-      expected = ["netif-dhcp-home-net-wifi"];
+      expected = ["netif-dhcp-home-net-dock"];
     };
     test_forwardingAcceptsRouterAdvertisements = {
       expr = let
         interfaces = forwardingEval.config.nixosConfigurations.kamrui-h1.config.networking.ifstate.settings.interfaces;
       in {
-        dhcp = interfaces.wlp2s0.sysctl.ipv6.accept_ra;
+        dhcp = interfaces.enp4s0.sysctl.ipv6.accept_ra;
         static = interfaces.enp3s0.sysctl.ipv6.accept_ra;
       };
       expected = {
@@ -492,7 +652,7 @@ in {
     };
     test_multiInstanceInterfaces = {
       expr = lib.all (name: kamInterfaces ? ${name}) [
-        "wlp2s0"
+        "enp4s0"
         "enp3s0"
         "enp6s0"
       ];
@@ -504,7 +664,7 @@ in {
     };
     test_firewallTrust = {
       expr = lib.all (i: lib.elem i kam.networking.firewall.trustedInterfaces) [
-        "wlp2s0"
+        "enp4s0"
         "enp3s0"
         "enp6s0"
       ];
@@ -542,9 +702,9 @@ in {
         endpoint = null;
         mtu = 1500;
         links = {
-          wifi = {
+          dock = {
             kind = "physical";
-            interface = "wlp2s0";
+            interface = "enp4s0";
             mtu = 1500;
             nameservers = ["192.168.10.1"];
             endpoint = false;

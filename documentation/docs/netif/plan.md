@@ -11,7 +11,7 @@ suites.
 | Phase | Work | Done when |
 |---|---|---|
 | N0 | The netif contract (docs only) | merged |
-| N1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green |
+| N1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
 | N2 | NetworkManager renderer, one manager per mode, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | N3 | NICs by MAC, DHCPv6 prefix delegation settings, path MTU, per-link DNS through resolved, a checked IfState passthrough | `netif-match` green, existing suites green |
 | N4 | Mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |

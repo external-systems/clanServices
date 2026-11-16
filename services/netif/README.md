@@ -84,8 +84,8 @@ inventory.instances = {
     };
     roles.default.machines.kamrui-h1.settings = {
       targetHost = true;
-      links.wifi = {
-        interface = "wlp2s0";
+      links.eth = {
+        interface = "enp3s0";
         dhcp.ipv4 = true; # inherits the site mtu default
       };
     };

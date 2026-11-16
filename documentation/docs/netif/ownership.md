@@ -17,19 +17,27 @@ about. IfState 2.5.1 does this to anything undeclared:
 
 Other software tells netif what it owns through
 `clanServices.networking.owners.<name>`: interface names, namespaces, tables
-and rule priorities. netif turns that into IfState ignore rules and
-NetworkManager unmanaged devices. A preset switches on automatically when
-you enable its daemon:
+and rule priorities. netif turns that into IfState ignore rules (and, from
+phase N2, NetworkManager unmanaged devices). A preset switches on
+automatically when you enable its daemon:
 
-| Preset | Owns | Status |
-|---|---|---|
-| `iwd` | Wi-Fi links | probe-verified |
-| `tailscale` | `tailscale0`, rules 5210/5230/5250/5270, table 52 | probe-verified |
-| `cilium` | `cilium_*`, `lxc*`, table 200 | implemented |
-| `vm` | `tap*`, `vnet*` | implemented |
+| Preset | Switched on by | Owns | Status |
+|---|---|---|---|
+| `iwd` | `networking.wireless.iwd.enable` | Wi-Fi links (`wl*`) | VM-proven |
+| `tailscale` | `services.tailscale.enable` | `tailscale0`, rules 5210/5230/5250/5270, table 52 | VM-proven |
+| `cilium` | `services.k3s.enable` or `services.rke2.enable` | `cilium_*`, `lxc*`, table 200 | VM-proven |
+| `vm` | libvirtd or Incus | `tap*`, `vnet*` | implemented |
 
-Enabling a daemon that has no preset fails evaluation. NetBird, Cloudflare
-WARP and ZeroTier get presets only once a VM suite proves them.
+The rules are checked when the configuration evaluates. Each of these
+fails the build:
+
+- netif declares an interface, namespace, table or rule priority that an
+  owner claims;
+- netif declares a Wi-Fi link (`wl*`): Wi-Fi is always iwd's;
+- NetBird, Cloudflare WARP, ZeroTier, or scripted WireGuard
+  (`networking.wireguard`, `wg-quick`) is enabled without an owner of that
+  name. Those get presets only once a VM suite proves them; for WireGuard,
+  use `wireguard-mesh` or `routed-fabric`.
 
 In the probe, a dry run without the registry would have deleted
 `tailscale0`, all eight Tailscale rules and a foreign namespace, and set
@@ -50,7 +58,7 @@ link under it.
 
 Tailscale's policy rules sit in front of the main routing table, where FRR
 installs fabric routes. A subnet route you accept through Tailscale
-therefore wins over a fabric route for the same prefix. netif will:
+therefore wins over a fabric route for the same prefix. netif:
 
 - reject a Tailscale range that overlaps a netif, fabric or cluster pool;
 - warn when a fabric member accepts Tailscale routes (`--accept-routes`).

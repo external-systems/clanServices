@@ -33,5 +33,9 @@ in rec {
       imports = [./tests/vm/dhcp.nix];
       inherit clan;
     };
+    netif-registry = {
+      imports = [./tests/vm/registry.nix];
+      inherit clan;
+    };
   };
 }
