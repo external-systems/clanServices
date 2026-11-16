@@ -16,7 +16,9 @@ overrides, and a host joins as many instances as it has attachments.
 
 ## Links
 
-Link kinds: `physical` (a named `interface`), `vlan` (`vlan.id` +
+Link kinds: `physical` (a named `interface`, or `match.mac` to find the
+NIC by permanent MAC and rename it to the logical link name, at most 15
+characters), `vlan` (`vlan.id` +
 `vlan.parent` naming another link in the same instance), `bond` and
 `bridge` (`bond.members` / `bridge.members` naming physical links in the
 same instance; an empty bridge is declared with `kind = "bridge"` for
@@ -36,6 +38,12 @@ routing — routed-fabric owns fabric policy), per-link `mtu`, `nameservers`
 Segment defaults live on `roles.default.settings`: `mtu`, `nameservers`,
 `dhcp.ipv4` / `dhcp.ipv6`, `gateway.ipv4` / `gateway.ipv6`, and
 `firewall.trust`; per-link values override them.
+
+`extraSettings` is a checked IfState passthrough merged into the link's
+interface: IfState's schema validates it at build time, and setting a
+key netif already renders is an eval error. A declared physical NIC that
+is missing after IfState applies fails `ifstate.service` and is named in
+the journal (specs/netif.md N15).
 
 ## Cross-instance checks (D53)
 

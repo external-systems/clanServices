@@ -9,6 +9,15 @@ rendering is `documentation/docs/netif/`. **Edit this file and those pages
 together.** Decisions are numbered `N1`… so they never collide with
 SPEC.md's `D1`–`D66`.
 
+Round N3a (2026-11-15): **physical NICs: identity, presence, passthrough
+(N15).** Phase N3 is split: N3a (`match.mac`, a missing NIC fails
+loudly, the checked `extraSettings` passthrough) is implemented and
+VM-proven by `netif-match` (`NETIF_MATCH_OK`). Probing the IfState 2.5.1
+source showed a declared physical NIC that is missing only logs
+"unable to create physical link" and exits 0, so netif adds its own
+post-apply check. N3b (DHCPv6-PD settings, `pathMtu`, per-link resolved
+DNS) stays planned.
+
 Round N1 (2026-11-15): **the ownership registry is implemented and
 enforced.** `lib/ownership.nix` (imported by the shared IfState base)
 holds `clanServices.networking.owners`, the four presets, N7's ordering
@@ -311,6 +320,27 @@ here.
   entry. 1.0 requires every probe-verified claim to be VM-proven and home to
   run netif on one machine of each use case (U1–U4).
 
+- **N15 Physical NICs: identity, presence, passthrough.**
+  - `links.<name>.match.mac` finds a physical NIC by permanent MAC
+    (lower-case, colon-separated; the option type rejects other forms).
+    It renders IfState `identify.perm_address`, and IfState renames the
+    NIC to the logical link name, so that name is at most 15 characters.
+    A physical link sets exactly one of `interface` and `match.mac`;
+    `match.mac` on a VLAN, bond or bridge is an eval error.
+  - **A missing NIC fails loudly.** IfState 2.5.1 only warns
+    ("unable to create physical link") and exits 0 when a declared
+    physical NIC is absent. The shared base adds an `ExecStartPost` to
+    `ifstate.service` that fails the unit when any declared root-namespace
+    physical link is missing after apply, and names it in the journal
+    ("declared physical links missing after IfState apply: <names>"). The
+    rest of the configuration still applies.
+  - `links.<name>.extraSettings` is merged into the link's rendered
+    IfState interface. IfState's schema checks it at build time; a key
+    netif already renders for that link (a rendered path, or a prefix of
+    one that is a leaf) is an eval error naming the path.
+  *(implemented; VM-proven by `netif-match` `NETIF_MATCH_MAC_OK`,
+  `NETIF_MATCH_MISSING_LOUD_OK`, `NETIF_MATCH_OK`; eval tests `underlay.*`)*
+
 ## 4. Invariants
 
 1. Exactly one manager per system configuration (N2).
@@ -351,7 +381,7 @@ here.
   - there are no modes (N3/N4), and the registry does not render into
     NetworkManager yet (N6, phase N2);
   - DNS uses global `networking.nameservers` (N9);
-  - there is no `match.mac`, PD or zone seam (N10).
+  - there is no PD settings or zone seam (N10; phases N3b and N5).
 
 ## 6. Out of scope
 
@@ -387,7 +417,7 @@ here.
   | `netif-wifi` | ad hoc join, roaming between two APs, DNS from DHCP | N2 |
   | `netif-hotplug` | dock ethernet hot-plug in an IfState mode | N2 |
   | `netif-router` | WAN DHCPv4 + DHCPv6-PD hook, kea, radvd, NAT, reapply no-op, prefix change, reboot | N5 |
-  | `netif-match` | NIC found by permanent MAC under a different kernel name; missing NIC fails loudly | N3 |
+  | `netif-match` | NIC found by permanent MAC under a different kernel name; missing NIC fails loudly | N3a (green) |
 
   Existing suites stay green throughout.
 
@@ -443,7 +473,8 @@ Each phase amends this file first, then code, then suites.
 | N0 | This contract (docs only) | merged |
 | N1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | N2 | NetworkManager renderer, manager selection per mode, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
-| N3 | Underlay coverage: `match.mac`, DHCPv6-PD settings, `pathMtu`, per-link resolved DNS (N9), checked `extraSettings` passthrough (former hardening phase 4) | `netif-match` green; existing suites green |
+| N3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
+| N3b | DHCPv6-PD settings, `pathMtu`, per-link resolved DNS (N9) (rest of former hardening phase 4) | `netif-dhcp` extended with PD; existing suites green |
 | N4 | `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
 | N5 | Router seam: zones and resolved names as read-only options + facts; `modules` router consumes them | `netif-router` green |
 | N6 | Stability gate: netif 1.0 tag after home runs netif on U1–U4 | N14 met |

@@ -208,6 +208,30 @@
       '';
       example = "enp1s0f0np0";
     };
+    match.mac = mkOption {
+      type = types.nullOr (types.strMatching "([0-9a-f]{2}:){5}[0-9a-f]{2}");
+      default = null;
+      description = ''
+        Find a physical NIC by its permanent MAC address (lower-case,
+        colon-separated) instead of its kernel name. IfState renames
+        the NIC to the logical link name, which must then be at most 15
+        characters. Set exactly one of 'interface' and 'match.mac'.
+      '';
+      example = "52:54:00:12:01:02";
+    };
+    extraSettings = mkOption {
+      type = types.attrsOf types.anything;
+      default = {};
+      description = ''
+        IfState interface settings merged into this link's rendered
+        interface (checked passthrough). IfState's schema validates them
+        at build time; setting a key netif already renders for the link
+        is an eval error.
+      '';
+      example = {
+        ethtool.features.rx-checksum = false;
+      };
+    };
     kind = mkOption {
       type = types.nullOr (
         types.enum [
@@ -466,8 +490,16 @@
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' has kind '${link.kind}' that does not match its configuration (vlan.id/bond.members/bridge.members indicators)";
           }
           {
-            assertion = r.kind != "physical" || link.interface != null;
-            message = "netif/${instanceName}: physical link '${logical}' of machine '${machineName}' must set 'interface'";
+            assertion = r.kind != "physical" || (link.interface != null) != (link.match.mac != null);
+            message = "netif/${instanceName}: physical link '${logical}' of machine '${machineName}' must set exactly one of 'interface' and 'match.mac'";
+          }
+          {
+            assertion = link.match.mac == null || r.kind == "physical";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'match.mac' but is not a physical link";
+          }
+          {
+            assertion = link.match.mac == null || lib.stringLength logical <= 15;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' uses 'match.mac', so its logical name becomes the interface name and must be at most 15 characters";
           }
           {
             assertion = r.kind != "vlan" || (link.vlan.id != null && link.vlan.id >= 0 && link.vlan.id <= 4094);
@@ -779,65 +811,98 @@ in {
 
       dhcpHookName = logical: "netif-dhcp-${instanceName}-${logical}";
 
+      # The interface netif renders for one link, before extraSettings.
+      mkIfstateBase = forwarding: logical: r: let
+        link = settings.links.${logical};
+      in
+        {
+          addresses = r.static4 ++ r.static6;
+          link =
+            {
+              inherit (r) kind;
+              state = "up";
+            }
+            // lib.optionalAttrs (r.mtu != null) {inherit (r) mtu;}
+            // lib.optionalAttrs (r.memberOf != null) {
+              master = resolved.${r.memberOf}.interface;
+            }
+            // lib.optionalAttrs (r.kind == "vlan") {
+              link = resolved.${link.vlan.parent}.interface;
+              vlan_id = link.vlan.id;
+            }
+            // lib.optionalAttrs (r.kind == "bond") {
+              bond_mode =
+                if link.bond.mode != null
+                then link.bond.mode
+                else "802.3ad";
+              bond_miimon = 100;
+            };
+          sysctl.ipv6 = {
+            accept_ra =
+              if r.ra
+              then
+                if forwarding
+                then 2
+                else 1
+              else 0;
+            autoconf =
+              if r.ra
+              then 1
+              else 0;
+          };
+          hooks = lib.optional (r.dhcp4 || r.dhcp6) {
+            name = dhcpHookName logical;
+            args = {
+              ipv4 =
+                if r.dhcp4
+                then "true"
+                else "false";
+              ipv6 =
+                if r.dhcp6
+                then "true"
+                else "false";
+            };
+            timeout = 15;
+          };
+        }
+        // lib.optionalAttrs (link.match.mac != null) {
+          identify.perm_address = link.match.mac;
+        };
+
       mkIfstateInterfaces = forwarding:
         lib.mapAttrs' (
           logical: r:
             lib.nameValuePair r.interface (
-              let
-                link = settings.links.${logical};
-              in {
-                addresses = r.static4 ++ r.static6;
-                link =
-                  {
-                    inherit (r) kind;
-                    state = "up";
-                  }
-                  // lib.optionalAttrs (r.mtu != null) {inherit (r) mtu;}
-                  // lib.optionalAttrs (r.memberOf != null) {
-                    master = resolved.${r.memberOf}.interface;
-                  }
-                  // lib.optionalAttrs (r.kind == "vlan") {
-                    link = resolved.${link.vlan.parent}.interface;
-                    vlan_id = link.vlan.id;
-                  }
-                  // lib.optionalAttrs (r.kind == "bond") {
-                    bond_mode =
-                      if link.bond.mode != null
-                      then link.bond.mode
-                      else "802.3ad";
-                    bond_miimon = 100;
-                  };
-                sysctl.ipv6 = {
-                  accept_ra =
-                    if r.ra
-                    then
-                      if forwarding
-                      then 2
-                      else 1
-                    else 0;
-                  autoconf =
-                    if r.ra
-                    then 1
-                    else 0;
-                };
-                hooks = lib.optional (r.dhcp4 || r.dhcp6) {
-                  name = dhcpHookName logical;
-                  args = {
-                    ipv4 =
-                      if r.dhcp4
-                      then "true"
-                      else "false";
-                    ipv6 =
-                      if r.dhcp6
-                      then "true"
-                      else "false";
-                  };
-                  timeout = 15;
-                };
-              }
+              lib.recursiveUpdate (mkIfstateBase forwarding logical r) settings.links.${logical}.extraSettings
             )
         )
         resolved;
+
+      # A path collides when it, or a prefix of it that is a leaf, is
+      # already rendered.
+      collides = base: path:
+        lib.any (
+          n: let
+            prefix = lib.take n path;
+          in
+            lib.hasAttrByPath prefix base && (n == lib.length path || !builtins.isAttrs (lib.getAttrFromPath prefix base))
+        ) (lib.range 1 (lib.length path));
+      # Leaf paths of extraSettings that netif already renders.
+      leafPaths = prefix: value:
+        if builtins.isAttrs value && value != {}
+        then lib.concatLists (lib.mapAttrsToList (key: leafPaths (prefix ++ [key])) value)
+        else [prefix];
+      extraSettingsCollisions = lib.concatLists (
+        lib.mapAttrsToList (
+          logical: r: let
+            base = mkIfstateBase false logical r;
+          in
+            map (path: "${logical}: ${lib.concatStringsSep "." path}") (
+              builtins.filter (collides base) (leafPaths [] settings.links.${logical}.extraSettings)
+            )
+        )
+        resolved
+      );
 
       ifstateRoutes = lib.concatLists (
         lib.mapAttrsToList (
@@ -1003,7 +1068,13 @@ in {
               message = "netif/${instanceName}: machine '${machine.name}' sets 'targetHost = true' but no deploy address resolves; set 'endpoint', matching 'endpointSources', or an endpoint-enabled link with static addresses";
             }
           ]
-          ++ linkAssertions instanceName machine.name settings.links resolved;
+          ++ linkAssertions instanceName machine.name settings.links resolved
+          ++ [
+            {
+              assertion = extraSettingsCollisions == [];
+              message = "netif/${instanceName}: machine '${machine.name}' sets extraSettings that netif already renders: ${lib.concatStringsSep ", " extraSettingsCollisions}; use the link option instead";
+            }
+          ];
 
         networking = {
           ifstate.settings = {
