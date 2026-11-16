@@ -4,6 +4,17 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 28 (2026-11-16): **the netif contract is refined before phase N3b;
+docs only** (`specs/netif.md` round N3b-spec, decisions N16–N19). Points
+that touch this file:
+- netif links become firewall-untrusted by default (N19). routed-fabric,
+  wireguard-mesh, k3s and rke2 open their own ports and never rely on
+  netif trust.
+- `pathMtu` (N17) is the underlay MTU routed-fabric and wireguard-mesh
+  prefer; it closes invariant 21's gap in N3b.
+- The netif export moves to `schemaVersion` 2 (zones, `pathMtu`,
+  prefix delegation as a runtime fact).
+
 Round 27 (2026-11-15): **netif phase N3a is implemented** (`specs/netif.md`
 N15): `match.mac`, a missing NIC fails `ifstate.service`, and the checked
 `extraSettings` passthrough. Suite `netif-match`.
@@ -1692,7 +1703,9 @@ unless noted) — revoked entries keep one-line reasons for history.
     native mode and minimum minus 50 under VXLAN; VMs assert path MTU
     (D51/D58). *(Partially implemented: wireguard-mesh uses a fixed 1420
     and routed-fabric assumes a 1500 underlay when netif exports no MTU,
-    as on every DHCP link; see the hardening plan, phase 4.)*
+    as on every DHCP link. `specs/netif.md` N17 closes it in phase N3b:
+    both prefer netif's `pathMtu`, then the link `mtu`, and wireguard-mesh
+    derives its MTU as that minus 96, floor 1280.)*
 22. `clan.networkFacts` is versioned (schemaVersion 2), non-secret,
     deep-evaluable, and
     identical in meaning to the functional configuration and exports;
@@ -2780,7 +2793,7 @@ such as external-dns).
   and sysctls and reconciles them live without reboot; FRR/Zebra and
   Cilium retain dynamic ownership. No systemd-networkd, netdevs, or
   scripted network units.
-- **netif contract** — `specs/netif.md` (N1–N14): netif is the only
+- **netif contract** — `specs/netif.md` (N1–N19): netif is the only
   network contract in the inventory; IfState renders IfState modes and
   NetworkManager renders NetworkManager modes, never both in one system
   configuration; iwd owns Wi-Fi in every mode.
