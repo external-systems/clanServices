@@ -43,6 +43,23 @@ In the probe, a dry run without the registry would have deleted
 `tailscale0`, all eight Tailscale rules and a foreign namespace, and set
 the Wi-Fi link down. With the registry, two applies changed nothing.
 
+## Default routes from several owners
+
+netif lets at most one of its links own the default route per address
+family. Wi-Fi, a dock and Tailscale can add their own, so every default
+route gets a fixed metric (planned: netif's in N3b, the rest in N2).
+Lower wins:
+
+| Owner | Metric |
+|---|---|
+| a netif link | 100 |
+| a hot-plugged dock | 200 |
+| Wi-Fi (iwd) | 300 and up |
+
+Tailscale adds no default route of its own. An exit node takes over
+through Tailscale's policy rules, ahead of every metric; turning one on
+is your choice.
+
 ## Start order
 
 Each mode provides `network-online.target`:

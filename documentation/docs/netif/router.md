@@ -45,10 +45,44 @@ it, so a kernel or driver change cannot swap ports. If a declared port is
 missing, `ifstate.service` fails and the journal names it
 (`netif-match` suite).
 
-## Planned
+## Prefix delegation (planned, N3b)
 
-- prefix-delegation settings;
-- the zone seam;
+The WAN link asks for a prefix and hands `/64`s to LAN links, which may
+sit in another netif instance:
+
+```nix
+links.wan.dhcp = {
+  ipv4 = true;
+  ipv6 = true;
+  prefixDelegation = {
+    enable = true;
+    hint = 56;
+    assign = [
+      { instance = "lan"; link = "lan1"; subnet = 0; }
+      { instance = "lan"; link = "lan2"; subnet = 1; }
+    ];
+  };
+};
+```
+
+The delegated prefix only exists at runtime. netif publishes that a
+link gets a delegation, never the prefix itself; the router module reads
+the live prefix from the LAN link.
+
+dhcpcd only handles leases and delegations here. The kernel's router
+advertisement handling stays with IfState, and DNS goes to
+systemd-resolved.
+
+## Zones (planned, N3b)
+
+Each link can carry a `zone` label (`wan`, `lan`, `mgmt`). netif does not
+interpret it. It publishes each link's Linux name, kind and zone under
+`clanServices.networking.links.<instance>.<link>`, and the router module
+uses those.
+
+## Planned later
+
+- the router module in `modules`;
 - a full `netif-router` suite with a prefix change and a reboot.
 
-All in phases N3b and N5 of the [plan](plan.md).
+Both are phase N5 of the [plan](plan.md).

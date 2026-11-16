@@ -38,6 +38,16 @@ each machine declares one or more logical links under
 - optional `clan.core.networking.targetHost` export and SSH user;
 - optional `peer` endpoint exports for fabric consumers.
 
+!!! note "Planned changes (phase N3b, `specs/netif.md` N9, N16–N19)"
+    - Links become firewall-untrusted by default; set
+      `firewall.trust = true` on trusted segments.
+    - `nameservers` move from the global list to per-link DNS in
+      systemd-resolved, and the cross-instance DNS conflict check below
+      goes away.
+    - New link options: `dhcp.prefixDelegation`, `pathMtu`, `zone`.
+    - Default routes get metric 100.
+    - The `netif` export moves to `schemaVersion` 2.
+
 Cross-instance checks keep the host coherent (D53): an interface/link is
 owned by exactly one instance, exactly one link per address family may
 provide the host default route (DHCP lease defaults count), and DNS

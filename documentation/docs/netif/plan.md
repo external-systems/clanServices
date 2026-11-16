@@ -6,7 +6,9 @@ other clanServices work continues.
 ## Phases
 
 Each phase updates `specs/netif.md` first, then the code, then the VM
-suites.
+suites. The order is N3b, N2, N4, N5, then N6a; N6b follows the hardware.
+If a check a phase depends on fails, or a fix would need a new ownership
+model, the phase stops and the owner decides.
 
 | Phase | Work | Done when |
 |---|---|---|
@@ -14,10 +16,34 @@ suites.
 | N1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
 | N2 | NetworkManager renderer, one manager per mode, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | N3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green, existing suites green — done |
-| N3b | DHCPv6 prefix delegation settings, path MTU, per-link DNS through resolved | `netif-dhcp` with prefix delegation green |
+| N3b | dhcpcd with its own config and prefix delegation, path MTU used by the fabric and the mesh, per-link DNS through resolved, default-route metrics, untrusted links by default, a zone per link; fixes found in review (below) | `netif-dhcp` and `netif` extended, every suite green |
 | N4 | Mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
-| N5 | The router seam: zones and link names for `modules` | `netif-router` green |
-| N6 | netif 1.0, once home runs netif on a Deck, kamrui-h1, the router and a server | every probe-verified claim is VM-proven |
+| N5 | The router module in `modules`, built on N3b's zones and link names | `netif-router` green |
+| N6a | netif 1.0 | N1–N5 done, every probe-verified claim VM-proven, every invariant tested |
+| N6b | home runs netif on a Deck, kamrui-h1, the router and a server | each one live; does not block 1.0 |
+
+## What the 2026-11-16 review found
+
+A review of `main` against the contract found these. All are fixed in N3b:
+
+- netif's route ignore for DHCP links is a regex anchored only at the
+  start, so the rule for `eth1` also covers `eth10`.
+- dhcpcd runs without its own config file, so its own RA handling and
+  hooks are not pinned down.
+- Links are firewall-trusted unless told otherwise.
+- Two suites treat `ifstatecli check` exiting 0 as "nothing changed",
+  which it does not mean.
+- Live reconfiguration is tested with hand-edited YAML, not a generation
+  switch.
+
+## What "reapplying changes nothing" means in a test
+
+Two checks, done by one shared test helper:
+
+1. A snapshot of links, addresses, routes in every table, rules and
+   namespaces is the same before and after.
+2. `ifstatecli check` reports no change. Its exit status alone proves
+   nothing.
 
 ## How Wi-Fi, Tailscale and modes are tested
 

@@ -36,6 +36,13 @@ You can also declare networks in the inventory, with the password as a
 prompted clan var. That is optional, and only useful for a network that must
 work on the very first boot.
 
+## Wired and Wi-Fi together
+
+When a cable and Wi-Fi are both up, the cable wins: netif's default route
+has metric 100, iwd's starts at 300, and NetworkManager's Wi-Fi uses 600.
+Wi-Fi stays connected as a fallback, so unplugging needs no
+reconfiguration (planned, phases N3b and N2).
+
 ## Limits
 
 - A Wi-Fi link never carries a static core address, a literal endpoint or

@@ -9,6 +9,27 @@ rendering is `documentation/docs/netif/`. **Edit this file and those pages
 together.** Decisions are numbered `N1`… so they never collide with
 SPEC.md's `D1`–`D66`.
 
+Round N3b-spec (2026-11-16): **the contract is refined before N3b code;
+docs only.** A review of `main` against this file found gaps, now
+decisions:
+- **N16** dhcpcd gets a per-link config file and a fixed job: leases,
+  DHCPv6 and prefix delegation only, one writer per kernel setting.
+  Delegated prefixes are runtime facts, never written into the config.
+- **N17** `pathMtu`: the smallest MTU towards fabric peers, which the
+  transports prefer.
+- **N18** default routes from several owners (wired, Wi-Fi, Tailscale)
+  follow a fixed metric order.
+- **N19** links are untrusted by the firewall unless declared trusted.
+- **N9** is concrete: resolved is on in every IfState mode, static DNS is
+  per link, and the cross-instance DNS conflict check goes away.
+- **N10**'s zone seam and the export's `schemaVersion` 2 move into N3b.
+- **N14** splits 1.0 into a contract gate (N6a, VM-proven) and a field
+  gate (N6b, home runs U1–U4).
+- **Invariant 5** has a test definition (§7) and one shared helper.
+- **N8** records that IfState route ignores match `dev` as a regex, so
+  netif anchors its own.
+Drift found by the review is listed in §5; N3b fixes it.
+
 Round N3a (2026-11-15): **physical NICs: identity, presence, passthrough
 (N15).** Phase N3 is split: N3a (`match.mac`, a missing NIC fails
 loudly, the checked `extraSettings` passthrough) is implemented and
@@ -251,25 +272,56 @@ here.
   - Routes with protocols `dhcp` (16), `ra` (9) and the FRR protocols are
     ignored by default. Netif additionally ignores `static` (4) routes on
     its DHCP links.
+  - Route ignores match `dev` with Python `re.match`
+    (`libifstate/routing/__init__.py`, `route_ignored`): a regex anchored
+    only at the start. Owner regexes rely on this. A selector naming one
+    link must be the escaped name anchored at both ends (`^eth1$`),
+    otherwise `eth1` also covers `eth10` and `eth1.20`, and the `.` in a
+    VLAN name matches any character. *(netif's DHCP-link ignore is not
+    anchored today; fixed in N3b.)*
   - Addresses with finite lifetimes (DHCP, SLAAC, delegated-prefix
     addresses) are kept; extra permanent addresses on declared links are
     removed.
   - A hook process survives the oneshot with `KillMode=process`.
   - A reapply of an unchanged configuration changes nothing.
 
-- **N9 DNS goes through systemd-resolved in every mode.** NetworkManager
-  (gaming), iwd (`NameResolvingService = systemd`), dhcpcd hooks and
-  Tailscale MagicDNS all publish per-link DNS to resolved. netif's static
-  `nameservers` move from the global `networking.nameservers` to per-link
-  resolved configuration. *(probe-verified for iwd and NetworkManager;
-  netif change planned, phase N3)*
+- **N9 DNS goes through systemd-resolved in every mode.**
+  - **Who turns it on.** The shared base sets `services.resolved.enable`
+    in IfState modes; the NetworkManager renderer does the same in
+    NetworkManager modes (N2). Today the base does not, so DHCP DNS goes
+    through dhcpcd's resolvconf hook into `/etc/resolv.conf`.
+  - **Who publishes.** Every writer sets DNS per link in resolved:
+    - NetworkManager (gaming);
+    - iwd (`NameResolvingService = systemd`);
+    - dhcpcd, through its resolvconf hook, which systemd's `resolvconf`
+      compatibility turns into per-link resolved DNS (N16);
+    - Tailscale MagicDNS;
+    - netif's static `nameservers` (below).
+  - **Static DNS is per link.** `links.<n>.nameservers` (or the segment
+    default) is applied to that link's resolved state by a per-link,
+    instance-namespaced IfState hook (`netif-dns-<instance>-<link>`).
+    The hook runs `resolvectl dns` and `resolvectl domain` on start and
+    re-applies on every IfState run, so a reapply converges DNS too.
+    netif stops writing `networking.nameservers`.
+  - **No global DNS from netif.** A machine-wide fallback, if wanted, is
+    plain `services.resolved` configuration outside netif.
+  - **The cross-instance DNS conflict check goes away.** Per-link DNS
+    cannot conflict between instances: each link belongs to exactly one
+    instance (D53), and resolved routes queries per link.
+  - **Verification gate.** The resolvconf compatibility path for dhcpcd,
+    and the hook keeping per-link DNS across a reapply and a link
+    down/up, must be VM-proven in `netif-dhcp` before the change lands.
+    If either fails, N3b stops for an owner decision instead of falling
+    back to global DNS.
+  *(probe-verified for iwd and NetworkManager; netif change planned,
+  phase N3b)*
 
 - **N10 Router contract.**
   - **IfState owns** the router's links: all four SFP+ ports matched by
     permanent MAC, VLANs, bridges, LAN addresses, forwarding sysctls and
     static routes.
   - **A per-link dhcpcd hook owns** the WAN DHCPv4 lease and DHCPv6 prefix
-    delegation. Delegated LAN addresses and their routes (`proto dhcp`,
+    delegation (N16). Delegated LAN addresses and their routes (`proto dhcp`,
     finite lifetimes) are dynamic and survive IfState reapply.
   - **Other daemons, configured in `modules`:** nftables NAT, the DHCP
     server (kea), router advertisements (radvd or corerad) and DNS.
@@ -277,13 +329,23 @@ here.
     (`wan`, `lan`, `mgmt`, …) as read-only NixOS options and in
     `clan.networkFacts`. Router modules reference those, never the
     inventory.
+    - `links.<n>.zone` is a nullable string (lower-case,
+      `[a-z][a-z0-9-]*`). netif gives it no meaning: it is a label for
+      consumers.
+    - The read-only option is
+      `clanServices.networking.links.<instance>.<logical>`, holding
+      `{interface, zone, kind}`. The same facts go into
+      `clan.networkFacts.netif` and the `netif` export.
+    - The seam ships in N3b with the export's `schemaVersion` 2 (N16,
+      N17), so the export changes once. Phase N5 builds the router
+      module in `modules` on it.
   - PPPoE, if an ISP needs it, is owned by pppd; IfState already ignores
     `ppp*`.
   - The router probe ran WAN DHCPv4 and DHCPv6-PD through the IfState hook,
     a /60 delegated with a /64 on the LAN, kea, SLAAC from radvd, and NAT
     to the ISP. An IfState reapply changed nothing (§8).
-  *(probe-verified; `match.mac`, PD settings and the seam planned, phases
-  N3 and N5)*
+  *(probe-verified; `match.mac` implemented (N15); PD settings and the
+  seam planned, phase N3b; the router module and `netif-router`, phase N5)*
 
 - **N11 Tailscale and the fabric.** Tailscale's rule 5270 (`lookup 52`) sits
   before `main`, where FRR installs fabric routes. A subnet route accepted
@@ -314,11 +376,18 @@ here.
   LAN DNS or a Tailscale MagicDNS name. Tailscale is not a clanServices
   tunnel, so rule 11's literal check does not apply to it.
 
-- **N14 Versioning.** Settings and exports carry `schemaVersion`. Before
-  netif 1.0, breaking changes need no shims (AGENTS.md rule 10). From 1.0, a
-  breaking settings or export change needs a major version and a changelog
-  entry. 1.0 requires every probe-verified claim to be VM-proven and home to
-  run netif on one machine of each use case (U1–U4).
+- **N14 Versioning and the 1.0 gates.** Settings and exports carry
+  `schemaVersion`. Before netif 1.0, breaking changes need no shims
+  (AGENTS.md rule 10). 1.0 has two gates:
+  - **N6a, the contract gate (1.0).** Every phase N1–N5 is done, every
+    probe-verified claim is VM-proven, and every invariant in §4 is
+    asserted by a suite. This depends only on this repo. Passing it tags
+    netif 1.0. From then on, a breaking settings or export change needs a
+    major version and a changelog entry.
+  - **N6b, the field gate.** home runs netif on one machine of each use
+    case (U1–U4). It depends on hardware (the router may not exist yet),
+    so it does not block 1.0. Each use case is recorded in §5 as it goes
+    live; a defect it finds is fixed under the 1.0 versioning rule.
 
 - **N15 Physical NICs: identity, presence, passthrough.**
   - `links.<name>.match.mac` finds a physical NIC by permanent MAC
@@ -341,6 +410,117 @@ here.
   *(implemented; VM-proven by `netif-match` `NETIF_MATCH_MAC_OK`,
   `NETIF_MATCH_MISSING_LOUD_OK`, `NETIF_MATCH_OK`; eval tests `underlay.*`)*
 
+- **N16 dhcpcd's job, and prefix delegation as a runtime fact.**
+  - **Own config file.** Each DHCP link's hook starts dhcpcd with `-f`
+    and a per-link store file, `netif-dhcpcd-<instance>-<link>.conf`.
+    dhcpcd never reads `/etc/dhcpcd.conf`.
+  - **dhcpcd does exactly three things:**
+    - the DHCPv4 lease: address, default route, DNS;
+    - DHCPv6 addresses (`ia_na`);
+    - prefix delegation (`ia_pd`).
+  - **One writer per kernel setting.** Kernel RA handling (`accept_ra`,
+    `autoconf`, the RA default route) belongs to IfState's per-link
+    sysctls. dhcpcd runs with `noipv6rs`: it neither solicits nor
+    processes RAs and never touches RA sysctls. DHCPv6 starts because the
+    link config asks for it, not because of RA flags.
+  - **Hooks.** Only the resolvconf hook stays, so DNS reaches resolved
+    (N9). Every other dhcpcd hook is off (`nohook`).
+  - **Route metric.** dhcpcd's default routes use N18's metric.
+  - **Route protocols are observed, not assumed.** `netif-dhcp` records
+    the protocols dhcpcd's routes carry (`ip -j route`; `dhcp` is 16,
+    `ra` 9, `static` 4). netif's extra `{dev, proto = 4}` ignore stays
+    only if dhcpcd still installs `static` routes, anchored per N8.
+  - **Finding the daemon.** The hook finds its dhcpcd through dhcpcd's
+    per-interface pidfile or an exact, escaped interface match, never a
+    regex that matches other links.
+  - **Prefix delegation settings:**
+    `links.<n>.dhcp.prefixDelegation = { enable; hint; assign; }`
+    - `hint`: requested length, 48–64, default 56;
+    - `assign`: a list of `{ instance ? null; link; subnet; length ? 64; }`.
+      `instance = null` means the same instance; WAN and LAN are usually
+      separate instances, so naming another instance is allowed.
+    - It renders `ia_pd` with one `<interface>/<subnet>/<length>` per
+      entry, using resolved interface names.
+  - **Eval errors** for prefix delegation:
+    - it needs `dhcp.ipv6 = true` on the same link;
+    - every `assign` target exists on the machine and is not the
+      delegating link;
+    - subnet ids are unique per delegating link and fit in
+      `2^(length - hint)`;
+    - a target link receives delegation from at most one link.
+  - **Runtime fact.** Delegated prefixes exist only at runtime. Exports and
+    `clan.networkFacts` carry
+    `prefixDelegation = { enable; hint; assign; dynamic = true; }` with
+    resolved interface names and never a prefix literal. Consumers (the
+    router module, N5) read the live prefix on the target link. netif
+    never invents an address.
+  - **Verification gate.** dhcpcd with `noipv6rs` must still run DHCPv6
+    and prefix delegation in `netif-dhcp`. If dhcpcd needs RA processing
+    for that, N3b stops for an owner decision; the fix would change who
+    owns RA handling.
+  *(planned, phase N3b)*
+
+- **N17 Path MTU.**
+  - `links.<n>.pathMtu` is a nullable integer, at least 1280 and at most
+    the link's effective MTU when both are set. It is the smallest MTU on
+    the path to fabric peers, which may be below the link MTU (GCP 1460,
+    PPPoE 1492).
+  - The `netif` export carries `pathMtu` per link and an instance
+    `pathMtu`, the smallest of its links.
+  - **Consumers prefer it.** `routed-fabric` and `wireguard-mesh` pick an
+    underlay MTU in this order:
+    1. `pathMtu`;
+    2. the link `mtu`;
+    3. their own settings.
+  - When the user sets no `mtu`, wireguard-mesh derives it as that
+    underlay MTU minus 96, with a floor of 1280. That closes SPEC.md
+    invariant 21.
+  - **Warning.** netif warns when a fabric member's DHCP link owns the main
+    default route and declares neither `mtu` nor `pathMtu`. Transports
+    would assume 1500 there, which is wrong on many clouds.
+  *(planned, phase N3b)*
+
+- **N18 Default routes from several owners.** D53 still allows at most one
+  netif link per family to own the main-table default. Other owners
+  (Wi-Fi, a hot-plugged dock, Tailscale) may add defaults too, so every
+  default route has a fixed metric. Lower wins:
+
+  | Owner | IPv4 and IPv6 metric | How it is set |
+  |---|---|---|
+  | netif link (static gateway, DHCP lease, RA) | 100 | IfState route `preference`; dhcpcd `metric`; per-link sysctl `ra_defrtr_metric` |
+  | `wired-hotplug` owner (N12) | 200 | its dhcpcd `metric` |
+  | iwd (Wi-Fi) | 300 and up | iwd `RoutePriorityOffset = 300`, pinned by the `iwd` preset |
+  | NetworkManager modes | wired 100, Wi-Fi 600 | the renderer sets wired profiles' route metric to 100 explicitly; NetworkManager's Wi-Fi default is already higher |
+
+  - Effect: with a cable plugged in, wired wins and Wi-Fi stays up as a
+    fallback; unplugging falls back with no reconfiguration.
+  - Tailscale installs no main-table default. An exit node routes through
+    table 52 at rule 5270, ahead of every metric; using one is the
+    owner's explicit choice and outside this order.
+  - **Verification gate.** `netif-dhcp` asserts metric 100 for each
+    family's default (DHCPv4, RA). `netif-wifi` (N2) asserts wired
+    over Wi-Fi in both families. If iwd does not apply
+    `RoutePriorityOffset` to IPv6, or the kernel lacks
+    `ra_defrtr_metric`, the phase stops for an owner decision.
+  *(planned: netif metrics in N3b, Wi-Fi and dock in N2)*
+
+- **N19 Links are untrusted unless declared trusted.**
+  - `links.<n>.firewall.trust` and the segment `firewall.trust` default
+    to untrusted. Null on a link inherits the segment; null on the
+    segment means untrusted.
+  - Trust is explicit: set it on a segment (a private LAN) or a link.
+  - Services open what they need on their own interfaces and ports:
+    - `routed-fabric`: BGP and BFD on fabric WireGuard links (D63);
+    - `wireguard-mesh`: its UDP port;
+    - `k3s` and `rke2`: their cluster ports.
+    No service may rely on netif trusting a link. N3b runs every suite
+    to find any that do and fixes them in the owning service.
+  - A breaking change with no shims (AGENTS.md rule 10).
+  - **Stop condition.** If a cluster service needs a new firewall
+    ownership model rather than a missing port opening, N3b stops for an
+    owner decision.
+  *(planned, phase N3b)*
+
 ## 4. Invariants
 
 1. Exactly one manager per system configuration (N2).
@@ -349,7 +529,8 @@ here.
 3. Every physical NIC is declared or registry-owned in IfState modes (N8).
 4. IfState never configures a Wi-Fi link; iwd owns Wi-Fi in every mode (N5).
 5. A reapply of an unchanged configuration changes nothing, including on
-   routers with dhcpcd, kea, radvd and NAT running (N8, N10).
+   routers with dhcpcd, kea, radvd and NAT running (N8, N10). "Changes
+   nothing" has the test definition in §7.
 6. Session daemons start after the mode's `network-online.target` (N7).
 7. Modes switch only by reboot; deploys keep the booted mode (N3).
 8. Spines, borders and multi-node etcd voters exist in every mode of their
@@ -357,8 +538,14 @@ here.
 9. No secret appears in the Nix store; WireGuard keys stay runtime
    `!include`s (D61, unchanged).
 10. `targetHost` stays on the underlay or a name (N13).
+11. Each kernel setting has one writer: IfState owns RA handling, dhcpcd
+    owns leases and delegations, resolved holds DNS (N9, N16).
+12. Default routes follow N18's metric order; wired beats Wi-Fi in every
+    mode (N18).
+13. No link is trusted by the firewall unless declared trusted; services
+    open their own ports (N19).
 
-## 5. What exists today (2026-11-15)
+## 5. What exists today (2026-11-16)
 
 - **Implemented and VM-proven** (SPEC.md D53/D61/D63; suites `netif`
   `NETIF_IFSTATE_LIVE_OK`, `netif-dhcp` `NETIF_DHCP_RA_IFSTATE_OK`):
@@ -376,12 +563,28 @@ here.
   ownership, Wi-Fi and unowned-daemon eval errors, IfState before
   `network-online.target` with session units after it (N7), and the N11
   range check and warning.
+- **Implemented and VM-proven in N3a** (suite `netif-match`
+  `NETIF_MATCH_OK`): `match.mac`, the loud missing-NIC check and the
+  checked `extraSettings` passthrough (N15).
 - **Drift against this contract** (fixed by the phases in §9):
   - the base force-disables NetworkManager on every machine (conflicts N2);
   - there are no modes (N3/N4), and the registry does not render into
     NetworkManager yet (N6, phase N2);
-  - DNS uses global `networking.nameservers` (N9);
-  - there is no PD settings or zone seam (N10; phases N3b and N5).
+  - DNS uses global `networking.nameservers`, resolved is not enabled,
+    and the cross-instance DNS conflict check still exists (N9; N3b);
+  - there are no PD settings, `pathMtu` or zone seam (N10, N16, N17;
+    N3b);
+  - netif's DHCP-link route ignore `{dev = <interface>; proto = 4}` is
+    an unanchored regex, and the hook's `pgrep` match is loose too
+    (`services/netif/default.nix`; N8, N16; N3b);
+  - the DHCP hook starts dhcpcd with no config file of its own, so
+    dhcpcd's own RA handling and hooks are unpinned (N16; N3b);
+  - links default to firewall-trusted (N19; N3b);
+  - default routes carry no metric (N18; N3b);
+  - `netif` and `netif-dhcp` take `ifstatecli check`'s exit status as
+    "no change", which it is not (invariant 5, §7; N3b);
+  - live reconfiguration is proven by applying hand-edited YAML in the
+    `netif` suite, not by switching NixOS generations (§7; N3b).
 
 ## 6. Out of scope
 
@@ -408,6 +611,21 @@ here.
   (`virtualisation.useBootLoader`, `useEFIBoot`). The test selects the next
   entry by its title in `loader.conf` and power-cycles with `shutdown()` and
   `start()`. Each mode asserts which configuration booted.
+- **"Changes nothing" (invariant 5)** means both:
+  1. a kernel-state snapshot is identical before and after the reapply:
+     `ip -j` links, addresses, routes in every table, rules, and
+     `ip netns list`, with counters, lifetimes and timestamps stripped;
+  2. `ifstatecli check` reports no change for any object. Its exit status
+     is not a signal: it exits 0 even when it proposes changes.
+  One shared helper in `tests/` (for example
+  `assert_ifstate_noop(machine)`) does both, and every suite that
+  asserts a reapply uses it. N3b writes it and pins the `check` output
+  format it parses against IfState 2.5.1.
+- **Live reconfiguration** is proven by switching NixOS generations
+  (`switch-to-configuration test` into a specialisation that changes
+  netif settings, then back), not by applying hand-edited YAML. The
+  `netif` suite moves to that in N3b. This is a test device only; it
+  does not make live mode switching (N3) supported.
 - Planned suites, each with a final marker:
 
   | Suite | Proves | Phase |
@@ -418,6 +636,8 @@ here.
   | `netif-hotplug` | dock ethernet hot-plug in an IfState mode | N2 |
   | `netif-router` | WAN DHCPv4 + DHCPv6-PD hook, kea, radvd, NAT, reapply no-op, prefix change, reboot | N5 |
   | `netif-match` | NIC found by permanent MAC under a different kernel name; missing NIC fails loudly | N3a (green) |
+  | `netif-dhcp` (extended) | dhcpcd per-link config; DHCPv6 and a delegated prefix assigned to another instance's link; observed route protocols; per-link DNS in resolved across reapply and link down/up; metric 100 defaults; an RA default on a forwarding link surviving two RA lifetimes; the no-op helper | N3b |
+  | `netif` (extended) | live reconfiguration by generation switch; untrusted default with an explicitly trusted link; the no-op helper | N3b |
 
   Existing suites stay green throughout.
 
@@ -466,7 +686,10 @@ Throwaway tests, not committed; kept for the next agent under
 
 ## 9. Delivery plan
 
-Each phase amends this file first, then code, then suites.
+Each phase amends this file first, then code, then suites. Order: N3b,
+N2, N4, N5, N6a; N6b follows the hardware. A verification gate that
+fails, or a fix that needs a new ownership model, stops the phase for an
+owner decision.
 
 | Phase | Work | Done when |
 |---|---|---|
@@ -474,7 +697,8 @@ Each phase amends this file first, then code, then suites.
 | N1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | N2 | NetworkManager renderer, manager selection per mode, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | N3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
-| N3b | DHCPv6-PD settings, `pathMtu`, per-link resolved DNS (N9) (rest of former hardening phase 4) | `netif-dhcp` extended with PD; existing suites green |
+| N3b | dhcpcd per-link config and PD (N16), `pathMtu` and its consumers (N17), per-link resolved DNS (N9), default-route metrics (N18), untrusted default (N19), zone seam and export `schemaVersion` 2 (N10); fixes: anchored ignores, the no-op helper, live reconfiguration by generation switch. Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp` and `netif` extended (§7); every existing suite green |
 | N4 | `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
-| N5 | Router seam: zones and resolved names as read-only options + facts; `modules` router consumes them | `netif-router` green |
-| N6 | Stability gate: netif 1.0 tag after home runs netif on U1–U4 | N14 met |
+| N5 | Router module in `modules` on the N3b seam | `netif-router` green |
+| N6a | Contract gate: netif 1.0 tag (N14) | N1–N5 done; every probe-verified claim VM-proven; every §4 invariant asserted by a suite |
+| N6b | Field gate: home runs netif on U1–U4 (N14) | each use case live, recorded in §5 |
