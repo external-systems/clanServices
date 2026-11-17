@@ -6,22 +6,24 @@ other clanServices work continues.
 ## Phases
 
 Each phase updates `specs/netif.md` first, then the code, then the VM
-suites. The order is N3b, N7, N2, N4, N8, N5, then the contract gate.
-Phase numbers are labels, not the order. If a check a phase depends on
+suites. The order is P3b, P7, P2, P4, P8, P5, then the contract gate.
+Phase numbers are labels, not the order. (Phases were called N0–N8
+until 2026-11-16; they are P0–P8 now, so a phase and a decision never
+share a label.) If a check a phase depends on
 fails, or a fix would need a new ownership model, the phase stops and the
 owner decides.
 
 | Phase | Work | Done when |
 |---|---|---|
-| N0 | The netif contract (docs only) | merged |
-| N1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
-| N3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
-| N3b | First the DNS unit. Then dhcpcd with its own config and prefix delegation, path MTU, default-route metrics, an explicit default-route owner, untrusted links by default, a zone per link, NICs by device path; fixes found in review (below) | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
-| N7 | The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
-| N2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
-| N4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
-| N8 | The lockout guard | `netif-guard` green |
-| N5 | The router module in `modules`, built on N3b's zones and link names | `netif-router` green |
+| P0 | The netif contract (docs only) | merged |
+| P1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
+| P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
+| P3b | First dhcpcd's recovery after a link flap, then the DNS unit. Then dhcpcd with its own config and prefix delegation, path MTU, default-route metrics, an explicit default-route owner, untrusted links by default, a zone per link, NICs by device path; fixes found in review (below) | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
+| P7 | The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
+| P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
+| P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
+| P8 | The lockout guard | `netif-guard` green |
+| P5 | The router module in `modules`, built on P3b's zones and link names | `netif-router` green |
 | Contract gate | netif is stable in this repo | every phase above done, every probe-verified claim VM-proven, every invariant tested |
 | Field gate | home runs netif on each machine class that exists | each one live |
 | Later | a VM-test fixture for other repos; NetBird and Cloudflare WARP presets; a NAT gateway service; the design for a roaming Kubernetes node | each its own decision round |
@@ -31,7 +33,7 @@ freely. Version rules start with the first real consumer.
 
 ## What the 2026-11-16 review found
 
-A review of `main` against the contract found these. All are fixed in N3b:
+A review of `main` against the contract found these. All are fixed in P3b:
 
 - netif's route ignore for DHCP links is a regex anchored only at the
   start, so the rule for `eth1` also covers `eth10`.
@@ -63,12 +65,56 @@ Two checks, done by one shared test helper:
   picks the next boot entry by its title and power-cycles the VM, just like
   choosing an entry in the boot menu.
 
+## Probe evidence (2026-11-16, proof round)
+
+Five throwaway VM tests and one evaluation ran on euc-hel-0 to prove or
+disprove what the later phases assume. Versions: IfState 2.5.1, dhcpcd
+10.3.2, systemd 262, iwd 3.12, Docker 29.9.1, Podman 6.1.4.
+
+**What held as designed**
+
+| Assumption | Result |
+|---|---|
+| A netif unit can keep each link's DNS in systemd-resolved | Yes: after boot, a reapply, a link going down and up, a resolved restart, and a lease renewal with new servers |
+| Two DHCP NICs, one default route | Yes, for IPv4 and IPv6. The second NIC kept its lease, a pushed route and its SLAAC address |
+| No IPv4 link-local address with `noipv4ll` | Yes |
+| iwd puts both its default routes above netif's | Yes: metric 307 for IPv4 and IPv6; the cable wins, Wi-Fi takes over when it is unplugged |
+| A bridge can carry its uplink's MAC | Yes, and another machine saw that MAC |
+| A bridge on top of a VLAN | Yes |
+| The lockout guard | Yes: a bad change was rolled back in 10 seconds, a good one kept. The gateway ignored ping and still passed |
+| One `modes` service for both managers | Yes, evaluated both ways round |
+
+**What needed a design change**
+
+| Assumption | What the probe showed | Design now |
+|---|---|---|
+| Owning Podman's links is enough | Podman's containers still died: IfState deleted their named namespaces | The `containers` preset also owns `netns-…` namespaces |
+| IfState can leave one bridge's ports alone | It cannot: it only knows names | netif lists the bridge's ports before each apply and hands IfState the list |
+| A cloud NIC can be found by its parent device in IfState | For virtio NICs the parent is a counter (`virtio3`) that shifts when a disk is added | `match.path` is a udev path, and udev renames the NIC before IfState runs |
+
+**What is broken and still open**
+
+- **dhcpcd after a link flap.** After the link lost and regained
+  carrier, dhcpcd 10.3.2 logged an internal error and one of DHCPv4 or
+  DHCPv6 did not come back. Stopping that link's dhcpcd and letting
+  IfState start a new one fixed it. Phase P3b begins with this: a
+  dhcpcd version that recovers, or an automatic restart.
+- **dhcpcd and the link-local address.** dhcpcd creates the IPv6
+  link-local address itself, even when told to ignore router
+  advertisements. After `ip link set down` and `up` the kernel then did
+  not ask for a router, and the IPv6 default route stayed away until
+  the router's next periodic advertisement. One request sent by hand
+  brought it back.
+- **DNS from router advertisements** is not read by anything. A link
+  that gets IPv6 only from advertisements needs static nameservers or
+  DHCP DNS.
+
 ## Probe evidence (2026-11-16)
 
 Two more throwaway tests ran on euc-hel-0 while the contract was widened
 to the whole fleet. Versions: IfState 2.5.1, dhcpcd 10.3.2, systemd 262.
 
-**Gates probe.** It checked the assumptions phase N3b rests on.
+**Gates probe.** It checked the assumptions phase P3b rests on.
 
 | Question | Result |
 |---|---|

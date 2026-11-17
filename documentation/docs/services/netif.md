@@ -38,7 +38,7 @@ each machine declares one or more logical links under
 - optional `clan.core.networking.targetHost` export and SSH user;
 - optional `peer` endpoint exports for fabric consumers.
 
-!!! note "Planned changes (phase N3b, `specs/netif.md` N9, N16–N19)"
+!!! note "Planned changes (phase P3b, `specs/netif.md` N9, N16–N19)"
     - Links become firewall-untrusted by default; set
       `firewall.trust = true` on trusted segments.
     - `nameservers` move from the global list to per-link DNS in

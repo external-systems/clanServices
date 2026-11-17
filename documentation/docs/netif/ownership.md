@@ -18,7 +18,7 @@ about. IfState 2.5.1 does this to anything undeclared:
 Other software tells netif what it owns through
 `clanServices.networking.owners.<name>`: interface names, namespaces, tables
 and rule priorities. netif turns that into IfState ignore rules (and, from
-phase N2, NetworkManager unmanaged devices). A preset switches on
+phase P2, NetworkManager unmanaged devices). A preset switches on
 automatically when you enable its daemon:
 
 | Preset | Switched on by | Owns | Status |
@@ -27,7 +27,7 @@ automatically when you enable its daemon:
 | `tailscale` | `services.tailscale.enable` | `tailscale0`, rules 5210/5230/5250/5270, table 52 | VM-proven |
 | `cilium` | `services.k3s.enable` or `services.rke2.enable` | `cilium_*`, `lxc*`, table 200 | VM-proven |
 | `vm` | libvirtd or Incus | `tap*`, `vnet*` | implemented |
-| `containers` | Docker or Podman | `docker*`, `br-*`, `podman*`, `veth*` | planned, phase N7 |
+| `containers` | Docker or Podman | `docker*`, `br-*`, `podman*`, `veth*` | planned, phase P7 |
 
 The rules are checked when the configuration evaluates. Each of these
 fails the build:
@@ -46,32 +46,57 @@ the Wi-Fi link down. With the registry, two applies changed nothing.
 
 ## Containers
 
-A probe on 2026-11-16 ran Docker and rootful Podman next to plain IfState:
+Three probes on 2026-11-16 ran Docker and rootful Podman next to IfState:
 
-- **Docker survived.** IfState's built-in ignore list already covers
-  `docker0`, `br-…` and `veth…`. Containers kept their network and a
-  published port kept working across two applies.
-- **Podman did not.** `podman0` is not on that list. IfState deleted the
-  bridge and the container lost its network.
+| IfState told to leave alone | Docker | Podman |
+|---|---|---|
+| nothing extra (its built-in list) | survives | `podman0` deleted, containers offline |
+| the container links (`docker*`, `br-*`, `podman*`, `veth*`) | survives | bridge stays, but the containers' namespaces are deleted and they go offline |
+| the links **and** Podman's namespaces (`netns-…`) | survives | survives |
 
-The `containers` preset (planned, phase N7) names all of them, so netif
-does not depend on IfState's built-in list. It also rejects Docker's and
+In the last run nothing changed across two applies: every link, the
+default and a user-made network of each runtime, and a published port
+reached from another machine, with the nftables firewall on.
+
+The reason: rootful Podman puts each container in a *named* network
+namespace, and IfState deletes named namespaces it does not know.
+Docker's namespaces have no name, so IfState never sees them.
+
+The `containers` preset (planned, phase P7) owns all of it: the four
+link patterns and the `netns-` namespaces. It also rejects Docker's and
 Podman's default address pools when they overlap a fleet range. Rootless
 Podman creates no host links and needs nothing.
 
 ## VM guests on a bridge
 
-IfState deletes a tap it does not know, even when the tap sits on a
-bridge netif declared. A bridge marked `bridge.guestPorts = true`
-(planned, phase N7) leaves every port netif did not declare to the
-hypervisor. See [Use cases](use-cases.md), VM host.
+IfState deletes a port it does not know, even when the port sits on a
+bridge netif declared. It decides by interface name only; it has no rule
+"leave this bridge's ports alone".
+
+A bridge marked `bridge.guestPorts = true` (planned, phase P7) gets that
+rule from netif instead:
+
+1. Before every apply, netif lists the bridge's ports and drops the ones
+   it declared itself.
+2. It writes the rest, by exact name, into a small file under `/run`.
+3. IfState reads that file as part of its "leave alone" list.
+
+A probe on 2026-11-16 proved it: a guest port with an arbitrary name
+stayed on its bridge, and its guest stayed reachable from another
+machine, across two applies. Ports named `tap*` and `vnet*` are also
+left alone by name (the `vm` preset), which covers a port created
+between the listing and the apply.
+
+The same probe showed a bridge that takes its uplink's MAC, and a bridge
+on top of a VLAN, both carrying traffic. See [Use cases](use-cases.md),
+VM host.
 
 ## Default routes from several owners
 
 netif lets at most one of its links own the default route per address
 family. A second link sets `defaultRoute.ipv4 = false` (or `ipv6`) and
-keeps its lease and routes without a default (planned, phase N3b). Wi-Fi, a dock and Tailscale can add their own, so every default
-route gets a fixed metric (planned: netif's in N3b, the rest in N2).
+keeps its lease and routes without a default (planned, phase P3b). Wi-Fi, a dock and Tailscale can add their own, so every default
+route gets a fixed metric (planned: netif's in P3b, the rest in P2).
 Lower wins:
 
 | Owner | Metric |

@@ -1,4 +1,4 @@
-# netif-match (specs/netif.md N3a). A physical link found by permanent
+# netif-match (specs/netif.md P3a). A physical link found by permanent
 # MAC comes up under its logical name, whatever the kernel called it;
 # a declared NIC that does not exist fails ifstate.service loudly.
 _: let

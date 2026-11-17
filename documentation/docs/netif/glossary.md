@@ -24,7 +24,7 @@ The words the netif pages use. One word per thing. The agent edition is
 | **Manager** | The software that configures links in a mode: IfState or NetworkManager. One per mode. |
 | **Mode** | A NixOS specialisation, or the parent configuration (`default`). You switch by rebooting. |
 | **Owner** | A daemon in the ownership registry, with the kernel objects that are its. |
-| **Phase** | A delivery step, always written "phase N2". A phase and a decision can share a number; they are different things. |
+| **Phase** | A delivery step, written `P0` to `P8` ("phase P2"). Decisions are `N…`, so the two never share a label. |
 | **Preset** | An owner that switches on when its daemon is enabled. |
 | **Probe** | A throwaway VM test that checks an idea before it is built. |
 | **Renderer** | The part of netif that writes one manager's configuration. |

@@ -7,8 +7,31 @@ keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
 together.** Decisions are numbered `N1`–`N29` so they never collide with
-SPEC.md's `D1`–`D66`. Phases are also numbered `N0`–`N8`; a phase is
-always written "phase N2", a decision plain "N2" (§10).
+SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
+until the proof round), so a phase and a decision never share a label
+(§10).
+
+Round proof (2026-11-16): **the open assumptions were probed on
+euc-hel-0 and rough designs written around the results; docs only.**
+Five throwaway VM probes and one eval probe ran (§8.2). Phases are
+renamed `N…` → `P…`.
+- **Proven as designed:** the netif DNS unit (N9); one default route
+  with two DHCP links, for IPv4 and IPv6 (N21); iwd's metric offset in
+  both families (N18); bridge MAC and a bridge over a VLAN (N23); the
+  lockout guard (N25); the `modes` mechanism (N24).
+- **Proven after a design change:**
+  - **N22** the `containers` preset must also own Podman's named
+    namespaces (`^netns-`); owning the links is not enough.
+  - **N23** guest ports: IfState has no per-bridge rule, so netif writes
+    a run-time ignore list that IfState includes. No owner decision is
+    needed.
+  - **N26** `match.path` is a udev path rendered as a `.link` rename,
+    not IfState `identify`: a virtio NIC's parent name is a counter.
+- **Found broken, not fixed:** dhcpcd 10.3.2 does not recover both
+  protocols after a carrier change, and it takes over the link-local
+  address even with `noipv6rs` (N16). Phase P3b starts with these.
+- **Not covered:** DNS from RAs (N9).
+
 
 Round use-cases (2026-11-16): **the contract is widened to the owner's
 whole fleet and its boundary is written down; docs only.** The owner
@@ -43,7 +66,7 @@ Changed decisions:
 - **N10** NAT is never netif's (N20); the router has five ports.
 A glossary is §10.
 
-Round N3b-spec (2026-11-16): **the contract is refined before N3b code;
+Round P3b-spec (2026-11-16): **the contract is refined before P3b code;
 docs only.** A review of `main` against this file found gaps, now
 decisions:
 - **N16** dhcpcd gets a per-link config file and a fixed job: leases,
@@ -56,32 +79,32 @@ decisions:
 - **N19** links are untrusted by the firewall unless declared trusted.
 - **N9** is concrete: resolved is on in every IfState mode, static DNS is
   per link, and the cross-instance DNS conflict check goes away.
-- **N10**'s zone seam and the export's `schemaVersion` 2 move into N3b.
+- **N10**'s zone seam and the export's `schemaVersion` 2 move into P3b.
 - **N14** splits 1.0 into a contract gate (N6a, VM-proven) and a field
   gate (N6b, home runs U1–U4).
 - **Invariant 5** has a test definition (§7) and one shared helper.
 - **N8** records that IfState route ignores match `dev` as a regex, so
   netif anchors its own.
-Drift found by the review is listed in §5; N3b fixes it.
+Drift found by the review is listed in §5; P3b fixes it.
 
-Round N3a (2026-11-15): **physical NICs: identity, presence, passthrough
-(N15).** Phase N3 is split: N3a (`match.mac`, a missing NIC fails
+Round P3a (2026-11-15): **physical NICs: identity, presence, passthrough
+(N15).** Phase P3 is split: P3a (`match.mac`, a missing NIC fails
 loudly, the checked `extraSettings` passthrough) is implemented and
 VM-proven by `netif-match` (`NETIF_MATCH_OK`). Probing the IfState 2.5.1
 source showed a declared physical NIC that is missing only logs
 "unable to create physical link" and exits 0, so netif adds its own
-post-apply check. N3b (DHCPv6-PD settings, `pathMtu`, per-link resolved
+post-apply check. P3b (DHCPv6-PD settings, `pathMtu`, per-link resolved
 DNS) stays planned.
 
-Round N1 (2026-11-15): **the ownership registry is implemented and
+Round P1 (2026-11-15): **the ownership registry is implemented and
 enforced.** `lib/ownership.nix` (imported by the shared IfState base)
 holds `clanServices.networking.owners`, the four presets, N7's ordering
 and N11's checks; ownership conflicts, IfState Wi-Fi links and daemons
 without a preset are eval errors. The suite `netif-registry` proves it
 (`NETIF_REGISTRY_OK`). NetworkManager rendering of the registry waits
-for N2.
+for phase P2.
 
-Round N0 (2026-11-15): **the contract is split out of SPEC.md and
+Round P0 (2026-11-15): **the contract is split out of SPEC.md and
 revised for the owner's machines** — a Steam Deck and kamrui-h1 that boot
 into a gaming mode and offer developer/kubernetes modes, a headless home
 router, and servers. Docs only: no code changes in this round. The model
@@ -97,6 +120,8 @@ here.
 - **probe-verified** — a throwaway VM probe passed on the stated date (§8).
   It proves feasibility, not the implementation. Every probe-verified
   claim must become VM-proven before the contract gate (N14).
+- **eval-probed** — a throwaway evaluation passed on the stated date
+  (§8). Same weight as probe-verified, for claims that need no VM.
 - **planned** — target contract with a delivery phase (§9).
 
 ## 1. Model
@@ -240,7 +265,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - The probe (§8) verified the mutual exclusion in both directions: gaming
     boots ran NetworkManager with no `ifstate.service` unit at all; developer
     boots ran IfState with NetworkManager inactive.
-  *(probe-verified; renderer planned, phase N2)*
+  *(probe-verified; renderer planned, phase P2)*
 
 - **N3 Modes are NixOS specialisations, switched by reboot.**
   - The parent configuration is the default boot entry; each further mode is
@@ -255,7 +280,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     parent (default) mode and is the owner's explicit choice only.
   - The probe booted gaming → developer → gaming through systemd-boot entries
     on a persistent disk and verified each mode's state (§8).
-    *(probe-verified; mode settings planned, phase N4)*
+    *(probe-verified; mode settings planned, phase P4)*
 
 - **N4 Mode-scoped instances.** A per-machine setting on every networking or
   cluster service instance names the modes it is active in (`modes`,
@@ -275,7 +300,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     multi-node cluster to fewer than all of a machine's modes: switching it
     off would remove transit or quorum from other machines. Leaves, agents
     and single-node clusters (kamrui-h1's local k3s) may be mode-scoped.
-  *(planned, phase N4)*
+  *(planned, phase P4)*
 
 - **N5 iwd owns Wi-Fi in every mode.**
   - **NetworkManager modes:** NetworkManager drives iwd as its Wi-Fi
@@ -286,7 +311,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     systemd-resolved (`NameResolvingService = systemd`). IfState never
     configures a Wi-Fi link: the link and the routes iwd installs are
     registry-owned (N6). An IfState interface named `wl*` is an eval error
-    in every mode, whether or not iwd is enabled (implemented, N1).
+    in every mode, whether or not iwd is enabled (implemented, phase P1).
   - **Known networks are shared through `/var/lib/iwd`.** NetworkManager's
     default `iwd-config-path = auto` writes each Wi-Fi profile there. With
     the iwd backend, iwd's own autoconnect picks among known networks, and
@@ -306,8 +331,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     test). Evidence: Jovian only requires `networking.networkmanager.enable`,
     Steam talks to NetworkManager's backend-neutral D-Bus API, and Jovian's
     `steamos-manager` ships iwd integration because SteamOS uses NetworkManager
-    with iwd. A one-time hardware check on the Deck closes it (phase N2).
-  *(probe-verified except Steam itself; planned, phase N2)*
+    with iwd. A one-time hardware check on the Deck closes it (phase P2).
+  *(probe-verified except Steam itself; planned, phase P2)*
 
 - **N6 Ownership registry.** `clanServices.networking.owners.<name>` is a
   composable NixOS option. Each owner declares the objects it owns:
@@ -319,7 +344,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - whether its daemon holds long-lived network sessions (N7).
 
   The base renders every owner into IfState `parameters.ignore`
-  (`ifname`, `netns`, `rules`, `routes`) and, from phase N2, into
+  (`ifname`, `netns`, `rules`, `routes`) and, from phase P2, into
   NetworkManager `unmanaged-devices`. Rendering per owner:
   - each interface regex → `ignore.ifname` and a route ignore `{dev}`
     (routes on an owned link are the owner's);
@@ -340,7 +365,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   | `tailscale` (`services.tailscale.enable`) | `^tailscale`; rules 5210/5230/5250/5270 and table 52 (both families); session unit `tailscaled.service` | VM-proven |
   | `cilium` (`services.k3s.enable` or `services.rke2.enable`) | `^cilium`, `^lxc`; routes on those; table 200 | VM-proven (k3s/rke2 suites) |
   | `vm` (`virtualisation.libvirtd.enable` or `virtualisation.incus.enable`) | `^tap`, `^vnet`; guest ports on bridges are N23's | implemented |
-  | `containers` (`virtualisation.docker.enable` or `virtualisation.podman.enable`) | N22 | planned, phase N7 |
+  | `containers` (`virtualisation.docker.enable` or `virtualisation.podman.enable`) | N22 | planned, phase P7 |
   | netbird, cloudflare-warp | N29 | after the contract gate |
   | zerotier | — | not offered until VM-proven |
 
@@ -363,7 +388,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     by hand accepts the daemon; that is the owner's explicit choice and
     unsupported until a preset is VM-proven.
   *(implemented; VM-proven by `netif-registry` `NETIF_REGISTRY_OK`; the
-  NetworkManager side lands in N2)*
+  NetworkManager side lands in phase P2)*
 
 - **N7 Each mode provides `network-online.target`; session daemons wait for
   it.**
@@ -380,7 +405,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - Roaming Wi-Fi is not part of "online": iwd reconnects on its own and
     tailscaled follows link changes.
   *(IfState modes: implemented, VM-proven by `netif-registry`
-  `NETIF_REGISTRY_ORDER_OK`; NetworkManager modes: phase N2)*
+  `NETIF_REGISTRY_ORDER_OK`; NetworkManager modes: phase P2)*
 
 - **N8 IfState reconcile facts netif relies on** (IfState 2.5.1 source
   `libifstate/`, confirmed by the probes):
@@ -402,7 +427,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     link must be the escaped name anchored at both ends (`^eth1$`),
     otherwise `eth1` also covers `eth10` and `eth1.20`, and the `.` in a
     VLAN name matches any character. *(netif's DHCP-link ignore is not
-    anchored today; fixed in N3b.)*
+    anchored today; fixed in P3b.)*
   - Addresses with finite lifetimes (DHCP, SLAAC, delegated-prefix
     addresses) are kept; extra permanent addresses on declared links are
     removed.
@@ -441,11 +466,46 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - **Verification gate.** In `netif-dhcp`, static and DHCP DNS must be
     on their links in resolved after boot, an IfState reapply, a link
     down/up, and a lease renewal with changed servers. This is proven
-    first in phase N3b, before anything builds on it. If it fails, phase
-    N3b stops for an owner decision instead of falling back to global
+    first in phase P3b, before anything builds on it. If it fails, phase
+    P3b stops for an owner decision instead of falling back to global
     DNS.
-  *(probe-verified for iwd and NetworkManager; the first design failed
-  its gate on 2026-11-16; netif unit planned, phase N3b)*
+  - **Rough design** (DNS probe, §8.2; three runs):
+    - *One writer script.* `netif-dns-apply [link…]` is idempotent. For
+      each netif link it joins the static servers with the lease files
+      under `/run/netif-dns/`. With carrier and at least one server it
+      calls `resolvectl dns` and `resolvectl domain`; otherwise
+      `resolvectl revert`.
+    - *Three callers.* The unit's watcher loop (`ip monitor link`,
+      filtered to netif's links); dhcpcd's exit script, after it wrote
+      or removed a lease file; `ifstate.service`, as an
+      `ExecStartPost`.
+    - *Lease files.* dhcpcd's `script` setting points at netif's exit
+      script. It writes `<link>.dhcp4.dns` and `.domain` from
+      `new_domain_name_servers`, `new_domain_name` and
+      `new_domain_search` on `BOUND`, `RENEW`, `REBIND`, `REBOOT`; the
+      `.dhcp6` pair from `new_dhcp6_name_servers` and
+      `new_dhcp6_domain_search` on the `…6` reasons; and removes them on
+      `EXPIRE`, `STOP`, `RELEASE`, `NOCARRIER` and `STOPPED`.
+    - *resolved restarts.* The unit is `PartOf` and `After`
+      `systemd-resolved.service`, so a resolved restart re-applies.
+    - *Gate results.* DNS was on the right link after boot (DHCPv4,
+      DHCPv6, static, a second DHCP link), after an IfState reapply,
+      after a static link went down and up (also ten times in a row),
+      after a resolved restart, and after a lease renewal that brought
+      new servers (the old one was removed, the DHCPv6 server kept).
+      resolved held no DNS for a link without carrier.
+    - **The gate passes for the DNS unit.** What failed in the same
+      runs is dhcpcd's recovery after a carrier change, which is N16's
+      subject, not this unit's.
+  - **RA-only DNS is not covered.** A link that learns IPv6 only from
+    RAs gets no DNS from them: the kernel does not act on the RDNSS
+    option and no daemon listens (probe: the server in the RA never
+    reached resolved). Such a link declares `nameservers`, or uses
+    DHCPv4 or DHCPv6 DNS. Reading RDNSS would need a new listener and
+    is not planned.
+  *(probe-verified 2026-11-16: the netif unit design passed its gate in
+  a probe; iwd and NetworkManager probe-verified 2026-11-15; planned,
+  phase P3b)*
 
 - **N10 Router contract.**
   - **IfState owns** the router's links: the four SFP+ ports and the
@@ -467,8 +527,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
       `clanServices.networking.links.<instance>.<logical>`, holding
       `{interface, zone, kind}`. The same facts go into
       `clan.networkFacts.netif` and the `netif` export.
-    - The seam ships in phase N3b with the other export changes (N16,
-      N17), so the export changes once. Phase N5 builds the router
+    - The seam ships in phase P3b with the other export changes (N16,
+      N17), so the export changes once. Phase P5 builds the router
       module in `modules` on it.
   - **NAT is never netif's (N20).** The home router's NAT lives in the
     router module. A NAT gateway for other machines (U9) is a separate
@@ -484,7 +544,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     a /60 delegated with a /64 on the LAN, kea, SLAAC from radvd, and NAT
     to the ISP. An IfState reapply changed nothing (§8).
   *(probe-verified; `match.mac` implemented (N15); PD settings and the
-  seam planned, phase N3b; the router module and `netif-router`, phase N5)*
+  seam planned, phase P3b; the router module and `netif-router`, phase P5)*
 
 - **N11 Tailscale and the fabric.** Tailscale's rule 5270 (`lookup 52`) sits
   before `main`, where FRR installs fabric routes. A subnet route accepted
@@ -506,7 +566,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   so hot-plugged links are not IfState's. A `wired-hotplug` registry owner
   (a standalone dhcpcd limited to matching names, for example `^enx`) owns
   them in IfState modes. NetworkManager handles them natively in
-  NetworkManager modes. *(planned, phase N2; must be VM-proven with QEMU
+  NetworkManager modes. *(planned, phase P2; must be VM-proven with QEMU
   device hot-plug before it is offered)*
 
 - **N13 Deploy target.** Rule 11 stands: `targetHost` is an underlay
@@ -597,14 +657,60 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     `clan.networkFacts` carry
     `prefixDelegation = { enable; hint; assign; dynamic = true; }` with
     resolved interface names and never a prefix literal. Consumers (the
-    router module, N5) read the live prefix on the target link. netif
+    router module, phase P5) read the live prefix on the target link. netif
     never invents an address.
+  - **Facts from the DNS probe** (§8.2, dhcpcd 10.3.2):
+    - Setting `script` to netif's exit script replaces
+      `dhcpcd-run-hooks`, so no stock hook runs and `nohook` lines are
+      not needed. `/etc/resolv.conf` was not touched.
+    - `noipv4ll`: no `169.254` address and no link-local default
+      appeared in any run.
+    - A dhcpcd started for one link writes `/run/dhcpcd/<link>.pid`.
+      The hook tests that file and the process, not a `pgrep` pattern.
+    - Its routes are `proto dhcp` with the configured metric, including
+      a classless static route. No `static` route was seen, so the
+      extra `{dev, proto = 4}` ignore can go.
+  - **Open problem: dhcpcd after a carrier change.** In three runs
+    dhcpcd 10.3.2 logged `eloop_event_add: No such file or directory`
+    after every carrier change, and each time one of the two protocols
+    did not recover: DHCPv4 after both real carrier losses, DHCPv6
+    (twice) or DHCPv4 (once) after `ip link set down` / `up`. DNS
+    follows the lease, so the link lost that DNS too.
+    - The error is `epoll` refusing to change a descriptor it does not
+      hold. dhcpcd 10.3.0 rewrote its event loop for `epoll`; 10.5.0
+      lists "Delete DHCPv6 IA FD from the loop before closing it".
+    - A run with an unpatched upstream 10.5.2 showed no such error and
+      DHCPv4 recovered after a carrier loss. In that build DHCPv6 never
+      got a lease, even at boot; the cause is not known.
+    - **Workaround that worked:** stop that link's dhcpcd and let the
+      IfState hook start a new one. Both protocols and their DNS came
+      back.
+    - Phase P3b starts here, before any other N16 work: find a dhcpcd
+      version that recovers by itself (a pkgs PR), or make the link
+      watcher restart dhcpcd when its link regains carrier. `netif-dhcp`
+      asserts recovery after a real carrier loss (QEMU `set_link`) and
+      after `ip link set down` / `up`.
+  - **Open problem: dhcpcd takes over the link-local address.** With
+    `noipv6rs` dhcpcd still sets the link's `addr_gen_mode` to 1 and
+    adds the link-local address itself. After `ip link set down` / `up`
+    the kernel then sent no router solicitation, and the RA default
+    route stayed away until the next periodic RA. One solicitation
+    sent by hand (`rdisc6 -1`) brought it back at once. A real carrier
+    loss kept the route. This breaks "one writer per kernel setting"
+    for that sysctl. Candidates, to settle in phase P3b:
+    - `ipv4only` for links without DHCPv6, so dhcpcd leaves IPv6 alone
+      there;
+    - on DHCPv6 links, the link watcher sends one solicitation when the
+      link regains carrier;
+    - or dhcpcd handles RAs on DHCPv6 links after all. That would move
+      RA handling away from IfState on those links and needs an owner
+      decision.
   - **Verification gate.** dhcpcd with `noipv6rs` must still run DHCPv6
     and prefix delegation in `netif-dhcp`. The 2026-11-16 probe passed
     this: an address from `ia_na` and a delegated `/60` with a `/64` on
     the LAN, with IfState's `accept_ra = 2` untouched (§8). The suite
     still has to prove it.
-  *(probe-verified; planned, phase N3b)*
+  *(probe-verified; planned, phase P3b)*
 
 - **N17 Path MTU.**
   - `links.<n>.pathMtu` is a nullable integer, at least 1280 and at most
@@ -624,7 +730,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - **Warning.** netif warns when a fabric member's DHCP link owns the main
     default route and declares neither `mtu` nor `pathMtu`. Transports
     would assume 1500 there, which is wrong on many clouds.
-  *(planned, phase N3b)*
+  *(planned, phase P3b)*
 
 - **N18 Default routes from several owners.** D53 still allows at most one
   netif link per family to own the main-table default. Other owners
@@ -651,12 +757,21 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     back. netif stays the one writer. The missing key is worth reporting
     to IfState upstream; netif does not depend on a fix.
   - **Verification gate.** `netif-dhcp` asserts metric 100 for each
-    family's default (DHCPv4, RA). `netif-wifi` (N2) asserts wired
+    family's default (DHCPv4, RA). `netif-wifi` (phase P2) asserts wired
     over Wi-Fi in both families. If iwd does not apply
     `RoutePriorityOffset` to IPv6, the phase stops for an owner
     decision. The 2026-11-16 probe showed both defaults at metric 100
     (`proto dhcp` and `proto ra`), with the sysctl written by the hook.
-  *(planned: netif metrics in N3b, Wi-Fi and dock in N2)*
+  - **iwd applies the offset to both families** (Wi-Fi probe, §8.2).
+    With `RoutePriorityOffset = 300`, iwd 3.12 installed its IPv4
+    default (`proto dhcp`) and its IPv6 default (`proto ra`) at metric
+    307. iwd handles RAs itself and sets the link's `accept_ra` to 0.
+    Beside IfState defaults at `preference` 100, both families left
+    through the wired link; with the wired link down, both left through
+    Wi-Fi with no reconfiguration. Two applies changed no default. The
+    stop condition above did not trigger.
+  *(probe-verified 2026-11-16 for netif, RA and Wi-Fi metrics; planned:
+  netif metrics in P3b, Wi-Fi and dock in P2)*
 
 - **N19 Links are untrusted unless declared trusted.**
   - `links.<n>.firewall.trust` and the segment `firewall.trust` default
@@ -667,13 +782,13 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     - `routed-fabric`: BGP and BFD on fabric WireGuard links (D63);
     - `wireguard-mesh`: its UDP port;
     - `k3s` and `rke2`: their cluster ports.
-    No service may rely on netif trusting a link. N3b runs every suite
+    No service may rely on netif trusting a link. P3b runs every suite
     to find any that do and fixes them in the owning service.
   - A breaking change with no shims (AGENTS.md rule 10).
   - **Stop condition.** If a cluster service needs a new firewall
-    ownership model rather than a missing port opening, N3b stops for an
+    ownership model rather than a missing port opening, P3b stops for an
     owner decision.
-  *(planned, phase N3b)*
+  *(planned, phase P3b)*
 
 - **N20 Responsibility boundary.** §1.1 is normative. netif owns links
   and how they are addressed, routed, resolved and trusted; the ownership
@@ -708,19 +823,42 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - Example (Hetzner Cloud, U6): the public NIC keeps the default; the
     private NIC sets `defaultRoute.ipv4 = false` and keeps its lease's
     routes to the private network.
-  *(planned, phase N3b)*
+  - **Probe results** (§8.2). A second DHCP link with `nogateway`:
+    - kept its lease and address;
+    - installed the classless static route the server sent
+      (`10.50.0.0/16`, `proto dhcp`, metric 100);
+    - installed no default, although the server sent a router option
+      and a classless default.
+    The same link with `accept_ra = 1`, `autoconf = 1` and
+    `accept_ra_defrtr = 0` took a SLAAC address and the on-link prefix
+    route from the RA and no default. IfState's schema accepts
+    `accept_ra_defrtr`. The machine had exactly one default per family,
+    both on the first link at metric 100.
+  *(probe-verified 2026-11-16; planned, phase P3b)*
 
 - **N22 Containers: Docker and Podman.**
   - One preset, `containers`, switched on by
     `virtualisation.docker.enable` or `virtualisation.podman.enable`.
-  - It owns: `^docker`, `^br-`, `^podman`, `^veth`, and the routes on
-    them. IfState's built-in ignores already cover `docker0`,
-    `br-<12 hex>` and `veth*`; **they do not cover `podman0`**. In the
-    2026-11-16 probe, Docker survived two IfState applies with
-    connectivity and a published port intact; Podman's bridge was
-    deleted and its container lost the network (§8). The preset names
-    all of them so netif does not depend on IfState's built-in list, and
-    so NetworkManager modes mark them unmanaged.
+  - It owns:
+    - links `^docker`, `^br-`, `^podman`, `^veth`, and the routes on
+      them;
+    - network namespaces `^netns-`. Rootful Podman (netavark) puts each
+      container in a named namespace, `netns-<uuid>`, and IfState
+      deletes undeclared named namespaces (N8). Docker's namespaces are
+      not named, so IfState never sees them.
+  - **Why all of them.** IfState's built-in ignores cover `docker0`,
+    `br-<12 hex>` and `veth*`, but not `podman0` and no namespace. Three
+    probes (§8.1, §8.2) showed the steps:
+    - plain IfState: Docker survives two applies; `podman0` is deleted;
+    - links owned, namespaces not: `podman0` stays but goes down. Its
+      containers' namespaces are deleted, and their `veth` ends with
+      them;
+    - links and `^netns-` owned: Docker and Podman keep every link,
+      their default and user-defined networks, and a published port
+      reached from another machine, across two applies. The kernel
+      snapshot is identical, with the nftables firewall on.
+    The preset names everything so netif does not depend on IfState's
+    built-in list, and so NetworkManager modes mark the links unmanaged.
   - Rootless Podman creates no host links and needs nothing.
   - **Address pools.** Eval rejects Docker's and Podman's default pools
     (`172.17.0.0/16`, `10.88.0.0/16`) overlapping any netif, fabric or
@@ -733,8 +871,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     configured for IPv6.
   - **Firewall.** Container bridges are not netif links and get no
     trust from netif (N19). Docker and Podman manage their own rules.
-  *(probe-verified for Docker under plain IfState; planned, phase N7;
-  suite `netif-containers`)*
+  *(probe-verified 2026-11-16 for Docker and rootful Podman with the
+  preset's ignores; planned, phase P7; suite `netif-containers`)*
 
 - **N23 VM hosts: bridges for guests (U5).**
   - **Bridge MAC.** IfState 2.5.1 gives every bridge a generated MAC
@@ -753,13 +891,34 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     error. (Today only physical members are allowed; a Hetzner vSwitch
     needs a bridge over a VLAN.)
   - **Guest ports.** `links.<n>.bridge.guestPorts = true` marks a bridge
-    whose undeclared ports belong to a hypervisor. In the probe, IfState
-    deleted an undeclared tap on a bridge at the next apply. On a
-    guest-ports bridge netif never deletes, downs or detaches an
-    undeclared port. How netif renders that is found in phase N7; if
-    IfState cannot express it per bridge, the phase stops for an owner
-    decision. The `vm` preset's names (`^tap`, `^vnet`) and
-    `^veth` (N22) stay as the fallback.
+    whose undeclared ports belong to a hypervisor. On such a bridge
+    netif never deletes, downs or detaches an undeclared port.
+    - **IfState has no per-bridge rule.** Its orphan cleanup looks only
+      at interface names (`ignore.ifname`) and namespaces
+      (`ignore.netns`); a port's bridge plays no part (`libifstate`
+      `_apply`). The probes agree: an undeclared port with an unowned
+      name was deleted; a `tap0` port matched by `^tap` kept its
+      bridge and its state across two applies.
+    - **netif builds the rule itself.** IfState reads `!include` files
+      at run time. Before every apply, a netif `ExecStartPre` step lists
+      the ports of each guest-ports bridge
+      (`/sys/class/net/<bridge>/brif/`), drops the declared members,
+      and writes the whole `ignore.ifname` list to
+      `/run/netif/ignore-ifname.yaml`: the registry's regexes plus one
+      anchored name (`^gp0$`) per guest port. The rendered
+      configuration includes that file. In the probe a guest port with
+      an arbitrary name kept its bridge and its guest stayed reachable
+      from another machine across two applies.
+    - The file must exist before any `ifstatecli` run: with it missing,
+      `ifstatecli check` fails. A machine with no guest-ports bridge
+      gets the static list and no include.
+    - A guest's **named** network namespace must be owned as well
+      (N8). Hypervisors that use unnamed namespaces need nothing.
+    - The `vm` preset's names (`^tap`, `^vnet`) stay: they cover a
+      port created between the listing and the apply.
+    The stop condition "IfState cannot express it per bridge" is
+    answered: IfState cannot, netif can, and no owner decision is
+    needed.
   - **Guest addresses are not netif's.** A guest's public address and
     its provider MAC are set in the guest and the hypervisor. netif
     renders the host side only. A routed extra subnet (no MAC needed) is
@@ -767,8 +926,15 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - **Order of proof:** KubeVirt with Multus first, Incus second.
   - The host's own address moves onto the bridge; `targetHost` stays an
     underlay address (N13), which the bridge address is.
-  *(bridge MAC and tap deletion probe-verified; planned, phase N7;
-  suite `netif-vmhost`)*
+  - **Probe results** (§8.2): a bridge with `link.address` set to its
+    member's permanent MAC came up with that MAC, kept it across a
+    reapply, and another machine learned that MAC for the bridge's
+    address. A bridge over a VLAN link (`eth3.100`) carried traffic to a
+    peer on the same VLAN. IfState's generated bridge MAC is stable on
+    one machine but differed between two builds of the same VM, so it
+    is not a value to write down anywhere.
+  *(bridge MAC, bridge over a VLAN and guest ports probe-verified
+  2026-11-16; planned, phase P7; suite `netif-vmhost`)*
 
 - **N24 The `modes` service.**
   - A clanService `modes` in this repo, at most one instance per clan.
@@ -791,7 +957,26 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     (spines, borders, voters in every mode) read one source.
   - It is a separate service because modes are per machine, while netif
     settings are per instance and a machine may be in several.
-  *(planned, phase N4; the probe's mode mechanics are §8)*
+  - **Mechanism** (eval probe, §8.2):
+    - A read-only option cannot differ between a parent and its
+      specialisation: a second definition is an eval error. So the
+      service sets an internal option, `currentMode` (default
+      `default`), and each `specialisation.<name>.configuration` sets
+      only that. `mode` is derived from it and stays read-only.
+    - Specialisations are defined only when `currentMode` is `default`.
+      A specialisation inherits the parent's modules, and NixOS clears
+      its own `specialisation` set, so nothing nests.
+    - The shared base must follow the mode: today it forces IfState on
+      and NetworkManager off for every configuration
+      (`lib/ifstate.nix`). In the probe it set
+      `networking.ifstate.enable` and
+      `networking.networkmanager.enable` from `mode.manager`, and
+      rendered IfState settings only in IfState modes. Both directions
+      evaluated with every assertion passing: NetworkManager by default
+      with IfState modes (U1, U2), and IfState by default with a
+      NetworkManager mode (U10).
+  *(mechanism eval-probed 2026-11-16, mode switching by reboot
+  probe-verified 2026-11-15; planned, phase P4)*
 
 - **N25 Lockout guard.** IfState has no rollback, and a bad change on a
   headless machine cuts the only way in.
@@ -811,25 +996,74 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - **Limits.** It protects against a change that breaks the path to the
     gateway. It does not detect a broken firewall rule or a wrong
     address that the gateway still answers.
-  - How the previous configuration is kept and re-applied is settled in
-    phase N8 with a probe first.
-  *(planned, phase N8; suite `netif-guard`)*
+  - **Mechanism** (guard probe, §8.2):
+    - The guard is an `ExecStartPost` of `ifstate.service`. At build
+      time it gets the store path of this generation's rendered IfState
+      configuration and the static gateways. At run time it adds every
+      default gateway in the main table, so DHCP and RA gateways are
+      covered.
+    - It asks once a second until the deadline: `arping` for IPv4,
+      `ndisc6` for IPv6. It returns as soon as every target answers, so
+      a good apply is not slowed down.
+    - **Kept.** On success it points `/var/lib/netif/guard/last-good` at
+      that store path and registers it as a garbage-collector root. The
+      state survives reboots.
+    - **Rolled back.** On failure it runs
+      `ifstatecli --config <last-good> apply` and exits non-zero. The
+      unit fails, and `switch-to-configuration` exits 4, so the deploy
+      reports the failure.
+  - **After a rollback** the kernel has the last-good network, while
+    `/etc/ifstate/ifstate.yaml` and the running generation still name
+    the bad one. A unit restart or a reboot tries the bad configuration
+    again and rolls back again (probe). The fix is a corrected
+    generation.
+  - **Order.** The guard runs before N15's missing-NIC check, so a
+    change that loses both a NIC and the gateway is still rolled back.
+  - **Not settled yet** (phase P8): runtime `!include` secrets that a
+    rolled-back configuration names but the new generation no longer
+    provides; the guard on a machine whose only default route comes
+    from Wi-Fi (the guard is off there by default).
+  *(probe-verified 2026-11-16; planned, phase P8; suite `netif-guard`)*
 
 - **N26 Cloud NICs.**
-  - `links.<n>.match.path` finds a physical NIC by its parent device
-    name (a PCI or virtio address such as `0000:00:03.0`), rendered as
-    IfState `identify.parent_dev_name`. A cloud NIC's MAC is unknown
-    before the VM exists; its slot is stable.
+  - `links.<n>.match.path` finds a physical NIC by its udev path
+    (`ID_PATH`, for example `pci-0000:00:03.0`). A cloud NIC's MAC is
+    unknown before the VM exists; its slot is stable.
+  - **Rendering: a udev `.link` file, not IfState `identify`.** The
+    probe (§8.2) showed why:
+    - IfState's `identify.parent_dev_name` is the PCI address only for
+      a NIC that sits on the PCI bus directly (`ifstatecli identify`
+      gave `0000:00:10.0` for an e1000). Renaming by it was not
+      proven: the probe's hand-made YAML left the address unquoted
+      and IfState's parser read it as a number.
+    - A virtio NIC's parent is `virtio<N>`. `N` counts every virtio
+      device in probe order: disks, the random-number device, consoles
+      and file shares too. In the probe VM the NICs were `virtio0`,
+      `virtio3`–`virtio6` and `virtio13`. Adding a disk renumbers them.
+      Hetzner Cloud, GCP and Proxmox NICs are virtio.
+    - udev's `ID_PATH` named the PCI slot for every NIC, virtio
+      included. A `.link` file with `Path=pci-0000:00:11.0` and
+      `Name=cloud1` renamed the NIC before IfState ran, with
+      `net.ifnames=0` set, and IfState configured `cloud1` by name.
+    So netif renders `systemd.network.links` for `match.path` and
+    declares the link to IfState by its logical name. `.link` files
+    belong to udev and work with systemd-networkd off; D61 stays as it
+    is (no networkd, no netdevs, no scripted units).
+  - `match.mac` keeps IfState `identify.perm_address` (N15).
   - A physical link sets exactly one of `interface`, `match.mac` and
-    `match.path`. With either matcher, IfState renames the NIC to the
-    logical link name (at most 15 characters).
+    `match.path`. With either matcher the NIC ends up with the logical
+    link name (at most 15 characters).
+  - **Not proven yet:** AWS (ENA, on the PCI bus) and Azure
+    (`hv_netvsc`, on VMBus) NICs. Their `ID_PATH` values are recorded
+    in the provider notes when a machine exists.
   - Eval rejects cloud-init's network configuration next to netif
     (`services.cloud-init.network.enable`): it would be a second writer.
   - Provider facts netif relies on are recorded per provider in the
     human docs as they are proven: gateway outside the subnet
     (`gateway.onLink`), MTU below 1500 (`pathMtu`, N17), a second NIC
     without a default (N21).
-  *(planned, phase N3b; `match.path` VM-proven in `netif-match`)*
+  *(probe-verified 2026-11-16; planned, phase P3b; `match.path` to be
+  VM-proven in `netif-match`)*
 
 - **N27 A roaming Kubernetes node uses its fabric loopback (U2).**
   kamrui-h1's `kubernetes` mode runs a k3s server with ClusterMesh while
@@ -890,7 +1124,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
 19. On a guarded machine, an apply that loses the gateways is rolled
     back (N25).
 
-## 5. What exists today (2026-11-16)
+## 5. What exists today (2026-11-16, after the proof round)
 
 - **Implemented and VM-proven** (SPEC.md D53/D61/D63; suites `netif`
   `NETIF_IFSTATE_LIVE_OK`, `netif-dhcp` `NETIF_DHCP_RA_IFSTATE_OK`):
@@ -903,42 +1137,46 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - cross-instance checks;
   - reserved WireGuard ports;
   - live reconfiguration.
-- **Implemented and VM-proven in N1** (suite `netif-registry`
+- **Implemented and VM-proven in P1** (suite `netif-registry`
   `NETIF_REGISTRY_OK`): the ownership registry and its presets (N6), the
   ownership, Wi-Fi and unowned-daemon eval errors, IfState before
   `network-online.target` with session units after it (N7), and the N11
   range check and warning.
-- **Implemented and VM-proven in N3a** (suite `netif-match`
+- **Implemented and VM-proven in P3a** (suite `netif-match`
   `NETIF_MATCH_OK`): `match.mac`, the loud missing-NIC check and the
   checked `extraSettings` passthrough (N15).
 - **Drift against this contract** (fixed by the phases in §9):
   - the base force-disables NetworkManager on every machine (conflicts N2);
   - there are no modes (N3/N4), and the registry does not render into
-    NetworkManager yet (N6, phase N2);
+    NetworkManager yet (N6, phase P2);
   - DNS uses global `networking.nameservers`, resolved is not enabled,
-    and the cross-instance DNS conflict check still exists (N9; N3b);
+    and the cross-instance DNS conflict check still exists (N9; P3b);
   - there are no PD settings, `pathMtu` or zone seam (N10, N16, N17;
-    N3b);
+    P3b);
   - netif's DHCP-link route ignore `{dev = <interface>; proto = 4}` is
     an unanchored regex, and the hook's `pgrep` match is loose too
-    (`services/netif/default.nix`; N8, N16; N3b);
+    (`services/netif/default.nix`; N8, N16; P3b);
   - the DHCP hook starts dhcpcd with no config file of its own, so
-    dhcpcd's own RA handling and hooks are unpinned (N16; N3b);
-  - links default to firewall-trusted (N19; N3b);
-  - default routes carry no metric (N18; N3b);
+    dhcpcd's own RA handling and hooks are unpinned (N16; P3b);
+  - links default to firewall-trusted (N19; P3b);
+  - default routes carry no metric (N18; P3b);
   - `netif` and `netif-dhcp` take `ifstatecli check`'s exit status as
-    "no change", which it is not (invariant 5, §7; N3b);
+    "no change", which it is not (invariant 5, §7; P3b);
   - live reconfiguration is proven by applying hand-edited YAML in the
-    `netif` suite, not by switching NixOS generations (§7; N3b);
+    `netif` suite, not by switching NixOS generations (§7; P3b);
   - every DHCPv4 link counts as a default-route owner, so two DHCP
     links fail eval, and RA defaults are not counted at all
-    (`services/netif/default.nix` `v4Default`, `v6Default`; N21; N3b);
+    (`services/netif/default.nix` `v4Default`, `v6Default`; N21; P3b);
   - bridges accept physical members only and have no MAC setting (N23;
-    phase N7);
+    phase P7);
   - there is no `containers` preset; Podman's bridge is deleted on
-    reapply (N22; phase N7);
-  - a NIC can be matched by name or MAC only (N26; N3b);
-  - nothing rolls back a change that cuts the gateway (N25; phase N8).
+    reapply (N22; phase P7);
+  - a NIC can be matched by name or MAC only (N26; P3b);
+  - nothing rolls back a change that cuts the gateway (N25; phase P8);
+  - the base forces IfState on in every configuration, so no
+    NetworkManager mode can exist (N24; phase P4);
+  - dhcpcd 10.3.2 loses DHCPv4 or DHCPv6 after a carrier change, and
+    nothing restarts it (N16; phase P3b).
 - **Field gate (N14):** no use case is live. netif has no consumers.
 
 ## 6. Out of scope
@@ -981,29 +1219,29 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
      is not a signal: it exits 0 even when it proposes changes.
   One shared helper in `tests/` (for example
   `assert_ifstate_noop(machine)`) does both, and every suite that
-  asserts a reapply uses it. N3b writes it and pins the `check` output
+  asserts a reapply uses it. P3b writes it and pins the `check` output
   format it parses against IfState 2.5.1.
 - **Live reconfiguration** is proven by switching NixOS generations
   (`switch-to-configuration test` into a specialisation that changes
   netif settings, then back), not by applying hand-edited YAML. The
-  `netif` suite moves to that in N3b. This is a test device only; it
+  `netif` suite moves to that in P3b. This is a test device only; it
   does not make live mode switching (N3) supported.
 - Planned suites, each with a final marker:
 
   | Suite | Proves | Phase |
   |---|---|---|
-  | `netif-registry` | Tailscale and an iwd Wi-Fi link survive two IfState applies; foreign netns kept; ordering | N1 |
-  | `netif-modes` | gaming (NetworkManager + iwd + Tailscale) → developer (IfState + iwd + Tailscale) → gaming by reboot; known networks shared both ways | N2, N4 |
-  | `netif-wifi` | ad hoc join, roaming between two APs, DNS from DHCP | N2 |
-  | `netif-hotplug` | dock ethernet hot-plug in an IfState mode | N2 |
-  | `netif-router` | WAN DHCPv4 + DHCPv6-PD hook, kea, radvd, NAT, reapply no-op, prefix change, reboot | N5 |
-  | `netif-match` | NIC found by permanent MAC under a different kernel name; missing NIC fails loudly | N3a (green) |
-  | `netif-dhcp` (extended) | dhcpcd per-link config; DHCPv6 and a delegated prefix assigned to another instance's link; observed route protocols; per-link DNS in resolved across reapply, link down/up and a lease renewal (N9); no IPv4 link-local; metric 100 defaults; an RA default on a forwarding link surviving two RA lifetimes; the no-op helper | N3b |
-  | `netif` (extended) | live reconfiguration by generation switch; untrusted default with an explicitly trusted link; two DHCP links with one default (N21); the no-op helper | N3b |
-  | `netif-match` (extended) | NIC found by device path (N26) | N3b |
-  | `netif-containers` | Docker and rootful Podman keep links, connectivity and a published port across two applies, in an IfState mode; pool-overlap eval error | N7 |
-  | `netif-vmhost` | bridge sends from the uplink's MAC; a bridge over a VLAN; guest ports survive two applies | N7 |
-  | `netif-guard` | a change that loses the gateway is rolled back and the unit fails; a good change is kept | N8 |
+  | `netif-registry` | Tailscale and an iwd Wi-Fi link survive two IfState applies; foreign netns kept; ordering | P1 |
+  | `netif-modes` | gaming (NetworkManager + iwd + Tailscale) → developer (IfState + iwd + Tailscale) → gaming by reboot; known networks shared both ways | P2, P4 |
+  | `netif-wifi` | ad hoc join, roaming between two APs, DNS from DHCP | P2 |
+  | `netif-hotplug` | dock ethernet hot-plug in an IfState mode | P2 |
+  | `netif-router` | WAN DHCPv4 + DHCPv6-PD hook, kea, radvd, NAT, reapply no-op, prefix change, reboot | P5 |
+  | `netif-match` | NIC found by permanent MAC under a different kernel name; missing NIC fails loudly | P3a (green) |
+  | `netif-dhcp` (extended) | dhcpcd per-link config; DHCPv6 and a delegated prefix assigned to another instance's link; observed route protocols; per-link DNS in resolved across reapply, link down/up, a resolved restart and a lease renewal (N9); both DHCP protocols and the RA default back after a real carrier loss and after `ip link set down`/`up` (N16); no IPv4 link-local; metric 100 defaults; an RA default on a forwarding link surviving two RA lifetimes; the no-op helper | P3b |
+  | `netif` (extended) | live reconfiguration by generation switch; untrusted default with an explicitly trusted link; two DHCP links with one default (N21); the no-op helper | P3b |
+  | `netif-match` (extended) | a virtio NIC found by udev path and renamed before IfState runs (N26) | P3b |
+  | `netif-containers` | Docker and rootful Podman keep links, namespaces, default and user-defined networks and a published port reached from another machine across two applies, in an IfState mode; pool-overlap eval error | P7 |
+  | `netif-vmhost` | bridge sends from the uplink's MAC; a bridge over a VLAN; guest ports with arbitrary names survive two applies and stay reachable | P7 |
+  | `netif-guard` | a change that loses the gateway is rolled back and the unit fails; a good change is kept; a gateway that ignores ping passes; no previous configuration fails loudly | P8 |
 
   Existing suites stay green throughout.
 
@@ -1099,25 +1337,133 @@ Throwaway tests, not committed; `.baton-pass/netif-probes/gates.nix` and
 - **What they changed:** N9 (DNS unit), N16 (`noipv4ll`, no resolvconf
   hook), N18 (who writes `ra_defrtr_metric`), N22, N23.
 
+### 8.2 Probes of 2026-11-16, proof round (euc-hel-0)
+
+Versions: IfState 2.5.1, dhcpcd 10.3.2, systemd 262, iwd 3.12, kea
+3.2.1, Docker 29.9.1, Podman 6.1.4 (netavark), kernel 6.18.59.
+Throwaway tests under `.baton-pass/netif-probes/` (`dns.nix`,
+`vmhost.nix`, `containers2.nix`, `guard.nix`, `wifi.nix`,
+`modes-eval.nix`; run with `run-any.nix --argstr probe <name>`). They
+print `FACT` lines and do not assert. Plain IfState with the listed
+ignores, not the clanServices base.
+
+- **DNS probe** (`NETIF_DNS_PROBE_DONE`, three runs). An ISP node (kea
+  DHCPv4 on two networks, kea DHCPv6, radvd) and a router with a DHCP
+  WAN (`ia_na`), a static LAN and a second DHCP link (`nogateway`,
+  `accept_ra_defrtr = 0`), plus the prototype DNS unit of N9.
+
+  | Question | Result |
+  |---|---|
+  | DNS on the right link after boot: DHCPv4, DHCPv6, static, second DHCP link; search domains | yes |
+  | After an IfState reapply | yes |
+  | Static link down and up, once and ten times fast | yes, DNS back; none while down |
+  | After a systemd-resolved restart | yes |
+  | Lease renewed with changed servers (60 s lease) | yes: new servers set, old removed, DHCPv6 server kept |
+  | DNS from an RA (RDNSS) | **no**: nothing reads it |
+  | Second DHCP link with `nogateway` | lease and classless route kept, no default |
+  | Second link with `accept_ra_defrtr = 0` | SLAAC address and prefix route kept, no default |
+  | Defaults per family | one each, on the first link, metric 100 (`proto dhcp`, `proto ra`) |
+  | `noipv4ll` | no `169.254` address or route |
+  | Stock dhcpcd hooks with `script` set | none ran |
+  | dhcpcd pidfile for one link | `/run/dhcpcd/<link>.pid` |
+  | Reapply with everything running | no change |
+  | Real carrier loss and return (QEMU `set_link`) | **DHCPv4 lost**: no lease within 75 s (run 3; run 2's journal shows the same error and an expired lease). DHCPv6 and the RA default came back |
+  | `ip link set down` / `up` on the DHCP link | **one protocol lost** (DHCPv6 twice, DHCPv4 once); the RA default did not return within 30 s |
+  | dhcpcd journal after either | `eloop_event_add: No such file or directory` |
+  | `addr_gen_mode` of the DHCPv6 link | 1: dhcpcd adds the link-local address itself |
+  | One router solicitation by hand after the down/up | RA default back at once |
+  | Kill that link's dhcpcd, rerun IfState | both protocols and their DNS back |
+  | Same probe with upstream dhcpcd 10.5.2, unpatched | no `eloop` error and DHCPv4 back after carrier loss; DHCPv6 got no lease at all, cause unknown |
+
+- **VM-host probe** (`NETIF_VMHOST_PROBE_DONE`). A host with a bridge
+  over a NIC, a bridge over a VLAN, an e1000 and a virtio NIC on fixed
+  PCI slots, and a peer.
+
+  | Question | Result |
+  |---|---|
+  | Bridge with `link.address` = member's permanent MAC | bridge has that MAC, also after a reapply; the peer learned it |
+  | Bridge over a VLAN link | peer on the VLAN reached it |
+  | `tap0` port with `^tap` ignored, two applies | port, bridge membership and state kept |
+  | Port with an unowned name | deleted |
+  | Named namespace not in `ignore.netns`, no `namespaces` key | deleted |
+  | Run-time `!include` for `ignore.ifname` listing the bridge's ports | port kept, guest reachable from the peer, two applies |
+  | Include file missing | `ifstatecli check` fails |
+  | `ifstatecli identify`, virtio NIC | `parent_dev_name: virtio<N>`, `parent_dev_bus_name: virtio` |
+  | `ifstatecli identify`, e1000 | `parent_dev_name: '0000:00:10.0'`, bus `pci` |
+  | virtio numbering | NICs `virtio0`, `3`–`6`, `13`; rng, disk, input, file shares and console in between |
+  | udev `ID_PATH` | `pci-0000:00:<slot>.0` for every NIC |
+  | `.link` file `Path=pci-0000:00:11.0`, `Name=cloud1` | renamed before IfState ran, with `net.ifnames=0`; IfState configured it |
+  | IfState rename by `parent_dev_name` | not proven (probe YAML error) |
+
+- **Containers probe 2** (`NETIF_CONTAINERS2_PROBE_DONE`, two runs).
+  Docker and rootful Podman, each with a container on the default
+  bridge and one on a user-defined network, published ports, nftables
+  firewall on, a peer machine.
+
+  | Ignored | Result after two applies |
+  |---|---|
+  | links `^docker`, `^br-`, `^podman`, `^veth` | Docker intact. Podman: bridges kept but down, both `netns-<uuid>` namespaces and their `veth` ends deleted, containers and published port dead |
+  | the same plus namespaces `^netns-` | kernel snapshot identical; Docker and Podman connectivity and both published ports from the peer intact; a new Podman container worked |
+
+- **Guard probe** (`NETIF_GUARD_PROBE_DONE`). A host with the prototype
+  guard of N25 (8 s deadline) and a gateway that ignores ping.
+
+  | Question | Result |
+  |---|---|
+  | Gateway: ping, `arping`, `ndisc6` | no, yes, yes |
+  | Boot | gateways answered; `last-good` recorded; unit succeeded |
+  | Generation switch to an address in another subnet | rolled back in 10 s: old address and default route back, unit failed, `switch-to-configuration` exit 4, `last-good` unchanged |
+  | Unit restart afterwards | fails and rolls back again |
+  | Generation switch that adds an address | kept; `last-good` updated |
+  | Bad change with no `last-good` | unit fails, bad configuration stays |
+
+- **Wi-Fi probe** (`NETIF_WIFI_PROBE_DONE`). One machine, a simulated
+  access point with DHCPv4 and RAs, iwd with
+  `RoutePriorityOffset = 300`, IfState wired defaults at `preference`
+  100.
+
+  | Question | Result |
+  |---|---|
+  | iwd IPv4 default | `proto dhcp`, metric 307 |
+  | iwd IPv6 default | `proto ra`, metric 307; `accept_ra` 0 on the link |
+  | Route lookup, both up | wired, both families |
+  | Route lookup, wired down | Wi-Fi, both families |
+  | Two applies | defaults unchanged |
+
+- **Modes eval probe** (`modes-eval.nix`, evaluated locally). The
+  prototype of N24 with a base that follows `mode.manager`.
+
+  | Machine | Result |
+  |---|---|
+  | NetworkManager default, IfState `developer` and `kubernetes` | one manager each; a module gated on `mode.name` was on in `kubernetes` only; no nested specialisations; all assertions pass; the system derivation evaluates |
+  | IfState default, NetworkManager `gaming` | the same, the other way round |
+  | No modes | one mode `default`, IfState |
+
+- **Probe-writing traps:** the test driver runs commands with `errexit`,
+  so `a; b` stops at a failing `a`; `dhcpcd` is not on the VM's `PATH`
+  (use the store path); an unquoted PCI address in hand-made YAML is
+  read as a number; a peer keeps a stale neighbour entry when a guest
+  address moves to a new MAC.
+
 ## 9. Delivery plan
 
-Each phase amends this file first, then code, then suites. Order: N3b,
-N7, N2, N4, N8, N5, then the contract gate; the field gate follows the
+Each phase amends this file first, then code, then suites. Order: P3b,
+P7, P2, P4, P8, P5, then the contract gate; the field gate follows the
 hardware; N28 and N29 come after. A verification gate that fails, or a
 fix that needs a new ownership model, stops the phase for an owner
 decision. Phase numbers are labels, not the order.
 
 | Phase | Work | Done when |
 |---|---|---|
-| N0 | This contract (docs only) | merged |
-| N1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
-| N3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
-| N3b | First: prove the netif DNS unit (N9). Then: dhcpcd per-link config and PD (N16), `pathMtu` and its consumers (N17), default-route metrics (N18), untrusted default (N19), zone seam (N10), `defaultRoute` and RA in the one-default rule (N21), `match.path` and the cloud-init check (N26); fixes: anchored ignores, the no-op helper, live reconfiguration by generation switch. Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
-| N7 | `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
-| N2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
-| N4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
-| N8 | Lockout guard (N25), probe first | `netif-guard` green |
-| N5 | Router module in `modules` on the N3b seam | `netif-router` green |
+| P0 | This contract (docs only) | merged |
+| P1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
+| P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
+| P3b | First: dhcpcd's recovery after a carrier change and its link-local takeover (N16), then the netif DNS unit as probed (N9). Then: dhcpcd per-link config and PD (N16), `pathMtu` and its consumers (N17), default-route metrics (N18), untrusted default (N19), zone seam (N10), `defaultRoute` and RA in the one-default rule (N21), `match.path` and the cloud-init check (N26); fixes: anchored ignores, the no-op helper, live reconfiguration by generation switch. Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
+| P7 | `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
+| P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
+| P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
+| P8 | Lockout guard (N25), as probed | `netif-guard` green |
+| P5 | Router module in `modules` on the P3b seam | `netif-router` green |
 | Contract gate | netif is stable (N14) | every phase above done; every probe-verified claim VM-proven; every §4 invariant asserted by a suite |
 | Field gate | home runs netif on each use case that exists (N14) | each use case live, recorded in §5 |
 | Later | VM-test fixture (N28); NetBird and WARP presets (N29); a NAT gateway service (N10); the roaming-node design in SPEC.md (N27) | each its own decision round |
@@ -1160,7 +1506,7 @@ Terms as this file uses them. One term per thing.
   configuration (named `default`). Switched by reboot (N3, N24).
 - **Owner** — an entry in the ownership registry: a daemon and the
   kernel objects that are its, not netif's (N6).
-- **Phase** — a delivery step in §9, always written "phase N2".
+- **Phase** — a delivery step in §9, written `P0`…`P8` ("phase P2").
 - **Preset** — an owner that switches on by itself when its daemon is
   enabled (N6).
 - **Probe, probe-verified** — a throwaway VM test and what it showed

@@ -4,6 +4,21 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 30 (2026-11-16): **netif proof round; docs only**
+(`specs/netif.md` round proof, §8.2). Throwaway probes on euc-hel-0
+tested the open netif assumptions. netif's delivery phases are renamed
+`N0`–`N8` → `P0`–`P8`. Points that touch this file:
+- The `cilium` preset's neighbours matter: IfState deletes any named
+  network namespace no owner claims. Rootful Podman's `netns-<uuid>`
+  needed its own ignore (N22); a new runtime on a cluster node needs
+  the same check.
+- dhcpcd 10.3.2 loses DHCPv4 or DHCPv6 after a carrier change (N16).
+  Every DHCP underlay of a cluster node is affected until netif phase
+  P3b fixes it.
+- A virtio NIC cannot be matched through IfState `identify` by its
+  parent device; netif will use a udev `.link` rename for `match.path`
+  (N26). D61 is unchanged: `.link` files are udev's, not networkd's.
+
 Round 29 (2026-11-16): **the netif contract is widened to the whole
 fleet; docs only** (`specs/netif.md` round use-cases, decisions N20–N29,
 use cases U1–U11). Points that touch this file:
@@ -22,23 +37,23 @@ use cases U1–U11). Points that touch this file:
 - The netif export is not version-bumped: version rules wait for a real
   consumer (N14). This replaces round 28's `schemaVersion` 2 note.
 
-Round 28 (2026-11-16): **the netif contract is refined before phase N3b;
-docs only** (`specs/netif.md` round N3b-spec, decisions N16–N19). Points
+Round 28 (2026-11-16): **the netif contract is refined before phase P3b;
+docs only** (`specs/netif.md` round P3b-spec, decisions N16–N19). Points
 that touch this file:
 - netif links become firewall-untrusted by default (N19). routed-fabric,
   wireguard-mesh, k3s and rke2 open their own ports and never rely on
   netif trust.
 - `pathMtu` (N17) is the underlay MTU routed-fabric and wireguard-mesh
-  prefer; it closes invariant 21's gap in N3b.
+  prefer; it closes invariant 21's gap in P3b.
 - The netif export moves to `schemaVersion` 2 (zones, `pathMtu`,
   prefix delegation as a runtime fact).
 
-Round 27 (2026-11-15): **netif phase N3a is implemented** (`specs/netif.md`
+Round 27 (2026-11-15): **netif phase P3a is implemented** (`specs/netif.md`
 N15): `match.mac`, a missing NIC fails `ifstate.service`, and the checked
 `extraSettings` passthrough. Suite `netif-match`.
 
-Round 26 (2026-11-15): **netif phase N1 is implemented** (`specs/netif.md`
-round N1). The Cilium and VM ignores that D61 hard-coded in the shared
+Round 26 (2026-11-15): **netif phase P1 is implemented** (`specs/netif.md`
+round P1). The Cilium and VM ignores that D61 hard-coded in the shared
 IfState base are now presets of the ownership registry (`lib/ownership.nix`);
 the Cilium preset is on wherever k3s or RKE2 runs. Suite `netif-registry`.
 
@@ -54,8 +69,8 @@ supersedes D50, D53 and D61 where they conflict. In short:
 - each mode provides `network-online.target` for session daemons.
 
 The model was probe-verified on euc-hel-0 before it was written down. netif
-stability work (phases N1–N6) comes before further cluster work. The
-data-plane hardening plan's phase 4 is folded into netif phase N3.
+stability work (phases P1–P6) comes before further cluster work. The
+data-plane hardening plan's phase 4 is folded into netif phase P3.
 
 Round 24 (2026-11-11): **the repo follows the external-systems org standard
 (D66); no service behavior change.** The artifact flake is the input
@@ -1721,7 +1736,7 @@ unless noted) — revoked entries keep one-line reasons for history.
     native mode and minimum minus 50 under VXLAN; VMs assert path MTU
     (D51/D58). *(Partially implemented: wireguard-mesh uses a fixed 1420
     and routed-fabric assumes a 1500 underlay when netif exports no MTU,
-    as on every DHCP link. `specs/netif.md` N17 closes it in phase N3b:
+    as on every DHCP link. `specs/netif.md` N17 closes it in phase P3b:
     both prefer netif's `pathMtu`, then the link `mtu`, and wireguard-mesh
     derives its MTU as that minus 96, floor 1280.)*
 22. `clan.networkFacts` is versioned (schemaVersion 2), non-secret,

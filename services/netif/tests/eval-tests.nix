@@ -382,7 +382,7 @@
       clan._networkFacts.fabric.lab = {};
     }
     baseInventory);
-  # --- underlay coverage (specs/netif.md N3a) ---
+  # --- underlay coverage (specs/netif.md P3a) ---
   withEdgeLinks = links:
     (mkEvaled (
       lib.recursiveUpdate baseInventory {

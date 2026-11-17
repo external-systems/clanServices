@@ -47,10 +47,15 @@ The contract was split out of SPEC.md on 2026-11-15 and checked with two VM
 probes before it was written down: [Plan and evidence](plan.md). What runs
 in `main` today is IfState-only networking with multi-link,
 multi-instance links (D53/D61), plus the ownership registry with its
-presets, start ordering and Tailscale checks (phase N1, suite
-`netif-registry`), and NICs found by MAC (phase N3a, suite `netif-match`).
+presets, start ordering and Tailscale checks (phase P1, suite
+`netif-registry`), and NICs found by MAC (phase P3a, suite `netif-match`).
 
-Next is phase N3b. It brings:
+A proof round on 2026-11-16 tested the assumptions of the later phases
+in throwaway VMs: [Plan and evidence](plan.md). Most held. Three designs
+changed (Podman, guest ports, cloud NICs), and dhcpcd turned out not to
+recover cleanly after a link flap, which phase P3b fixes first.
+
+Next is phase P3b. It brings:
 - DNS per link through systemd-resolved;
 - DHCPv6 prefix delegation;
 - a declared path MTU;
@@ -61,9 +66,9 @@ Next is phase N3b. It brings:
 It also brings an explicit default-route owner per link, so two DHCP
 NICs can coexist, and NICs found by device path for cloud VMs.
 
-After it come containers and VM hosts (phase N7), the NetworkManager
-renderer (N2), modes (N4), the lockout guard (N8) and the router module
-(N5). See the [plan](plan.md).
+After it come containers and VM hosts (phase P7), the NetworkManager
+renderer (P2), modes (P4), the lockout guard (P8) and the router module
+(P5). See the [plan](plan.md).
 
 netif has no consumers yet. It is not used on real machines until it
 passes the contract gate.
@@ -71,12 +76,12 @@ passes the contract gate.
 ## Defaults worth knowing
 
 - **Firewall:** a link is untrusted unless its segment or the link sets
-  `firewall.trust = true` (from N3b). Services open their own ports.
+  `firewall.trust = true` (from P3b). Services open their own ports.
 - **DNS:** each link's nameservers go to that link in systemd-resolved,
-  never to a global list (from N3b).
+  never to a global list (from P3b).
 - **Default routes:** netif's default route has metric 100, a dock 200,
   and Wi-Fi 300 or more, so a cable wins and Wi-Fi stays as a fallback
-  (netif's metrics from N3b, Wi-Fi and the dock from N2).
+  (netif's metrics from P3b, Wi-Fi and the dock from P2).
 
 ## Pages
 
