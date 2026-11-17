@@ -170,8 +170,9 @@ real defects that no earlier test could see:
 | A floating IP placed by a failover tool had no owner | a reapply would have removed it |
 
 All three are fixed, and the tools that show "what would change" now
-catch such cases. Still to prove: RKE2 on netif, a machine that only
-runs FRR, and a desktop mode such as KDE.
+catch such cases. RKE2 passes the same test on netif
+(`rke2-data-plane-netif`) with no further fix. Still to prove: a
+machine that only runs FRR, and a desktop mode such as KDE.
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible
