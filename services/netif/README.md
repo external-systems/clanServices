@@ -95,6 +95,9 @@ Beside IfState, netif runs (`host.nix`):
   is rejected next to netif;
 - `pathMtu` is published per link and instance; routed-fabric and
   wireguard-mesh prefer it over the link MTU;
+- the operator tools (`tools.nix`): `netif-status [--json]`,
+  `netif-preview [system]` and the hourly `netif-drift.timer`, all
+  read-only;
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

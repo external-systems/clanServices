@@ -181,6 +181,37 @@ _: {
             assert main_default() == [("10.10.10.254", "eth4.10", 100)], main_default()
             assert_ifstate_noop(edge_1)
             print("NETIF_SWITCH_OK")
+        with subtest("operator tools: status, preview and the drift watch (N38, N41, N42)"):
+            status = json.loads(edge_1.succeed("netif-status --json"))
+            uplink = [l for l in status["links"] if l["interface"] == "eth1"][0]
+            assert (uplink["instance"], uplink["link"], uplink["state"], uplink["trusted"]) == ("lan", "uplink", "UP", False), uplink
+            assert "10.99.0.2/24" in uplink["addresses"], uplink
+            assert status["ifstate"]["result"] == "success", status
+            assert status["defaultRoutes"]["ipv4"][0]["metric"] == 100, status
+            table = edge_1.succeed("netif-status")
+            print(table)
+            assert "dmz/dmz10" in table and "eth4.10" in table and "untrusted" in table, table
+
+            edge_1.succeed("netif-preview | grep 'would change nothing' >/dev/null")
+            # another built system: the preview names what it would change
+            preview = edge_1.execute("netif-preview /run/booted-system/specialisation/moved")
+            assert preview[0] == 2 and "would change:" in preview[1], preview
+            edge_1.succeed("ip addr show eth1 | grep '10.99.0.2/24' >/dev/null")
+
+            edge_1.succeed("systemctl list-timers --all | grep netif-drift.timer >/dev/null")
+            edge_1.succeed("systemctl start netif-drift.service")
+            assert json.loads(edge_1.succeed("netif-status --json"))["drift"] == "none"
+            # someone else changes the network: the watch fails and changes nothing
+            edge_1.succeed("ip addr add 10.99.0.99/24 dev eth1")
+            edge_1.fail("systemctl start netif-drift.service")
+            edge_1.succeed("journalctl -u netif-drift.service --no-pager | grep 'the network differs from the configuration' >/dev/null")
+            edge_1.succeed("ip addr show eth1 | grep '10.99.0.99/24' >/dev/null")
+            assert json.loads(edge_1.succeed("netif-status --json"))["drift"] == "DRIFT"
+            edge_1.succeed("systemctl restart ifstate.service")
+            edge_1.fail("ip addr show eth1 | grep '10.99.0.99/24' >/dev/null")
+            edge_1.succeed("systemctl start netif-drift.service")
+            assert_ifstate_noop(edge_1)
+            print("NETIF_TOOLS_OK")
         print("NETIF_OK")
     except Exception:
         for command in [

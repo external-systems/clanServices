@@ -11,6 +11,19 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round tools (2026-11-17): **the operator tools and the last
+hardening decisions that needed no new phase.** Implemented:
+- **N38** `netif-drift.service` and its timer; **N41** `netif-status`;
+  **N42** `netif-preview` and the error sweep. Proven by `netif`
+  (`NETIF_TOOLS_OK`).
+- **N39** is decided: no daemon reads DNS servers from router
+  advertisements; a machine that would end up with no DNS source gets
+  an eval warning.
+- **N40** the five remaining probes are in the repo and run as
+  `.#netifProbes.<name>`.
+- **§7** the no-op helper ignores LACP negotiation state of bond
+  members; it changed between two snapshots with no apply in between.
+
 Round P3b-5 (2026-11-17): **path MTU and cloud NICs; P3b is
 complete.** Implemented:
 - **N17** `links.<n>.pathMtu`, published per link and per instance in
@@ -1418,28 +1431,64 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
 - **N38 A drift watch (was H7).** A timer runs the dry run and fails
   `netif-drift.service` when IfState would change something. It never
   applies.
-  *(planned, slice "tools" after P3b slice 3)*
+  - Interval: `clanServices.netif.driftInterval` (default `1h`; first
+    run 15 minutes after boot, up to 5 minutes of random delay).
+  - A run during an apply (`ifstate.service` activating) is skipped.
+  - The failed unit is the signal (`systemctl --failed`,
+    `netif-status`); its journal lists the proposed changes and says
+    how to reapply.
+  *(implemented: `netif` `NETIF_TOOLS_OK` — a foreign address makes
+  the unit fail, the address stays, a reapply clears it)*
 
-- **N39 DNS from router advertisements is decided in slice 2b (was
-  H9).** Probe `rdnssd` as a writer of the N9 lease files; if it does
-  not hold, an RA link with no DNS source is an eval warning.
-  *(planned)*
+- **N39 DNS from router advertisements is not read (was H9).**
+  - The kernel ignores the RDNSS option; reading it needs a daemon.
+    `rdnssd` was not adopted and not probed: it merges the servers of
+    all links into one resolv.conf-style file with no interface names,
+    so it cannot feed N9's per-link files without a wrapper that
+    listens to the kernel itself.
+  - **Rule.** netif warns at evaluation when a machine takes its IPv6
+    default from RAs and has no DNS source at all: no link sets
+    `nameservers`, none uses DHCP, and `networking.nameservers` is
+    empty. The warning names the fix.
+  - Open again only when a real network offers DNS through RAs alone.
+  *(implemented: eval test `test_raOnlyWithoutDnsWarned`)*
 
 - **N40 Probes live in the repo (was H10).** Probes whose findings no
   suite asserts yet are kept under `services/netif/tests/probes/`,
   outside `checks` and `vmTests`. The DNS and dhcpcd probes are
   retired: `netif-dhcp` asserts what they showed.
-  *(planned for the remaining probes: containers, VM host, guard,
-  Wi-Fi metrics, modes)*
+  - They are exposed as `legacyPackages.<system>.netifProbes.<name>`
+    (`nix build .#netifProbes.guard`; `nix eval --json
+    .#netifProbes.modes-eval`), so they follow the repo's nixpkgs and
+    linters. `services/netif/tests/probes/README.md` names the suite
+    that takes each one over; the probe is deleted in that change.
+  *(implemented for containers, vmhost, guard, wifi, modes-eval)*
 
 - **N41 `netif-status` (was H11).** One read-only command per machine.
-  *(planned, slice "tools")*
+  - Per netif link: instance and link name, interface, state, zone,
+    trust, the dhcpcd unit's state, global addresses and DNS servers.
+    A declared link that does not exist shows as `MISSING`.
+  - Per machine: the result and time of the last apply, the drift
+    watch's verdict, and each family's default routes with metric.
+  - `netif-status --json` gives the same as one JSON object.
+  *(implemented: `netif` `NETIF_TOOLS_OK`)*
 
 - **N42 Errors that say what to do, and `netif-preview` (was H12).**
   Every netif eval error names the instance, the link, the decision
-  and the option. New errors follow the rule now; the old ones are
-  swept in slice "tools".
-  *(rule in force for new errors; sweep and `netif-preview` planned)*
+  and the option. The old ones were swept: each now ends with what to
+  change.
+  - **`netif-preview [system]`** prints what an apply would change and
+    changes nothing. Without an argument it reads the running
+    configuration; with a built system (`./result`, a profile
+    generation) it reads that system's IfState config, so a change can
+    be read before it is switched to. Exit status: 0 nothing, 2
+    changes, 1 the dry run failed. The drift watch runs the same code.
+  - It reads `ifstatecli check`'s output (its exit status is always 0),
+    with the rule the suites' no-op helper uses, pinned to IfState 2.5.
+    N35's version warning is the reminder to recheck it.
+  *(implemented: `netif` `NETIF_TOOLS_OK` previews another generation;
+  not covered: firewall, DHCP and DNS changes, which IfState does not
+  own)*
 
 
 ## 4. Invariants

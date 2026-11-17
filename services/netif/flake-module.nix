@@ -13,7 +13,25 @@ in rec {
     exportInterfaces.netif = ./netif-interface.nix;
   };
 
-  perSystem = _: {
+  perSystem = {system, ...}: {
+    # Probes (specs/netif.md N40): findings no suite asserts yet. Outside
+    # `checks` and `vmTests`; run one with `nix build .#netifProbes.<name>`.
+    legacyPackages.netifProbes = let
+      probePkgs = import inputs.nixpkgs {
+        inherit system;
+        overlays = [inputs.org-pkgs.overlays.ifstate];
+      };
+    in
+      lib.genAttrs ["containers" "vmhost" "guard" "wifi"] (
+        probe: probePkgs.testers.runNixOSTest (import (./tests/probes + "/${probe}.nix"))
+      )
+      // {
+        modes-eval = import ./tests/probes/modes-eval.nix {
+          inherit (inputs) nixpkgs;
+          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
+        };
+      };
+
     nix-unit.tests.netif = import ./tests/eval-tests.nix {
       inherit
         module

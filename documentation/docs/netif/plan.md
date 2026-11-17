@@ -75,6 +75,19 @@ Slice 5, the same day:
 | cloud-init may not also configure the network | the build fails with a message that says what to do |
 | Path MTU (`pathMtu`) | you declare the real size of the path (GCP 1460, PPPoE 1492); routed-fabric and wireguard-mesh size their tunnels from it. Build-time tests cover each step |
 
+The tools slice, the same day, proven by `netif`:
+
+| Tool | What it does |
+|---|---|
+| `netif-status` | one table per machine: every link with its state, addresses, DNS, DHCP, zone and trust, plus the default routes and whether drift was found. `--json` for scripts |
+| `netif-preview` | shows what applying the configuration would change, and changes nothing. Give it a built system (`./result`) to read a change before switching to it |
+| `netif-drift` (a timer, hourly) | runs the same preview and fails when the network no longer matches the configuration. It never repairs anything by itself |
+
+Also in this slice: every older build error now ends with what to
+change; a machine that would have no DNS server at all gets a
+warning; and the five remaining test probes are in the repository
+(`nix build .#netifProbes.<name>`).
+
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible
 IPv6 default. On a machine with several links, all but one need
