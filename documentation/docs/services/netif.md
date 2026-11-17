@@ -38,29 +38,38 @@ each machine declares one or more logical links under
 - optional `clan.core.networking.targetHost` export and SSH user;
 - optional `peer` endpoint exports for fabric consumers.
 
-!!! note "Planned changes (phase P3b, `specs/netif.md` N9, N16–N19)"
+Since 2026-11-17 (P3b slice 1) netif also runs three kinds of unit
+beside IfState:
+
+- **`netif-dhcpcd-<interface>.service`**, one per DHCP link. systemd
+  restarts it after a crash and limits what it may touch. It runs
+  upstream dhcpcd 10.5 with netif's own config.
+  `dhcp.prefixDelegation` asks the ISP for a prefix and gives parts of
+  it to other links.
+- **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
+  link's `nameservers` plus what its DHCP leases bring. There is no
+  global DNS list from netif.
+- **`netif-online.service`** makes "online" mean "the DHCP links have
+  an address". It waits at most 30 seconds, so a pulled cable never
+  blocks a boot.
+
+!!! note "Planned changes (later slices of P3b, `specs/netif.md` N17–N19)"
     - Links become firewall-untrusted by default; set
       `firewall.trust = true` on trusted segments.
-    - `nameservers` move from the global list to per-link DNS in
-      systemd-resolved, and the cross-instance DNS conflict check below
-      goes away.
-    - New link options: `dhcp.prefixDelegation`, `pathMtu`, `zone`.
-    - Default routes get metric 100.
-    - The `netif` export moves to `schemaVersion` 2.
+    - New link options: `pathMtu`, `zone`, `defaultRoute`, `match.path`.
+    - Static default routes get metric 100 (DHCP ones have it).
 
 Cross-instance checks keep the host coherent (D53): an interface/link is
 owned by exactly one instance, exactly one link per address family may
-provide the host default route (DHCP lease defaults count), and DNS
-nameserver sets that overlap while differing between instances are
-rejected (identical or disjoint sets are allowed). Policy-routing tables
+provide the host default route (DHCP lease defaults count). DNS is per
+link, so instances cannot conflict over it. Policy-routing tables
 and every effective from/to rule priority must also be unique across
 instances. `routed-fabric` owns fabric policy routing — `netif` never
 renders fabric rules — and `netif` links never become a shared-L2
 Kubernetes datapath. Within one
 instance, a VLAN child names its parent link, and bonds/bridges name
 physical member links; a physical link consumed as a member carries no
-addressing of its own. Every DHCP hook is instance-namespaced
-(`netif-dhcp-<instance>-<link>`).
+addressing of its own.
 
 Static core addresses and routes live in `inventory.nix`. A public fleet
 repo may obtain sensitive public-topology values from its
@@ -156,7 +165,8 @@ route. For example, when `home-net` supplies the default through DHCP, a
 
 Multi-instance, multi-link inventory renders exclusively through IfState
 2.5.1 (D61). Live static apply/check/restore and DHCPv4/SLAAC/default-route
-suites are green, including one persistent DHCP client across reapply and
-clean `ifstatecli check` output. Eval and VM coverage includes VLAN/bond/
+suites are green. `netif-dhcp` proves leases, per-link DNS, a renewal,
+a real cable loss, five link flaps, prefix delegation, restarts after a
+crash, and that a reapply changes nothing. Eval and VM coverage includes VLAN/bond/
 bridge links, on-link/policy routes, cross-instance ownership/default-route/
 DNS checks, export defaults, and routed-fabric endpoint consumption.

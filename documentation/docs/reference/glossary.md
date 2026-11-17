@@ -35,7 +35,7 @@ One term per concept. Mirrors SPEC.md §10.
   2.5.1. It reconciles links, addresses, WireGuard, static/policy routes,
   rules, and sysctls live without reboot; no systemd-networkd, netdevs, or
   scripted network units. FRR/Zebra and Cilium retain dynamic ownership.
-- **netif contract** — `specs/netif.md` (decisions N1–N30; its own
+- **netif contract** — `specs/netif.md` (decisions N1–N42; its own
   glossary is `netif/glossary.md`): netif is the
   only network contract in the inventory; IfState renders it in IfState
   modes and NetworkManager in NetworkManager modes, never both in one

@@ -79,6 +79,7 @@ _: {
   };
 
   testScript = ''
+    ${import ../../../../tests/ifstate-noop.nix}
     try:
         start_all()
         with subtest("static links render through IfState"):
@@ -106,7 +107,7 @@ _: {
             edge_1.succeed("ip addr show eth4.10 | grep 'fd00:10::1/64' >/dev/null")
             edge_1.succeed("ip rule show | grep 'from 10.99.0.2 lookup 300' >/dev/null")
             edge_1.succeed("test -f /etc/ifstate/ifstate.yaml")
-            edge_1.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
+            assert_ifstate_noop(edge_1)
             edge_1.fail("systemctl is-active systemd-networkd.service")
 
         # Apply a changed address live: no reboot and no loss of the other links.
@@ -121,7 +122,7 @@ _: {
             edge_1.succeed("ifstatecli --config /tmp/netif-live.yaml check")
             edge_1.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml apply")
             edge_1.succeed("ip addr show eth1 | grep '10.99.0.2/24' >/dev/null")
-            edge_1.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
+            assert_ifstate_noop(edge_1)
             print("NETIF_IFSTATE_LIVE_OK")
         print("NETIF_OK")
     except Exception:

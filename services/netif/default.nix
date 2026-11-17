@@ -141,6 +141,11 @@
           endpoint
           ;
         policy = link.routingPolicy;
+        inherit (link.dhcp) prefixDelegation;
+        requiredForOnline =
+          if link.requiredForOnline != null
+          then link.requiredForOnline
+          else true;
       }
     )
     links;
@@ -321,6 +326,59 @@
         default = null;
         description = "DHCPv6 on this link. Null inherits the segment default.";
       };
+      prefixDelegation = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Ask the DHCPv6 server on this link for a delegated prefix
+            (needs 'dhcp.ipv6'). The prefix exists only at runtime;
+            netif never writes it into the configuration.
+          '';
+        };
+        hint = mkOption {
+          type = types.ints.between 48 64;
+          default = 56;
+          description = "Requested length of the delegated prefix.";
+        };
+        assign = mkOption {
+          type = types.listOf (
+            types.submodule {
+              options = {
+                instance = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = "netif instance of the target link; null means this instance.";
+                };
+                link = mkOption {
+                  type = types.str;
+                  description = "Logical name of the link that gets a subnet of the delegated prefix.";
+                };
+                subnet = mkOption {
+                  type = types.ints.unsigned;
+                  description = "Subnet id inside the delegated prefix.";
+                };
+                length = mkOption {
+                  type = types.ints.between 48 64;
+                  default = 64;
+                  description = "Prefix length assigned to the target link.";
+                };
+              };
+            }
+          );
+          default = [];
+          description = "Links of this machine that each get one subnet of the delegated prefix.";
+        };
+      };
+    };
+    requiredForOnline = mkOption {
+      type = types.nullOr types.bool;
+      default = null;
+      description = ''
+        Whether 'network-online.target' waits for a DHCP address on this
+        link (up to 'clanServices.netif.onlineTimeout' seconds). Null
+        means yes for a DHCP link. Static links never delay "online".
+      '';
     };
     ra = mkOption {
       type = types.bool;
@@ -364,8 +422,9 @@
       type = types.listOf types.str;
       default = [];
       description = ''
-        DNS servers for this link (networking.nameservers). When empty,
-        the segment default 'nameservers' apply.
+        DNS servers for this link, set on the link in systemd-resolved
+        by 'netif-dns.service'. When empty, the segment default
+        'nameservers' apply. DHCP leases add their own servers.
       '';
     };
     routes = mkOption {
@@ -551,6 +610,25 @@
           {
             assertion = !r.dhcp6 || r.static6 == [];
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets both 'dhcp.ipv6' and static IPv6 addresses; exactly one addressing mode per family is allowed";
+          }
+          {
+            assertion = !r.prefixDelegation.enable || r.dhcp6;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' enables 'dhcp.prefixDelegation' without 'dhcp.ipv6 = true'; a prefix is delegated over DHCPv6 (N16)";
+          }
+          {
+            assertion = r.prefixDelegation.enable || r.prefixDelegation.assign == [];
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'dhcp.prefixDelegation.assign' without 'dhcp.prefixDelegation.enable = true' (N16)";
+          }
+          {
+            assertion = let
+              ids = map (a: a.subnet) r.prefixDelegation.assign;
+            in
+              lib.length ids == lib.length (lib.unique ids);
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' assigns one subnet id of its delegated prefix twice; subnet ids are unique per delegating link (N16)";
+          }
+          {
+            assertion = lib.all (a: a.length >= r.prefixDelegation.hint && a.subnet < ip.pow2 (a.length - r.prefixDelegation.hint)) r.prefixDelegation.assign;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' assigns a subnet that does not fit in its delegated prefix: each 'subnet' must be below 2^(length - hint) (N16)";
           }
           {
             assertion = !r.endpoint || (r.static4 != [] || r.static6 != []);
@@ -809,8 +887,6 @@ in {
             else acc) (builtins.head mtus)
           mtus;
 
-      dhcpHookName = logical: "netif-dhcp-${instanceName}-${logical}";
-
       # The interface netif renders for one link, before extraSettings.
       mkIfstateBase = forwarding: logical: r: let
         link = settings.links.${logical};
@@ -849,20 +925,6 @@ in {
               if r.ra
               then 1
               else 0;
-          };
-          hooks = lib.optional (r.dhcp4 || r.dhcp6) {
-            name = dhcpHookName logical;
-            args = {
-              ipv4 =
-                if r.dhcp4
-                then "true"
-                else "false";
-              ipv6 =
-                if r.dhcp6
-                then "true"
-                else "false";
-            };
-            timeout = 15;
           };
         }
         // lib.optionalAttrs (link.match.mac != null) {
@@ -971,8 +1033,19 @@ in {
         resolved
       );
 
-      dhcpLinks = lib.filterAttrs (_: r: r.dhcp4 || r.dhcp6) resolved;
-      nameservers = lib.unique (lib.concatLists (lib.mapAttrsToList (_: r: r.nameservers) resolved));
+      exportedPrefixDelegation = r: {
+        inherit (r.prefixDelegation) enable hint;
+        assign =
+          map (a: {
+            instance =
+              if a.instance == null
+              then instanceName
+              else a.instance;
+            inherit (a) link subnet length;
+          })
+          r.prefixDelegation.assign;
+        dynamic = true;
+      };
       trustedInterfaces = lib.catAttrs "interface" (
         lib.attrValues (lib.filterAttrs (_: r: r.trust) resolved)
       );
@@ -1002,6 +1075,7 @@ in {
                 ;
               addresses = r.static4 ++ r.static6;
               gatewayInMain = v4Default r || v6Default r;
+              prefixDelegation = exportedPrefixDelegation r;
             })
             resolved;
         };
@@ -1010,54 +1084,10 @@ in {
       nixosModule = {
         config,
         lib,
-        pkgs,
         ...
       }: let
         forwarding = config.clan.networkFacts.forwarding;
         ifstateInterfaces = mkIfstateInterfaces forwarding;
-        dhcpHookScript = pkgs.writeScript "netif-dhcp-hook" ''
-          running() {
-            ${lib.getExe' pkgs.procps "pgrep"} -f "dhcpcd.* ''${IFS_IFNAME}( |$)" >/dev/null
-          }
-
-          case "$1" in
-            start)
-              if running; then
-                exit "$IFS_RC_OK"
-              fi
-              families=""
-              if [ "$IFS_ARG_IPV4" = "true" ] && [ "$IFS_ARG_IPV6" != "true" ]; then
-                families="-4"
-              elif [ "$IFS_ARG_IPV6" = "true" ] && [ "$IFS_ARG_IPV4" != "true" ]; then
-                families="-6"
-              fi
-              ${lib.getExe pkgs.dhcpcd} -b $families "$IFS_IFNAME" || exit "$IFS_RC_ERROR"
-              exit "$IFS_RC_STARTED"
-              ;;
-            check-start)
-              if running; then
-                exit "$IFS_RC_OK"
-              fi
-              exit "$IFS_RC_STARTED"
-              ;;
-            stop)
-              if running; then
-                ${lib.getExe pkgs.dhcpcd} -x "$IFS_IFNAME" >/dev/null 2>&1 || exit "$IFS_RC_ERROR"
-                exit "$IFS_RC_STOPPED"
-              fi
-              exit "$IFS_RC_OK"
-              ;;
-            check-stop)
-              if running; then
-                exit "$IFS_RC_STOPPED"
-              fi
-              exit "$IFS_RC_OK"
-              ;;
-            *)
-              exit "$IFS_RC_ERROR"
-              ;;
-          esac
-        '';
       in {
         imports = [../../lib/kube-cluster/network-facts.nix];
 
@@ -1083,24 +1113,7 @@ in {
               routes = ifstateRoutes;
               rules = ifstateRules;
             };
-            parameters = {
-              hooks =
-                lib.mapAttrs' (
-                  logical: _:
-                    lib.nameValuePair (dhcpHookName logical) {
-                      script = "${dhcpHookScript}";
-                    }
-                )
-                dhcpLinks;
-              ignore.routes =
-                lib.mapAttrsToList (_: r: {
-                  dev = r.interface;
-                  proto = 4;
-                })
-                dhcpLinks;
-            };
           };
-          inherit nameservers;
           nftables.enable = lib.mkDefault true;
           firewall.trustedInterfaces = trustedInterfaces;
         };
@@ -1133,6 +1146,7 @@ in {
                     ;
                   addresses = r.static4 ++ r.static6;
                   gatewayInMain = v4Default r || v6Default r;
+                  prefixDelegation = exportedPrefixDelegation r;
                   routingPolicy = r.policy;
                   trusted = r.trust;
                 })
@@ -1240,36 +1254,77 @@ in {
     policyTableDuplicates = crossInstanceDuplicates policyTableClaims;
     rulePriorityDuplicates = crossInstanceDuplicates rulePriorityClaims;
 
-    # Per-instance effective DNS (segment default + per-link override).
-    dnsByInstance =
-      lib.mapAttrs (
-        _: instance: let
-          settings = instance.roles.default.machines.${machine.name}.settings;
-          resolved = resolveLinks settings settings.links;
-        in
-          lib.unique (lib.concatLists (lib.mapAttrsToList (_: r: r.nameservers) resolved))
-      )
-      memberships;
-    dnsConflicts = lib.concatLists (
+    # Prefix delegation targets, resolved across instances (N16).
+    pdClaims = lib.concatLists (
       lib.mapAttrsToList (
-        aName: aDns:
-          lib.mapAttrsToList
-          (bName: _: {
-            inherit aName bName;
-          })
-          (
-            lib.filterAttrs (
-              bName: bDns:
-                bName != aName && aDns != [] && bDns != [] && aDns != bDns && lib.intersectLists aDns bDns != []
-            )
-            dnsByInstance
-          )
+        instanceName: resolved:
+          lib.concatMap (
+            r:
+              map (a: let
+                targetInstance =
+                  if a.instance == null
+                  then instanceName
+                  else a.instance;
+                target = resolvedByInstance.${targetInstance}.${a.link} or null;
+              in {
+                from = "${instanceName}/${r.logical}";
+                to = "${targetInstance}/${a.link}";
+                exists = target != null;
+                self = targetInstance == instanceName && a.link == r.logical;
+                interface =
+                  if target == null
+                  then "unresolved"
+                  else target.interface;
+                inherit (a) subnet length;
+              })
+              r.prefixDelegation.assign
+          ) (lib.attrValues resolved)
       )
-      dnsByInstance
+      resolvedByInstance
+    );
+    pdMissing = map (c: "${c.from} -> ${c.to}") (lib.filter (c: !c.exists) pdClaims);
+    pdSelf = map (c: c.from) (lib.filter (c: c.self) pdClaims);
+    pdTwice = lib.attrNames (
+      lib.filterAttrs (_: claims: lib.length (lib.unique (map (c: c.from) claims)) > 1) (lib.groupBy (c: c.to) pdClaims)
+    );
+
+    # What runs beside IfState (host.nix), keyed by interface name.
+    hostLinks = lib.listToAttrs (
+      lib.concatLists (
+        lib.mapAttrsToList (
+          instanceName: resolved:
+            map (
+              r:
+                lib.nameValuePair r.interface {
+                  instance = instanceName;
+                  inherit
+                    (r)
+                    logical
+                    dhcp4
+                    dhcp6
+                    nameservers
+                    requiredForOnline
+                    ;
+                  prefixDelegation = {
+                    inherit (r.prefixDelegation) enable hint;
+                    assign = map (c: {inherit (c) interface subnet length;}) (
+                      lib.filter (c: c.from == "${instanceName}/${r.logical}") pdClaims
+                    );
+                  };
+                }
+            ) (lib.filter (r: r.memberOf == null) (lib.attrValues resolved))
+        )
+        resolvedByInstance
+      )
     );
   in {
     nixosModule = _: {
-      imports = [(import ../../lib/ifstate.nix {inherit ifstateOverlay;})];
+      imports = [
+        (import ../../lib/ifstate.nix {inherit ifstateOverlay;})
+        ./host.nix
+      ];
+
+      clanServices.netif.links = hostLinks;
 
       assertions = [
         {
@@ -1289,10 +1344,16 @@ in {
           }); exactly one link may own the host default route (D53)";
         }
         {
-          assertion = dnsConflicts == [];
-          message = "netif: machine '${machine.name}' has conflicting DNS nameservers between netif instances: ${
-            lib.concatStringsSep "; " (map (c: "${c.aName} vs ${c.bName}") dnsConflicts)
-          } (identical or disjoint sets are allowed; overlapping-but-different sets are ambiguous, D53)";
+          assertion = pdMissing == [];
+          message = "netif: machine '${machine.name}' assigns a delegated prefix to a link that does not exist on it: ${lib.concatStringsSep ", " pdMissing} (N16)";
+        }
+        {
+          assertion = pdSelf == [];
+          message = "netif: machine '${machine.name}' assigns a delegated prefix to the link that requests it: ${lib.concatStringsSep ", " pdSelf}; assign it to another link (N16)";
+        }
+        {
+          assertion = pdTwice == [];
+          message = "netif: machine '${machine.name}' has links that receive a delegated prefix from more than one link: ${lib.concatStringsSep ", " pdTwice} (N16)";
         }
         {
           assertion = policyTableDuplicates == [];

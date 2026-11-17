@@ -101,7 +101,6 @@
       pkgs.socat
     ];
     networking.nameservers = lib.mkForce [dnsServerIp];
-    services.resolved.enable = false;
     systemd.services = lib.optionalAttrs (name == "alpha" || name == "gamma") (
       let
         cluster =

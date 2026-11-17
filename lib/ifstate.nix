@@ -90,7 +90,7 @@ in {
       }
       {
         assertion = !config.networking.useDHCP;
-        message = "clanServices networking is IfState-only; use per-link IfState DHCP hooks instead of networking.useDHCP";
+        message = "clanServices networking is IfState-only; declare DHCP per link in netif (dhcp.ipv4, dhcp.ipv6) instead of networking.useDHCP";
       }
       {
         assertion = lib.versionAtLeast config.networking.ifstate.package.version "2.5";
@@ -110,7 +110,33 @@ in {
       }
     ];
 
+    # The version envelope (specs/netif.md N35): the networking packages
+    # the VM suites last passed with. A newer minor is not an error; the
+    # warning says which suites to run again.
+    warnings =
+      lib.concatMap (
+        p:
+          lib.optional (lib.versionAtLeast p.version p.next)
+          "clanServices networking: ${p.name} ${p.version} is newer than the proven ${p.proven}.x; rerun the netif VM suites (vm-test --all --remote --rebuild) and update lib/ifstate.nix"
+      ) [
+        {
+          name = "IfState";
+          inherit (config.networking.ifstate.package) version;
+          proven = "2.5";
+          next = "2.6";
+        }
+        {
+          name = "dhcpcd";
+          version = pkgs.dhcpcd_latest.version or "0";
+          proven = "10.5";
+          next = "10.6";
+        }
+      ];
+
     nixpkgs.overlays = lib.mkAfter [ifstateOverlay];
+
+    # DNS goes through systemd-resolved in every mode (specs/netif.md N9).
+    services.resolved.enable = true;
 
     boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," (
       lib.unique (config.clanServices.networking.reservedPorts ++ map toString wireguardPorts)

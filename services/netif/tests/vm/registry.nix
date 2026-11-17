@@ -177,6 +177,7 @@ in {
   };
 
   testScript = ''
+    ${import ../../../../tests/ifstate-noop.nix}
     def snapshot():
         return laptop.succeed(
             "ip -br link | sort; ip rule; ip route show table 52; "
@@ -227,7 +228,7 @@ in {
                 laptop.succeed("test $(systemctl show -p Result --value ifstate.service) = success")
             after = snapshot()
             assert before == after, f"IfState reapply changed owned state:\n{before}\n---\n{after}"
-            laptop.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
+            assert_ifstate_noop(laptop)
             laptop.succeed("ip netns list | grep '^ap' >/dev/null")
             laptop.succeed("ping -c1 -W2 192.168.77.1")
             laptop.succeed(f"tailscale ping {peer_ip}")

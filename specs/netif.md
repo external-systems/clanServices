@@ -6,10 +6,35 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N30` so they never collide with
+together.** Decisions are numbered `N1`–`N42` so they never collide with
 SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
+
+Round P3b-1 (2026-11-17): **the first code slice: dhcpcd, DNS and
+"online" are implemented and VM-proven; the hardening candidates are
+decisions.** Owner decisions of this round:
+- **H1–H12 are adopted** as decisions **N31–N42** (§3). §11 keeps the
+  reasoning.
+- **"Stable" has an owner definition** (N14): netif is stable when it
+  is proven to carry Cilium Kubernetes, FRR, and desktop
+  specialisations such as KDE.
+- **dhcpcd for non-netif machines waits for nixpkgs** (N30). Every
+  machine moves to netif once it is stable.
+- **`match.path` by udev path is confirmed** (N26).
+- **Code, VM suites, spec and docs may change together**; breaking
+  changes need no shim and no `schemaVersion` bump (N14).
+Implemented and proven by `netif-dhcp` (`NETIF_DHCP_OK`):
+- **N16, N31** one supervised, sandboxed dhcpcd unit per DHCP link,
+  running upstream dhcpcd 10.5.2 with netif's own config. **The
+  IfState hook is gone**: a systemd unit bound to the link replaces it.
+- **N9** `netif-dns.service`; resolved is on in the base; netif writes
+  no global DNS; the cross-instance DNS check is removed.
+- **N16** prefix delegation, with its eval errors.
+- **N32** `netif-online.service`; **N33** a stable IAID per link;
+  **N34** the DHCPv4 backoff cap; **N35** the version envelope.
+- **§7** the shared no-op helper, used by four suites; a forwarding
+  RA server; the carrier-change assertions.
 
 Round retro (2026-11-17): **netif moves to the unpatched upstream
 dhcpcd, and the session's weak spots are written down; docs only
@@ -551,7 +576,15 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     candidate, if a machine ever needs it, is `rdnssd` from the `ndisc6`
     package (NixOS `services.rdnssd`) feeding the netif DNS writer. It
     is not planned.
-  *(probe-verified 2026-11-16: the netif unit design passed its gate in
+  - **As built (P3b-1).** `services/netif/host.nix`. Static servers
+    are files under `/etc/netif/dns/`, lease files live in
+    `/run/netif-dns/`. The watcher exits non-zero when `ip monitor`
+    ends, and the unit has `Restart=always`. Search domains come from
+    leases only; a static link sets servers.
+  *(implemented; VM-proven by `netif-dhcp` `NETIF_DHCP_DNS_BOOT_OK`,
+  `NETIF_DHCP_RENEW_OK`, `NETIF_DHCP_DNS_FLAP_OK`; iwd and
+  NetworkManager sides: phase P2. Earlier status:
+  probe-verified 2026-11-16: the netif unit design passed its gate in
   a probe; iwd and NetworkManager probe-verified 2026-11-15; planned,
   phase P3b)*
 
@@ -636,6 +669,15 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     owner does not use netif on real machines before the contract gate.
   The `schemaVersion` fields stay where they are and are not bumped.
   (The gates were called N6a and N6b before this round.)
+  - **Owner definition of "stable" (2026-11-17).** The contract gate
+    is passed only when VM suites prove netif under the three loads
+    the fleet needs:
+    1. a Cilium Kubernetes node (k3s and RKE2 suites on the netif
+       base);
+    2. FRR on `routed-fabric`;
+    3. desktop specialisations such as KDE: NetworkManager modes
+       beside IfState modes on one machine (N3, N24).
+    Every machine moves to netif once it is stable.
 
 - **N15 Physical NICs: identity, presence, passthrough.**
   - `links.<name>.match.mac` finds a physical NIC by permanent MAC
@@ -659,9 +701,9 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   `NETIF_MATCH_MISSING_LOUD_OK`, `NETIF_MATCH_OK`; eval tests `underlay.*`)*
 
 - **N16 dhcpcd's job, and prefix delegation as a runtime fact.**
-  - **Own config file.** Each DHCP link's hook starts dhcpcd with `-f`
-    and a per-link store file, `netif-dhcpcd-<instance>-<link>.conf`.
-    dhcpcd never reads `/etc/dhcpcd.conf`.
+  - **Own config file.** Each DHCP link's unit (N31) starts dhcpcd
+    with `-f /etc/netif/dhcpcd/<interface>.conf`. dhcpcd never reads
+    `/etc/dhcpcd.conf`.
   - **dhcpcd does exactly three things:**
     - the DHCPv4 lease: address, default route (unless N21 turns it
       off), and the DNS servers it hands to the netif DNS unit (N9);
@@ -683,17 +725,20 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     the protocols dhcpcd's routes carry (`ip -j route`; `dhcp` is 16,
     `ra` 9, `static` 4). netif's extra `{dev, proto = 4}` ignore stays
     only if dhcpcd still installs `static` routes, anchored per N8.
-  - **Finding the daemon.** The hook finds its dhcpcd through dhcpcd's
-    per-interface pidfile or an exact, escaped interface match, never a
-    regex that matches other links.
+  - **Finding the daemon.** Each link's dhcpcd is its own systemd unit
+    (N31); nothing searches the process list.
+  - **No route ignore.** dhcpcd's routes are `proto dhcp` (16) and the
+    kernel's RA routes `proto ra` (9). IfState ignores both by
+    default, so netif's `{dev, proto = 4}` ignore is removed.
   - **Prefix delegation settings:**
     `links.<n>.dhcp.prefixDelegation = { enable; hint; assign; }`
     - `hint`: requested length, 48–64, default 56;
     - `assign`: a list of `{ instance ? null; link; subnet; length ? 64; }`.
       `instance = null` means the same instance; WAN and LAN are usually
       separate instances, so naming another instance is allowed.
-    - It renders `ia_pd` with one `<interface>/<subnet>/<length>` per
-      entry, using resolved interface names.
+    - It renders `ia_pd <iaid>/::/<hint>` with one
+      `<interface>/<subnet>/<length>` per entry, using resolved
+      interface names.
   - **Eval errors** for prefix delegation:
     - it needs `dhcp.ipv6 = true` on the same link;
     - every `assign` target exists on the machine and is not the
@@ -703,8 +748,9 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     - a target link receives delegation from at most one link.
   - **Runtime fact.** Delegated prefixes exist only at runtime. Exports and
     `clan.networkFacts` carry
-    `prefixDelegation = { enable; hint; assign; dynamic = true; }` with
-    resolved interface names and never a prefix literal. Consumers (the
+    `prefixDelegation = { enable; hint; assign; dynamic = true; }`,
+    where each `assign` entry names the target `instance` and `link`,
+    and never a prefix literal. Consumers (the
     router module, phase P5) read the live prefix on the target link. netif
     never invents an address.
   - **Facts from the DNS probe** (§8.2, dhcpcd 10.3.2):
@@ -799,8 +845,10 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     this: an address from `ia_na` and a delegated `/60` with a `/64` on
     the LAN, with IfState's `accept_ra = 2` untouched (§8). The suite
     still has to prove it.
-  *(probe-verified 2026-11-16 and 2026-11-17, solo runs;
-  `dhcpcd_latest` 10.5.2 is in pkgs; planned, phase P3b)*
+  *(implemented; VM-proven by `netif-dhcp`: `NETIF_DHCP_LEASES_OK`,
+  `NETIF_DHCP_UNIT_OK`, `NETIF_DHCP_PD_OK`, `NETIF_DHCP_IPV4ONLY_OK`,
+  `NETIF_DHCP_CARRIER_OK`, `NETIF_DHCP_FLAP_OK`; `defaultRoute` (N21)
+  is slice 3)*
 
 - **N17 Path MTU.**
   - `links.<n>.pathMtu` is a nullable integer, at least 1280 and at most
@@ -1166,8 +1214,9 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     human docs as they are proven: gateway outside the subnet
     (`gateway.onLink`), MTU below 1500 (`pathMtu`, N17), a second NIC
     without a default (N21).
-  *(probe-verified 2026-11-16; planned, phase P3b; `match.path` to be
-  VM-proven in `netif-match`)*
+  *(probe-verified 2026-11-16; confirmed by the owner 2026-11-17;
+  planned, phase P3b slice 5; `match.path` to be VM-proven in
+  `netif-match`)*
 
 - **N27 A roaming Kubernetes node uses its fabric loopback (U2).**
   kamrui-h1's `kubernetes` mode runs a k3s server with ClusterMesh while
@@ -1223,16 +1272,104 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     `sync-locks` here (AGENTS.md tool loop). The spec names the pkgs
     change and the upstream reference.
   - The shared base asserts what it needs from a package, as it does
-    for IfState (`>= 2.5`). For dhcpcd: netif's hook runs
-    `pkgs.dhcpcd_latest`, and the base asserts it is 10.5.0 or newer
-    (phase P3b).
+    for IfState (`>= 2.5`). For dhcpcd: netif's units run
+    `pkgs.dhcpcd_latest`, and netif asserts it is 10.5.0 or newer.
+  - **Owner decision (2026-11-17):** machines on the stock NixOS
+    `dhcpcd.service` wait for nixpkgs to ship 10.5. No unit change in
+    the modules repo. Every machine moves to netif once it is stable
+    (N14), which ends the question.
   - History: dhcpcd 10.3.2 with two upstream commits (pkgs PR 42,
     2026-11-16); `dhcpcd_latest`, upstream 10.5.2, added beside it
     (pkgs PR 43, 2026-11-17).
-  *(contract; `dhcpcd_latest` in pkgs; this repo still runs
-  `pkgs.dhcpcd`, the patched 10.3.2, with which `netif-dhcp`
-  `NETIF_DHCP_RA_IFSTATE_OK` passes; lock bump, switch and assertion
-  planned in phase P3b)*
+  *(implemented: netif runs `pkgs.dhcpcd_latest` 10.5.2 and asserts
+  the version; VM-proven by `netif-dhcp` `NETIF_DHCP_UNIT_OK`)*
+
+- **N31 dhcpcd is a supervised unit per link (was H1).**
+  - One unit per DHCP link, `netif-dhcpcd-<interface>.service`, runs
+    `dhcpcd -B` in the foreground. No IfState hook starts dhcpcd.
+  - It is bound to the link's device unit, so it stops when the link
+    goes away. It is started at boot, by udev when the link appears
+    later (`SYSTEMD_WANTS`), and by `ifstate.service` after each apply,
+    which covers a link IfState created or renamed.
+  - `Restart=on-failure`. After every stop, crash or not, the unit
+    flushes the link's dynamic IPv4 addresses and its lease files: a
+    dhcpcd that finds its address already on the link does not remove
+    it on exit (seen in `netif-dhcp`).
+  - Sandbox: capabilities limited to `NET_ADMIN`, `NET_RAW`,
+    `NET_BIND_SERVICE` and `CHOWN`; `ProtectSystem=strict` with three
+    writable paths; no new privileges; the `@system-service` call
+    filter (it includes `chown`, which dhcpcd 10.5 needs).
+  - A link that stops being a DHCP link loses its unit on the next
+    generation switch; systemd stops it and the lease goes.
+  *(implemented; VM-proven by `netif-dhcp` `NETIF_DHCP_UNIT_OK`,
+  `NETIF_DHCP_SUPERVISED_OK`)*
+
+- **N32 "Online" on a DHCP link means an address (was H2).**
+  - `netif-online.service` is ordered before `network-online.target`.
+    It waits for a global address of each requested family on every
+    DHCP link with `requiredForOnline`.
+  - `links.<n>.requiredForOnline`: null means true for a DHCP link.
+    Static links never delay "online".
+  - After `clanServices.netif.onlineTimeout` seconds (default 30) it
+    logs a warning and lets the machine count as online. A pulled
+    cable never blocks a boot.
+  *(implemented; VM-proven by `netif-dhcp` `NETIF_DHCP_ONLINE_OK`)*
+
+- **N33 A stable DHCP identity (was H3).**
+  - Each link's IAID is derived from its instance and link name, not
+    from its MAC address. A bridge that takes the uplink's MAC (N23)
+    or a replaced NIC keeps the identity.
+  - The DUID stays in `/var/lib/dhcpcd/duid`. Setting it from a clan
+    var, so a reinstall keeps it, belongs to the router phase P5.
+  *(IAID implemented, eval-tested; DUID planned, phase P5)*
+
+- **N34 DHCPv4 retries are capped (was H4).** dhcpcd runs with
+  `backoff_cutoff` 16 seconds (`clanServices.netif.dhcpBackoffCutoff`),
+  not the default 64.
+  *(implemented, eval-tested; no VM timing test)*
+
+- **N35 A version envelope (was H8).** The base warns at evaluation
+  when IfState or dhcpcd is a newer minor than the one the suites last
+  passed with (IfState 2.5, dhcpcd 10.5). The warning names the rerun.
+  iwd and systemd join the list in phase P2.
+  *(implemented)*
+
+- **N36 A wider lockout guard (was H5).** N25's guard also checks
+  optional `guard.targets` and runs after firewall changes.
+  *(planned, phase P8)*
+
+- **N37 Guest ports are compared after each apply (was H6).** Name
+  patterns stay the first protection. After the apply netif compares
+  each guest-ports bridge's members with the list it computed and
+  fails the unit when one is gone.
+  *(planned, phase P7)*
+
+- **N38 A drift watch (was H7).** A timer runs the dry run and fails
+  `netif-drift.service` when IfState would change something. It never
+  applies.
+  *(planned, slice "tools" after P3b slice 3)*
+
+- **N39 DNS from router advertisements is decided in slice 2b (was
+  H9).** Probe `rdnssd` as a writer of the N9 lease files; if it does
+  not hold, an RA link with no DNS source is an eval warning.
+  *(planned)*
+
+- **N40 Probes live in the repo (was H10).** Probes whose findings no
+  suite asserts yet are kept under `services/netif/tests/probes/`,
+  outside `checks` and `vmTests`. The DNS and dhcpcd probes are
+  retired: `netif-dhcp` asserts what they showed.
+  *(planned for the remaining probes: containers, VM host, guard,
+  Wi-Fi metrics, modes)*
+
+- **N41 `netif-status` (was H11).** One read-only command per machine.
+  *(planned, slice "tools")*
+
+- **N42 Errors that say what to do, and `netif-preview` (was H12).**
+  Every netif eval error names the instance, the link, the decision
+  and the option. New errors follow the rule now; the old ones are
+  swept in slice "tools".
+  *(rule in force for new errors; sweep and `netif-preview` planned)*
+
 
 ## 4. Invariants
 
@@ -1286,6 +1423,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   ownership, Wi-Fi and unowned-daemon eval errors, IfState before
   `network-online.target` with session units after it (N7), and the N11
   range check and warning.
+- **Implemented and VM-proven in P3b slice 1** (suite `netif-dhcp`
+  `NETIF_DHCP_OK`, dhcpcd 10.5.2, IfState 2.5.1): supervised dhcpcd
+  units with netif's config (N16, N31), `ipv4only`, prefix delegation,
+  per-link DNS through resolved (N9), "online" (N32), carrier-change
+  recovery, the no-op helper (§7).
 - **Implemented and VM-proven in P3a** (suite `netif-match`
   `NETIF_MATCH_OK`): `match.mac`, the loud missing-NIC check and the
   checked `extraSettings` passthrough (N15).
@@ -1293,19 +1435,9 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - the base force-disables NetworkManager on every machine (conflicts N2);
   - there are no modes (N3/N4), and the registry does not render into
     NetworkManager yet (N6, phase P2);
-  - DNS uses global `networking.nameservers`, resolved is not enabled,
-    and the cross-instance DNS conflict check still exists (N9; P3b);
-  - there are no PD settings, `pathMtu` or zone seam (N10, N16, N17;
-    P3b);
-  - netif's DHCP-link route ignore `{dev = <interface>; proto = 4}` is
-    an unanchored regex, and the hook's `pgrep` match is loose too
-    (`services/netif/default.nix`; N8, N16; P3b);
-  - the DHCP hook starts dhcpcd with no config file of its own, so
-    dhcpcd's own RA handling and hooks are unpinned (N16; P3b);
+  - there is no `pathMtu` or zone seam (N10, N17; P3b);
   - links default to firewall-trusted (N19; P3b);
   - default routes carry no metric (N18; P3b);
-  - `netif` and `netif-dhcp` take `ifstatecli check`'s exit status as
-    "no change", which it is not (invariant 5, §7; P3b);
   - live reconfiguration is proven by applying hand-edited YAML in the
     `netif` suite, not by switching NixOS generations (§7; P3b);
   - every DHCPv4 link counts as a default-route owner, so two DHCP
@@ -1319,20 +1451,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - nothing rolls back a change that cuts the gateway (N25; phase P8);
   - the base forces IfState on in every configuration, so no
     NetworkManager mode can exist (N24; phase P4);
-  - dhcpcd 10.3.2 loses DHCPv4 or DHCPv6 after a carrier change (N16).
-    This repo runs the patched 10.3.2 (`pkgs.dhcpcd`, pkgs PR 42).
-    `org-pkgs` now also has upstream 10.5.2 as `pkgs.dhcpcd_latest`
-    (pkgs PR 43); the lock bump, the switch of netif's hook to it and
-    the version assertion are the first step of P3b (N30);
-  - dhcpcd is started by the IfState hook with `-b` and nothing
-    watches it: no restart after a crash, no sandbox, privilege
-    separation off in the nixpkgs build (§11 H1);
-  - `network-online.target` is reached when `ifstate.service` ends,
-    which is before a DHCP link has a lease (§11 H2);
-  - dhcpcd runs with IPv6 enabled on DHCPv4-only links and takes over
-    their link-local address (N16 `ipv4only`; phase P3b);
-  - `netif-dhcp`'s RA-sending server node does not forward IPv6, so
-    its RA default can vanish from the client (§7; phase P3b).
+  - `links.<n>.nameservers` on a link sets servers only; there is no
+    static search-domain option (N9);
+  - on untrusted DHCPv6 links the firewall must admit DHCPv6 replies
+    (UDP 546); today links are trusted, so nothing opens it (N19;
+    slice 4).
 - **Field gate (N14):** no use case is live. netif has no consumers.
 
 ## 6. Out of scope
@@ -1373,7 +1496,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   without the router flag, and Linux hosts then delete it as default
   router a few seconds after they first use it. The symptom is an RA
   default route that appears and vanishes, depending on timing.
-  `netif-dhcp`'s server node lacks this today (§5).
+  `netif-dhcp`'s server node forwards since P3b slice 1.
 - **Timing-sensitive findings are confirmed alone.** A probe result
   that could depend on load is rerun as the only build on euc-hel-0
   before it changes a design. The test script records the builder's
@@ -1389,10 +1512,13 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
      `ip netns list`, with counters, lifetimes and timestamps stripped;
   2. `ifstatecli check` reports no change for any object. Its exit status
      is not a signal: it exits 0 even when it proposes changes.
-  One shared helper in `tests/` (for example
-  `assert_ifstate_noop(machine)`) does both, and every suite that
-  asserts a reapply uses it. P3b writes it and pins the `check` output
-  format it parses against IfState 2.5.1.
+  One shared helper, `tests/ifstate-noop.nix`
+  (`assert_ifstate_noop(machine)`), does both. `netif`, `netif-dhcp`,
+  `netif-match` and `netif-registry` use it. It parses the `check`
+  output of IfState 2.5.1: an indented `<object>  <operation>` line
+  per object, where `ok`, `= <value>` and `orphan` mean unchanged
+  (`libifstate/log.py`). An undeclared physical NIC that is still up
+  also prints `orphan`; the kernel snapshot catches that case.
 - **Live reconfiguration** is proven by switching NixOS generations
   (`switch-to-configuration test` into a specialisation that changes
   netif settings, then back), not by applying hand-edited YAML. The
@@ -1759,7 +1885,7 @@ Terms as this file uses them. One term per thing.
   (`ifstate.service`). It converges the whole kernel network state to
   the configuration. A reapply is a run with an unchanged configuration.
 - **Contract gate, field gate** — the two conditions for "stable" (N14).
-- **Decision** — a numbered rule in §3, written `N1`…`N30`.
+- **Decision** — a numbered rule in §3, written `N1`…`N42`.
 - **Default route owner** — the one netif link per family that may
   install a main-table default route (N21).
 - **Deploy target** — `clan.core.networking.targetHost`: where clan
@@ -1813,9 +1939,11 @@ Terms as this file uses them. One term per thing.
 
 ## 11. Retrospective and hardening candidates (2026-11-17)
 
-Written after the proof rounds, before P3b code. **Nothing in this
-section is a decision.** A candidate `H…` becomes an `N…` decision by
-an owner yes or a passing probe, in the phase named beside it.
+Written after the proof rounds, before P3b code. **The owner adopted
+every candidate on 2026-11-17: H1–H12 are decisions N31–N42 in §3**
+(H1→N31, H2→N32, H3→N33, H4→N34, H8→N35, H5→N36, H6→N37, H7→N38,
+H9→N39, H10→N40, H11→N41, H12→N42). This section keeps the reasoning;
+§3 holds the rule and the status.
 
 ### 11.1 Decisions with weak proof
 

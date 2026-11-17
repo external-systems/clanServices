@@ -66,6 +66,7 @@
         gatewayInMain = bool "Whether this link declares a main-table default route.";
         nameservers = strList "Declared DNS servers.";
         routes = fact (t.listOf t.attrs) [] "Declared static route objects.";
+        prefixDelegation = attrs "Declared prefix-delegation intent; the prefix itself is a runtime fact.";
         routingPolicy = attrs "Declared underlay policy-routing intent.";
         trusted = bool "Whether the link is firewall-trusted.";
         endpoint = bool "Whether static addresses are exported as peer endpoints.";

@@ -49,11 +49,10 @@ the journal (specs/netif.md N15).
 
 A machine may join several netif instances. Eval rejects: the same
 interface owned by more than one instance, more than one default route
-per address family (DHCP lease defaults count), DNS nameserver sets that
-overlap while differing between instances (identical or disjoint sets are
-allowed), and cross-instance policy-table or effective rule-priority
-collisions. DHCP hook names are instance- and link-namespaced
-(`netif-dhcp-<instance>-<link>`). RA-enabled links use `accept_ra = 2` on
+per address family (DHCP lease defaults count), a delegated prefix
+assigned to a missing link or to two links' worth of sources, and
+cross-instance policy-table or effective rule-priority collisions. DNS
+is per link, so instances cannot conflict over it. RA-enabled links use `accept_ra = 2` on
 forwarding machines. Literal deploy targets may not name fabric, transfer,
 or tunnel addresses.
 
@@ -74,8 +73,21 @@ or tunnel addresses.
 Everything renders to `networking.ifstate.settings` for IfState 2.5.1 —
 no systemd-networkd, netdevs, scripted network units, or IFD. Applying a
 new generation reconciles links, addresses, routes, rules, and sysctls live
-through `ifstate.service`; no reboot is needed. DHCPv4/DHCPv6 clients run
-in per-link IfState hooks, while IPv6 SLAAC uses the kernel's RA settings.
+through `ifstate.service`; no reboot is needed.
+
+Beside IfState, netif runs (`host.nix`):
+
+- one supervised `netif-dhcpcd-<interface>.service` per DHCP link, with
+  its own config (upstream dhcpcd 10.5, no RA handling, no stock hooks).
+  `dhcp.prefixDelegation` asks for a prefix and assigns subnets of it to
+  other links of the machine;
+- `netif-dns.service`, which sets each link's DNS in systemd-resolved:
+  the link's `nameservers` plus the servers of its DHCP leases;
+- `netif-online.service`, which holds `network-online.target` until the
+  DHCP links have an address, for at most
+  `clanServices.netif.onlineTimeout` seconds.
+
+IPv6 SLAAC uses the kernel's RA settings.
 `targetHost = true` exports the machine as its own clan deploy target
 (`clan.core.networking.targetHost`), resolved from the endpoint.
 

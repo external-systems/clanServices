@@ -4,6 +4,21 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 33 (2026-11-17): **netif P3b slice 1: code** (`specs/netif.md`
+round P3b-1). Points that touch this file:
+- **The shared IfState base enables systemd-resolved** (N9). Every
+  cluster suite runs on it. k3s and RKE2 hand the kubelet resolved's
+  upstream file, not the stub.
+- netif starts dhcpcd as a supervised unit per link and holds
+  `network-online.target` until DHCP links have an address (N31,
+  N32). A k3s or RKE2 node on a DHCP underlay now starts with its
+  address.
+- The owner's definition of "netif stable" names this file's subject:
+  proven under Cilium Kubernetes and FRR, and under desktop
+  specialisations (N14).
+- `flake.lock` moves to the org-pkgs with `dhcpcd_latest`; every suite
+  was rerun on it.
+
 Round 32 (2026-11-17): **netif retrospective; dhcpcd moves to
 upstream 10.5.2 in pkgs; docs only here** (`specs/netif.md` round
 retro, §8.4, §11). Points that touch this file:
