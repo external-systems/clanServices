@@ -18,7 +18,7 @@ owner decides.
 | P0 | The netif contract (docs only) | merged |
 | P1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
-| P3b | First dhcpcd's recovery after a link flap, then the DNS unit. Then dhcpcd with its own config and prefix delegation, path MTU, default-route metrics, an explicit default-route owner, untrusted links by default, a zone per link, NICs by device path; fixes found in review (below) | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
+| P3b | First the patched dhcpcd from pkgs with a check that it is in use, `ipv4only` on IPv4-only DHCP links, and link-flap tests; then the DNS unit. Then dhcpcd with its own config and prefix delegation, path MTU, default-route metrics, an explicit default-route owner, untrusted links by default, a zone per link, NICs by device path; fixes found in review (below) | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
@@ -92,22 +92,60 @@ disprove what the later phases assume. Versions: IfState 2.5.1, dhcpcd
 | IfState can leave one bridge's ports alone | It cannot: it only knows names | netif lists the bridge's ports before each apply and hands IfState the list |
 | A cloud NIC can be found by its parent device in IfState | For virtio NICs the parent is a counter (`virtio3`) that shifts when a disk is added | `match.path` is a udev path, and udev renames the NIC before IfState runs |
 
-**What is broken and still open**
+**What was broken** (settled the same day, see the next section)
 
-- **dhcpcd after a link flap.** After the link lost and regained
-  carrier, dhcpcd 10.3.2 logged an internal error and one of DHCPv4 or
-  DHCPv6 did not come back. Stopping that link's dhcpcd and letting
-  IfState start a new one fixed it. Phase P3b begins with this: a
-  dhcpcd version that recovers, or an automatic restart.
-- **dhcpcd and the link-local address.** dhcpcd creates the IPv6
-  link-local address itself, even when told to ignore router
-  advertisements. After `ip link set down` and `up` the kernel then did
-  not ask for a router, and the IPv6 default route stayed away until
-  the router's next periodic advertisement. One request sent by hand
-  brought it back.
-- **DNS from router advertisements** is not read by anything. A link
-  that gets IPv6 only from advertisements needs static nameservers or
-  DHCP DNS.
+- dhcpcd lost DHCPv4 or DHCPv6 after a link flap.
+- The IPv6 default route seemed to stay away after a link went down and
+  up.
+- DNS from router advertisements is not read by anything. A link that
+  gets IPv6 only from advertisements needs static nameservers or DHCP
+  DNS. If a machine ever needs it, the `rdnssd` daemon is the candidate.
+
+## Solo runs and research (2026-11-16)
+
+The two broken findings were rerun with nothing else on the builder, to
+rule out a noisy neighbour, and researched in the source and upstream.
+The builder's load average was 0.1 to 0.3 during every run.
+
+**dhcpcd after a link flap: a real bug, now patched**
+
+| dhcpcd | Five down/up cycles in a row: DHCPv4 back, DHCPv6 back | Internal errors |
+|---|---|---|
+| 10.3.2 from nixpkgs | 0 of 5, 1 of 5 | in every cycle |
+| 10.3.2 with the fix (the pkgs package) | 5 of 5, 5 of 5, in four runs | none |
+| 10.5.2 from upstream | 5 of 5, 5 of 5 | none |
+
+- **Cause.** dhcpcd closes one of its sockets before it takes the socket
+  out of its event loop. The loop keeps a stale entry. The next socket
+  that gets the same number is then never read. Which protocol loses
+  depends on which socket that is.
+- **Upstream** knows it as issue 596 and fixed it in 10.5.0 with two
+  small commits.
+- **Fix.** Our pkgs repo now builds dhcpcd 10.3.2 with those two
+  commits. This is the rule for every such case: a package that needs a
+  patch is patched in pkgs, never in this repo or on a machine.
+
+**The IPv6 default route: a fault in the test, not in netif**
+
+The simulated ISP in the probe sent router advertisements but did not
+forward IPv6. Such a machine tells its neighbours "I am not a router",
+and Linux then drops it as default router about ten seconds after first
+use. It happened with dhcpcd stopped too. With forwarding switched on at
+the ISP, the route stayed. The kernel also asked for a router by itself
+after every one of 30 down/up cycles, so no helper is needed.
+
+Two test rules came out of it: a test machine that advertises itself as
+a router must forward, and a timing-sensitive finding is confirmed in a
+run of its own before it changes a design.
+
+**Decisions**
+
+- dhcpcd runs with `ipv4only` on links that do not use DHCPv6. It then
+  leaves IPv6 on that link alone (proven).
+- dhcpcd never handles router advertisements on a netif link. IfState
+  keeps that job.
+- Guest ports are rendered through the normal NixOS IfState module, as
+  one small included file. Proven.
 
 ## Probe evidence (2026-11-16)
 

@@ -6,10 +6,32 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N29` so they never collide with
+together.** Decisions are numbered `N1`–`N30` so they never collide with
 SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
+
+Round proof-solo (2026-11-16): **the broken and open findings were
+rerun alone on euc-hel-0 and researched; docs only here, one package
+patch in pkgs.** Evidence is §8.3.
+- **dhcpcd's lost leases are real, root-caused and fixed.** Not a noisy
+  neighbour: stock 10.3.2 failed in every solo run. A socket is closed
+  before it leaves the event loop (upstream issue #596, fix PR #611).
+  `org-pkgs` now builds dhcpcd with the two upstream commits; with it
+  every carrier change recovered (N16).
+- **N30** (new): a package that needs a patch is patched in pkgs,
+  never here.
+- **The vanishing RA default was the probe's fault.** The simulated ISP
+  did not forward IPv6. No solicitation helper is needed, and dhcpcd
+  never handles RAs (N16). §7 gains two testing rules.
+- **Decided:** `ipv4only` for dhcpcd on links without DHCPv6 (N16).
+- **N23** guest ports render through the stock NixOS module as one
+  included regex; proven. **N26** IfState can rename by parent device;
+  the udev path stays the design because virtio parent names move.
+- **N9** names `rdnssd` as the candidate if RA DNS is ever needed.
+- A correction to the round below: its 10.5.2 run "got no DHCPv6
+  lease" because the probe's kea had not opened its socket, not
+  because of dhcpcd.
 
 Round proof (2026-11-16): **the open assumptions were probed on
 euc-hel-0 and rough designs written around the results; docs only.**
@@ -27,9 +49,9 @@ renamed `N…` → `P…`.
     needed.
   - **N26** `match.path` is a udev path rendered as a `.link` rename,
     not IfState `identify`: a virtio NIC's parent name is a counter.
-- **Found broken, not fixed:** dhcpcd 10.3.2 does not recover both
-  protocols after a carrier change, and it takes over the link-local
-  address even with `noipv6rs` (N16). Phase P3b starts with these.
+- **Found broken:** dhcpcd 10.3.2 does not recover both protocols
+  after a carrier change, and it takes over the link-local address even
+  with `noipv6rs` (N16). Both are settled in round proof-solo above.
 - **Not covered:** DNS from RAs (N9).
 
 
@@ -501,7 +523,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     RAs gets no DNS from them: the kernel does not act on the RDNSS
     option and no daemon listens (probe: the server in the RA never
     reached resolved). Such a link declares `nameservers`, or uses
-    DHCPv4 or DHCPv6 DNS. Reading RDNSS would need a new listener and
+    DHCPv4 or DHCPv6 DNS. Reading RDNSS would need a listener:
+    systemd-resolved reads no RAs (only systemd-networkd does), and
+    dhcpcd reads them only when it handles RAs, which N16 forbids. The
+    candidate, if a machine ever needs it, is `rdnssd` from the `ndisc6`
+    package (NixOS `services.rdnssd`) feeding the netif DNS writer. It
     is not planned.
   *(probe-verified 2026-11-16: the netif unit design passed its gate in
   a probe; iwd and NetworkManager probe-verified 2026-11-15; planned,
@@ -670,47 +696,75 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     - Its routes are `proto dhcp` with the configured metric, including
       a classless static route. No `static` route was seen, so the
       extra `{dev, proto = 4}` ignore can go.
-  - **Open problem: dhcpcd after a carrier change.** In three runs
-    dhcpcd 10.3.2 logged `eloop_event_add: No such file or directory`
-    after every carrier change, and each time one of the two protocols
-    did not recover: DHCPv4 after both real carrier losses, DHCPv6
-    (twice) or DHCPv4 (once) after `ip link set down` / `up`. DNS
-    follows the lease, so the link lost that DNS too.
-    - The error is `epoll` refusing to change a descriptor it does not
-      hold. dhcpcd 10.3.0 rewrote its event loop for `epoll`; 10.5.0
-      lists "Delete DHCPv6 IA FD from the loop before closing it".
-    - A run with an unpatched upstream 10.5.2 showed no such error and
-      DHCPv4 recovered after a carrier loss. In that build DHCPv6 never
-      got a lease, even at boot; the cause is not known.
-    - **Workaround that worked:** stop that link's dhcpcd and let the
-      IfState hook start a new one. Both protocols and their DNS came
-      back.
-    - Phase P3b starts here, before any other N16 work: find a dhcpcd
-      version that recovers by itself (a pkgs PR), or make the link
-      watcher restart dhcpcd when its link regains carrier. `netif-dhcp`
-      asserts recovery after a real carrier loss (QEMU `set_link`) and
-      after `ip link set down` / `up`.
-  - **Open problem: dhcpcd takes over the link-local address.** With
-    `noipv6rs` dhcpcd still sets the link's `addr_gen_mode` to 1 and
-    adds the link-local address itself. After `ip link set down` / `up`
-    the kernel then sent no router solicitation, and the RA default
-    route stayed away until the next periodic RA. One solicitation
-    sent by hand (`rdisc6 -1`) brought it back at once. A real carrier
-    loss kept the route. This breaks "one writer per kernel setting"
-    for that sysctl. Candidates, to settle in phase P3b:
-    - `ipv4only` for links without DHCPv6, so dhcpcd leaves IPv6 alone
-      there;
-    - on DHCPv6 links, the link watcher sends one solicitation when the
-      link regains carrier;
-    - or dhcpcd handles RAs on DHCPv6 links after all. That would move
-      RA handling away from IfState on those links and needs an owner
-      decision.
+  - **dhcpcd 10.3.2 loses a protocol after a carrier change. Fixed by a
+    patch in pkgs (N30).**
+    - *Symptom.* After the link loses and regains carrier, dhcpcd logs
+      `eloop_event_add: No such file or directory` and DHCPv4 or DHCPv6
+      does not recover. DNS follows the lease, so the link loses that
+      DNS too.
+    - *Not a noisy neighbour.* Each run below was the only build on
+      euc-hel-0 (load average 0.1–0.3 at start and end). Stock 10.3.2
+      showed the error after every carrier change in three runs. In
+      five `ip link set down` / `up` cycles in a row, DHCPv4 came back
+      0 of 5 times and DHCPv6 1 of 5.
+    - *Cause, from the source.* `ipv6_freeaddr` (`src/ipv6.c`) closes a
+      DHCPv6 address socket and only then deletes it from the event
+      loop. `epoll` has already dropped the closed descriptor, the
+      delete fails, and the loop keeps a stale entry. The next socket
+      that gets the same descriptor number is then "modified" instead
+      of added, which fails with `ENOENT`, and nobody reads that
+      socket. Which protocol loses depends on which socket reuses the
+      number. This is the only such place in 10.3.2.
+    - *Upstream.* Issue NetworkConfiguration/dhcpcd#596 reports the
+      same three log lines after suspend and after Wi-Fi roaming. PR
+      #611 fixes it with two commits (delete before close; always drop
+      the entry on delete), released in 10.5.0.
+    - *Fix.* `org-pkgs` `overlays.ifstate` builds dhcpcd 10.3.2 with
+      those two commits. With that exact package: no error, and DHCPv4,
+      DHCPv6, their DNS and the RA default came back after a real
+      carrier loss and in 5 of 5 down/up cycles (four runs). Upstream
+      10.5.2 passed the same loop.
+    - *Security note.* dhcpcd through 10.3.2 has CVE-2026-56113, 56114,
+      56116 and 56117, fixed in 10.5.0. With `noipv6rs` dhcpcd parses
+      no RAs, which removes the RA-handling ones from netif's
+      configuration; the delegated-prefix option one (56114) is
+      reachable from a DHCPv6 server on a link with prefix delegation.
+      Moving `overlays.ifstate` to dhcpcd 10.5.2 is an owner decision
+      in pkgs: it changes the DHCP client of every machine that uses
+      the org overlay, not only netif machines.
+    - *Workaround, no longer needed:* stopping that link's dhcpcd and
+      rerunning IfState brought both protocols back.
+  - **dhcpcd and the link-local address.** dhcpcd sets the link's
+    `addr_gen_mode` to 1 and adds the link-local address itself
+    whenever IPv6 is enabled for the link, `noipv6rs` or not
+    (`if_setup_inet6`, `src/if-linux.c`; it has no option to leave it).
+    The value stays after dhcpcd stops.
+    - **Decided: `ipv4only` on links without DHCPv6.** dhcpcd then
+      leaves IPv6 on that link alone: `addr_gen_mode` stayed 0 and the
+      lease, its routes and its DNS were unchanged (§8.3).
+    - **Accepted on DHCPv6 links.** There dhcpcd is the writer of the
+      link-local address; netif renders no link-local setting for such
+      a link. The kernel still solicits routers with that address: a
+      router solicitation left the link after every down/up (30 of 30
+      cycles), and the RA default was back within 2 seconds.
+    - **No solicitation helper.** The first proof round saw the RA
+      default stay away after a down/up and blamed the missing
+      solicitation. That was a fault of the probe, not of netif: the
+      simulated ISP did not forward IPv6, so its neighbour
+      advertisements carried no router flag, and the kernel dropped it
+      as default router about 10 seconds after first use (RFC 4861
+      §7.2.5). It happened with dhcpcd stopped too, and stopped
+      happening once the ISP node forwarded. §7 now requires
+      RA-sending test nodes to forward.
+    - dhcpcd never handles RAs on a netif link; that candidate is
+      closed.
   - **Verification gate.** dhcpcd with `noipv6rs` must still run DHCPv6
     and prefix delegation in `netif-dhcp`. The 2026-11-16 probe passed
     this: an address from `ia_na` and a delegated `/60` with a `/64` on
     the LAN, with IfState's `accept_ra = 2` untouched (§8). The suite
     still has to prove it.
-  *(probe-verified; planned, phase P3b)*
+  *(probe-verified 2026-11-16, solo runs; the dhcpcd patch set is in
+  pkgs; planned, phase P3b)*
 
 - **N17 Path MTU.**
   - `links.<n>.pathMtu` is a nullable integer, at least 1280 and at most
@@ -903,15 +957,29 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
       at run time. Before every apply, a netif `ExecStartPre` step lists
       the ports of each guest-ports bridge
       (`/sys/class/net/<bridge>/brif/`), drops the declared members,
-      and writes the whole `ignore.ifname` list to
-      `/run/netif/ignore-ifname.yaml`: the registry's regexes plus one
-      anchored name (`^gp0$`) per guest port. The rendered
-      configuration includes that file. In the probe a guest port with
-      an arbitrary name kept its bridge and its guest stayed reachable
-      from another machine across two applies.
+      and writes **one regex** that names the rest, for example
+      `"^(gp0|tap0)$"`, to `/run/netif/guest-ports.yaml`. With no guest
+      port it writes `"^$"`, which matches nothing. Dots in names are
+      escaped.
+    - **Rendering through the stock NixOS module.** The registry's
+      static regexes stay in `parameters.ignore.ifname`, and the list
+      gets one more entry, the string
+      `"!include /run/netif/guest-ports.yaml"`. This shape is forced by
+      the nixpkgs module: it checks the settings against IfState's
+      schema at build time and only then turns `'!include …'` strings
+      into the YAML tag. The schema wants a list of strings there, so
+      the whole list cannot be an include, and an included list inside
+      the list would not be flat. One included string is both valid at
+      build time and a regex at run time.
+    - **Proven through that module** (VM-host probe, §8.3): the
+      rendered file had `- !include '/run/netif/guest-ports.yaml'` in
+      the list; a guest port with an arbitrary name kept its bridge and
+      its guest stayed reachable from another machine across two
+      applies; a port on a bridge without `guestPorts` was deleted;
+      after the guest left, the next apply shrank the regex.
     - The file must exist before any `ifstatecli` run: with it missing,
-      `ifstatecli check` fails. A machine with no guest-ports bridge
-      gets the static list and no include.
+      `ifstatecli check` fails. The step runs before every apply, and a
+      machine with no guest-ports bridge gets no include at all.
     - A guest's **named** network namespace must be owned as well
       (N8). Hypervisors that use unnamed namespaces need nothing.
     - The `vm` preset's names (`^tap`, `^vnet`) stay: they cover a
@@ -1033,9 +1101,9 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     probe (§8.2) showed why:
     - IfState's `identify.parent_dev_name` is the PCI address only for
       a NIC that sits on the PCI bus directly (`ifstatecli identify`
-      gave `0000:00:10.0` for an e1000). Renaming by it was not
-      proven: the probe's hand-made YAML left the address unquoted
-      and IfState's parser read it as a number.
+      gave `0000:00:10.0` for an e1000). IfState found and renamed
+      both a PCI NIC and a virtio NIC by it (§8.3), so the mechanism
+      works; what fails is the stability of the virtio name.
     - A virtio NIC's parent is `virtio<N>`. `N` counts every virtio
       device in probe order: disks, the random-number device, consoles
       and file shares too. In the probe VM the NICs were `virtio0`,
@@ -1089,6 +1157,27 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     machine, recorded in §5 with the date and versions. This is the one
     exception to "not offered until VM-proven" (N6).
   *(planned, after the contract gate)*
+
+- **N30 Patched packages come from pkgs.**
+  - netif runs on the packages of the `org-pkgs` overlay
+    `overlays.ifstate`: IfState 2.5.1 and dhcpcd. That overlay is the
+    host-networking package set.
+  - When a package netif depends on needs a fix that nixpkgs does not
+    carry, the patch lives in external-systems/pkgs, in that overlay,
+    with a version guard that drops it once nixpkgs has the fix. It is
+    never patched in this repo, in home, or in a machine configuration.
+  - Order of work: probe the fix here with an overlay in a throwaway
+    test, land it in pkgs, then `nix flake update org-pkgs` and
+    `sync-locks` here (AGENTS.md tool loop). The spec names the pkgs
+    change and the upstream reference.
+  - The shared base asserts what it needs from a package, as it does
+    for IfState (`>= 2.5`). For dhcpcd the assertion is "10.5.0 or
+    newer, or the org patch set" (phase P3b).
+  - First use: dhcpcd 10.3.2 with two upstream commits (N16), pkgs
+    PR 42, locked here in round proof-solo.
+  *(contract; dhcpcd patch set in pkgs and locked here; `netif-dhcp`
+  `NETIF_DHCP_RA_IFSTATE_OK` passes with it; assertion planned in
+  phase P3b)*
 
 ## 4. Invariants
 
@@ -1175,8 +1264,14 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - nothing rolls back a change that cuts the gateway (N25; phase P8);
   - the base forces IfState on in every configuration, so no
     NetworkManager mode can exist (N24; phase P4);
-  - dhcpcd 10.3.2 loses DHCPv4 or DHCPv6 after a carrier change, and
-    nothing restarts it (N16; phase P3b).
+  - dhcpcd 10.3.2 loses DHCPv4 or DHCPv6 after a carrier change (N16).
+    The fix is in `org-pkgs` `overlays.ifstate` (pkgs PR 42), and this
+    repo's lock has it since round proof-solo. The base does not
+    assert it yet (N30; phase P3b);
+  - dhcpcd runs with IPv6 enabled on DHCPv4-only links and takes over
+    their link-local address (N16 `ipv4only`; phase P3b);
+  - `netif-dhcp`'s RA-sending server node does not forward IPv6, so
+    its RA default can vanish from the client (§7; phase P3b).
 - **Field gate (N14):** no use case is live. netif has no consumers.
 
 ## 6. Out of scope
@@ -1211,6 +1306,17 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   (`virtualisation.useBootLoader`, `useEFIBoot`). The test selects the next
   entry by its title in `loader.conf` and power-cycles with `shutdown()` and
   `start()`. Each mode asserts which configuration booted.
+- **A test node that sends RAs forwards IPv6**
+  (`net.ipv6.conf.all.forwarding = 1`). A node that advertises itself
+  as a router but does not forward answers neighbour solicitations
+  without the router flag, and Linux hosts then delete it as default
+  router a few seconds after they first use it. The symptom is an RA
+  default route that appears and vanishes, depending on timing.
+  `netif-dhcp`'s server node lacks this today (§5).
+- **Timing-sensitive findings are confirmed alone.** A probe result
+  that could depend on load is rerun as the only build on euc-hel-0
+  before it changes a design. The test script records the builder's
+  load average (`/proc/loadavg`, read by the driver) at start and end.
 - **"Changes nothing" (invariant 5)** means both:
   1. a kernel-state snapshot is identical before and after the reapply:
      `ip -j` links, addresses, routes in every table, rules, and
@@ -1236,7 +1342,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   | `netif-hotplug` | dock ethernet hot-plug in an IfState mode | P2 |
   | `netif-router` | WAN DHCPv4 + DHCPv6-PD hook, kea, radvd, NAT, reapply no-op, prefix change, reboot | P5 |
   | `netif-match` | NIC found by permanent MAC under a different kernel name; missing NIC fails loudly | P3a (green) |
-  | `netif-dhcp` (extended) | dhcpcd per-link config; DHCPv6 and a delegated prefix assigned to another instance's link; observed route protocols; per-link DNS in resolved across reapply, link down/up, a resolved restart and a lease renewal (N9); both DHCP protocols and the RA default back after a real carrier loss and after `ip link set down`/`up` (N16); no IPv4 link-local; metric 100 defaults; an RA default on a forwarding link surviving two RA lifetimes; the no-op helper | P3b |
+  | `netif-dhcp` (extended) | dhcpcd per-link config; DHCPv6 and a delegated prefix assigned to another instance's link; observed route protocols; per-link DNS in resolved across reapply, link down/up, a resolved restart and a lease renewal (N9); both DHCP protocols and the RA default back after a real carrier loss and after five `ip link set down`/`up` cycles, with no `eloop_event_add` line in the journal (N16); `addr_gen_mode` 0 on a DHCPv4-only link (N16); a forwarding RA server (§7); no IPv4 link-local; metric 100 defaults; an RA default on a forwarding link surviving two RA lifetimes; the no-op helper | P3b |
   | `netif` (extended) | live reconfiguration by generation switch; untrusted default with an explicitly trusted link; two DHCP links with one default (N21); the no-op helper | P3b |
   | `netif-match` (extended) | a virtio NIC found by udev path and renamed before IfState runs (N26) | P3b |
   | `netif-containers` | Docker and rootful Podman keep links, namespaces, default and user-defined networks and a published port reached from another machine across two applies, in an IfState mode; pool-overlap eval error | P7 |
@@ -1445,6 +1551,80 @@ ignores, not the clanServices base.
   read as a number; a peer keeps a stale neighbour entry when a guest
   address moves to a new MAC.
 
+### 8.3 Probes of 2026-11-16, solo runs (euc-hel-0)
+
+Each run was the only build on the builder; the test recorded the
+builder's load average, 0.07–0.33 throughout. Same probes as §8.2
+(`dns.nix`, `vmhost.nix`), with `run-dhcpcd.nix --argstr variant
+stock|patched|new` choosing dhcpcd: nixpkgs 10.3.2, 10.3.2 with the two
+upstream commits (the exact `org-pkgs` package), upstream 10.5.2.
+
+- **Carrier changes on a DHCPv4 + DHCPv6 link.** "Back" means the
+  lease's DNS was on the link in resolved within 60 s.
+
+  | dhcpcd | Run | Real carrier loss | Five down/up cycles: DHCPv4 back, DHCPv6 back | `eloop_event_add` errors |
+  |---|---|---|---|---|
+  | 10.3.2 stock | solo 1 | both back | one cycle only: DHCPv4 lost | after every change |
+  | 10.3.2 stock | solo 2 | DHCPv4 lost | one cycle only: DHCPv4 lost | after every change |
+  | 10.3.2 stock | loop | DHCPv4 lost | 0 of 5, 1 of 5 | 2–5 per cycle |
+  | 10.3.2 + two commits | single | both back | one cycle: both back | none |
+  | 10.3.2 + two commits (pkgs) | loop | both back | 5 of 5, 5 of 5 | none |
+  | 10.3.2 + two commits (pkgs) | timeline, three runs | both back | 5 of 5, 5 of 5 each | none |
+  | 10.5.2 | loop | both back | 5 of 5, 5 of 5 | none |
+
+- **Other dhcpcd facts.**
+
+  | Question | Result |
+  |---|---|
+  | `addr_gen_mode` on a link with DHCPv6 | 1 |
+  | `addr_gen_mode` on a DHCPv4-only link, IPv6 enabled in dhcpcd | 1 |
+  | The same link with `ipv4only` | 0; lease, classless route and DNS unchanged |
+  | `addr_gen_mode` on a static link | 0 |
+  | Router solicitation from the DHCPv6 link after down/up | seen on the wire in 30 of 30 cycles |
+  | RA default back after down/up | within 2 s, 30 of 30 cycles |
+  | `dhcpcd -x <link>` stops that link's daemon | yes |
+  | Lease renewal with changed DNS servers (60 s lease) | new servers set, old removed, in every run |
+
+- **The vanishing RA default.** A route monitor, a packet capture and a
+  one-second sample of the default route ran across a down/up.
+
+  | Observation | Result |
+  |---|---|
+  | RAs seen | router lifetime 1800 s every time |
+  | Default with dhcpcd running | once kept for 40 s; once deleted 10.7 s after it was added, back with the next RA |
+  | Default with dhcpcd stopped and kernel link-local | deleted 10.6 s after it was added |
+  | dhcpcd journal at the deletion | nothing |
+  | ISP node | radvd on, IPv6 forwarding off |
+  | With forwarding on at the ISP node | default kept for the whole 40 s, with dhcpcd and without; the ISP's neighbour advertisements carry the router flag; the final reapply changed nothing |
+
+- **VM-host probe, second run** (`NETIF_VMHOST_PROBE_DONE`).
+
+  | Question | Result |
+  |---|---|
+  | `ignore.ifname` list with one `"!include /run/netif/guest-ports.yaml"` entry through the NixOS module | builds; rendered as `- !include '…'` |
+  | Guest-port file at boot, with a guest, after the guest left | a regex of the current ports each time |
+  | Guest port with an arbitrary name, two applies | kept, bridge membership kept, guest reachable from the peer |
+  | Port on a bridge without guest ports | deleted |
+  | Include file missing | `ifstatecli check` fails |
+  | IfState rename by `parent_dev_name`, PCI NIC and virtio NIC | both renamed and configured |
+
+- **Corrections to §8.2.**
+  - "Upstream 10.5.2: DHCPv6 got no lease": the probe's kea-dhcp6 had
+    failed to open its socket (`DHCPSRV_NO_SOCKETS_OPEN`). The fixture
+    now retries, and 10.5.2 passed.
+  - "The RA default did not return within 30 s", "one solicitation by
+    hand brought it back": see the table above. The kernel solicits by
+    itself.
+  - "`dhcpcd -x`" and renewal commands were never run in §8.2: `dhcpcd`
+    was not on the VM's `PATH`.
+- **Source and upstream references.** dhcpcd 10.3.2 `src/ipv6.c`
+  `ipv6_freeaddr` (close before `eloop_event_delete`), `src/eloop.c`
+  (`EPOLL_CTL_MOD` for a known descriptor), `src/if-linux.c`
+  `if_setup_inet6`; upstream issue #596 and PR #611 (commits `3375f52`,
+  `cf232b9`); nixpkgs builds dhcpcd with `--disable-privsep` and no
+  patches; the nixpkgs IfState module checks the schema before it
+  writes `!include` tags.
+
 ## 9. Delivery plan
 
 Each phase amends this file first, then code, then suites. Order: P3b,
@@ -1458,7 +1638,7 @@ decision. Phase numbers are labels, not the order.
 | P0 | This contract (docs only) | merged |
 | P1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
-| P3b | First: dhcpcd's recovery after a carrier change and its link-local takeover (N16), then the netif DNS unit as probed (N9). Then: dhcpcd per-link config and PD (N16), `pathMtu` and its consumers (N17), default-route metrics (N18), untrusted default (N19), zone seam (N10), `defaultRoute` and RA in the one-default rule (N21), `match.path` and the cloud-init check (N26); fixes: anchored ignores, the no-op helper, live reconfiguration by generation switch. Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
+| P3b | First: assert the patched dhcpcd in the base (N16, N30; the lock already has it), `ipv4only` on DHCPv4-only links, and the carrier-change assertions in `netif-dhcp`; then the netif DNS unit as probed (N9). Then: dhcpcd per-link config and PD (N16), `pathMtu` and its consumers (N17), default-route metrics (N18), untrusted default (N19), zone seam (N10), `defaultRoute` and RA in the one-default rule (N21), `match.path` and the cloud-init check (N26); fixes: anchored ignores, the no-op helper, live reconfiguration by generation switch. Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
 | P7 | `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
@@ -1476,7 +1656,7 @@ Terms as this file uses them. One term per thing.
   (`ifstate.service`). It converges the whole kernel network state to
   the configuration. A reapply is a run with an unchanged configuration.
 - **Contract gate, field gate** — the two conditions for "stable" (N14).
-- **Decision** — a numbered rule in §3, written `N1`…`N29`.
+- **Decision** — a numbered rule in §3, written `N1`…`N30`.
 - **Default route owner** — the one netif link per family that may
   install a main-table default route (N21).
 - **Deploy target** — `clan.core.networking.targetHost`: where clan

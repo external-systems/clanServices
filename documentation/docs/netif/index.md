@@ -6,7 +6,7 @@ links, addresses and routes once in `inventory.nix`. netif renders them for
 whichever network manager the machine's current mode uses.
 
 This section is the human version of the netif contract. The agent edition,
-with numbered decisions `N1`–`N29`, is
+with numbered decisions `N1`–`N30`, is
 [`specs/netif.md`](https://github.com/external-systems/clanServices/blob/main/specs/netif.md).
 
 ## The model
@@ -52,8 +52,9 @@ presets, start ordering and Tailscale checks (phase P1, suite
 
 A proof round on 2026-11-16 tested the assumptions of the later phases
 in throwaway VMs: [Plan and evidence](plan.md). Most held. Three designs
-changed (Podman, guest ports, cloud NICs), and dhcpcd turned out not to
-recover cleanly after a link flap, which phase P3b fixes first.
+changed (Podman, guest ports, cloud NICs). dhcpcd lost leases after a
+link flap; solo runs proved it is a dhcpcd bug, and our pkgs repo now
+builds dhcpcd with the upstream fix.
 
 Next is phase P3b. It brings:
 - DNS per link through systemd-resolved;

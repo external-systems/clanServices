@@ -8,7 +8,7 @@ The words the netif pages use. One word per thing. The agent edition is
 |---|---|
 | **Apply, reapply** | One run of IfState. It makes the kernel's network state match the configuration. A reapply is a run with nothing changed; it must change nothing. |
 | **Contract gate** | netif is stable in this repo: every phase done and proven in VM tests. |
-| **Decision** | A numbered rule in the contract: `N1` to `N29`. |
+| **Decision** | A numbered rule in the contract: `N1` to `N30`. |
 | **Default route owner** | The one netif link per address family that may install the default route. |
 | **Deploy target** | Where clan connects to deploy. Always an underlay address or a name. |
 | **Endpoint** | An address other machines dial to reach this one. |

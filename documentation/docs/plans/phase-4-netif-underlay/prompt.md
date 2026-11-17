@@ -10,7 +10,7 @@ Repo: external-systems/clanServices. Touch external-systems/pkgs only if the IfS
 
 Read first, in this order:
 1. AGENTS.md, then documentation/docs/plans/agent-brief.md.
-2. specs/netif.md: the round proof, use-cases and P3b-spec summaries at the top; §1.1; N8, N9, N10, N16, N17, N18, N19, N21, N26; invariants 5, 11–13 and 15 in §4; §5 drift; §7 testing; §8.1 and §8.2 (the 2026-11-16 probes); §9 P3b row. This file is the contract. SPEC.md invariant 21 and round 28 point at it.
+2. specs/netif.md: the round proof-solo, proof, use-cases and P3b-spec summaries at the top; §1.1; N8, N9, N10, N16, N17, N18, N19, N21, N26; invariants 5, 11–13 and 15 in §4; §5 drift; §7 testing; §8.1 to §8.3 (the 2026-11-16 probes); §9 P3b row. This file is the contract. SPEC.md invariant 21 and round 28 point at it.
 3. services/netif/default.nix: `linkOptions`, `resolveLinks`, `mkIfstateBase`, `dhcpHookScript`, `parameters.ignore.routes`, the `nameservers` and `trustedInterfaces` wiring, the exports, and the perMachine DNS conflict check.
 4. services/netif/netif-interface.nix (the export schema; no version bump, N14), lib/ifstate.nix, lib/ownership.nix.
 5. services/routed-fabric/default.nix `mtuFromSources`/`underlayMtuOf`, services/wireguard-mesh/default.nix `mtu` (fixed 1420): the pathMtu consumers.
@@ -21,10 +21,11 @@ Load skills: external-systems, clanservices, ifstate, nix-style, frr (only for r
 Goal: phase P3b of specs/netif.md, nothing more. Implement N9 (the netif DNS unit), N16, N17, N18 (netif's own metrics only; Wi-Fi and the dock are N2), N19, N21, N26 and the N10 zone seam, plus the §5 drift fixes.
 
 Do, in this order (one branch, one PR):
-1. Start with dhcpcd (N16 "Open problem" items), in netif-dhcp, before writing the renderer. The 2026-11-16 proof round (specs/netif.md §8.2; `.baton-pass/netif-probes/dns.nix` if present) showed:
-   - dhcpcd 10.3.2 logs `eloop_event_add: No such file or directory` after a carrier change and then loses DHCPv4 or DHCPv6. Find a dhcpcd version that recovers (a pkgs PR), or make the netif link watcher restart that link's dhcpcd when the link regains carrier. Killing the daemon and rerunning IfState worked in the probe.
-   - dhcpcd sets `addr_gen_mode` to 1 even with `noipv6rs`, so the kernel sends no router solicitation after `ip link set down`/`up` and the RA default stays away. Use `ipv4only` on links without DHCPv6; on DHCPv6 links send one solicitation when the link regains carrier. If neither holds, STOP and ask the owner before letting dhcpcd handle RAs.
-   - Assert both in netif-dhcp: a real carrier loss (QEMU `set_link`, `machine.send_monitor_command`) and `ip link set down`/`up`, then DHCPv4, DHCPv6, their DNS and the RA default all back.
+1. Start with dhcpcd (N16, N30), in netif-dhcp, before writing the renderer. The 2026-11-16 solo runs (specs/netif.md §8.3; `.baton-pass/netif-probes/dns.nix` and `run-dhcpcd.nix` if present) settled:
+   - dhcpcd 10.3.2 loses DHCPv4 or DHCPv6 after a carrier change (`eloop_event_add: No such file or directory`). org-pkgs `overlays.ifstate` builds dhcpcd with the upstream fix. `flake.lock` already pins an org-pkgs with it; add the base assertion of N30 (dhcpcd 10.5.0 or newer, or the org patch set).
+   - Render `ipv4only` for dhcpcd on links without DHCPv6; assert `addr_gen_mode` 0 there.
+   - No router-solicitation helper and no dhcpcd RA handling: both are closed in N16.
+   - Give netif-dhcp's RA-sending server `net.ipv6.conf.all.forwarding = 1` (§7), then assert: a real carrier loss (QEMU `set_link`, `machine.send_monitor_command`) and five `ip link set down`/`up` cycles, each followed by DHCPv4, DHCPv6, their DNS and the RA default back, with no `eloop_event_add` line in the journal.
    Then build the netif DNS unit as probed (N9 "Rough design"): one idempotent writer script, called by a link watcher, by dhcpcd's exit script (set with `script`, which also switches every stock hook off) and by `ifstate.service`; the unit is `PartOf` systemd-resolved. It passed boot, reapply, link down/up, a resolved restart and a lease renewal with changed servers. Earlier facts that still hold (§8.1): dhcpcd with `noipv6rs` runs `ia_na` and `ia_pd`; the link hook writes `ra_defrtr_metric` (N18).
 2. Anchor every single-link route ignore and the hook's dhcpcd lookup (N8, N16).
 3. dhcpcd per-link config (`noipv6rs`, `noipv4ll`, every stock hook off, one netif exit hook for DNS) and PD settings with their eval errors; PD exported as a runtime fact (N16).

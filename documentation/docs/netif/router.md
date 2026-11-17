@@ -83,8 +83,9 @@ and a delegated prefix when it is told to ignore router advertisements.
 
 A second probe that day found a weakness that matters for a WAN port:
 after the link lost and regained carrier, dhcpcd 10.3.2 did not get both
-its DHCPv4 and its DHCPv6 lease back. Phase P3b fixes this before
-anything else ([Plan and evidence](plan.md)).
+its DHCPv4 and its DHCPv6 lease back. It is a bug in dhcpcd, fixed
+upstream. Our pkgs repo builds dhcpcd with that fix, and with it every
+flap recovered ([Plan and evidence](plan.md)).
 
 ## Zones (planned, P3b)
 
