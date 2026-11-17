@@ -10,7 +10,7 @@ kamrui-h1:
 | NixOS (developer) | developer | IfState | Wi-Fi, Tailscale, FRR fabric leaf with admin routes |
 | NixOS (kubernetes) | kubernetes | IfState | developer + single-node k3s |
 
-## Where modes are declared (planned, phase N4)
+## Where modes are declared (planned, phase P4)
 
 One small service, `modes`, names each machine's modes and the network
 manager of each:
@@ -36,6 +36,13 @@ instances.modes = {
 
 A machine's modes can differ in kind: a headless server in one, a
 gamescope box in another.
+
+A prototype of this service was evaluated on 2026-11-16, both ways
+round: NetworkManager by default with IfState modes, and IfState by
+default with a NetworkManager mode. Each configuration got exactly one
+manager and passed every NixOS assertion. One change in the shared
+IfState base is needed: it must switch IfState on only in IfState
+modes. Today it forces IfState on everywhere.
 
 ## One manager per mode
 

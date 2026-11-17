@@ -1,4 +1,4 @@
-# netif-registry (specs/netif.md N6, N7, N11; phase N1). One IfState
+# netif-registry (specs/netif.md N6, N7, N11; phase P1). One IfState
 # machine runs netif, Tailscale against an offline Headscale, and iwd on
 # a mac80211_hwsim radio whose access point lives in a foreign netns.
 # The ownership registry must keep IfState away from all of them across

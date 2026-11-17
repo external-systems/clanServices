@@ -50,7 +50,7 @@ it, so a kernel or driver change cannot swap ports. If a declared port is
 missing, `ifstate.service` fails and the journal names it
 (`netif-match` suite).
 
-## Prefix delegation (planned, N3b)
+## Prefix delegation (planned, P3b)
 
 The WAN link asks for a prefix and hands `/64`s to LAN links, which may
 sit in another netif instance:
@@ -81,23 +81,45 @@ DNS servers into systemd-resolved.
 A probe on 2026-11-16 confirmed that dhcpcd still gets a DHCPv6 address
 and a delegated prefix when it is told to ignore router advertisements.
 
-## Zones (planned, N3b)
+A second probe that day found a weakness that matters for a WAN port:
+after the link lost and regained carrier, dhcpcd 10.3.2 did not get both
+its DHCPv4 and its DHCPv6 lease back. Phase P3b fixes this before
+anything else ([Plan and evidence](plan.md)).
+
+## Zones (planned, P3b)
 
 Each link can carry a `zone` label (`wan`, `lan`, `mgmt`). netif does not
 interpret it. It publishes each link's Linux name, kind and zone under
 `clanServices.networking.links.<instance>.<link>`, and the router module
 uses those.
 
-## Lockout guard (planned, phase N8)
+## Lockout guard (planned, phase P8)
 
 The router is headless and remote changes are risky. After every apply,
 netif checks that each default gateway still answers. If one does not
 within 30 seconds, netif re-applies the previous network configuration
 and fails the unit with the reason in the journal.
 
+A probe on 2026-11-16 ran a prototype:
+
+- **The check is layer 2.** The gateway in the probe ignored ping, and
+  still answered `arping` (IPv4) and `ndisc6` (IPv6).
+- **A bad change was rolled back.** A change that moved the machine to
+  another subnet was undone: the old address and default route came
+  back, the unit failed, and the deploy command reported a failure.
+- **A good change was kept**, and became the new "last good"
+  configuration.
+- **A first boot has nothing to roll back to.** The guard then only
+  fails loudly.
+
+After a rollback the machine runs the old network, but the new
+generation is still the current one. A reboot tries the new
+configuration again and rolls back again. Fix it by deploying a
+corrected configuration.
+
 ## Planned later
 
 - the router module in `modules`;
 - a full `netif-router` suite with a prefix change and a reboot.
 
-Both are phase N5 of the [plan](plan.md).
+Both are phase P5 of the [plan](plan.md).

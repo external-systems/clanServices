@@ -1,7 +1,7 @@
 # Data-plane hardening plan
 
 Status: phases 1–3 are complete. Phase 4 (netif underlay) is folded into
-netif phases N3a (done) and N3b of the [netif plan](../netif/plan.md); netif stability comes
+netif phases P3a (done) and P3b of the [netif plan](../netif/plan.md); netif stability comes
 before phases 5–9. D64 locks the
 clan-vars allocation contract before its implementation commits. SPEC.md
 stays the status authority, and each phase below amends SPEC.md before it
@@ -396,7 +396,7 @@ in phases 1 and 2. Phases 6, 8 and 9 are split into parts (6a/6b, 8a/8b,
 | 1 | alejandra + statix + deadnix, flake input cleanup and partitions, VM log helper | `nix flake check` green; `nix-github-actions` gone; consumers no longer lock dev inputs | [phase-1-tooling/prompt.md](phase-1-tooling/prompt.md) |
 | 2 (implemented) | correctness fixes, eval assertions, stability timers | each finding has a fix or an assertion with positive and negative tests | [phase-2-correctness/prompt.md](phase-2-correctness/prompt.md) |
 | 3 | allocation through clan vars, new ranges | no fabric or mesh address, ASN or port is derived from a name (cluster ids and Cilium ASNs stay hash-derived by design); all suites green | [phase-3-allocation/prompt.md](phase-3-allocation/prompt.md) |
-| 4 (= netif N3a + N3b) | netif underlay features | `match.mac` (N3a, done); dhcpcd contract and PD, path MTU, per-link DNS, metrics, untrusted links (N3b) | [phase-4-netif-underlay/prompt.md](phase-4-netif-underlay/prompt.md) |
+| 4 (= netif P3a + P3b) | netif underlay features | `match.mac` (P3a, done); dhcpcd contract and PD, path MTU, per-link DNS, metrics, untrusted links (P3b) | [phase-4-netif-underlay/prompt.md](phase-4-netif-underlay/prompt.md) |
 | 5 | facts schema, materializer, synthetic inventories | every `tests/clans/` inventory evaluates; materializer round-trips | [phase-5-facts-and-clans/prompt.md](phase-5-facts-and-clans/prompt.md) |
 | 6 (6a, 6b) | VM harness + priority scenarios | 6a: harness + scenarios 4, 9, 19, 22; 6b: scenarios 1, 2, 6, 8, 13; all green with markers | [phase-6-vm-harness/prompt.md](phase-6-vm-harness/prompt.md) |
 | 7 | gateway service, single NAT egress, floating IP coexistence | scenarios 16, 20, 21 green | [phase-7-gateway/prompt.md](phase-7-gateway/prompt.md) |

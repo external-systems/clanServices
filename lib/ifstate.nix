@@ -13,7 +13,7 @@
       else address.address
     );
   # IfState 2.5.1 only warns when a declared physical NIC is missing and
-  # exits 0. netif makes that loud (specs/netif.md N3a): the unit fails
+  # exits 0. netif makes that loud (specs/netif.md P3a): the unit fails
   # and the journal names the link.
   physicalNames = builtins.attrNames (
     lib.filterAttrs (_: interface: (interface.link.kind or null) == "physical") config.networking.ifstate.settings.interfaces

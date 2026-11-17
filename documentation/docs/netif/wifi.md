@@ -41,7 +41,12 @@ work on the very first boot.
 When a cable and Wi-Fi are both up, the cable wins: netif's default route
 has metric 100, iwd's starts at 300, and NetworkManager's Wi-Fi uses 600.
 Wi-Fi stays connected as a fallback, so unplugging needs no
-reconfiguration (planned, phases N3b and N2).
+reconfiguration (planned, phases P3b and P2).
+
+A probe on 2026-11-16 confirmed it for IPv4 and IPv6. iwd put both of
+its default routes at metric 307. With a wired default at 100, traffic
+left through the cable. With the cable down, it left through Wi-Fi, and
+nothing was reconfigured.
 
 ## Limits
 
@@ -52,7 +57,7 @@ reconfiguration (planned, phases N3b and N2).
 - Steam itself cannot run in a VM test. Steam talks to NetworkManager's
   backend-neutral D-Bus API, and SteamOS uses NetworkManager with iwd too.
   One check on the real Deck confirms Steam's Wi-Fi settings with the iwd
-  backend (phase N2).
+  backend (phase P2).
 - A dock's Ethernet plugged in while in developer mode is handled by a
-  separate hot-plug owner (planned, phase N2). NetworkManager handles it in
+  separate hot-plug owner (planned, phase P2). NetworkManager handles it in
   gaming mode.
