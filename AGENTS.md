@@ -43,7 +43,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `ci / flake-check`) and the branch ruleset. Never add steps or jobs here;
   CI changes are pkgs PRs.
 - `specs/netif.md` — the host-networking contract and status authority
-  (decisions N1–N29, use cases U1–U11, the responsibility boundary
+  (decisions N1–N30, use cases U1–U11, the responsibility boundary
   in §1.1): netif, the shared IfState base, modes, the
   ownership registry. It supersedes SPEC.md D50/D53/D61 where they
   conflict; its human pages are `documentation/docs/netif/`. Edit them
@@ -179,4 +179,14 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `kubectl apply --server-side` avoids CSA→SSA field-ownership friction;
   `cilium install` (CLI) auto-detects hidden values and skews cert
   generation — rejected as the bootstrap mechanism.
+- dhcpcd 10.3.2: a DHCPv6 address socket is closed before it leaves the
+  event loop (`ipv6_freeaddr`), so after a carrier change DHCPv4 or
+  DHCPv6 does not recover (`eloop_event_add: No such file or directory`;
+  upstream issue 596, fixed in 10.5.0). org-pkgs `overlays.ifstate`
+  carries the two upstream commits. dhcpcd sets `addr_gen_mode` to 1 on
+  every link it runs IPv6 on, `noipv6rs` or not; `ipv4only` avoids it.
+  A package that needs a patch is patched in pkgs, never here
+  (`specs/netif.md` N30).
+- A test node that sends RAs must forward IPv6, or Linux hosts drop it
+  as default router seconds after first use (`specs/netif.md` §7).
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).

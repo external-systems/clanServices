@@ -57,3 +57,16 @@ of decision N20 in the contract.
 | run VMs with their own public addresses | a netif bridge with guest ports; the guest's address is set in the guest |
 | add a mode to a machine | the `modes` service |
 | reach pod IPs from a laptop | `routed-fabric`, in an IfState mode |
+
+## Where the packages come from
+
+netif runs on two packages from our pkgs repo (`org-pkgs`, overlay
+`overlays.ifstate`): IfState and dhcpcd.
+
+- If one of them needs a fix that nixpkgs does not have yet, the patch
+  goes into pkgs, with a version check that removes it once nixpkgs
+  catches up.
+- It is never patched in clanServices, in home, or on a machine.
+- First case: dhcpcd 10.3.2 with two upstream commits for lost leases
+  after a link flap ([Plan and evidence](plan.md)).
+

@@ -4,6 +4,19 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 31 (2026-11-16): **netif solo runs and research; docs only here,
+one package patch in pkgs** (`specs/netif.md` round proof-solo, §8.3,
+N30). Points that touch this file:
+- The dhcpcd fault of round 30 is a dhcpcd 10.3.2 bug (upstream issue
+  596). org-pkgs `overlays.ifstate` now builds dhcpcd with the two
+  upstream commits. Cluster nodes on DHCP underlays get it with the
+  next `org-pkgs` bump.
+- Packages that need a patch are patched in pkgs, never in this repo
+  (N30). That covers the Kubernetes artifacts' host dependencies too.
+- A VM suite node that sends RAs must forward IPv6 (`specs/netif.md`
+  §7); suites with a simulated router are checked for it in netif
+  phase P3b.
+
 Round 30 (2026-11-16): **netif proof round; docs only**
 (`specs/netif.md` round proof, §8.2). Throwaway probes on euc-hel-0
 tested the open netif assumptions. netif's delivery phases are renamed
@@ -2826,7 +2839,7 @@ such as external-dns).
   and sysctls and reconciles them live without reboot; FRR/Zebra and
   Cilium retain dynamic ownership. No systemd-networkd, netdevs, or
   scripted network units.
-- **netif contract** — `specs/netif.md` (N1–N29): netif is the only
+- **netif contract** — `specs/netif.md` (N1–N30): netif is the only
   network contract in the inventory; IfState renders IfState modes and
   NetworkManager renders NetworkManager modes, never both in one system
   configuration; iwd owns Wi-Fi in every mode.

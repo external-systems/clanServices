@@ -6,7 +6,7 @@
 # pkgs ("attribute 'bash' missing").
 inputs:
   org-pkgs:
-    url: github:external-systems/pkgs/3500ca31c2b5285aaff7ff09c9ae3ea87d4dcd20
+    url: github:external-systems/pkgs/3c80f8a071340b61a32f273e13856cc8ecae2f64
   nixpkgs:
     follows: org-pkgs/nixpkgs
 imports:
