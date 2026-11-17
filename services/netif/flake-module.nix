@@ -22,7 +22,7 @@ in rec {
         overlays = [inputs.org-pkgs.overlays.ifstate];
       };
     in
-      lib.genAttrs ["guard" "wifi"] (
+      lib.genAttrs ["wifi"] (
         probe: probePkgs.testers.runNixOSTest (import (./tests/probes + "/${probe}.nix"))
       )
       // {
@@ -49,6 +49,10 @@ in rec {
     };
     netif-dhcp = {
       imports = [./tests/vm/dhcp.nix];
+      inherit clan;
+    };
+    netif-guard = {
+      imports = [./tests/vm/guard.nix];
       inherit clan;
     };
     netif-match = {

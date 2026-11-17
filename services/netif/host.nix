@@ -252,6 +252,8 @@ in {
             kind = mkOption {type = types.str;};
             zone = mkOption {type = types.nullOr types.str;};
             trusted = mkOption {type = types.bool;};
+            gateway4 = mkOption {type = types.nullOr types.str;};
+            gateway6 = mkOption {type = types.nullOr types.str;};
             prefixDelegation = {
               enable = mkOption {type = types.bool;};
               hint = mkOption {type = types.int;};

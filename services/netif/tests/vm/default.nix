@@ -79,6 +79,10 @@ _: {
       pkgs.yq
       pkgs.jq
     ];
+    # The gateways of this single-VM suite do not exist; the lockout
+    # guard (N25) would rightly roll every apply back. netif-guard and
+    # netif-dhcp run with it on.
+    clanServices.netif.guard.enable = false;
     # A second generation to switch to: another address on the uplink and
     # another metric. Switching must apply it live and switching back
     # must restore the first state.

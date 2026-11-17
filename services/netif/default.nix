@@ -1509,6 +1509,8 @@ in {
                     default4
                     kind
                     zone
+                    gateway4
+                    gateway6
                     ;
                   trusted = r.trust;
                   prefixDelegation = {
@@ -1529,6 +1531,7 @@ in {
         (import ../../lib/ifstate.nix {inherit ifstateOverlay;})
         ./host.nix
         ./tools.nix
+        ./guard.nix
       ];
 
       # DNS servers a router advertises (RDNSS) are not read: the kernel

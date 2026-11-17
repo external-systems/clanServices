@@ -31,7 +31,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   asserts yet (`nix build .#netifProbes.<name>`; never in `checks` or
   `vmTests`; its README names the suite that replaces each one).
 - `tests/ifstate-vm.nix` — the shared IfState node fixture for VM suites.
-  Each service registers its suites (28 in all) in its `flake-module.nix`
+  Each service registers its suites (29 in all) in its `flake-module.nix`
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`

@@ -11,6 +11,24 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P8 (2026-11-17): **the lockout guard.** Implemented and proven
+by `netif-guard` (`NETIF_GUARD_OK`):
+- **N25** after every apply the default gateways must answer at layer
+  2; if not, the last configuration that passed is re-applied and
+  `netif-guard.service` fails. On by default on machines without a
+  display manager.
+- **A design change found by `netif-dhcp`:** the guard is its own
+  unit, not an `ExecStartPost` of `ifstate.service` as probed. Inside
+  `ifstate.service` it waited for a DHCP gateway that dhcpcd could
+  only learn after `ifstate.service` had finished.
+- **N36** `guard.targets` (a TCP port, a layer-2 answer or a ping),
+  also checked after a firewall reload, where a failure is reported
+  and nothing is rolled back.
+- The `guard` probe is deleted (N40). The `netif` suite turns the
+  guard off: its gateways do not exist.
+- P8 was taken before P2 and P4: it has no dependency on modes, and it
+  is the protection N19's untrusted default asked for.
+
 Round P7b (2026-11-17): **VM hosts; P7 is complete.** Implemented and
 proven by `netif-vmhost` (`NETIF_VMHOST_OK`):
 - **N23** the bridge MAC rule and `links.<n>.mac`; bridge members may
@@ -1311,7 +1329,38 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     rolled-back configuration names but the new generation no longer
     provides; the guard on a machine whose only default route comes
     from Wi-Fi (the guard is off there by default).
-  *(probe-verified 2026-11-16; planned, phase P8; suite `netif-guard`)*
+  - **As built** (`services/netif/guard.nix`):
+    - options `clanServices.netif.guard.{enable, timeout, targets}`;
+      `enable` defaults to true unless `services.xserver.enable`,
+      `services.displayManager.enable` or `programs.gamescope.enable`
+      is set;
+    - the state is `/var/lib/netif/guard/last-good`, with the
+      garbage-collector root `/nix/var/nix/gcroots/netif-guard-last-good`;
+    - a DHCPv4 link that owns the default is waited for: no default
+      route on it before the deadline is a failure;
+    - **the guard is `netif-guard.service`**, a oneshot unit ordered
+      after `ifstate.service` and every `netif-dhcpcd-*` unit. This
+      replaces the probed mechanism above (an `ExecStartPost`), which
+      deadlocked on a DHCP link: dhcpcd starts only after
+      `ifstate.service` is done. `ifstate.service` restarts the guard
+      after each apply, and the guard's `restartTriggers` name the
+      rendered IfState configuration, so `switch-to-configuration`
+      waits for the verdict and exits non-zero on a rollback;
+    - **the failed unit is `netif-guard.service`**, not
+      `ifstate.service`. N15's missing-NIC check fails
+      `ifstate.service` on its own; the guard still runs then, and
+      does not record a configuration as good when the apply failed;
+    - one deadline (`timeout`, 30 seconds) covers all targets.
+  - **Still not settled:** a rolled-back configuration that names a
+    runtime `!include` secret the new generation no longer provides
+    (the rollback then fails and says so); a machine whose only
+    default comes from Wi-Fi.
+  *(implemented, round P8: `netif-guard` — `NETIF_GUARD_BOOT_OK` (the
+  gateway drops pings and still passes), `NETIF_GUARD_ROLLBACK_OK`
+  (the switch exits non-zero, the old address and default are back, a
+  restart rolls back again), `NETIF_GUARD_KEPT_OK`,
+  `NETIF_GUARD_FIRST_BOOT_OK`; `netif-dhcp` runs with the guard on, so
+  the learned DHCP and RA gateways are checked on every reapply there)*
 
 - **N26 Cloud NICs.**
   - `links.<n>.match.path` finds a physical NIC by its udev path
@@ -1472,7 +1521,20 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
 
 - **N36 A wider lockout guard (was H5).** N25's guard also checks
   optional `guard.targets` and runs after firewall changes.
-  *(planned, phase P8)*
+  - A target is `{ address; port?; interface? }`: with `port` a TCP
+    connection must open (the deployer's SSH port is the useful one);
+    with `interface` a layer-2 answer on that link; with neither a
+    ping.
+  - After an apply a silent target counts like a silent gateway: roll
+    back and fail.
+  - After a firewall reload (`nftables.service`) only the targets are
+    checked: gateways answer ARP whatever the rules say. A failure
+    fails the reload and is logged; netif does not own the firewall
+    and rolls nothing back.
+  - **Limit.** The check goes outwards. It does not prove that the
+    machine still accepts an incoming connection.
+  *(implemented, round P8: `netif-guard` `NETIF_GUARD_TARGET_OK`,
+  `NETIF_GUARD_FIREWALL_OK`)*
 
 - **N37 Guest ports are compared after each apply (was H6).** Name
   patterns stay the first protection. After the apply netif compares
@@ -2035,7 +2097,7 @@ decision. Phase numbers are labels, not the order.
 | P7 | **Done** (rounds P7a, P7b): `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
-| P8 | Lockout guard (N25), as probed | `netif-guard` green |
+| P8 | **Done** (round P8). Lockout guard (N25, N36) | `netif-guard` green |
 | P5 | Router module in `modules` on the P3b seam | `netif-router` green |
 | Contract gate | netif is stable (N14) | every phase above done; every probe-verified claim VM-proven; every §4 invariant asserted by a suite |
 | Field gate | home runs netif on each use case that exists (N14) | each use case live, recorded in §5 |
