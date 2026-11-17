@@ -3,6 +3,7 @@
 #   isp  ── vlan 1 ──  router (wan: DHCPv4 + DHCPv6 + prefix delegation)
 #                 └──  client4 (uplink: DHCPv4 only)
 #   router ── vlan 2 ── (lan: static, gets a subnet of the delegated prefix)
+#   isp  ── vlan 3 ──  client4 (private: DHCPv4 and RAs, no default route; N21)
 #
 # The isp node is a fixture: kea for DHCPv4 and DHCPv6, radvd, and it
 # forwards IPv6 (§7: a node that sends RAs must forward).
@@ -18,7 +19,10 @@
     enable = true;
     settings = {
       interfaces-config = {
-        interfaces = ["eth1"];
+        interfaces = [
+          "eth1"
+          "eth2"
+        ];
         service-sockets-max-retries = 30;
         service-sockets-retry-wait-time = 1000;
       };
@@ -46,6 +50,31 @@
             {
               name = "domain-name";
               data = "isp.test";
+            }
+          ];
+        }
+        # The private network: the server offers a router and a classless
+        # default too, and a link with 'defaultRoute.ipv4 = false' must
+        # take neither (N21).
+        {
+          id = 2;
+          subnet = "198.51.100.0/24";
+          interface = "eth2";
+          pools = [{pool = "198.51.100.100 - 198.51.100.150";}];
+          option-data = [
+            {
+              name = "routers";
+              data = "198.51.100.1";
+            }
+            {
+              name = "domain-name-servers";
+              data = "198.51.100.53";
+            }
+            {
+              # 10.50.0.0/16 via 198.51.100.1 and a default via 198.51.100.1
+              name = "classless-static-route";
+              csv-format = false;
+              data = "100A32C633640100C6336401";
             }
           ];
         }
@@ -101,6 +130,20 @@ in {
             interface = "eth2";
             static.ipv4 = ["192.168.10.1/24"];
             nameservers = ["192.168.10.53"];
+            # a router does not take a default from its own LAN (N21)
+            ra = false;
+          };
+        };
+        private = {
+          module.name = "netif";
+          module.input = "self";
+          roles.default.machines.client4.settings.links.private = {
+            interface = "eth2";
+            dhcp.ipv4 = true;
+            defaultRoute = {
+              ipv4 = false;
+              ipv6 = false;
+            };
           };
         };
       };
@@ -130,9 +173,16 @@ in {
         script = "${lib.getExe' pkgs.iproute2 "ip"} -4 -o addr show dev eth1 scope global > /run/online-probe";
       };
     };
-    client4.virtualisation = {
-      cores = 1;
-      memorySize = 1024;
+    client4 = {pkgs, ...}: {
+      virtualisation = {
+        cores = 1;
+        memorySize = 1024;
+        vlans = [
+          1
+          3
+        ];
+      };
+      environment.systemPackages = [pkgs.jq];
     };
     isp = {pkgs, ...}: {
       imports = [
@@ -148,6 +198,20 @@ in {
       virtualisation = {
         cores = 1;
         memorySize = 1024;
+        vlans = [
+          1
+          3
+        ];
+      };
+      networking.ifstate.settings.interfaces.eth2 = {
+        addresses = [
+          "198.51.100.1/24"
+          "2001:db8:2::1/64"
+        ];
+        link = {
+          kind = "physical";
+          state = "up";
+        };
       };
       environment.systemPackages = [pkgs.tcpdump];
       boot.kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
@@ -206,6 +270,10 @@ in {
               AdvManagedFlag on;
               AdvOtherConfigFlag on;
               prefix 2001:db8::/64 { AdvAutonomous off; };
+            };
+            interface eth2 {
+              AdvSendAdvert on;
+              prefix 2001:db8:2::/64 { };
             };
           '';
         };
@@ -307,6 +375,28 @@ in {
             assert router.succeed("cat /proc/sys/net/ipv6/conf/eth2/addr_gen_mode").strip() == "0"
             client4.fail("ip -6 -o addr show dev eth1 scope global | grep /128 >/dev/null")
             print("NETIF_DHCP_IPV4ONLY_OK")
+
+        with subtest("one default per family, at netif's metric (N18, N21)"):
+            # the private link: lease, classless route and DNS, no default
+            client4.wait_until_succeeds("ip -4 -o addr show dev eth2 scope global | grep 198.51.100.1 >/dev/null", timeout=90)
+            client4.wait_until_succeeds("ip -4 route show 10.50.0.0/16 | grep 'via 198.51.100.1 dev eth2 proto dhcp' >/dev/null", timeout=30)
+            client4.succeed("grep -x nogateway /etc/netif/dhcpcd/eth2.conf")
+            client4.fail("grep -x nogateway /etc/netif/dhcpcd/eth1.conf")
+            wait_dns(client4, "eth2", "198.51.100.53")
+            # RAs on the private link give a prefix and an address, no router
+            client4.wait_until_succeeds("ip -6 -o addr show dev eth2 scope global | grep 2001:db8:2: >/dev/null", timeout=60)
+            assert client4.succeed("cat /proc/sys/net/ipv6/conf/eth2/accept_ra_defrtr").strip() == "0"
+            client4.wait_until_succeeds("ip -6 route show default | grep 'dev eth1 proto ra' >/dev/null", timeout=60)
+            for machine in [client4, router]:
+                v4 = json.loads(machine.succeed("ip -j -4 route show default"))
+                assert [(r["dev"], r["protocol"], r["metric"]) for r in v4] == [("eth1", "dhcp", 100)], v4
+                v6 = json.loads(machine.succeed("ip -j -6 route show default"))
+                assert [(r["dev"], r["protocol"], r["metric"]) for r in v6] == [("eth1", "ra", 100)], v6
+            # the same holds after the private lease renews (60 s lease)
+            time.sleep(35)
+            v4 = json.loads(client4.succeed("ip -j -4 route show default"))
+            assert [r["dev"] for r in v4] == ["eth1"], v4
+            print("NETIF_DHCP_DEFAULT_OK")
 
         with subtest("a reapply changes nothing (invariant 5)"):
             assert_ifstate_noop(router)

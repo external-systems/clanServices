@@ -95,6 +95,18 @@ in {
                 this set (D53).
               '';
             };
+            defaultRoute = {
+              ipv4 = mkOption {
+                type = types.bool;
+                default = false;
+                description = "True when this link owns the machine's main-table IPv4 default route: 'defaultRoute.ipv4' is set and the link has a static gateway or DHCPv4 (N21).";
+              };
+              ipv6 = mkOption {
+                type = types.bool;
+                default = false;
+                description = "True when this link owns the machine's main-table IPv6 default route: 'defaultRoute.ipv6' is set and the link accepts router advertisements or has a static gateway (N21).";
+              };
+            };
             nameservers = mkOption {
               type = types.listOf types.str;
               default = [];

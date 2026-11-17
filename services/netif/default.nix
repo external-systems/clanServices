@@ -141,6 +141,14 @@
           endpoint
           ;
         policy = link.routingPolicy;
+        default4 =
+          if link.defaultRoute.ipv4 != null
+          then link.defaultRoute.ipv4
+          else site.defaultRoute.ipv4;
+        default6 =
+          if link.defaultRoute.ipv6 != null
+          then link.defaultRoute.ipv6
+          else site.defaultRoute.ipv6;
         inherit (link.dhcp) prefixDelegation;
         requiredForOnline =
           if link.requiredForOnline != null
@@ -150,10 +158,15 @@
     )
     links;
 
-  # Default-route ownership per address family (D53): a DHCP lease default
-  # or a static gateway rendered into the main table (no policy routing).
-  v4Default = r: r.dhcp4 || (r.gateway4 != null && r.policy.table == null);
-  v6Default = r: r.dhcp6 || (r.gateway6 != null && r.policy.table == null);
+  # Default-route ownership per address family (N21): the link may own
+  # the main-table default ('defaultRoute') and has a source for one. The
+  # sources are a static gateway outside a policy table, a DHCPv4 lease,
+  # and a router advertisement. A bond or bridge member carries no
+  # addressing, so it is never a source.
+  v4Default = r:
+    r.memberOf == null && r.default4 && (r.dhcp4 || (r.gateway4 != null && r.policy.table == null));
+  v6Default = r:
+    r.memberOf == null && r.default6 && (r.ra || (r.gateway6 != null && r.policy.table == null));
 
   # IPv4/IPv6 split helpers for export facts and endpoint selection.
   # Exported endpoints are bare host addresses: static inventory values
@@ -384,6 +397,34 @@
       type = types.bool;
       default = true;
       description = "Accept IPv6 router advertisements on this link (IfState ipv6.accept_ra/autoconf).";
+    };
+    defaultRoute = {
+      ipv4 = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = ''
+          Whether this link may install a main-table IPv4 default route,
+          from a static gateway or a DHCPv4 lease. With false the lease,
+          its address and its classless routes stay, and the router
+          option is dropped (dhcpcd 'nogateway'); a static gateway is
+          still used by the link's routes and policy table. Null inherits
+          the segment default (true). One link per machine may own the
+          default (specs/netif.md N21).
+        '';
+      };
+      ipv6 = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = ''
+          Whether this link may install a main-table IPv6 default route,
+          from a static gateway or a router advertisement. With false,
+          advertisements still give prefixes and addresses, and no
+          default router ('accept_ra_defrtr = 0'). Null inherits the
+          segment default (true). Every link with 'ra = true' is a source
+          of a default, so on a machine with several links all but one
+          set this to false, or 'ra = false' (specs/netif.md N21).
+        '';
+      };
     };
     gateway = {
       ipv4 = mkOption {
@@ -791,6 +832,18 @@ in {
             description = "Segment-default IPv6 gateway applied to links that do not set 'gateway.ipv6'.";
           };
         };
+        defaultRoute = {
+          ipv4 = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Segment default for per-link 'defaultRoute.ipv4': false on a segment that never carries the host's IPv4 default route.";
+          };
+          ipv6 = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Segment default for per-link 'defaultRoute.ipv6': false on a segment that never carries the host's IPv6 default route.";
+          };
+        };
         firewall = {
           trust = mkOption {
             type = types.nullOr types.bool;
@@ -925,6 +978,12 @@ in {
               if r.ra
               then 1
               else 0;
+            # Prefixes and addresses from an RA, but no default router,
+            # when the link may not own the IPv6 default (N21).
+            accept_ra_defrtr =
+              if r.ra && r.default6
+              then 1
+              else 0;
           };
         }
         // lib.optionalAttrs (link.match.mac != null) {
@@ -966,51 +1025,49 @@ in {
         resolved
       );
 
-      ifstateRoutes = lib.concatLists (
-        lib.mapAttrsToList (
-          _: r: let
-            hasPolicy = r.policy.table != null;
-            gatewayRoutes =
-              lib.optionals (!r.dhcp4 && r.gateway4 != null) [
-                (
-                  {
-                    to = "0.0.0.0/0";
-                    via = r.gateway4;
-                    dev = r.interface;
-                  }
-                  // lib.optionalAttrs hasPolicy {table = r.policy.table;}
-                  // lib.optionalAttrs r.onLink {onlink = true;}
+      # A main-table default carries netif's metric (N18); a default in
+      # a policy table is alone there and needs none.
+      mkIfstateRoutes = metric:
+        lib.concatLists (
+          lib.mapAttrsToList (
+            _: r: let
+              hasPolicy = r.policy.table != null;
+              defaultVia = to: via:
+                {
+                  inherit to via;
+                  dev = r.interface;
+                }
+                // (
+                  if hasPolicy
+                  then {table = r.policy.table;}
+                  else {preference = metric;}
                 )
-              ]
-              ++ lib.optionals (r.gateway6 != null && (!r.dhcp6 || r.static6 != [])) [
-                (
-                  {
-                    to = "::/0";
-                    via = r.gateway6;
-                    dev = r.interface;
-                  }
-                  // lib.optionalAttrs hasPolicy {table = r.policy.table;}
-                  // lib.optionalAttrs r.onLink {onlink = true;}
+                // lib.optionalAttrs r.onLink {onlink = true;};
+              gatewayRoutes =
+                lib.optional (!r.dhcp4 && r.gateway4 != null && (hasPolicy || r.default4)) (
+                  defaultVia "0.0.0.0/0" r.gateway4
                 )
-              ];
-            staticRoutes =
-              map (
-                route:
-                  {
-                    to = route.destination;
-                    dev = r.interface;
-                  }
-                  // lib.optionalAttrs (route.gateway != null) {via = route.gateway;}
-                  // lib.optionalAttrs (route.gateway != null && (route.onLink || r.onLink)) {
-                    onlink = true;
-                  }
-              )
-              r.routes;
-          in
-            gatewayRoutes ++ staticRoutes
-        )
-        resolved
-      );
+                ++ lib.optional (r.gateway6 != null && (!r.dhcp6 || r.static6 != []) && (hasPolicy || r.default6)) (
+                  defaultVia "::/0" r.gateway6
+                );
+              staticRoutes =
+                map (
+                  route:
+                    {
+                      to = route.destination;
+                      dev = r.interface;
+                    }
+                    // lib.optionalAttrs (route.gateway != null) {via = route.gateway;}
+                    // lib.optionalAttrs (route.gateway != null && (route.onLink || r.onLink)) {
+                      onlink = true;
+                    }
+                )
+                r.routes;
+            in
+              gatewayRoutes ++ staticRoutes
+          )
+          resolved
+        );
 
       ifstateRules = lib.concatLists (
         lib.mapAttrsToList (
@@ -1075,6 +1132,10 @@ in {
                 ;
               addresses = r.static4 ++ r.static6;
               gatewayInMain = v4Default r || v6Default r;
+              defaultRoute = {
+                ipv4 = v4Default r;
+                ipv6 = v6Default r;
+              };
               prefixDelegation = exportedPrefixDelegation r;
             })
             resolved;
@@ -1088,6 +1149,7 @@ in {
       }: let
         forwarding = config.clan.networkFacts.forwarding;
         ifstateInterfaces = mkIfstateInterfaces forwarding;
+        ifstateRoutes = mkIfstateRoutes config.clanServices.netif.routeMetric;
       in {
         imports = [../../lib/kube-cluster/network-facts.nix];
 
@@ -1146,6 +1208,10 @@ in {
                     ;
                   addresses = r.static4 ++ r.static6;
                   gatewayInMain = v4Default r || v6Default r;
+                  defaultRoute = {
+                    ipv4 = v4Default r;
+                    ipv6 = v6Default r;
+                  };
                   prefixDelegation = exportedPrefixDelegation r;
                   routingPolicy = r.policy;
                   trusted = r.trust;
@@ -1304,6 +1370,7 @@ in {
                     dhcp6
                     nameservers
                     requiredForOnline
+                    default4
                     ;
                   prefixDelegation = {
                     inherit (r.prefixDelegation) enable hint;
@@ -1333,15 +1400,15 @@ in {
         }
         {
           assertion = lib.length v4Defaults <= 1;
-          message = "netif: machine '${machine.name}' renders more than one IPv4 default route (links: ${
+          message = "netif: machine '${machine.name}' may install more than one IPv4 default route (links: ${
             lib.concatStringsSep ", " (map (r: r.logical) v4Defaults)
-          }); exactly one link may own the host default route (D53)";
+          }); one link may own it: set 'defaultRoute.ipv4 = false' on the others (N21)";
         }
         {
           assertion = lib.length v6Defaults <= 1;
-          message = "netif: machine '${machine.name}' renders more than one IPv6 default route (links: ${
+          message = "netif: machine '${machine.name}' may install more than one IPv6 default route (links: ${
             lib.concatStringsSep ", " (map (r: r.logical) v6Defaults)
-          }); exactly one link may own the host default route (D53)";
+          }); a link with 'ra = true' or a static IPv6 gateway is a source of a default. One link may own it: set 'defaultRoute.ipv6 = false' (or 'ra = false') on the others (N21)";
         }
         {
           assertion = pdMissing == [];

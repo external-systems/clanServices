@@ -115,6 +115,8 @@
           "backoff_cutoff ${toString cfg.dhcpBackoffCutoff}"
           "script ${dhcpcdScript}"
         ]
+        # Keep the lease and its classless routes, drop the router (N21).
+        ++ lib.optional (!l.default4) "nogateway"
         ++ lib.optional (!l.dhcp6) "ipv4only"
         ++ lib.optional (!l.dhcp4) "ipv6only"
         ++ [
@@ -171,6 +173,7 @@ in {
             dhcp6 = mkOption {type = types.bool;};
             nameservers = mkOption {type = types.listOf types.str;};
             requiredForOnline = mkOption {type = types.bool;};
+            default4 = mkOption {type = types.bool;};
             prefixDelegation = {
               enable = mkOption {type = types.bool;};
               hint = mkOption {type = types.int;};
@@ -235,6 +238,8 @@ in {
       systemPackages = lib.optional (dhcpLinks != {}) pkgs.dhcpcd_latest;
     };
 
+    boot.kernel.sysctl."net.ipv6.conf.default.ra_defrtr_metric" = cfg.routeMetric;
+
     services.udev.extraRules = lib.concatMapStrings (interface: ''
       SUBSYSTEM=="net", ACTION=="add", NAME=="${interface}", ENV{SYSTEMD_WANTS}+="${dhcpcdUnit interface}.service"
     '') (lib.attrNames dhcpLinks);
@@ -262,6 +267,19 @@ in {
               RestartSec = 1;
             };
           };
+
+          # RA defaults get netif's metric too (N18). IfState's schema has
+          # no key for this sysctl, so it is written before each apply,
+          # while a new link is still down; links IfState creates take the
+          # 'default' value set below.
+          ifstate.serviceConfig.ExecStartPre = [
+            (pkgs.writeShellScript "netif-ra-metric" ''
+              for f in /proc/sys/net/ipv6/conf/*/ra_defrtr_metric; do
+                [ -w "$f" ] && echo ${toString cfg.routeMetric} > "$f"
+              done
+              exit 0
+            '')
+          ];
 
           ifstate.serviceConfig.ExecStartPost =
             [dnsApply]
