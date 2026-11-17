@@ -23,11 +23,14 @@ _: {
         {
           "Host networking (netif)" = [
             {Overview = "netif/index.md";}
+            {"What netif is responsible for" = "netif/responsibility.md";}
+            {"Use cases" = "netif/use-cases.md";}
             {"Modes and reboots" = "netif/modes.md";}
             {Wi-Fi = "netif/wifi.md";}
             {"Ownership and VPNs" = "netif/ownership.md";}
             {"Home router" = "netif/router.md";}
             {"Plan and evidence" = "netif/plan.md";}
+            {Glossary = "netif/glossary.md";}
           ];
         }
         {Decisions = [{"Decision record" = "decisions/index.md";}];}

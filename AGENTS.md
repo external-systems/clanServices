@@ -43,7 +43,8 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `ci / flake-check`) and the branch ruleset. Never add steps or jobs here;
   CI changes are pkgs PRs.
 - `specs/netif.md` — the host-networking contract and status authority
-  (decisions N1–N19): netif, the shared IfState base, modes, the
+  (decisions N1–N29, use cases U1–U11, the responsibility boundary
+  in §1.1): netif, the shared IfState base, modes, the
   ownership registry. It supersedes SPEC.md D50/D53/D61 where they
   conflict; its human pages are `documentation/docs/netif/`. Edit them
   together.
