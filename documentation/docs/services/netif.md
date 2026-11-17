@@ -57,6 +57,11 @@ beside IfState:
   opens its own). Trust a link only on a private network.
 - **`zone`** is a free label (`wan`, `lan`). Other modules read
   `clanServices.netif.zones.<zone>` to get the interface names.
+- **`match.path`** finds a NIC by its PCI slot (udev `ID_PATH`), for
+  cloud machines whose MAC is not known up front. The NIC gets the
+  link's name.
+- **`pathMtu`** says how large a packet the path really carries when
+  that is less than the link's MTU. Tunnels are sized from it.
 - **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
   link's `nameservers` plus what its DHCP leases bring. There is no
   global DNS list from netif.

@@ -18,7 +18,7 @@ owner decides.
 | P0 | The netif contract (docs only) | merged |
 | P1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
-| P3b | Slices 1 to 4 are **done** (2026-11-17, `netif-dhcp` and `netif` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
+| P3b | **Done**, all five slices (2026-11-17; `netif-dhcp`, `netif` and `netif-match` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
@@ -66,6 +66,14 @@ This is the change most likely to lock someone out of a real machine:
 a service that silently relied on an open link now needs its own port.
 No test relied on it. On a real machine, apply it with console access
 until the lockout guard (P8) exists.
+
+Slice 5, the same day:
+
+| Feature | What shows it |
+|---|---|
+| Cloud NICs matched by PCI slot (`match.path`) | `netif-match`: a virtio NIC in a fixed slot is renamed by udev before IfState runs, with systemd-networkd off |
+| cloud-init may not also configure the network | the build fails with a message that says what to do |
+| Path MTU (`pathMtu`) | you declare the real size of the path (GCP 1460, PPPoE 1492); routed-fabric and wireguard-mesh size their tunnels from it. Build-time tests cover each step |
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible

@@ -36,6 +36,15 @@ in {
         transport MTUs from it (WireGuard: underlay minus overhead).
       '';
     };
+    pathMtu = mkOption {
+      type = types.nullOr types.int;
+      default = null;
+      description = ''
+        The smallest declared path MTU of this instance's links (null
+        when no link declares one). Consumers prefer it over 'mtu'
+        (specs/netif.md N17).
+      '';
+    };
     links = mkOption {
       type = types.attrsOf (
         types.submodule {
@@ -54,6 +63,11 @@ in {
               type = types.nullOr types.int;
               default = null;
               description = "Effective link MTU (segment default merged).";
+            };
+            pathMtu = mkOption {
+              type = types.nullOr types.int;
+              default = null;
+              description = "Declared path MTU towards peers through this link, when below the link MTU (N17).";
             };
             addresses = mkOption {
               type = types.listOf types.str;

@@ -4,6 +4,14 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 36 (2026-11-17): **netif P3b slice 5: path MTU, cloud NICs**
+(`specs/netif.md` round P3b-5). Points that touch this file:
+- Invariant 21 is closed for WireGuard: both transports size their
+  tunnels from netif's `pathMtu`, then the link `mtu`.
+- `wireguard-mesh`'s `mtu` option is nullable (null derives it).
+- The `netif` export and `clan.networkFacts.netif` carry `pathMtu`
+  per link and per instance.
+
 Round 35 (2026-11-17): **netif P3b slice 4: untrusted links**
 (`specs/netif.md` round P3b-4). Points that touch this file:
 - A netif link is firewall-trusted only when declared so (N19). k3s,
@@ -1798,11 +1806,11 @@ unless noted) — revoked entries keep one-line reasons for history.
 21. WireGuard MTU derives per link from the underlay minus WireGuard
     overhead with a 1280 floor; Cilium MTU = the minimum interface MTU in
     native mode and minimum minus 50 under VXLAN; VMs assert path MTU
-    (D51/D58). *(Partially implemented: wireguard-mesh uses a fixed 1420
-    and routed-fabric assumes a 1500 underlay when netif exports no MTU,
-    as on every DHCP link. `specs/netif.md` N17 closes it in phase P3b:
-    both prefer netif's `pathMtu`, then the link `mtu`, and wireguard-mesh
-    derives its MTU as that minus 96, floor 1280.)*
+    (D51/D58). *(Implemented for WireGuard, `specs/netif.md` N17, round
+    P3b-5: routed-fabric and wireguard-mesh prefer netif's `pathMtu`,
+    then the link `mtu`; wireguard-mesh derives its MTU as that minus
+    96, floor 1280, and keeps 1420 when netif publishes neither. Eval
+    tests `test_mtuFollowsNetif`, `test_netifPathMtuPreferred`.)*
 22. `clan.networkFacts` is versioned (schemaVersion 2), non-secret,
     deep-evaluable, and
     identical in meaning to the functional configuration and exports;

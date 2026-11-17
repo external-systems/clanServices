@@ -134,7 +134,8 @@
           else if site.firewall.trust != null
           then site.firewall.trust
           else false;
-        inherit (link) zone;
+        inherit (link) zone pathMtu;
+        matchPath = link.match.path;
         inherit
           (link)
           routes
@@ -234,9 +235,36 @@
         Find a physical NIC by its permanent MAC address (lower-case,
         colon-separated) instead of its kernel name. IfState renames
         the NIC to the logical link name, which must then be at most 15
-        characters. Set exactly one of 'interface' and 'match.mac'.
+        characters. Set exactly one of 'interface', 'match.mac' and
+        'match.path'.
       '';
       example = "52:54:00:12:01:02";
+    };
+    match.path = mkOption {
+      type = types.nullOr (types.strMatching "[A-Za-z0-9:._-]+");
+      default = null;
+      description = ''
+        Find a physical NIC by its udev path ('ID_PATH', see
+        'udevadm info /sys/class/net/<name>'), for a cloud NIC whose MAC
+        is unknown before the machine exists but whose slot is stable.
+        netif renders a udev '.link' file that renames the NIC to the
+        logical link name (at most 15 characters) before IfState runs
+        (specs/netif.md N26). Prefer 'match.mac' where the provider
+        fixes the MAC.
+      '';
+      example = "pci-0000:00:03.0";
+    };
+    pathMtu = mkOption {
+      type = types.nullOr (types.ints.between 1280 65535);
+      default = null;
+      description = ''
+        The smallest MTU on the path to the machine's peers through
+        this link, when it is below the link MTU (GCP 1460, PPPoE
+        1492). netif does not set it on the link; it publishes it, and
+        routed-fabric and wireguard-mesh size their tunnels from it
+        (specs/netif.md N17).
+      '';
+      example = 1460;
     };
     extraSettings = mkOption {
       type = types.attrsOf types.anything;
@@ -604,8 +632,28 @@
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' has kind '${link.kind}' that does not match its configuration (vlan.id/bond.members/bridge.members indicators)";
           }
           {
-            assertion = r.kind != "physical" || (link.interface != null) != (link.match.mac != null);
-            message = "netif/${instanceName}: physical link '${logical}' of machine '${machineName}' must set exactly one of 'interface' and 'match.mac'";
+            assertion =
+              r.kind
+              != "physical"
+              || lib.count (x: x != null) [
+                link.interface
+                link.match.mac
+                link.match.path
+              ]
+              == 1;
+            message = "netif/${instanceName}: physical link '${logical}' of machine '${machineName}' must set exactly one of 'interface', 'match.mac' and 'match.path'";
+          }
+          {
+            assertion = link.match.path == null || r.kind == "physical";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'match.path' but is not a physical link";
+          }
+          {
+            assertion = link.match.path == null || lib.stringLength logical <= 15;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' uses 'match.path', so its logical name becomes the interface name and must be at most 15 characters";
+          }
+          {
+            assertion = link.pathMtu == null || r.mtu == null || link.pathMtu <= r.mtu;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'pathMtu' ${toString link.pathMtu} above its MTU ${toString r.mtu}; the path cannot carry more than the link";
           }
           {
             assertion = link.match.mac == null || r.kind == "physical";
@@ -943,16 +991,19 @@ in {
         then "${settings.targetUser}@[${targetHostAddr}]"
         else "${settings.targetUser}@${targetHostAddr}";
 
-      mtus = lib.filter (mtu: mtu != null) (lib.catAttrs "mtu" (lib.attrValues resolved));
-      minMtu =
-        if mtus == []
+      smallest = values:
+        if values == []
         then null
-        else
-          builtins.foldl' (acc: m:
-            if m < acc
-            then m
-            else acc) (builtins.head mtus)
-          mtus;
+        else builtins.foldl' lib.min (builtins.head values) values;
+      minMtu = smallest (lib.filter (mtu: mtu != null) (lib.catAttrs "mtu" (lib.attrValues resolved)));
+      minPathMtu = smallest (
+        lib.filter (mtu: mtu != null) (lib.catAttrs "pathMtu" (lib.attrValues resolved))
+      );
+      # A DHCP link that carries the default and says nothing about its
+      # MTU: transports would assume 1500, which is wrong on many clouds.
+      unsizedDhcpDefaults = lib.attrNames (
+        lib.filterAttrs (_: r: r.dhcp4 && v4Default r && r.mtu == null && r.pathMtu == null) resolved
+      );
 
       # The interface netif renders for one link, before extraSettings.
       mkIfstateBase = forwarding: logical: r: let
@@ -1128,6 +1179,7 @@ in {
           schemaVersion = 1;
           endpoint = machineEndpoint;
           mtu = minMtu;
+          pathMtu = minPathMtu;
           links =
             lib.mapAttrs (_: r: {
               inherit
@@ -1135,6 +1187,7 @@ in {
                 kind
                 interface
                 mtu
+                pathMtu
                 nameservers
                 endpoint
                 ra
@@ -1184,6 +1237,21 @@ in {
             }
           ];
 
+        warnings =
+          lib.optional (config.clan.networkFacts.fabric != {} && unsizedDhcpDefaults != [])
+          "netif/${instanceName}: machine '${machine.name}' is a fabric member and its DHCP link(s) ${lib.concatStringsSep ", " unsizedDhcpDefaults} carry the default route with neither 'mtu' nor 'pathMtu'; tunnels will assume 1500. Set 'pathMtu' to the provider's value (N17)";
+
+        # A cloud NIC found by its udev path is renamed by udev before
+        # IfState runs; IfState then knows it by name (N26). '.link'
+        # files are udev's and work with systemd-networkd off.
+        systemd.network.links = lib.mapAttrs' (
+          logical: r:
+            lib.nameValuePair "10-netif-${logical}" {
+              matchConfig.Path = r.matchPath;
+              linkConfig.Name = logical;
+            }
+        ) (lib.filterAttrs (_: r: r.matchPath != null) resolved);
+
         networking = {
           ifstate.settings = {
             interfaces = ifstateInterfaces;
@@ -1206,6 +1274,7 @@ in {
             netif.${instanceName} = {
               endpoint = machineEndpoint;
               mtu = minMtu;
+              pathMtu = minPathMtu;
               links =
                 lib.mapAttrs (_: r: {
                   inherit
@@ -1213,6 +1282,7 @@ in {
                     kind
                     interface
                     mtu
+                    pathMtu
                     nameservers
                     endpoint
                     ra

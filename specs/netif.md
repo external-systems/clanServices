@@ -11,6 +11,20 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P3b-5 (2026-11-17): **path MTU and cloud NICs; P3b is
+complete.** Implemented:
+- **N17** `links.<n>.pathMtu`, published per link and per instance in
+  the export and in `clan.networkFacts`; never set on the link.
+  `routed-fabric` prefers it over the link MTU. `wireguard-mesh`'s
+  `mtu` is nullable: null derives it from the machine's netif links
+  (path MTU, else link MTU, minus 96, floor 1280; 1420 when netif
+  publishes neither). netif warns when a fabric member's DHCP default
+  link declares no size. Eval tests cover each step.
+- **N26** `links.<n>.match.path` renders a udev `.link` file; proven
+  by `netif-match` (`NETIF_MATCH_PATH_OK`) on a virtio NIC in a fixed
+  PCI slot. Eval rejects cloud-init's network configuration.
+- SPEC.md invariant 21 is closed.
+
 Round P3b-4 (2026-11-17): **links are untrusted by default; the zone
 seam exists.** Implemented and proven by `netif-dhcp`
 (`NETIF_DHCP_TRUST_OK`):
@@ -902,7 +916,13 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - **Warning.** netif warns when a fabric member's DHCP link owns the main
     default route and declares neither `mtu` nor `pathMtu`. Transports
     would assume 1500 there, which is wrong on many clouds.
-  *(planned, phase P3b)*
+  - **As built.** wireguard-mesh reads every netif export of its own
+    machine, so the smallest declared size of all its netif instances
+    wins. When netif publishes neither a path MTU nor a link MTU the
+    mesh keeps 1420.
+  *(implemented, round P3b-5: eval tests `test_pathMtuExported`,
+  `test_pathMtuAboveMtuRejected`, wireguard-mesh `test_mtuFollowsNetif`,
+  routed-fabric `test_netifPathMtuPreferred`)*
 
 - **N18 Default routes from several owners.** D53 still allows at most one
   netif link per family to own the main-table default. Other owners
@@ -1266,8 +1286,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     (`gateway.onLink`), MTU below 1500 (`pathMtu`, N17), a second NIC
     without a default (N21).
   *(probe-verified 2026-11-16; confirmed by the owner 2026-11-17;
-  planned, phase P3b slice 5; `match.path` to be VM-proven in
-  `netif-match`)*
+  implemented, round P3b-5: `netif-match` `NETIF_MATCH_PATH_OK`; eval
+  tests `test_matchPath*`, `test_cloudInitNetworkRejected`)*
 
 - **N27 A roaming Kubernetes node uses its fabric loopback (U2).**
   kamrui-h1's `kubernetes` mode runs a k3s server with ClusterMesh while
@@ -1486,12 +1506,10 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - the base force-disables NetworkManager on every machine (conflicts N2);
   - there are no modes (N3/N4), and the registry does not render into
     NetworkManager yet (N6, phase P2);
-  - there is no `pathMtu` (N17; P3b slice 5);
   - bridges accept physical members only and have no MAC setting (N23;
     phase P7);
   - there is no `containers` preset; Podman's bridge is deleted on
     reapply (N22; phase P7);
-  - a NIC can be matched by name or MAC only (N26; P3b);
   - nothing rolls back a change that cuts the gateway (N25; phase P8);
   - the base forces IfState on in every configuration, so no
     NetworkManager mode can exist (N24; phase P4);
@@ -1908,7 +1926,7 @@ decision. Phase numbers are labels, not the order.
 | P0 | This contract (docs only) | merged |
 | P1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
-| P3b | **Slices 1 to 4 are done** (rounds P3b-1, P3b-3, P3b-4). Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
+| P3b | **Done: all five slices** (rounds P3b-1, P3b-3, P3b-4, P3b-5). The tools of N38, N41 and N42 follow as their own slice. Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
 | P7 | `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |

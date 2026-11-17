@@ -276,6 +276,10 @@ in {
     (lib.mkIf (links != {}) {
       assertions = [
         {
+          assertion = !(config.services.cloud-init.enable && config.services.cloud-init.network.enable);
+          message = "netif: 'services.cloud-init.network.enable' would make cloud-init a second writer of the links netif owns; turn it off and match the NICs with 'match.path' or 'match.mac' (specs/netif.md N26)";
+        }
+        {
           assertion = dhcpLinks == {} || lib.versionAtLeast pkgs.dhcpcd_latest.version "10.5.0";
           message = "netif: DHCP links need dhcpcd 10.5.0 or newer as pkgs.dhcpcd_latest (got ${pkgs.dhcpcd_latest.version}); apply inputs.org-pkgs.overlays.ifstate (specs/netif.md N30)";
         }
