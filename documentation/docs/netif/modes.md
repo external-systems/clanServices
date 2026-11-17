@@ -1,5 +1,12 @@
 # Modes and reboots
 
+!!! note "Status (2026-11-17)"
+    Built and tested for netif itself: the `modes` service, the
+    NetworkManager and IfState renderers, and limiting a netif instance
+    to some modes. The test `netif-modes` boots one machine into each
+    mode in turn. Not built yet: limiting tunnels and clusters to a
+    mode, Wi-Fi settings for IfState modes, hot-plugged dock Ethernet.
+
 A mode is a NixOS specialisation. The parent configuration is the default
 boot entry; every other mode is an extra entry in the boot menu. On
 kamrui-h1:

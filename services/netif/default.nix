@@ -151,6 +151,7 @@
           then only.match.mac
           else null;
         matchPath = link.match.path;
+        matchMac = link.match.mac;
         inherit
           (link)
           routes
@@ -888,6 +889,18 @@ in {
             explicit per-machine overrides.
           '';
         };
+        modes = mkOption {
+          type = types.listOf types.str;
+          default = [];
+          example = ["developer"];
+          description = ''
+            The machine's modes this instance is active in ('default'
+            is the parent configuration; see the 'modes' service). Empty
+            means every mode. In the other modes netif renders none of
+            this instance's links; its exports, vars and facts stay
+            (specs/netif.md N4).
+          '';
+        };
         targetHost = mkOption {
           type = types.bool;
           default = false;
@@ -1268,8 +1281,16 @@ in {
         forwarding = config.clan.networkFacts.forwarding;
         ifstateInterfaces = mkIfstateInterfaces forwarding;
         ifstateRoutes = mkIfstateRoutes config.clanServices.netif.routeMetric;
+        # Mode scoping (N4): rendered only in the instance's modes.
+        inherit (config.clanServices.networking) mode;
+        active = settings.modes == [] || lib.elem mode.name settings.modes;
+        knownModes = ["default"] ++ builtins.attrNames config.clanServices.networking.modes;
+        unknownModes = builtins.filter (name: !(lib.elem name knownModes)) settings.modes;
       in {
-        imports = [../../lib/kube-cluster/network-facts.nix];
+        imports = [
+          ../../lib/kube-cluster/network-facts.nix
+          ../../lib/modes.nix
+        ];
 
         assertions =
           [
@@ -1281,13 +1302,17 @@ in {
           ++ linkAssertions instanceName machine.name settings.links resolved
           ++ [
             {
+              assertion = unknownModes == [];
+              message = "netif/${instanceName}: machine '${machine.name}' limits this instance to mode(s) it does not have: ${lib.concatStringsSep ", " unknownModes}. Its modes are ${lib.concatStringsSep ", " knownModes}; declare the mode in the 'modes' service or fix the name (N4)";
+            }
+            {
               assertion = extraSettingsCollisions == [];
               message = "netif/${instanceName}: machine '${machine.name}' sets extraSettings that netif already renders: ${lib.concatStringsSep ", " extraSettingsCollisions}; use the link option instead";
             }
           ];
 
         warnings =
-          lib.optional (config.clan.networkFacts.fabric != {} && unsizedDhcpDefaults != [])
+          lib.optional (active && config.clan.networkFacts.fabric != {} && unsizedDhcpDefaults != [])
           "netif/${instanceName}: machine '${machine.name}' is a fabric member and its DHCP link(s) ${lib.concatStringsSep ", " unsizedDhcpDefaults} carry the default route with neither 'mtu' nor 'pathMtu'; tunnels will assume 1500. Set 'pathMtu' to the provider's value (N17)";
 
         # A cloud NIC found by its udev path is renamed by udev before
@@ -1299,9 +1324,9 @@ in {
               matchConfig.Path = r.matchPath;
               linkConfig.Name = logical;
             }
-        ) (lib.filterAttrs (_: r: r.matchPath != null) resolved);
+        ) (lib.filterAttrs (_: r: active && r.matchPath != null) resolved);
 
-        networking = {
+        networking = lib.mkIf active {
           ifstate.settings = {
             interfaces = ifstateInterfaces;
             routing = {
@@ -1373,165 +1398,193 @@ in {
     instances,
     machine,
     ...
-  }: let
-    memberships =
-      lib.filterAttrs (
-        _: instance: instance.roles ? default && instance.roles.default.machines ? ${machine.name}
-      )
-      instances;
-
-    # instanceName -> resolved links of this machine in that instance.
-    resolvedByInstance =
-      lib.mapAttrs (
-        _: instance: let
-          settings = instance.roles.default.machines.${machine.name}.settings;
-        in
-          resolveLinks settings settings.links
-      )
-      memberships;
-
-    allResolved = lib.concatLists (
-      lib.mapAttrsToList (_: resolved: lib.attrValues resolved) resolvedByInstance
-    );
-
-    interfacesWithOwners = lib.concatLists (
-      lib.mapAttrsToList (
-        instanceName: resolved:
-          map (r: {
-            inherit (r) interface;
-            inherit instanceName;
-          }) (lib.attrValues resolved)
-      )
-      resolvedByInstance
-    );
-    interfaceClaimCounts =
-      lib.foldl' (
-        acc: o: acc // {${o.interface} = (acc.${o.interface} or 0) + 1;}
-      ) {}
-      interfacesWithOwners;
-    interfaceDuplicates = lib.attrNames (lib.filterAttrs (_: count: count > 1) interfaceClaimCounts);
-
-    v4Defaults = lib.filter v4Default allResolved;
-    v6Defaults = lib.filter v6Default allResolved;
-
-    policyTableClaims = lib.concatLists (
-      lib.mapAttrsToList (
-        instanceName: resolved:
-          lib.concatMap (
-            r:
-              lib.optional (r.policy.table != null) {
-                inherit instanceName;
-                inherit (r) logical;
-                value = r.policy.table;
-              }
-          ) (lib.attrValues resolved)
-      )
-      resolvedByInstance
-    );
-    rulePriorityClaims = lib.concatLists (
-      lib.mapAttrsToList (
-        instanceName: resolved:
-          lib.concatMap (
-            r:
-              lib.optionals (r.policy.table != null) (
-                map (priority: {
-                  inherit instanceName;
-                  inherit (r) logical;
-                  value = priority;
-                }) (
-                  (lib.genList (i: r.policy.priority + i) (lib.length r.policy.from))
-                  ++ (lib.genList (i: r.policy.priority + 50 + i) (lib.length r.policy.to))
+  }: {
+    nixosModule = {config, ...}: let
+      # Only the instances active in this configuration's mode (N4): the
+      # same NIC may belong to one instance per mode.
+      currentMode = config.clanServices.networking.mode.name;
+      mine = lib.filterAttrs (_: instance: instance.roles ? default && instance.roles.default.machines ? ${machine.name}) instances;
+      activeIn = instance: let
+        inherit (instance.roles.default.machines.${machine.name}.settings) modes;
+      in
+        modes == [] || lib.elem currentMode modes;
+      memberships = lib.filterAttrs (_: activeIn) mine;
+      # Physical NICs of the instances that belong to other modes: in
+      # this mode they are nobody's, and NetworkManager must not adopt
+      # them (N4).
+      otherModeInterfaces = lib.subtractLists (map (r: r.interface) allResolved) (
+        lib.unique (
+          lib.concatLists (
+            lib.mapAttrsToList (
+              _: instance: let
+                inherit (instance.roles.default.machines.${machine.name}) settings;
+              in
+                map (r: r.interface) (
+                  lib.filter (r: r.kind == "physical") (lib.attrValues (resolveLinks settings settings.links))
                 )
-              )
-          ) (lib.attrValues resolved)
-      )
-      resolvedByInstance
-    );
-    crossInstanceDuplicates = claims:
-      lib.attrNames (
-        lib.filterAttrs (
-          _: entries: lib.length (lib.unique (map (entry: entry.instanceName) entries)) > 1
-        ) (lib.groupBy (entry: toString entry.value) claims)
+            ) (lib.filterAttrs (_: instance: !(activeIn instance)) mine)
+          )
+        )
       );
-    policyTableDuplicates = crossInstanceDuplicates policyTableClaims;
-    rulePriorityDuplicates = crossInstanceDuplicates rulePriorityClaims;
 
-    # Prefix delegation targets, resolved across instances (N16).
-    pdClaims = lib.concatLists (
-      lib.mapAttrsToList (
-        instanceName: resolved:
-          lib.concatMap (
-            r:
-              map (a: let
-                targetInstance =
-                  if a.instance == null
-                  then instanceName
-                  else a.instance;
-                target = resolvedByInstance.${targetInstance}.${a.link} or null;
-              in {
-                from = "${instanceName}/${r.logical}";
-                to = "${targetInstance}/${a.link}";
-                exists = target != null;
-                self = targetInstance == instanceName && a.link == r.logical;
-                interface =
-                  if target == null
-                  then "unresolved"
-                  else target.interface;
-                inherit (a) subnet length;
-              })
-              r.prefixDelegation.assign
-          ) (lib.attrValues resolved)
-      )
-      resolvedByInstance
-    );
-    pdMissing = map (c: "${c.from} -> ${c.to}") (lib.filter (c: !c.exists) pdClaims);
-    pdSelf = map (c: c.from) (lib.filter (c: c.self) pdClaims);
-    pdTwice = lib.attrNames (
-      lib.filterAttrs (_: claims: lib.length (lib.unique (map (c: c.from) claims)) > 1) (lib.groupBy (c: c.to) pdClaims)
-    );
+      # instanceName -> resolved links of this machine in that instance.
+      resolvedByInstance =
+        lib.mapAttrs (
+          _: instance: let
+            settings = instance.roles.default.machines.${machine.name}.settings;
+          in
+            resolveLinks settings settings.links
+        )
+        memberships;
 
-    # What runs beside IfState (host.nix), keyed by interface name.
-    hostLinks = lib.listToAttrs (
-      lib.concatLists (
+      allResolved = lib.concatLists (
+        lib.mapAttrsToList (_: resolved: lib.attrValues resolved) resolvedByInstance
+      );
+
+      interfacesWithOwners = lib.concatLists (
         lib.mapAttrsToList (
           instanceName: resolved:
-            map (
-              r:
-                lib.nameValuePair r.interface {
-                  instance = instanceName;
-                  inherit
-                    (r)
-                    logical
-                    dhcp4
-                    dhcp6
-                    nameservers
-                    requiredForOnline
-                    default4
-                    kind
-                    zone
-                    gateway4
-                    gateway6
-                    ;
-                  trusted = r.trust;
-                  prefixDelegation = {
-                    inherit (r.prefixDelegation) enable hint;
-                    assign = map (c: {inherit (c) interface subnet length;}) (
-                      lib.filter (c: c.from == "${instanceName}/${r.logical}") pdClaims
-                    );
-                  };
-                }
-            ) (lib.filter (r: r.memberOf == null) (lib.attrValues resolved))
+            map (r: {
+              inherit (r) interface;
+              inherit instanceName;
+            }) (lib.attrValues resolved)
         )
         resolvedByInstance
-      )
-    );
-  in {
-    nixosModule = {config, ...}: {
+      );
+      interfaceClaimCounts =
+        lib.foldl' (
+          acc: o: acc // {${o.interface} = (acc.${o.interface} or 0) + 1;}
+        ) {}
+        interfacesWithOwners;
+      interfaceDuplicates = lib.attrNames (lib.filterAttrs (_: count: count > 1) interfaceClaimCounts);
+
+      v4Defaults = lib.filter v4Default allResolved;
+      v6Defaults = lib.filter v6Default allResolved;
+
+      policyTableClaims = lib.concatLists (
+        lib.mapAttrsToList (
+          instanceName: resolved:
+            lib.concatMap (
+              r:
+                lib.optional (r.policy.table != null) {
+                  inherit instanceName;
+                  inherit (r) logical;
+                  value = r.policy.table;
+                }
+            ) (lib.attrValues resolved)
+        )
+        resolvedByInstance
+      );
+      rulePriorityClaims = lib.concatLists (
+        lib.mapAttrsToList (
+          instanceName: resolved:
+            lib.concatMap (
+              r:
+                lib.optionals (r.policy.table != null) (
+                  map (priority: {
+                    inherit instanceName;
+                    inherit (r) logical;
+                    value = priority;
+                  }) (
+                    (lib.genList (i: r.policy.priority + i) (lib.length r.policy.from))
+                    ++ (lib.genList (i: r.policy.priority + 50 + i) (lib.length r.policy.to))
+                  )
+                )
+            ) (lib.attrValues resolved)
+        )
+        resolvedByInstance
+      );
+      crossInstanceDuplicates = claims:
+        lib.attrNames (
+          lib.filterAttrs (
+            _: entries: lib.length (lib.unique (map (entry: entry.instanceName) entries)) > 1
+          ) (lib.groupBy (entry: toString entry.value) claims)
+        );
+      policyTableDuplicates = crossInstanceDuplicates policyTableClaims;
+      rulePriorityDuplicates = crossInstanceDuplicates rulePriorityClaims;
+
+      # Prefix delegation targets, resolved across instances (N16).
+      pdClaims = lib.concatLists (
+        lib.mapAttrsToList (
+          instanceName: resolved:
+            lib.concatMap (
+              r:
+                map (a: let
+                  targetInstance =
+                    if a.instance == null
+                    then instanceName
+                    else a.instance;
+                  target = resolvedByInstance.${targetInstance}.${a.link} or null;
+                in {
+                  from = "${instanceName}/${r.logical}";
+                  to = "${targetInstance}/${a.link}";
+                  exists = target != null;
+                  self = targetInstance == instanceName && a.link == r.logical;
+                  interface =
+                    if target == null
+                    then "unresolved"
+                    else target.interface;
+                  inherit (a) subnet length;
+                })
+                r.prefixDelegation.assign
+            ) (lib.attrValues resolved)
+        )
+        resolvedByInstance
+      );
+      pdMissing = map (c: "${c.from} -> ${c.to}") (lib.filter (c: !c.exists) pdClaims);
+      pdSelf = map (c: c.from) (lib.filter (c: c.self) pdClaims);
+      pdTwice = lib.attrNames (
+        lib.filterAttrs (_: claims: lib.length (lib.unique (map (c: c.from) claims)) > 1) (lib.groupBy (c: c.to) pdClaims)
+      );
+
+      # What runs beside IfState (host.nix), keyed by interface name.
+      hostLinks = lib.listToAttrs (
+        lib.concatLists (
+          lib.mapAttrsToList (
+            instanceName: resolved:
+              map (
+                r:
+                  lib.nameValuePair r.interface {
+                    instance = instanceName;
+                    inherit
+                      (r)
+                      logical
+                      dhcp4
+                      dhcp6
+                      nameservers
+                      requiredForOnline
+                      default4
+                      kind
+                      zone
+                      gateway4
+                      gateway6
+                      default6
+                      ra
+                      mtu
+                      routes
+                      ;
+                    trusted = r.trust;
+                    addresses = r.static4 ++ r.static6;
+                    inherit (r) matchMac;
+                    prefixDelegation = {
+                      inherit (r.prefixDelegation) enable hint;
+                      assign = map (c: {inherit (c) interface subnet length;}) (
+                        lib.filter (c: c.from == "${instanceName}/${r.logical}") pdClaims
+                      );
+                    };
+                  }
+              ) (lib.filter (r: r.memberOf == null) (lib.attrValues resolved))
+          )
+          resolvedByInstance
+        )
+      );
+    in {
       imports = [
         (import ../../lib/ifstate.nix {inherit ifstateOverlay;})
         ./host.nix
         ./tools.nix
         ./guard.nix
+        ./networkmanager.nix
       ];
 
       # DNS servers a router advertises (RDNSS) are not read: the kernel
@@ -1546,6 +1599,7 @@ in {
 
       clanServices.netif = {
         links = hostLinks;
+        inherit otherModeInterfaces;
         # Guest-ports bridges with the ports netif itself declares (N23).
         guestBridges = lib.listToAttrs (
           lib.concatLists (

@@ -5,6 +5,15 @@
   ...
 }: let
   ip = import ./ip.nix {inherit lib;};
+  # One manager per configuration (N2): IfState, or NetworkManager.
+  inherit (config.clanServices.networking) mode;
+  ifstateMode = mode.manager == "ifstate";
+  # What only IfState can render: anything but a plain physical link.
+  ifstateOnly =
+    builtins.attrNames (
+      lib.filterAttrs (_: interface: (interface.link.kind or null) != "physical") config.networking.ifstate.settings.interfaces
+    )
+    ++ lib.optional ((config.networking.ifstate.settings.routing.rules or []) != []) "policy-routing rules";
   cidr = import ./kube-cluster/cidr.nix {inherit lib;};
   addressValue = address:
     ip.addressFromCIDR (
@@ -72,8 +81,11 @@
 in {
   key = "clanServices:lib/ifstate.nix";
 
-  # The ownership registry renders parameters.ignore (specs/netif.md N6).
-  imports = [./ownership.nix];
+  # The registry renders parameters.ignore; modes pick the manager (N24).
+  imports = [
+    ./ownership.nix
+    ./modes.nix
+  ];
 
   options.clanServices.networking.reservedPorts = lib.mkOption {
     type = lib.types.listOf lib.types.str;
@@ -93,8 +105,12 @@ in {
         message = "clanServices networking is IfState-only; declare DHCP per link in netif (dhcp.ipv4, dhcp.ipv6) instead of networking.useDHCP";
       }
       {
-        assertion = lib.versionAtLeast config.networking.ifstate.package.version "2.5";
+        assertion = !ifstateMode || lib.versionAtLeast config.networking.ifstate.package.version "2.5";
         message = "clanServices requires IfState >= 2.5; apply inputs.org-pkgs.overlays.ifstate or provide an equivalent newer package";
+      }
+      {
+        assertion = ifstateMode || ifstateOnly == [];
+        message = "clanServices: mode '${mode.name}' uses NetworkManager, which renders plain wired links only, but this configuration declares ${lib.concatStringsSep ", " ifstateOnly}. VLANs, bonds, bridges, tunnels, fabric links and policy routing need an IfState mode: limit the instance to one with its 'modes' setting, or give this mode 'manager = \"ifstate\"' (specs/netif.md N2, N4)";
       }
       {
         assertion = lib.length wireguardPortClaims == lib.length wireguardPorts;
@@ -116,7 +132,7 @@ in {
     warnings =
       lib.concatMap (
         p:
-          lib.optional (lib.versionAtLeast p.version p.next)
+          lib.optional (ifstateMode && lib.versionAtLeast p.version p.next)
           "clanServices networking: ${p.name} ${p.version} is newer than the proven ${p.proven}.x; rerun the netif VM suites (vm-test --all --remote --rebuild) and update lib/ifstate.nix"
       ) [
         {
@@ -143,19 +159,22 @@ in {
     );
 
     networking = {
-      ifstate.enable = true;
+      ifstate.enable = ifstateMode;
 
       interfaces = lib.mkForce {};
-      networkmanager.enable = lib.mkForce false;
+      networkmanager.enable = lib.mkForce (!ifstateMode);
       useDHCP = lib.mkForce false;
       useNetworkd = lib.mkForce false;
     };
 
     systemd = {
       network.enable = lib.mkForce false;
-      services.ifstate.serviceConfig = {
-        KillMode = "process";
-        ExecStartPost = lib.mkIf (physicalNames != []) [physicalCheck];
+      # the unit exists only in an IfState mode
+      services = lib.mkIf ifstateMode {
+        ifstate.serviceConfig = {
+          KillMode = "process";
+          ExecStartPost = lib.mkIf (physicalNames != []) [physicalCheck];
+        };
       };
     };
   };

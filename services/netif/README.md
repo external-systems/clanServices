@@ -106,6 +106,10 @@ Beside IfState, netif runs (`host.nix`):
   `netif-guard.service`): after every apply the gateways and declared
   targets must answer, or the last configuration that passed is
   re-applied and the guard unit fails;
+- modes (`networkmanager.nix`, the `modes` service): in a
+  `networkmanager` mode netif renders NetworkManager profiles for its
+  plain wired links and none of the units above; an instance's `modes`
+  setting limits it to some modes;
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

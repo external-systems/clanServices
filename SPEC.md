@@ -4,6 +4,17 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 41 (2026-11-17): **netif P4a: modes** (`specs/netif.md` round
+P4a). Points that touch this file:
+- The shared IfState base follows the machine's mode: IfState in an
+  `ifstate` mode, NetworkManager otherwise. A machine with no modes
+  entry has one IfState mode, so every cluster suite is unchanged
+  (their test derivations are identical to before).
+- k3s, rke2, routed-fabric and wireguard-mesh need an IfState mode.
+  Until P4b gives them a `modes` setting, a machine that runs one of
+  them cannot have a NetworkManager mode: evaluation rejects it.
+- New public service: `modes`.
+
 Round 40 (2026-11-17): **netif P8: lockout guard** (`specs/netif.md`
 round P8). Nothing in this file's contract changes. A headless
 cluster node with a netif link now rolls a network change back when

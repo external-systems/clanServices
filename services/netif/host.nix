@@ -254,6 +254,12 @@ in {
             trusted = mkOption {type = types.bool;};
             gateway4 = mkOption {type = types.nullOr types.str;};
             gateway6 = mkOption {type = types.nullOr types.str;};
+            default6 = mkOption {type = types.bool;};
+            ra = mkOption {type = types.bool;};
+            mtu = mkOption {type = types.nullOr types.int;};
+            addresses = mkOption {type = types.listOf types.str;};
+            matchMac = mkOption {type = types.nullOr types.str;};
+            routes = mkOption {type = types.listOf types.attrs;};
             prefixDelegation = {
               enable = mkOption {type = types.bool;};
               hint = mkOption {type = types.int;};
@@ -283,6 +289,12 @@ in {
         name.
       '';
       type = types.attrsOf (types.listOf types.str);
+    };
+    otherModeInterfaces = mkOption {
+      internal = true;
+      default = [];
+      description = "Physical NICs that netif declares for other modes of this machine only. Set by netif's perMachine module.";
+      type = types.listOf types.str;
     };
     guestBridges = mkOption {
       internal = true;
@@ -336,7 +348,9 @@ in {
         );
       };
     }
-    (lib.mkIf (links != {}) {
+    # What follows runs beside IfState; a NetworkManager mode has its own
+    # renderer (networkmanager.nix).
+    (lib.mkIf (links != {} && config.clanServices.networking.mode.manager == "ifstate") {
       assertions = [
         {
           assertion = !(config.services.cloud-init.enable && config.services.cloud-init.network.enable);

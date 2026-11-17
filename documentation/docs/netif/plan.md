@@ -20,8 +20,8 @@ owner decides.
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
 | P3b | **Done**, all five slices (2026-11-17; `netif-dhcp`, `netif` and `netif-match` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | **Done** (2026-11-17; `netif-containers` and `netif-vmhost` green). The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
-| P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
-| P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
+| P2 | The NetworkManager part is **done** (2026-11-17, `netif-modes` green). Still to do: Wi-Fi settings for IfState modes, hot-plugged dock Ethernet, the Deck check. Original scope: NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
+| P4 | First half **done** (2026-11-17, `netif-modes` green): the `modes` service, and netif follows the mode. Still to do: the mode setting on the fabric and cluster services. Original scope: The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
 | P8 | **Done** (2026-11-17, `netif-guard` green). The lockout guard | `netif-guard` green |
 | P5 | The router module in `modules`, built on P3b's zones and link names | `netif-router` green |
 | Contract gate | netif is stable in this repo | every phase above done, every probe-verified claim VM-proven, every invariant tested |
@@ -136,6 +136,24 @@ and could never see a DHCP gateway; the DHCP test caught that.
 The guard is on by default on machines without a screen session and
 off on desktops. It cannot see a firewall rule that blocks incoming
 connections: its checks go outwards.
+
+Modes (first half of P4, with the NetworkManager part of P2), the same
+day, proven by the new `netif-modes` test:
+
+| Feature | What the test shows |
+|---|---|
+| A machine with two modes | one machine boots into its NetworkManager mode, then into its IfState mode, then back; each boot runs exactly one network manager |
+| The same wired link in both | NetworkManager brings it up from a profile netif wrote; in the other mode netif's own DHCP does. Same address source, same route metric, DNS in both |
+| Things only one mode has | a VLAN declared for the developer mode exists only there; in the other mode its network card is left alone |
+| A clear error | a VLAN, bond, bridge or tunnel in a NetworkManager mode fails the build and says how to limit it to an IfState mode |
+
+How you write it: one `modes` entry per machine names each mode and
+its manager; a netif instance can say `modes = ["developer"]`.
+Anything of your own that belongs to one mode hangs on
+`config.clanServices.networking.mode.name`.
+
+Not done yet: tunnels and clusters cannot be limited to a mode, so a
+machine that runs them cannot have a NetworkManager mode today.
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible
