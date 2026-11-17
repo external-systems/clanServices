@@ -95,6 +95,16 @@ in {
                 this set (D53).
               '';
             };
+            zone = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              description = "The link's zone label ('wan', 'lan', ...); netif gives it no meaning (N10).";
+            };
+            trusted = mkOption {
+              type = types.bool;
+              default = false;
+              description = "True when the link is in networking.firewall.trustedInterfaces (N19).";
+            };
             defaultRoute = {
               ipv4 = mkOption {
                 type = types.bool;

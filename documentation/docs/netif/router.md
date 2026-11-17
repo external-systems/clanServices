@@ -88,12 +88,16 @@ upstream. Our pkgs repo builds the upstream release that has the fix
 (10.5.2, as `dhcpcd_latest`), and with it every flap recovered
 ([Plan and evidence](plan.md)).
 
-## Zones (planned, P3b)
+## Zones (built 2026-11-17)
 
 Each link can carry a `zone` label (`wan`, `lan`, `mgmt`). netif does not
-interpret it. It publishes each link's Linux name, kind and zone under
-`clanServices.networking.links.<instance>.<link>`, and the router module
-uses those.
+interpret it. It publishes two read-only options, and the router module
+uses those:
+
+- `clanServices.netif.zones.<zone>`: the interface names of every link
+  with that zone, for example `zones.wan = ["enp1s0f0np0"]`;
+- `clanServices.networking.links.<instance>.<link>`: one link's Linux
+  name, kind and zone.
 
 ## Lockout guard (planned, phase P8)
 

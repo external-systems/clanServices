@@ -11,6 +11,21 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P3b-4 (2026-11-17): **links are untrusted by default; the zone
+seam exists.** Implemented and proven by `netif-dhcp`
+(`NETIF_DHCP_TRUST_OK`):
+- **N19** a link is firewall-trusted only when it or its segment says
+  so. On an untrusted link SSH answers and an unopened port does not;
+  on a trusted link both do. netif opens UDP 546 on its DHCPv6 links.
+  DHCPv4, DHCPv6 and prefix delegation work on an untrusted WAN.
+  No suite relied on netif's trust: the cluster suites do not use the
+  netif service, and every netif suite passed unchanged.
+- **N10** `links.<n>.zone`; the read-only options
+  `clanServices.networking.links.<instance>.<logical>` and
+  `clanServices.netif.zones.<zone>` (the interfaces of a zone, an
+  addition to the decision); `zone` and `trusted` in the export and in
+  `clan.networkFacts`.
+
 Round P3b-3 (2026-11-17): **default routes: one per family, chosen
 explicitly, at a fixed metric.** Implemented and proven by `netif-dhcp`
 (`NETIF_DHCP_DEFAULT_OK`) and `netif` (`NETIF_SWITCH_OK`):
@@ -623,8 +638,12 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
       `clanServices.networking.links.<instance>.<logical>`, holding
       `{interface, zone, kind}`. The same facts go into
       `clan.networkFacts.netif` and the `netif` export.
+    - `clanServices.netif.zones.<zone>` is the same seam read the
+      other way: the sorted interface names of every link with that
+      zone. A NAT rule wants "all `wan` interfaces", not one link.
     - The seam ships in phase P3b with the other export changes (N16,
-      N17), so the export changes once. Phase P5 builds the router
+      N17). *(implemented, round P3b-4; eval tests `test_zoneSeam`,
+      `test_zoneNameChecked`)* Phase P5 builds the router
       module in `modules` on it.
   - **NAT is never netif's (N20).** The home router's NAT lives in the
     router module. A NAT gateway for other machines (U9) is a separate
@@ -946,8 +965,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - A breaking change with no shims (AGENTS.md rule 10).
   - **Stop condition.** If a cluster service needs a new firewall
     ownership model rather than a missing port opening, P3b stops for an
-    owner decision.
-  *(planned, phase P3b)*
+    owner decision. It did not trigger: no suite relied on trust.
+  - **netif's own port.** netif opens UDP 546 on every DHCPv6 link
+    (`networking.firewall.interfaces.<link>.allowedUDPPorts`). DHCPv4
+    needs none: dhcpcd reads it from a packet socket.
+  *(implemented, round P3b-4: `netif-dhcp` `NETIF_DHCP_TRUST_OK`)*
 
 - **N20 Responsibility boundary.** §1.1 is normative. netif owns links
   and how they are addressed, routed, resolved and trusted; the ownership
@@ -1464,8 +1486,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - the base force-disables NetworkManager on every machine (conflicts N2);
   - there are no modes (N3/N4), and the registry does not render into
     NetworkManager yet (N6, phase P2);
-  - there is no `pathMtu` or zone seam (N10, N17; P3b);
-  - links default to firewall-trusted (N19; P3b);
+  - there is no `pathMtu` (N17; P3b slice 5);
   - bridges accept physical members only and have no MAC setting (N23;
     phase P7);
   - there is no `containers` preset; Podman's bridge is deleted on
@@ -1475,10 +1496,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - the base forces IfState on in every configuration, so no
     NetworkManager mode can exist (N24; phase P4);
   - `links.<n>.nameservers` on a link sets servers only; there is no
-    static search-domain option (N9);
-  - on untrusted DHCPv6 links the firewall must admit DHCPv6 replies
-    (UDP 546); today links are trusted, so nothing opens it (N19;
-    slice 4).
+    static search-domain option (N9).
 - **Field gate (N14):** no use case is live. netif has no consumers.
 
 ## 6. Out of scope
@@ -1890,7 +1908,7 @@ decision. Phase numbers are labels, not the order.
 | P0 | This contract (docs only) | merged |
 | P1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
-| P3b | **Slices 1, 2 and 3 are done** (rounds P3b-1, P3b-3). Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
+| P3b | **Slices 1 to 4 are done** (rounds P3b-1, P3b-3, P3b-4). Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
 | P7 | `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |

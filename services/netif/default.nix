@@ -133,7 +133,8 @@
           then link.firewall.trust
           else if site.firewall.trust != null
           then site.firewall.trust
-          else true;
+          else false;
+        inherit (link) zone;
         inherit
           (link)
           routes
@@ -526,12 +527,25 @@
         type = types.nullOr types.bool;
         default = null;
         description = ''
-          Add this link to networking.firewall.trustedInterfaces. Null
-          inherits the segment default (trusted unless the segment sets
-          it). Set false for internet-facing links so the firewall stays
-          in charge.
+          Add this link to networking.firewall.trustedInterfaces, which
+          opens every port on it. Null inherits the segment default,
+          and a link is untrusted unless one of the two says otherwise
+          (specs/netif.md N19). Services open their own ports; trust a
+          link only on a private segment.
         '';
       };
+    };
+    zone = mkOption {
+      type = types.nullOr (types.strMatching "[a-z][a-z0-9-]*");
+      default = null;
+      example = "wan";
+      description = ''
+        A label for consumers such as a router module ('wan', 'lan',
+        'mgmt'). netif gives it no meaning; it publishes it with the
+        link's resolved interface name in
+        'clanServices.networking.links', 'clanServices.netif.zones',
+        'clan.networkFacts' and the export (specs/netif.md N10).
+      '';
     };
     endpoint = mkOption {
       type = types.bool;
@@ -849,9 +863,9 @@ in {
             type = types.nullOr types.bool;
             default = null;
             description = ''
-              Segment default for per-link 'firewall.trust'. Null keeps
-              the built-in default (trusted); set false for
-              internet-facing segments so the firewall stays in charge.
+              Segment default for per-link 'firewall.trust'. Null means
+              untrusted; set true on a private segment whose links may
+              reach every port (specs/netif.md N19).
             '';
           };
         };
@@ -1137,6 +1151,8 @@ in {
                 ipv6 = v6Default r;
               };
               prefixDelegation = exportedPrefixDelegation r;
+              inherit (r) zone;
+              trusted = r.trust;
             })
             resolved;
         };
@@ -1215,6 +1231,7 @@ in {
                   prefixDelegation = exportedPrefixDelegation r;
                   routingPolicy = r.policy;
                   trusted = r.trust;
+                  inherit (r) zone;
                 })
                 resolved;
             };
@@ -1371,6 +1388,8 @@ in {
                     nameservers
                     requiredForOnline
                     default4
+                    kind
+                    zone
                     ;
                   prefixDelegation = {
                     inherit (r.prefixDelegation) enable hint;

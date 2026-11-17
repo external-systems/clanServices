@@ -70,6 +70,7 @@
         prefixDelegation = attrs "Declared prefix-delegation intent; the prefix itself is a runtime fact.";
         routingPolicy = attrs "Declared underlay policy-routing intent.";
         trusted = bool "Whether the link is firewall-trusted.";
+        zone = nullableStr "The link's zone label for router and gateway modules (N10).";
         endpoint = bool "Whether static addresses are exported as peer endpoints.";
       };
     };

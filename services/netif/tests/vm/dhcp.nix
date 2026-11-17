@@ -139,6 +139,9 @@ in {
           module.input = "self";
           roles.default.machines.client4.settings.links.private = {
             interface = "eth2";
+            # the one trusted link of the suite (N19)
+            firewall.trust = true;
+            zone = "private";
             dhcp.ipv4 = true;
             defaultRoute = {
               ipv4 = false;
@@ -183,6 +186,12 @@ in {
         ];
       };
       environment.systemPackages = [pkgs.jq];
+      # SSH opens its own port; the probe port is opened by nobody.
+      services.openssh.enable = true;
+      systemd.services.probe-listener = {
+        wantedBy = ["multi-user.target"];
+        serviceConfig.ExecStart = "${lib.getExe pkgs.python3} -m http.server 8080";
+      };
     };
     isp = {pkgs, ...}: {
       imports = [
@@ -213,7 +222,10 @@ in {
           state = "up";
         };
       };
-      environment.systemPackages = [pkgs.tcpdump];
+      environment.systemPackages = [
+        pkgs.tcpdump
+        pkgs.netcat
+      ];
       boot.kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
       networking.firewall.enable = false;
       # The same server with other DNS servers: a renewal then brings a
@@ -397,6 +409,25 @@ in {
             v4 = json.loads(client4.succeed("ip -j -4 route show default"))
             assert [r["dev"] for r in v4] == ["eth1"], v4
             print("NETIF_DHCP_DEFAULT_OK")
+
+        with subtest("links are untrusted unless declared trusted; SSH still answers (N19)"):
+            uplink_ip = json.loads(client4.succeed("ip -j -4 addr show dev eth1 scope global"))[0]["addr_info"][0]["local"]
+            private_ip = json.loads(client4.succeed("ip -j -4 addr show dev eth2 scope global"))[0]["addr_info"][0]["local"]
+            client4.wait_for_unit("sshd.service", timeout=60)
+            client4.wait_until_succeeds("ss -tln | grep ':8080 ' >/dev/null", timeout=60)
+            trusted = client4.succeed("nft list ruleset | grep 'trusted interfaces' || true")
+            assert "eth2" in trusted and "eth1" not in trusted, trusted
+            # the untrusted uplink: SSH answers, an unopened port does not
+            isp.succeed(f"nc -z -w 5 {uplink_ip} 22")
+            isp.fail(f"nc -z -w 5 {uplink_ip} 8080")
+            # the trusted private link: both answer
+            isp.succeed(f"nc -z -w 5 {private_ip} 22")
+            isp.succeed(f"nc -z -w 5 {private_ip} 8080")
+            # the router's WAN is untrusted and still got DHCPv4, DHCPv6 and the prefix
+            router_trusted = router.succeed("nft list ruleset | grep 'trusted interfaces' || true")
+            assert "eth1" not in router_trusted and "eth2" not in router_trusted, router_trusted
+            router.succeed("nft list ruleset | grep -E 'eth1.*546' >/dev/null")
+            print("NETIF_DHCP_TRUST_OK")
 
         with subtest("a reapply changes nothing (invariant 5)"):
             assert_ifstate_noop(router)

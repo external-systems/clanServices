@@ -282,6 +282,39 @@
         };
       }
     )).config.nixosConfigurations.edge-1.config;
+  # Trust (N19) and zones (N10).
+  trustEdge =
+    (mkEvaled (
+      lib.recursiveUpdate baseInventory {
+        instances.dmz-net.roles.default = {
+          settings.firewall.trust = true;
+          machines.edge-1.settings.links.virbr0.firewall.trust = false;
+        };
+      }
+    )).config.nixosConfigurations.edge-1.config;
+  zoneInventory = lib.recursiveUpdate baseInventory {
+    instances = {
+      uplink-a.roles.default.machines.edge-1.settings.links.sfp0.zone = "wan";
+      uplink-b.roles.default.machines.edge-1.settings.links.sfp1.zone = "lan";
+      dmz-net.roles.default.machines.edge-1.settings.links.agg0.zone = "lan";
+    };
+  };
+  zoneEvaled = mkEvaled zoneInventory;
+  zoneEdge = zoneEvaled.config.nixosConfigurations.edge-1.config;
+  zoneExport = instanceName:
+    clanLib.getExport {
+      serviceName = "netif";
+      inherit instanceName;
+      roleName = "default";
+      machineName = "edge-1";
+    }
+    zoneEvaled.config.exports;
+  badZoneEdge =
+    (mkEvaled (
+      lib.recursiveUpdate baseInventory {
+        instances.uplink-a.roles.default.machines.edge-1.settings.links.sfp0.zone = "WAN side";
+      }
+    )).config.nixosConfigurations.edge-1.config;
   # Per-link DNS cannot conflict between instances (N9): overlapping but
   # different server sets on two instances are fine.
   dnsOverlapEval = mkEvaled (
@@ -943,13 +976,83 @@ in {
       expr = kamInterfaces.enp6s0.link ? mtu;
       expected = false;
     };
-    test_firewallTrust = {
-      expr = lib.all (i: lib.elem i kam.networking.firewall.trustedInterfaces) [
-        "enp4s0"
-        "enp3s0"
-        "enp6s0"
-      ];
-      expected = true;
+    # Links are untrusted unless the link or its segment says otherwise
+    # (N19): a link value wins over the segment's.
+    test_linksUntrustedByDefault = {
+      expr = kam.networking.firewall.trustedInterfaces;
+      expected = ["lo"]; # the firewall's own default
+    };
+    test_firewallTrustExplicit = {
+      expr = {
+        trustedInterfaces = lib.sort builtins.lessThan trustEdge.networking.firewall.trustedInterfaces;
+        facts = lib.mapAttrs (_: l: l.trusted) trustEdge.clan.networkFacts.netif.dmz-net.links;
+      };
+      expected = {
+        trustedInterfaces = [
+          "agg0"
+          "enp2s0"
+          "enp2s0.10"
+          "enp4s0"
+          "enp5s0"
+          "enp7s0"
+          "lo"
+        ];
+        facts = {
+          agg0 = true;
+          dmz10 = true;
+          nic0 = true;
+          nic1 = true;
+          trunk = true;
+          virbr0 = false;
+          vswitch = true;
+        };
+      };
+    };
+    # The DHCPv6 client's port is opened on DHCPv6 links only (N19).
+    test_dhcp6PortOpenedPerLink = {
+      expr = {
+        pd = pdEdge.networking.firewall.interfaces.enp1s0f0np0.allowedUDPPorts;
+        dhcp4Only = kam.networking.firewall.interfaces ? enp4s0;
+      };
+      expected = {
+        pd = [546];
+        dhcp4Only = false;
+      };
+    };
+    # The zone seam (N10): labels by link, and interfaces by zone.
+    test_zoneSeam = {
+      expr = {
+        inherit (zoneEdge.clanServices.netif) zones;
+        link = zoneEdge.clanServices.networking.links.uplink-a.sfp0;
+        unlabelled = zoneEdge.clanServices.networking.links.dmz-net.virbr0;
+        fact = zoneEdge.clan.networkFacts.netif.uplink-a.links.sfp0.zone;
+        export = (zoneExport "uplink-b").netif.links.sfp1.zone;
+      };
+      expected = {
+        zones = {
+          lan = [
+            "agg0"
+            "enp1s0f1np1"
+          ];
+          wan = ["enp1s0f0np0"];
+        };
+        link = {
+          interface = "enp1s0f0np0";
+          zone = "wan";
+          kind = "physical";
+        };
+        unlabelled = {
+          interface = "virbr0";
+          zone = null;
+          kind = "bridge";
+        };
+        fact = "wan";
+        export = "lan";
+      };
+    };
+    test_zoneNameChecked = {
+      expr = (builtins.tryEval (builtins.deepSeq badZoneEdge.clanServices.netif.zones true)).success;
+      expected = false;
     };
     # Deploy target: endpoint-enabled link's static IPv4, default user.
     test_targetHost = {
@@ -1001,6 +1104,8 @@ in {
               ipv4 = true;
               ipv6 = true; # router advertisements
             };
+            trusted = false; # N19
+            zone = null;
             prefixDelegation = {
               enable = false;
               hint = 56;
@@ -1029,6 +1134,8 @@ in {
               ipv4 = false;
               ipv6 = false;
             };
+            trusted = false;
+            zone = null;
             prefixDelegation = {
               enable = false;
               hint = 56;

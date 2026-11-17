@@ -4,6 +4,14 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 35 (2026-11-17): **netif P3b slice 4: untrusted links**
+(`specs/netif.md` round P3b-4). Points that touch this file:
+- A netif link is firewall-trusted only when declared so (N19). k3s,
+  rke2, routed-fabric and wireguard-mesh already open their own ports;
+  none relied on netif's trust.
+- The `netif` export and `clan.networkFacts.netif` carry `zone` and
+  `trusted` per link (N10).
+
 Round 34 (2026-11-17): **netif P3b slice 3: default routes**
 (`specs/netif.md` round P3b-3). Points that touch this file:
 - The `netif` export and `clan.networkFacts.netif` carry
