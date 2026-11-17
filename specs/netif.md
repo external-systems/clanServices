@@ -11,6 +11,20 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P7a (2026-11-17): **Docker and Podman beside netif.**
+Implemented and proven by `netif-containers` (`NETIF_CONTAINERS_OK`):
+- **N22** the `containers` preset, on with
+  `virtualisation.docker.enable` or `virtualisation.podman.enable`;
+  the address-pool check; forwarding only when Docker does IPv6.
+- Docker's and Podman's published ports answer on an **untrusted**
+  netif link with no port opened in the NixOS firewall: the runtimes'
+  own rules forward them (N19).
+- The suite found a defect in the tools: with a named network
+  namespace present, IfState's dry run calls `mount`, which
+  `netif-preview` and the drift unit did not have. Fixed.
+- The `containers` probe is deleted (N40). VM hosts (N23, N37) are
+  the second half of P7.
+
 Round tools (2026-11-17): **the operator tools and the last
 hardening decisions that needed no new phase.** Implemented:
 - **N38** `netif-drift.service` and its timer; **N41** `netif-status`;
@@ -1093,8 +1107,18 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     configured for IPv6.
   - **Firewall.** Container bridges are not netif links and get no
     trust from netif (N19). Docker and Podman manage their own rules.
-  *(probe-verified 2026-11-16 for Docker and rootful Podman with the
-  preset's ignores; planned, phase P7; suite `netif-containers`)*
+  - **As built.** The pool check reads Docker's `bip` and
+    `default-address-pools` and Podman's
+    `defaultNetwork.settings.subnets` when they are set through NixOS
+    options, else the defaults. Its error names both ranges and the
+    options that move a pool.
+  *(implemented, round P7a: `netif-containers` — default bridges, user
+  networks, a published port each reached from another machine, across
+  four reapplies, with containers added and removed in between
+  (`NETIF_CONTAINERS_NOOP_OK`, `NETIF_CONTAINERS_CHURN_OK`); eval tests
+  `test_containersPreset`, `test_containerPoolOverlapRejected`,
+  `test_dockerIpv6SetsForwarding`. Not proven: Docker with IPv6 on in
+  a VM; rootless Podman, which creates no host links)*
 
 - **N23 VM hosts: bridges for guests (U5).**
   - **Bridge MAC.** IfState 2.5.1 gives every bridge a generated MAC
@@ -1976,7 +2000,7 @@ decision. Phase numbers are labels, not the order.
 | P1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
 | P3b | **Done: all five slices** (rounds P3b-1, P3b-3, P3b-4, P3b-5). The tools of N38, N41 and N42 follow as their own slice. Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
-| P7 | `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
+| P7 | **`containers` preset done** (round P7a, N22). Still to do: VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
 | P8 | Lockout guard (N25), as probed | `netif-guard` green |

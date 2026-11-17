@@ -6,7 +6,6 @@ relies on, before a suite asserts it (`specs/netif.md` N40, evidence in
 
 | Probe | What it showed | Suite that takes it over |
 |---|---|---|
-| `containers` | Docker and Podman next to IfState with the `containers` preset (N22) | `netif-containers` (P7) |
 | `vmhost` | bridge MAC, bridge over a VLAN, guest ports (N23) | `netif-vmhost` (P7) |
 | `guard` | the lockout guard prototype (N25) | `netif-guard` (P8) |
 | `wifi` | iwd's route metric in both families beside IfState (N18) | `netif-wifi` (P2) |
@@ -15,7 +14,7 @@ relies on, before a suite asserts it (`specs/netif.md` N40, evidence in
 Run one on a machine with KVM:
 
 ```sh
-nix build .#netifProbes.guard        # containers, vmhost, guard, wifi
+nix build .#netifProbes.guard        # vmhost, guard, wifi
 nix eval --json .#netifProbes.modes-eval
 ```
 

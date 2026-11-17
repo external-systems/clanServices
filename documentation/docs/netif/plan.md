@@ -19,7 +19,7 @@ owner decides.
 | P1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
 | P3b | **Done**, all five slices (2026-11-17; `netif-dhcp`, `netif` and `netif-match` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
-| P7 | The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
+| P7 | The `containers` preset is **done** (2026-11-17, `netif-containers` green). Still to do: VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
 | P8 | The lockout guard | `netif-guard` green |
@@ -87,6 +87,19 @@ Also in this slice: every older build error now ends with what to
 change; a machine that would have no DNS server at all gets a
 warning; and the five remaining test probes are in the repository
 (`nix build .#netifProbes.<name>`).
+
+P7, first half (containers), the same day, proven by the new
+`netif-containers` test:
+
+| Feature | What the test shows |
+|---|---|
+| Docker and Podman next to netif | turning either on is enough; netif leaves their bridges, container links and namespaces alone |
+| Reapplying the network | four reapplies with containers running, added and removed: nothing changes, every container still reaches another machine |
+| Published ports | a port published by Docker and one by Podman answer from another machine, on a link netif does not trust |
+| Address clashes | the build fails when one of your networks overlaps Docker's or Podman's default range, and says how to move it |
+
+The test also found a bug in the new tools (the hourly drift check
+failed on machines running Podman) before it reached a machine.
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible
