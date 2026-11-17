@@ -41,8 +41,11 @@ This is the first part of N14's definition of stable.
   as headings. The preview, the drift watch and the suites' helper now
   split on any whitespace, and the preview names the interface a
   change belongs to.
-- Still open for N14: RKE2 on netif, a fabric leaf with FRR alone, and
-  a desktop specialisation (KDE).
+- **RKE2 too** (round gate-2, same day): `rke2-data-plane-netif`
+  passes the same suite and the same added phase
+  (`RKE2_DATA_PLANE_NETIF_OK`), with no further fix.
+- Still open for N14: a fabric leaf with FRR alone, and a desktop
+  specialisation (KDE).
 
 Round P4a (2026-11-17): **modes exist: one manager per mode, both
 renderers.** Implemented and proven by `netif-modes`

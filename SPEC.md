@@ -20,6 +20,8 @@ fixes in this file's services** (`specs/netif.md` round gate-1).
   pool's blocks as owned address ranges on its candidate machines, so
   the address a failover controller places survives a network reapply.
 - k3s and rke2 import the ownership registry themselves.
+- `rke2-data-plane-netif` (added the same day) passes the same suite
+  on RKE2.
 
 Round 41 (2026-11-17): **netif P4a: modes** (`specs/netif.md` round
 P4a). Points that touch this file:

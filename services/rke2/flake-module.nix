@@ -1,4 +1,5 @@
 {
+  self,
   inputs,
   lib,
   ...
@@ -45,6 +46,15 @@ in rec {
     rke2-data-plane = {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
       inherit clan;
+    };
+    rke2-data-plane-netif = {
+      imports = [(import ./tests/vm/data-plane-netif.nix {inherit inputs;})];
+      clan =
+        clan
+        // {
+          modules = clan.modules // {inherit (self.clan.modules) netif;};
+          exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
+        };
     };
     rke2-clustermesh = {
       imports = [./tests/vm/clustermesh.nix];
