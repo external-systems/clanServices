@@ -24,6 +24,13 @@
       "cache",
       "used",
       "age",
+      # LACP negotiation state of a bond member: the protocol's, not ours
+      "ad_actor_oper_port_state",
+      "ad_actor_oper_port_state_str",
+      "ad_partner_oper_port_state",
+      "ad_partner_oper_port_state_str",
+      "churn_actor_state",
+      "churn_partner_state",
   }
 
 

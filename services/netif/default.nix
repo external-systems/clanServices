@@ -645,11 +645,11 @@
           }
           {
             assertion = link.match.path == null || r.kind == "physical";
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'match.path' but is not a physical link";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'match.path' but is not a physical link; only a physical NIC has a udev path, so remove 'match.path' here (N26)";
           }
           {
             assertion = link.match.path == null || lib.stringLength logical <= 15;
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' uses 'match.path', so its logical name becomes the interface name and must be at most 15 characters";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' uses 'match.path', so its logical name becomes the interface name and must be at most 15 characters; rename the link (N26)";
           }
           {
             assertion = link.pathMtu == null || r.mtu == null || link.pathMtu <= r.mtu;
@@ -657,11 +657,11 @@
           }
           {
             assertion = link.match.mac == null || r.kind == "physical";
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'match.mac' but is not a physical link";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'match.mac' but is not a physical link; only a physical NIC has a permanent MAC, so remove 'match.mac' here (N15)";
           }
           {
             assertion = link.match.mac == null || lib.stringLength logical <= 15;
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' uses 'match.mac', so its logical name becomes the interface name and must be at most 15 characters";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' uses 'match.mac', so its logical name becomes the interface name and must be at most 15 characters; rename the link (N15)";
           }
           {
             assertion = r.kind != "vlan" || (link.vlan.id != null && link.vlan.id >= 0 && link.vlan.id <= 4094);
@@ -689,30 +689,30 @@
               r.kind
               != "bond"
               || lib.all (member: links ? ${member} && resolved.${member}.kind == "physical") r.members;
-            message = "netif/${instanceName}: bond link '${logical}' of machine '${machineName}' references a 'bond.members' entry that is not a physical link declared in instance '${instanceName}'";
+            message = "netif/${instanceName}: bond link '${logical}' of machine '${machineName}' references a 'bond.members' entry that is not a physical link declared in instance '${instanceName}'; declare each member as a physical link in this instance";
           }
           {
             assertion =
               r.kind
               != "bridge"
               || lib.all (member: links ? ${member} && resolved.${member}.kind == "physical") r.members;
-            message = "netif/${instanceName}: bridge link '${logical}' of machine '${machineName}' references a 'bridge.members' entry that is not a physical link declared in instance '${instanceName}'";
+            message = "netif/${instanceName}: bridge link '${logical}' of machine '${machineName}' references a 'bridge.members' entry that is not a physical link declared in instance '${instanceName}'; declare each member as a physical link in this instance";
           }
           {
             assertion = memberOf == null || !hasAddressing link;
-            message = "netif/${instanceName}: member link '${logical}' of machine '${machineName}' is consumed by '${memberOf}' and must not set addresses, DHCP, gateways, routes, or nameservers";
+            message = "netif/${instanceName}: member link '${logical}' of machine '${machineName}' is consumed by '${memberOf}' and must not set addresses, DHCP, gateways, routes, or nameservers; set them on '${memberOf}' instead";
           }
           {
             assertion = !(lib.elem logical duplicatedMembers);
-            message = "netif/${instanceName}: machine '${machineName}' claims physical link '${logical}' as a bond/bridge member more than once (a member belongs to exactly one bond or bridge)";
+            message = "netif/${instanceName}: machine '${machineName}' claims physical link '${logical}' as a bond/bridge member more than once (a member belongs to exactly one bond or bridge); remove it from all but one 'members' list";
           }
           {
             assertion = !r.dhcp4 || r.static4 == [];
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets both 'dhcp.ipv4' and static IPv4 addresses; exactly one addressing mode per family is allowed";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets both 'dhcp.ipv4' and static IPv4 addresses; exactly one addressing mode per family is allowed, so remove 'static.ipv4' or set 'dhcp.ipv4 = false'";
           }
           {
             assertion = !r.dhcp6 || r.static6 == [];
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets both 'dhcp.ipv6' and static IPv6 addresses; exactly one addressing mode per family is allowed";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets both 'dhcp.ipv6' and static IPv6 addresses; exactly one addressing mode per family is allowed, so remove 'static.ipv6' or set 'dhcp.ipv6 = false'";
           }
           {
             assertion = !r.prefixDelegation.enable || r.dhcp6;
@@ -748,7 +748,7 @@
           }
           {
             assertion = r.policy.table == null || r.policy.from != [] || r.policy.to != [];
-            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'routingPolicy.table' without any 'routingPolicy.from' or 'routingPolicy.to' selector";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'routingPolicy.table' without any 'routingPolicy.from' or 'routingPolicy.to' selector; add one, or remove the table so the gateway lands in the main table";
           }
           {
             assertion =
@@ -1461,6 +1461,7 @@ in {
                     kind
                     zone
                     ;
+                  trusted = r.trust;
                   prefixDelegation = {
                     inherit (r.prefixDelegation) enable hint;
                     assign = map (c: {inherit (c) interface subnet length;}) (
@@ -1474,11 +1475,22 @@ in {
       )
     );
   in {
-    nixosModule = _: {
+    nixosModule = {config, ...}: {
       imports = [
         (import ../../lib/ifstate.nix {inherit ifstateOverlay;})
         ./host.nix
+        ./tools.nix
       ];
+
+      # DNS servers a router advertises (RDNSS) are not read: the kernel
+      # ignores them and netif runs no daemon for them (N39). A machine
+      # whose only way to the internet is an RA link, with no DNS server
+      # from anywhere, would resolve nothing.
+      warnings = lib.optional (
+        lib.any (r: v6Default r && r.gateway6 == null && r.static6 == []) allResolved
+        && lib.all (r: r.nameservers == [] && !r.dhcp4 && !r.dhcp6) allResolved
+        && config.networking.nameservers == []
+      ) "netif: machine '${machine.name}' takes its IPv6 default from router advertisements and has no DNS source: no link sets 'nameservers' and none uses DHCP. DNS servers from advertisements (RDNSS) are not read; set 'nameservers' on a link or enable 'dhcp.ipv6' (N39)";
 
       clanServices.netif.links = hostLinks;
 
@@ -1513,11 +1525,11 @@ in {
         }
         {
           assertion = policyTableDuplicates == [];
-          message = "netif: machine '${machine.name}' has cross-instance routingPolicy table collisions: ${lib.concatStringsSep ", " policyTableDuplicates}";
+          message = "netif: machine '${machine.name}' has cross-instance routingPolicy table collisions: ${lib.concatStringsSep ", " policyTableDuplicates}; give each link its own 'routingPolicy.table'";
         }
         {
           assertion = rulePriorityDuplicates == [];
-          message = "netif: machine '${machine.name}' has cross-instance routingPolicy rule-priority collisions: ${lib.concatStringsSep ", " rulePriorityDuplicates}";
+          message = "netif: machine '${machine.name}' has cross-instance routingPolicy rule-priority collisions: ${lib.concatStringsSep ", " rulePriorityDuplicates}; set distinct 'routingPolicy.priority' values (each link uses priority..priority+99)";
         }
       ];
     };

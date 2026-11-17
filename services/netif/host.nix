@@ -197,6 +197,7 @@ in {
             default4 = mkOption {type = types.bool;};
             kind = mkOption {type = types.str;};
             zone = mkOption {type = types.nullOr types.str;};
+            trusted = mkOption {type = types.bool;};
             prefixDelegation = {
               enable = mkOption {type = types.bool;};
               hint = mkOption {type = types.int;};

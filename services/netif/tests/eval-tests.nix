@@ -551,6 +551,17 @@
         }
       )
       baseInventory).config.nixosConfigurations.edge-1.config;
+  macEdgeOnly =
+    (mkEvaled {
+      instances.solo = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines.edge-1.settings.links.wan0 = {
+          interface = "enp9s0";
+          static.ipv4 = ["10.40.0.2/24"];
+        };
+      };
+    }).config.nixosConfigurations.edge-1.config;
   macAndInterfaceEdge = withEdgeLinks {
     wan0 = {
       interface = "enp9s0";
@@ -653,6 +664,38 @@ in {
     test_pathMtuAboveMtuRejected = {
       expr = failedAssertion pathMtuAboveMtuEdge "sets 'pathMtu' 1460 above its MTU 1400";
       expected = true;
+    };
+    # The operator tools (N38, N41): a drift timer that only looks, and
+    # the two commands on the machine.
+    test_operatorTools = {
+      expr = {
+        driftType = kam.systemd.services.netif-drift.serviceConfig.Type;
+        timer = kam.systemd.timers.netif-drift.timerConfig.OnUnitActiveSec;
+        wanted = kam.systemd.timers.netif-drift.wantedBy;
+        commands = lib.sort builtins.lessThan (
+          lib.filter (name: lib.hasPrefix "netif-" name) (map lib.getName kam.environment.systemPackages)
+        );
+      };
+      expected = {
+        driftType = "oneshot";
+        timer = "1h";
+        wanted = ["timers.target"];
+        commands = [
+          "netif-preview"
+          "netif-status"
+        ];
+      };
+    };
+    # RA-only machine without any DNS source: a warning, not an error (N39).
+    test_raOnlyWithoutDnsWarned = {
+      expr = {
+        raOnly = lib.any (lib.hasInfix "RDNSS") macEdgeOnly.warnings;
+        withDns = lib.any (lib.hasInfix "RDNSS") kam.warnings;
+      };
+      expected = {
+        raOnly = true;
+        withDns = false;
+      };
     };
     test_matchMacCleanInventory = {
       expr = failedAssertion macEdge "netif";

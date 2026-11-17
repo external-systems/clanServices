@@ -4,6 +4,11 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 37 (2026-11-17): **netif tools** (`specs/netif.md` round tools).
+Nothing in this file's contract changes. For operators of cluster
+nodes: `netif-status`, `netif-preview` and the `netif-drift` timer
+exist on every machine with a netif link.
+
 Round 36 (2026-11-17): **netif P3b slice 5: path MTU, cloud NICs**
 (`specs/netif.md` round P3b-5). Points that touch this file:
 - Invariant 21 is closed for WireGuard: both transports size their

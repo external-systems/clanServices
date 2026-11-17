@@ -62,6 +62,10 @@ beside IfState:
   link's name.
 - **`pathMtu`** says how large a packet the path really carries when
   that is less than the link's MTU. Tunnels are sized from it.
+- **`netif-status`** shows every link with its live state.
+  **`netif-preview`** shows what an apply would change without
+  applying. **`netif-drift.timer`** runs that preview every hour and
+  fails when something else changed the network.
 - **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
   link's `nameservers` plus what its DHCP leases bring. There is no
   global DNS list from netif.
