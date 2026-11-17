@@ -4,6 +4,25 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 32 (2026-11-17): **netif retrospective; dhcpcd moves to
+upstream 10.5.2 in pkgs; docs only here** (`specs/netif.md` round
+retro, §8.4, §11). Points that touch this file:
+- org-pkgs `overlays.ifstate` gains `dhcpcd_latest`: the unpatched
+  upstream dhcpcd 10.5.2 (owner decision), for netif's hook-started
+  dhcpcd. It fixes the lost leases of round 31 and four CVEs.
+  `pkgs.dhcpcd` stays the patched 10.3.2: 10.5 does not start under
+  the stock NixOS `dhcpcd.service` until nixpkgs PR 562813 lands.
+  This repo still runs `pkgs.dhcpcd`; the lock bump and the switch
+  are the first step of netif phase P3b and run every suite.
+- N30 is reworded: the upstream release first, a patch only when no
+  release works; a package the stock NixOS modules share is never
+  swapped under them without a test of that module.
+- `network-online.target` is reached before a DHCP underlay has a
+  lease (`specs/netif.md` §11 H2). A k3s or RKE2 node on a DHCP
+  underlay can start without its address until that is settled.
+- A "broken" probe finding needs a control run that shows the fixture
+  works (`specs/netif.md` §7).
+
 Round 31 (2026-11-16): **netif solo runs and research; docs only here,
 one package patch in pkgs** (`specs/netif.md` round proof-solo, §8.3,
 N30). Points that touch this file:

@@ -183,10 +183,13 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   event loop (`ipv6_freeaddr`), so after a carrier change DHCPv4 or
   DHCPv6 does not recover (`eloop_event_add: No such file or directory`;
   upstream issue 596, fixed in 10.5.0). org-pkgs `overlays.ifstate`
-  carries the two upstream commits. dhcpcd sets `addr_gen_mode` to 1 on
+  has upstream 10.5.2 as `pkgs.dhcpcd_latest` for netif; `pkgs.dhcpcd`
+  stays 10.3.2 with the two fix commits, because 10.5 does not start
+  under the stock NixOS `dhcpcd.service` (nixpkgs PR 562813). This
+  repo runs `pkgs.dhcpcd` until P3b switches netif. dhcpcd sets `addr_gen_mode` to 1 on
   every link it runs IPv6 on, `noipv6rs` or not; `ipv4only` avoids it.
-  A package that needs a patch is patched in pkgs, never here
-  (`specs/netif.md` N30).
+  A broken networking package is fixed in pkgs, never here: the
+  upstream release first, a patch second (`specs/netif.md` N30).
 - A test node that sends RAs must forward IPv6, or Linux hosts drop it
   as default router seconds after first use (`specs/netif.md` §7).
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).

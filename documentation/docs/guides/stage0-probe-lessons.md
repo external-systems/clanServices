@@ -402,6 +402,37 @@ hard way.
   probe.
 - Native Cilium uses the WG MTU directly; there is no VXLAN `-50` budget.
 
+## netif probes (2026-11-16 and 2026-11-17)
+
+Slips that each cost a rerun on the builder, and one rule.
+
+- **Prove the fixture before blaming the subject.** Three "broken"
+  findings were fixture faults: kea-dhcp6 had not opened its socket
+  (`DHCPSRV_NO_SOCKETS_OPEN`; set `service-sockets-max-retries`), the
+  simulated ISP sent RAs without `net.ipv6.conf.all.forwarding = 1`,
+  and `dhcpcd` was not on the VM's `PATH`. Run one control with a
+  known-good peer first (`specs/netif.md` §7).
+- A command that is not in `environment.systemPackages` returns 127.
+  Check the return code before reading meaning into an empty result.
+- The test driver runs commands with `errexit`: in `a; b` a failing
+  `a` stops the line. Use `a || true; b`, and never end a loop body
+  with a test that may be false.
+- `pkill -f PATTERN` also matches the shell that runs it. Kill by pid
+  file, or write the pattern as `[d]hcpcd`.
+- An unquoted YAML scalar such as a PCI address parses as a number.
+  Emit JSON (`yq -o=json`) for hand-made IfState configs.
+- After a guest changes its MAC or a namespace is rebuilt, the peer
+  holds a stale neighbour entry. Wait with `wait_until_succeeds`, do
+  not assert the first ping.
+- dnsmasq needs `--dhcp-leasefile` on a path that exists.
+- Record `/proc/loadavg` from the test script (the driver reads the
+  builder's). A timing-sensitive finding is rerun as the only build.
+- An overlay that swaps a package's `src` keeps the old `patches`.
+  Applied on top of a package that already carries patches, the build
+  fails in `patchPhase`. Set `patches = []` with the new source.
+- A second `nix build` of the same probe is a cache hit and boots
+  nothing. Add `--rebuild` for a repeat run.
+
 ## Scratch-probe hygiene
 
 - Declare every required test NIC with `virtualisation.vlans`: `eth0` is

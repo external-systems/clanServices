@@ -18,7 +18,7 @@ owner decides.
 | P0 | The netif contract (docs only) | merged |
 | P1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
-| P3b | First the patched dhcpcd from pkgs with a check that it is in use, `ipv4only` on IPv4-only DHCP links, and link-flap tests; then the DNS unit. Then dhcpcd with its own config and prefix delegation, path MTU, default-route metrics, an explicit default-route owner, untrusted links by default, a zone per link, NICs by device path; fixes found in review (below) | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
+| P3b | Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
@@ -107,7 +107,7 @@ The two broken findings were rerun with nothing else on the builder, to
 rule out a noisy neighbour, and researched in the source and upstream.
 The builder's load average was 0.1 to 0.3 during every run.
 
-**dhcpcd after a link flap: a real bug, now patched**
+**dhcpcd after a link flap: a real bug, fixed upstream**
 
 | dhcpcd | Five down/up cycles in a row: DHCPv4 back, DHCPv6 back | Internal errors |
 |---|---|---|
@@ -121,9 +121,39 @@ The builder's load average was 0.1 to 0.3 during every run.
   depends on which socket that is.
 - **Upstream** knows it as issue 596 and fixed it in 10.5.0 with two
   small commits.
-- **Fix.** Our pkgs repo now builds dhcpcd 10.3.2 with those two
-  commits. This is the rule for every such case: a package that needs a
-  patch is patched in pkgs, never in this repo or on a machine.
+- **Fix.** Our pkgs repo builds dhcpcd 10.3.2 with those two
+  commits. Since 2026-11-17 it also builds the upstream release
+  10.5.2 for netif (see below). The rule for every such case: a broken
+  package is fixed in pkgs, never in this repo or on a machine.
+
+**Upstream dhcpcd 10.5.2 (2026-11-17)**
+
+You chose the upstream release over our patch. It was tested alone on
+the builder before any merge.
+
+| Test | dhcpcd 10.5.2 |
+|---|---|
+| netif's way of running it: leases, DNS, renewal, real cable loss, five down/up cycles | all passed, no internal errors |
+| The same with `ipv4only` | passed; IPv6 on that link left alone |
+| The normal NixOS DHCP service, as non-netif machines use it | **does not start** |
+| The normal NixOS DHCP service with the fix from nixpkgs PR 562813 | passed |
+
+- **Why it fails there.** From 10.5.1 dhcpcd changes the owner of its
+  control socket. The NixOS service forbids that system call, so
+  dhcpcd dies at start. nixpkgs has an open change for it.
+- **What we did.** pkgs now has two packages. `dhcpcd_latest` is the
+  unchanged upstream 10.5.2; netif will use it (first step of P3b).
+  `dhcpcd` stays 10.3.2 with the two-commit fix, so machines on the
+  normal NixOS DHCP setting keep working.
+- **What is left.** Those machines keep 10.3.2, and its four security
+  holes, until nixpkgs ships 10.5. Moving them sooner means changing
+  the DHCP service and the package together, in the modules repo.
+  That is your call.
+- 10.5.2 also closes four security holes (CVE-2026-56113, 56114,
+  56116, 56117) for netif links.
+
+A list of weak spots and ideas for hardening is on
+[Retrospective and hardening](hardening.md).
 
 **The IPv6 default route: a fault in the test, not in netif**
 

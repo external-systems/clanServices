@@ -63,10 +63,16 @@ of decision N20 in the contract.
 netif runs on two packages from our pkgs repo (`org-pkgs`, overlay
 `overlays.ifstate`): IfState and dhcpcd.
 
-- If one of them needs a fix that nixpkgs does not have yet, the patch
-  goes into pkgs, with a version check that removes it once nixpkgs
-  catches up.
-- It is never patched in clanServices, in home, or on a machine.
-- First case: dhcpcd 10.3.2 with two upstream commits for lost leases
-  after a link flap ([Plan and evidence](plan.md)).
+- If nixpkgs ships one of them broken or too old, the fix goes into
+  pkgs, with a version check that removes it once nixpkgs catches up.
+- The upstream release comes first: pkgs builds the newest release
+  that has the fix, unchanged. A patch is used only when no release
+  works.
+- It is never fixed in clanServices, in home, or on a machine.
+- First case: dhcpcd. nixpkgs ships 10.3.2, which loses leases after a
+  link flap. pkgs builds upstream 10.5.2 as `dhcpcd_latest`, and netif
+  uses that.
+- The plain `dhcpcd` package stays 10.3.2 with a two-commit fix.
+  Machines that use the normal NixOS DHCP setting need it: 10.5 does
+  not start there yet ([Plan and evidence](plan.md)).
 
