@@ -30,6 +30,7 @@ _: {
             {"Ownership and VPNs" = "netif/ownership.md";}
             {"Home router" = "netif/router.md";}
             {"Plan and evidence" = "netif/plan.md";}
+            {"Retrospective and hardening" = "netif/hardening.md";}
             {Glossary = "netif/glossary.md";}
           ];
         }
