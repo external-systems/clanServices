@@ -32,7 +32,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   asserts yet (`nix build .#netifProbes.<name>`; never in `checks` or
   `vmTests`; its README names the suite that replaces each one).
 - `tests/ifstate-vm.nix` — the shared IfState node fixture for VM suites.
-  Each service registers its suites (30 in all) in its `flake-module.nix`
+  Each service registers its suites (31 in all) in its `flake-module.nix`
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
@@ -157,6 +157,13 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 
 ## Verified upstream facts the spec depends on
 
+- IfState 2.5.1 deletes every named network namespace it does not
+  know, including the CNI's `cni-<uuid>` pod namespaces; the `cilium`
+  registry owner claims `^cni-`. An address declared with a `scope`
+  that the kernel does not keep (any IPv6 address) is deleted and
+  re-added on every apply. `ifstatecli check` pads its columns, so a
+  long object name leaves one space before its operation
+  (`k3s-data-plane-netif`, 2026-11-17).
 - IfState 2.5.1: `ifstatecli apply` fully reconciles declared objects;
   `ifstatecli check` is the dry run. Runtime `!include` keeps secrets out
   of the store. `KillMode=process` preserves hook daemons; global

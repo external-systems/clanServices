@@ -26,12 +26,55 @@
 {
   inputs,
   distro,
+  # "fixture": the bare IfState node fixture. "netif": the nodes'
+  # underlay is declared through the netif service (specs/netif.md N14:
+  # netif proven under Cilium Kubernetes and FRR); the wrapper adds the
+  # netif instance.
+  underlay ? "fixture",
 }: {
   lib,
   nodes,
   ...
 }: let
   k3s = distro == "k3s";
+  netifUnderlay = underlay == "netif";
+  suiteName = "${distro}-data-plane" + lib.optionalString netifUnderlay "-netif";
+  fixture = addresses:
+    lib.optional (!netifUnderlay) (
+      import ../../../../tests/ifstate-vm.nix {
+        ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
+        inherit addresses;
+      }
+    );
+  # Python for the netif variant only. Both are empty for the fixture
+  # variant, whose test script must stay exactly as it was.
+  indent = prefix: text: lib.concatMapStringsSep "\n" (line: lib.optionalString (line != "") (prefix + line)) (lib.splitString "\n" text);
+  netifHelpers = lib.optionalString netifUnderlay ("import json\n\n" + import ../../../../tests/ifstate-noop.nix);
+  # one more phase inside the script's `try:` block
+  netifPhase = lib.optionalString netifUnderlay (
+    indent "    " ''
+      with subtest("netif under a live cluster: status, drift watch, a reapply that changes nothing (N14)"):
+          for node in [alpha, beta]:
+              status = json.loads(node.succeed("netif-status --json"))
+              uplink = [l for l in status["links"] if l["interface"] == "eth1"]
+              assert len(uplink) == 1 and uplink[0]["state"] == "UP" and not uplink[0]["trusted"], status
+              node.succeed("systemctl is-active netif-guard.service")
+              # Cilium, FRR and the fabric own their links, routes and rules:
+              # IfState proposes no change, and a real reapply changes nothing
+              status, preview = node.execute("netif-preview")
+              print(preview)
+              if status != 0:
+                  print(node.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check 2>&1; ip -6 -d addr show | grep -B3 -A3 '/127' || true"))
+              assert status == 0, f"{node.name}: IfState would change a live cluster node:\n{preview}"
+              node.succeed("systemctl start netif-drift.service")
+              assert_ifstate_noop(node)
+          # the cluster and the fabric did not notice
+          alpha.wait_until_succeeds("kubectl get nodes --no-headers | grep -c ' Ready ' | grep -x 2 >/dev/null", timeout=120)
+          alpha.succeed("vtysh -c 'show bgp summary json' | jq -e '[.. | objects | select(has(\"state\")) | .state] | length > 0 and all(. == \"Established\")' >/dev/null")
+          router.wait_until_succeeds("curl -sf --max-time 5 http://172.16.1.80/get | grep '\"url\"' >/dev/null", timeout=120)
+          print("NETIF_UNDER_KUBERNETES_OK")
+    ''
+  );
   # RKE2 runs distinct server and agent units; k3s runs one unit on both.
   serverUnit =
     if k3s
@@ -372,7 +415,7 @@
     ];
   };
 in {
-  name = "${distro}-data-plane";
+  name = suiteName;
 
   clan = {
     directory = ./.;
@@ -521,16 +564,12 @@ in {
     };
   in {
     alpha = {...}: {
-      imports = [
-        commonNode
-        (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-          addresses = [
-            "192.168.1.1/24"
-            "2001:db8:1::1/64"
-          ];
-        })
-      ];
+      imports =
+        [commonNode]
+        ++ fixture [
+          "192.168.1.1/24"
+          "2001:db8:1::1/64"
+        ];
       environment.sessionVariables.KUBECONFIG = "/etc/rancher/${distro}/${distro}.yaml";
       environment.etc."data-plane/probes.json".text = probesJson;
       # Airgap: the workload fixture image (distro + Cilium airgap
@@ -539,16 +578,12 @@ in {
       systemd.tmpfiles.rules = rke2ImageLinks;
     };
     beta = {...}: {
-      imports = [
-        commonNode
-        (import ../../../../tests/ifstate-vm.nix {
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-          addresses = [
-            "192.168.1.2/24"
-            "2001:db8:1::2/64"
-          ];
-        })
-      ];
+      imports =
+        [commonNode]
+        ++ fixture [
+          "192.168.1.2/24"
+          "2001:db8:1::2/64"
+        ];
       # The httpbin DaemonSet schedules on every node — preload the
       # fixture image here too (hermetic).
       services.${distro}.images = [httpbinImage];
@@ -589,7 +624,7 @@ in {
   };
 
   testScript = ''
-    def fail_dump(m):
+    ${netifHelpers}def fail_dump(m):
         for cmd in [
             "journalctl -u ${serverUnit} --no-pager -l | tail -n 80",
             "journalctl -u ${bootstrapUnit} --no-pager -l | tail -n 60 >&2 || true",
@@ -887,7 +922,7 @@ in {
             router.wait_until_succeeds("nc -z -w3 192.168.1.1 179", timeout=60)
             router.fail("nc -z -w3 192.168.1.1 4179")
 
-        with subtest("beta dies: ETP-Local withdrawal and floating blackhole"):
+    ${netifPhase}    with subtest("beta dies: ETP-Local withdrawal and floating blackhole"):
             # --- ETP-Local withdrawal + floating blackhole (beta dies) ------
             beta.shutdown()
             # beta's BGP session drops; the router withdraws its nexthop and
@@ -912,7 +947,7 @@ in {
             # The floating VIP blackholes: no controller re-homes it. This
             # assertion DOCUMENTS the window (D8) — it must keep failing.
             router.fail("curl -sf --max-time 5 http://192.0.2.100:82/get")
-        print("${lib.toUpper distro}_DATA_PLANE_OK")
+        print("${lib.toUpper (lib.replaceStrings ["-"] ["_"] suiteName)}_OK")
     except Exception:
         safe_dump(alpha)
         safe_dump(beta)

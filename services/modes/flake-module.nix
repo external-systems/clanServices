@@ -16,7 +16,8 @@ in {
         modes = module;
         inherit (self.clan.modules) netif;
       };
-      inherit (self.clan) exportInterfaces;
+      # the schema file itself, as every other suite registers it
+      exportInterfaces.netif = ../netif/netif-interface.nix;
     };
   };
 
@@ -25,7 +26,7 @@ in {
       inherit module lib;
       clanLib = inputs.clan-core.lib;
       netifModule = self.clan.modules.netif;
-      exportInterfaces = self.clan.exportInterfaces;
+      exportInterfaces.netif = ../netif/netif-interface.nix;
     };
   };
 }

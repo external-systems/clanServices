@@ -155,6 +155,24 @@ Anything of your own that belongs to one mode hangs on
 Not done yet: tunnels and clusters cannot be limited to a mode, so a
 machine that runs them cannot have a NetworkManager mode today.
 
+The first part of the final proof, the same day: **netif under a
+Kubernetes cluster**. The new test `k3s-data-plane-netif` runs the
+whole cluster data-plane test (k3s, Cilium, the FRR and WireGuard
+fabric, BGP to an outside router, load balancers, the firewall checks)
+on network links declared through netif, and then reapplies the
+network on both running nodes. Everything passed, after it found three
+real defects that no earlier test could see:
+
+| Defect | What would have happened on a real node |
+|---|---|
+| Pod network namespaces had no owner | any network reapply after the first pod started would have cut every pod off the network |
+| The fabric's IPv6 link address was re-created on every apply | a short gap under the BGP session at each deploy |
+| A floating IP placed by a failover tool had no owner | a reapply would have removed it |
+
+All three are fixed, and the tools that show "what would change" now
+catch such cases. Still to prove: RKE2 on netif, a machine that only
+runs FRR, and a desktop mode such as KDE.
+
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible
 IPv6 default. On a machine with several links, all but one need

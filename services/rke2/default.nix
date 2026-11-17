@@ -763,7 +763,11 @@
       );
       configPath = pkgs.writeText "rke2-config.yaml" (builtins.toJSON cleanConfig);
     in {
-      imports = [../../lib/kube-cluster/network-facts.nix];
+      imports = [
+        ../../lib/kube-cluster/network-facts.nix
+        # the ownership registry: this service declares what it owns
+        ../../lib/ownership.nix
+      ];
 
       # D19: the ONE host routing stack (FRR) is owned by
       # routed-fabric — the distro service renders no BIRD and no
@@ -964,6 +968,15 @@
               "mode=700"
             ];
           };
+
+          # Floating pools (D8): a runtime controller puts these addresses
+          # on a candidate machine. They are that controller's, so a network
+          # reapply must not remove them (specs/netif.md N6).
+          clanServices.networking.owners."${instanceName}-floating".addresses = lib.concatMap (pool: pool.blocks) (
+            lib.filter (pool: pool.delivery == "floating" && lib.elem machine.name pool.candidates) (
+              builtins.attrValues dp.effectivePools
+            )
+          );
 
           networking = {
             nftables.enable = true;
