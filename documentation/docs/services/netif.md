@@ -76,6 +76,11 @@ beside IfState:
   the last working network back and reports the failure. It is on by
   default on machines without a desktop. `guard.targets` adds your own
   addresses to check.
+- **Modes.** With the `modes` service a machine can boot into a
+  NetworkManager mode or an IfState mode. In a NetworkManager mode
+  netif writes one NetworkManager profile per wired link instead of
+  running IfState. `modes = ["developer"]` on an instance limits its
+  links to those modes.
 - **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
   link's `nameservers` plus what its DHCP leases bring. There is no
   global DNS list from netif.

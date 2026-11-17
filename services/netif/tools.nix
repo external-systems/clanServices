@@ -196,7 +196,8 @@ in {
     '';
   };
 
-  config = lib.mkIf (cfg.links != {}) {
+  # The tools read IfState; a NetworkManager mode has nmcli.
+  config = lib.mkIf (cfg.links != {} && config.clanServices.networking.mode.manager == "ifstate") {
     environment.systemPackages = [
       preview
       status

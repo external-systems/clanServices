@@ -50,6 +50,12 @@
     )
     ownerList;
 
+  ifstateMode = config.clanServices.networking.mode.manager == "ifstate";
+  nmOwners = lib.concatMap (owner: owner.interfaces) (builtins.filter (owner: owner.name != "iwd") ownerList);
+  isPrefix' = regex: lib.hasPrefix "^" regex && builtins.match "[A-Za-z0-9_.-]+" (lib.removePrefix "^" regex) != null;
+  nmUnmanaged = builtins.filter isPrefix' nmOwners;
+  nmUnmanageable = builtins.filter (regex: !(isPrefix' regex)) nmOwners;
+
   # Invariant 4 (N5): iwd owns every Wi-Fi link, in every mode.
   wifiInterfaces = builtins.filter (regexMatches "^wl") declaredInterfaces;
 
@@ -191,7 +197,10 @@
 in {
   key = "clanServices:lib/ownership.nix";
 
-  imports = [./kube-cluster/network-facts.nix];
+  imports = [
+    ./kube-cluster/network-facts.nix
+    ./modes.nix
+  ];
 
   options.clanServices.networking.owners = mkOption {
     type = types.attrsOf owner;
@@ -253,6 +262,10 @@ in {
         message = "clanServices: IfState declares objects the ownership registry gives to another owner (specs/netif.md N6): ${lib.concatStringsSep "; " conflicts}";
       }
       {
+        assertion = ifstateMode || nmUnmanageable == [];
+        message = "clanServices: mode '${config.clanServices.networking.mode.name}' uses NetworkManager, which takes interface-name globs, not regexes. These owner patterns are not a plain '^prefix': ${lib.concatStringsSep ", " nmUnmanageable}. Write them as '^prefix' (specs/netif.md N2, N6)";
+      }
+      {
         assertion = wifiInterfaces == [];
         message = "clanServices: Wi-Fi links belong to iwd, never IfState (specs/netif.md N5): ${lib.concatStringsSep ", " wifiInterfaces}";
       }
@@ -275,6 +288,12 @@ in {
     clan._networkFacts.forwarding = lib.mkIf dockerIpv6 true;
 
     warnings = lib.optional (owners ? tailscale && acceptsRoutes && fabricMember) "clanServices: this fabric member accepts Tailscale subnet routes; Tailscale's rule 5270 sits before main, so an accepted route wins over a fabric route for the same prefix (specs/netif.md N11)";
+
+    # In a NetworkManager mode the same owners are marked unmanaged (N2).
+    # iwd is the exception: NetworkManager drives it as its Wi-Fi backend.
+    networking.networkmanager.unmanaged = lib.mkIf (!ifstateMode) (
+      map (regex: "interface-name:${lib.removePrefix "^" regex}*") nmUnmanaged
+    );
 
     networking.ifstate.settings.parameters.ignore = {
       ifname = lib.concatMap (owner: owner.interfaces) ownerList;
@@ -299,13 +318,13 @@ in {
 
     systemd.services = lib.mkMerge (
       [
-        {
+        (lib.mkIf ifstateMode {
           # N7: an IfState mode is online once IfState has converged.
           ifstate = {
             before = ["network-online.target"];
             wantedBy = ["network-online.target"];
           };
-        }
+        })
       ]
       ++ map (
         unit: {

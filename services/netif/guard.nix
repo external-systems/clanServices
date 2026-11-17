@@ -205,7 +205,7 @@ in {
     };
   };
 
-  config = lib.mkIf (cfg.links != {} && guard.enable) {
+  config = lib.mkIf (cfg.links != {} && guard.enable && config.clanServices.networking.mode.manager == "ifstate") {
     systemd = {
       tmpfiles.rules = ["d /var/lib/netif/guard 0755 root root -"];
       services = {
