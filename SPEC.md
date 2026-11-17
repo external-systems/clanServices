@@ -4,6 +4,12 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 38 (2026-11-17): **netif P7a: containers** (`specs/netif.md`
+round P7a). The ownership registry in the shared IfState base gains a
+`containers` preset (Docker, rootful Podman). It is off unless one of
+them is enabled; the k3s, rke2, routed-fabric and wireguard-mesh suite
+derivations are unchanged.
+
 Round 37 (2026-11-17): **netif tools** (`specs/netif.md` round tools).
 Nothing in this file's contract changes. For operators of cluster
 nodes: `netif-status`, `netif-preview` and the `netif-drift` timer

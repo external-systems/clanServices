@@ -23,9 +23,12 @@
   # VM suites' no-op helper reads it the same way).
   preview = pkgs.writeShellApplication {
     name = "netif-preview";
+    # IfState calls `mount` and `ip` when named network namespaces exist.
     runtimeInputs = [
       pkgs.coreutils
       pkgs.gawk
+      pkgs.iproute2
+      pkgs.util-linux
     ];
     text = ''
       config=/etc/ifstate/ifstate.yaml

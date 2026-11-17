@@ -450,6 +450,30 @@
   kamOf = eval: eval.config.nixosConfigurations.kamrui-h1.config;
   tailscaleKam = kamOf (withKamrui {services.tailscale.enable = true;} baseInventory);
   iwdKam = kamOf (withKamrui {networking.wireless.iwd.enable = true;} baseInventory);
+  dockerKam = kamOf (withKamrui {virtualisation.docker.enable = true;} baseInventory);
+  podmanKam = kamOf (withKamrui {virtualisation.podman.enable = true;} baseInventory);
+  dockerV6Kam = kamOf (withKamrui {
+      virtualisation.docker = {
+        enable = true;
+        daemon.settings = {
+          ipv6 = true;
+          bip = "10.200.0.1/24";
+        };
+      };
+    }
+    baseInventory);
+  containerInventory = address:
+    lib.recursiveUpdate baseInventory {
+      instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.static.ipv4 = lib.mkForce [address];
+    };
+  dockerOverlapKam = kamOf (withKamrui {virtualisation.docker.enable = true;} (containerInventory "172.17.5.2/24"));
+  podmanOverlapKam = kamOf (withKamrui {virtualisation.podman.enable = true;} (containerInventory "10.88.3.2/24"));
+  dockerMovedKam = kamOf (withKamrui {
+    virtualisation.docker = {
+      enable = true;
+      daemon.settings.bip = "10.200.0.1/24";
+    };
+  } (containerInventory "172.17.5.2/24"));
   k3sKam = kamOf (withKamrui {services.k3s.enable = true;} baseInventory);
   wifiLinkKam = kamOf (mkEvaled (
     lib.recursiveUpdate baseInventory {
@@ -752,6 +776,60 @@ in {
       expected = {
         before = true;
         wantedBy = true;
+      };
+    };
+    # Docker or Podman switches the containers preset on (N22): every
+    # link pattern and Podman's named namespaces are owned.
+    test_containersPreset = {
+      expr = {
+        docker = {
+          inherit (dockerKam.networking.ifstate.settings.parameters.ignore) ifname netns;
+        };
+        podman = podmanKam.clanServices.networking.owners.containers.enable;
+        off = kam.clanServices.networking.owners.containers.enable;
+        clean = !(failedAssertion dockerKam "clanServices");
+      };
+      expected = {
+        docker = {
+          ifname = [
+            "^docker"
+            "^br-"
+            "^podman"
+            "^veth"
+          ];
+          netns = ["^netns-"];
+        };
+        podman = true;
+        off = false;
+        clean = true;
+      };
+    };
+    # A declared range inside a default container pool is rejected;
+    # moving the pool clears it.
+    test_containerPoolOverlapRejected = {
+      expr = {
+        docker = failedAssertion dockerOverlapKam "172.17.5.2/24 overlaps 172.17.0.0/16";
+        podman = failedAssertion podmanOverlapKam "10.88.3.2/24 overlaps 10.88.0.0/16";
+        moved = failedAssertion dockerMovedKam "container address pool";
+      };
+      expected = {
+        docker = true;
+        podman = true;
+        moved = false;
+      };
+    };
+    # Docker forwards IPv6 only when its daemon does IPv6; then RAs must
+    # still be accepted (accept_ra 2).
+    test_dockerIpv6SetsForwarding = {
+      expr = {
+        v6 = dockerV6Kam.clan.networkFacts.forwarding;
+        ra = dockerV6Kam.networking.ifstate.settings.interfaces.enp4s0.sysctl.ipv6.accept_ra;
+        plain = dockerKam.clan.networkFacts.forwarding;
+      };
+      expected = {
+        v6 = true;
+        ra = 2;
+        plain = false;
       };
     };
     test_tailscalePreset = {

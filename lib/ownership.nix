@@ -115,6 +115,29 @@
       range: lib.concatMap (tailnet: lib.optional (cidr.overlap range tailnet) "${range} overlaps ${tailnet}") tailscaleRanges
     ) (builtins.filter (value: isPrefix value && notDefault value) declaredRanges)
   );
+  # --- N22: Docker's and Podman's default address pools ---
+  dockerOn = config.virtualisation.docker.enable or false;
+  podmanOn = config.virtualisation.podman.enable or false;
+  dockerBip = config.virtualisation.docker.daemon.settings.bip or null;
+  containerRanges =
+    lib.optional dockerOn (
+      if dockerBip != null
+      then dockerBip
+      else "172.17.0.0/16"
+    )
+    ++ map (pool: pool.base) (lib.optionals dockerOn (config.virtualisation.docker.daemon.settings.default-address-pools or []))
+    ++ lib.optionals podmanOn (
+      map (network: network.subnet) (
+        config.virtualisation.podman.defaultNetwork.settings.subnets or [{subnet = "10.88.0.0/16";}]
+      )
+    );
+  containerOverlaps = lib.unique (
+    lib.concatMap (
+      range: lib.concatMap (pool: lib.optional (cidr.overlap range pool) "${range} overlaps ${pool}") containerRanges
+    ) (builtins.filter (value: isPrefix value && notDefault value) declaredRanges)
+  );
+  # Docker forwards IPv6 only when its daemon is configured for it.
+  dockerIpv6 = dockerOn && (config.virtualisation.docker.daemon.settings.ipv6 or false);
   tailscaleFlags = (config.services.tailscale.extraUpFlags or []) ++ (config.services.tailscale.extraSetFlags or []);
   acceptsRoutes = lib.any (flag: flag == "--accept-routes" || flag == "--accept-routes=true") tailscaleFlags;
   fabricMember = (facts.fabric or {}) != {};
@@ -168,6 +191,8 @@
 in {
   key = "clanServices:lib/ownership.nix";
 
+  imports = [./kube-cluster/network-facts.nix];
+
   options.clanServices.networking.owners = mkOption {
     type = types.attrsOf owner;
     default = {};
@@ -200,6 +225,19 @@ in {
         ];
         tables = [200];
       };
+      # Docker and rootful Podman (N22). Everything is named, so netif
+      # does not depend on IfState's built-in list. Podman puts each
+      # container in a named namespace, which IfState would delete.
+      containers = {
+        enable = lib.mkDefault (dockerOn || podmanOn);
+        interfaces = [
+          "^docker"
+          "^br-"
+          "^podman"
+          "^veth"
+        ];
+        netns = ["^netns-"];
+      };
       vm = {
         enable = lib.mkDefault ((config.virtualisation.libvirtd.enable or false) || (config.virtualisation.incus.enable or false));
         interfaces = [
@@ -223,10 +261,18 @@ in {
         message = "clanServices: ${lib.concatMapStringsSep "; " (daemon: "${daemon.name} (${daemon.option})") unownedDaemons} has no ownership-registry preset; IfState would remove its objects. Declare clanServices.networking.owners.<name> for it (specs/netif.md N6)";
       }
       {
+        assertion = !(owners ? containers) || containerOverlaps == [];
+        message = "clanServices: a declared range overlaps a container address pool (specs/netif.md N22): ${lib.concatStringsSep "; " containerOverlaps}. Move the pool ('virtualisation.docker.daemon.settings.bip', 'virtualisation.podman.defaultNetwork.settings.subnets') or the declared range";
+      }
+      {
         assertion = !(owners ? tailscale) || cgnatOverlaps == [];
         message = "clanServices: Tailscale's ranges overlap declared ranges (specs/netif.md N11): ${lib.concatStringsSep "; " cgnatOverlaps}";
       }
     ];
+
+    # Docker turns IPv6 forwarding on when its daemon does IPv6; RA
+    # handling depends on it (accept_ra 2 on a forwarding machine).
+    clan._networkFacts.forwarding = lib.mkIf dockerIpv6 true;
 
     warnings = lib.optional (owners ? tailscale && acceptsRoutes && fabricMember) "clanServices: this fabric member accepts Tailscale subnet routes; Tailscale's rule 5270 sits before main, so an accepted route wins over a fabric route for the same prefix (specs/netif.md N11)";
 

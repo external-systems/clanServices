@@ -62,7 +62,7 @@ The reason: rootful Podman puts each container in a *named* network
 namespace, and IfState deletes named namespaces it does not know.
 Docker's namespaces have no name, so IfState never sees them.
 
-The `containers` preset (planned, phase P7) owns all of it: the four
+The `containers` preset (built 2026-11-17, test `netif-containers`) owns all of it: the four
 link patterns and the `netns-` namespaces. It also rejects Docker's and
 Podman's default address pools when they overlap a fleet range. Rootless
 Podman creates no host links and needs nothing.
