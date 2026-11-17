@@ -52,6 +52,11 @@ beside IfState:
   counts for IPv6, so other links set `defaultRoute.ipv6 = false`, per
   link or once in the instance settings. Every default route netif
   installs has metric 100.
+- **`firewall.trust`** is off unless a link or its segment turns it
+  on. An untrusted link only answers on ports a service opened (SSH
+  opens its own). Trust a link only on a private network.
+- **`zone`** is a free label (`wan`, `lan`). Other modules read
+  `clanServices.netif.zones.<zone>` to get the interface names.
 - **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
   link's `nameservers` plus what its DHCP leases bring. There is no
   global DNS list from netif.

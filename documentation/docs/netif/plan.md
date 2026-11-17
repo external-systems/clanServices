@@ -18,7 +18,7 @@ owner decides.
 | P0 | The netif contract (docs only) | merged |
 | P1 | Ownership registry with presets (iwd, Tailscale, Cilium, VM taps), start ordering after `network-online.target`, Tailscale range and route checks | `netif-registry` green — done |
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
-| P3b | Slices 1, 2 and 3 are **done** (2026-11-17, `netif-dhcp` and `netif` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
+| P3b | Slices 1 to 4 are **done** (2026-11-17, `netif-dhcp` and `netif` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
@@ -53,6 +53,19 @@ Added the same day (slice 3), proven by `netif-dhcp` and `netif`:
 | One default route per family | a second DHCP link with `defaultRoute` off keeps its lease, its routes and its DNS, and adds no default, also after a renewal |
 | A fixed metric (100) on every default | static gateway, DHCPv4 lease and router advertisement all land at 100, so Wi-Fi and docks can sit behind them later |
 | Live changes | switching to another NixOS generation moves an address and a metric with no reboot and without touching other links; switching back restores the first state |
+
+Slice 4, the same day, proven by `netif-dhcp`:
+
+| Feature | What the test shows |
+|---|---|
+| Links are untrusted unless you say so | on an untrusted link SSH answers and a port nobody opened does not; on a trusted link both do |
+| DHCP on an untrusted WAN | DHCPv4, DHCPv6 and the delegated prefix all still arrive; netif opens the one port DHCPv6 needs |
+| Zones | a link can carry a label such as `wan` or `lan`; a router module reads the interface names from it |
+
+This is the change most likely to lock someone out of a real machine:
+a service that silently relied on an open link now needs its own port.
+No test relied on it. On a real machine, apply it with console access
+until the lockout guard (P8) exists.
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible

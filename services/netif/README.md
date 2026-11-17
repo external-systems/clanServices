@@ -85,6 +85,11 @@ Beside IfState, netif runs (`host.nix`):
   whether the link may carry the machine's default route; one link per
   family may, and a link with `ra = true` counts for IPv6. Every
   default route has metric 100 (`clanServices.netif.routeMetric`);
+- links are firewall-untrusted unless `firewall.trust` is set on the
+  link or the segment; netif opens UDP 546 on DHCPv6 links itself;
+- `zone` labels a link for other modules, which read
+  `clanServices.netif.zones.<zone>` (interface names) or
+  `clanServices.networking.links.<instance>.<link>`;
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

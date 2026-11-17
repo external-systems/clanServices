@@ -159,6 +159,27 @@
     done
   '';
 in {
+  options.clanServices.networking.links = mkOption {
+    readOnly = true;
+    description = ''
+      Every netif link of this machine by instance and logical name,
+      with its resolved interface name, its zone label and its kind
+      (specs/netif.md N10). Read-only: modules reference a link here
+      and never the inventory.
+    '';
+    type = types.attrsOf (
+      types.attrsOf (
+        types.submodule {
+          options = {
+            interface = mkOption {type = types.str;};
+            zone = mkOption {type = types.nullOr types.str;};
+            kind = mkOption {type = types.str;};
+          };
+        }
+      )
+    );
+  };
+
   options.clanServices.netif = {
     links = mkOption {
       internal = true;
@@ -174,6 +195,8 @@ in {
             nameservers = mkOption {type = types.listOf types.str;};
             requiredForOnline = mkOption {type = types.bool;};
             default4 = mkOption {type = types.bool;};
+            kind = mkOption {type = types.str;};
+            zone = mkOption {type = types.nullOr types.str;};
             prefixDelegation = {
               enable = mkOption {type = types.bool;};
               hint = mkOption {type = types.int;};
@@ -192,6 +215,17 @@ in {
           };
         }
       );
+    };
+    zones = mkOption {
+      readOnly = true;
+      description = ''
+        The seam for router and gateway modules (specs/netif.md N10):
+        zone name to the interface names of the netif links that carry
+        it, sorted. A module writes
+        'config.clanServices.netif.zones.wan' and never an interface
+        name.
+      '';
+      type = types.attrsOf (types.listOf types.str);
     };
     routeMetric = mkOption {
       type = types.ints.positive;
@@ -214,169 +248,202 @@ in {
     };
   };
 
-  config = lib.mkIf (links != {}) {
-    assertions = [
-      {
-        assertion = dhcpLinks == {} || lib.versionAtLeast pkgs.dhcpcd_latest.version "10.5.0";
-        message = "netif: DHCP links need dhcpcd 10.5.0 or newer as pkgs.dhcpcd_latest (got ${pkgs.dhcpcd_latest.version}); apply inputs.org-pkgs.overlays.ifstate (specs/netif.md N30)";
-      }
-    ];
-
-    environment = {
-      etc =
-        lib.mapAttrs' (
-          interface: l:
-            lib.nameValuePair "netif/dns/${interface}.dns" {
-              text = lib.concatLines l.nameservers;
-            }
-        )
-        (lib.filterAttrs (_: l: l.nameservers != []) links)
-        // lib.mapAttrs' (
-          interface: l: lib.nameValuePair "netif/dhcpcd/${interface}.conf" {source = dhcpcdConf interface l;}
-        )
-        dhcpLinks;
-      systemPackages = lib.optional (dhcpLinks != {}) pkgs.dhcpcd_latest;
-    };
-
-    boot.kernel.sysctl."net.ipv6.conf.default.ra_defrtr_metric" = cfg.routeMetric;
-
-    services.udev.extraRules = lib.concatMapStrings (interface: ''
-      SUBSYSTEM=="net", ACTION=="add", NAME=="${interface}", ENV{SYSTEMD_WANTS}+="${dhcpcdUnit interface}.service"
-    '') (lib.attrNames dhcpLinks);
-
-    systemd = {
-      tmpfiles.rules = [
-        "d ${runtimeDir} 0755 root root -"
-        "d /run/dhcpcd 0755 root root -"
-        "d /var/lib/dhcpcd 0755 root root -"
+  config = lib.mkMerge [
+    {
+      clanServices = {
+        netif.zones = lib.mapAttrs (_: lib.sort builtins.lessThan) (
+          lib.groupBy' (acc: entry: acc ++ [entry.interface]) [] (entry: entry.zone) (
+            lib.mapAttrsToList (interface: l: {
+              inherit interface;
+              inherit (l) zone;
+            }) (lib.filterAttrs (_: l: l.zone != null) links)
+          )
+        );
+        networking.links = lib.mapAttrs (_: lib.listToAttrs) (
+          lib.groupBy' (acc: entry: acc ++ [entry.value]) [] (entry: entry.instance) (
+            lib.mapAttrsToList (interface: l: {
+              inherit (l) instance;
+              value = lib.nameValuePair l.logical {
+                inherit interface;
+                inherit (l) zone kind;
+              };
+            })
+            links
+          )
+        );
+      };
+    }
+    (lib.mkIf (links != {}) {
+      assertions = [
+        {
+          assertion = dhcpLinks == {} || lib.versionAtLeast pkgs.dhcpcd_latest.version "10.5.0";
+          message = "netif: DHCP links need dhcpcd 10.5.0 or newer as pkgs.dhcpcd_latest (got ${pkgs.dhcpcd_latest.version}); apply inputs.org-pkgs.overlays.ifstate (specs/netif.md N30)";
+        }
       ];
 
-      services =
-        {
-          netif-dns = {
-            description = "netif: per-link DNS in systemd-resolved";
-            wantedBy = ["multi-user.target"];
-            after = [
-              "systemd-resolved.service"
-              "ifstate.service"
-            ];
-            partOf = ["systemd-resolved.service"];
-            serviceConfig = {
-              ExecStart = dnsWatch;
-              Restart = "always";
-              RestartSec = 1;
-            };
-          };
+      environment = {
+        etc =
+          lib.mapAttrs' (
+            interface: l:
+              lib.nameValuePair "netif/dns/${interface}.dns" {
+                text = lib.concatLines l.nameservers;
+              }
+          )
+          (lib.filterAttrs (_: l: l.nameservers != []) links)
+          // lib.mapAttrs' (
+            interface: l: lib.nameValuePair "netif/dhcpcd/${interface}.conf" {source = dhcpcdConf interface l;}
+          )
+          dhcpLinks;
+        systemPackages = lib.optional (dhcpLinks != {}) pkgs.dhcpcd_latest;
+      };
 
-          # RA defaults get netif's metric too (N18). IfState's schema has
-          # no key for this sysctl, so it is written before each apply,
-          # while a new link is still down; links IfState creates take the
-          # 'default' value set below.
-          ifstate.serviceConfig.ExecStartPre = [
-            (pkgs.writeShellScript "netif-ra-metric" ''
-              for f in /proc/sys/net/ipv6/conf/*/ra_defrtr_metric; do
-                [ -w "$f" ] && echo ${toString cfg.routeMetric} > "$f"
-              done
-              exit 0
-            '')
-          ];
+      boot.kernel.sysctl."net.ipv6.conf.default.ra_defrtr_metric" = cfg.routeMetric;
 
-          ifstate.serviceConfig.ExecStartPost =
-            [dnsApply]
-            ++ lib.optional (dhcpLinks != {}) (
-              pkgs.writeShellScript "netif-dhcpcd-start" ''
-                exec ${lib.getExe' pkgs.systemd "systemctl"} start --no-block ${
-                  lib.escapeShellArgs (map (interface: "${dhcpcdUnit interface}.service") (lib.attrNames dhcpLinks))
-                }
-              ''
-            );
+      # Links are untrusted by default (N19), so netif opens what its own
+      # DHCPv6 client needs: replies arrive on UDP 546. DHCPv4 needs no
+      # port, dhcpcd reads it from a packet socket.
+      networking.firewall.interfaces = lib.mapAttrs (_: _: {allowedUDPPorts = [546];}) (
+        lib.filterAttrs (_: l: l.dhcp6) links
+      );
 
-          netif-online = lib.mkIf (onlineLinks != {}) {
-            description = "netif: wait for DHCP addresses on the links required for online";
-            wantedBy = ["network-online.target"];
-            before = ["network-online.target"];
-            after = ["ifstate.service"] ++ map (interface: "${dhcpcdUnit interface}.service") (lib.attrNames onlineLinks);
-            serviceConfig = {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              ExecStart = onlineWait;
-            };
-          };
-        }
-        // lib.mapAttrs' (
-          interface: l:
-            lib.nameValuePair (dhcpcdUnit interface) {
-              description = "netif: dhcpcd on ${interface} (netif/${l.instance} link ${l.logical})";
-              # Bound to the link: stopped when the link goes away. Started
-              # at boot, by udev when the link appears later (a dock), and
-              # by IfState after it created or renamed the link. IfState
-              # has finished with the link before dhcpcd touches it.
+      services.udev.extraRules = lib.concatMapStrings (interface: ''
+        SUBSYSTEM=="net", ACTION=="add", NAME=="${interface}", ENV{SYSTEMD_WANTS}+="${dhcpcdUnit interface}.service"
+      '') (lib.attrNames dhcpLinks);
+
+      systemd = {
+        tmpfiles.rules = [
+          "d ${runtimeDir} 0755 root root -"
+          "d /run/dhcpcd 0755 root root -"
+          "d /var/lib/dhcpcd 0755 root root -"
+        ];
+
+        services =
+          {
+            netif-dns = {
+              description = "netif: per-link DNS in systemd-resolved";
               wantedBy = ["multi-user.target"];
-              bindsTo = [(deviceUnit interface)];
               after = [
-                (deviceUnit interface)
-                "ifstate.service"
-                "systemd-tmpfiles-setup.service"
                 "systemd-resolved.service"
+                "ifstate.service"
               ];
-              wants = ["ifstate.service"];
-              restartTriggers = [(dhcpcdConf interface l)];
-              unitConfig.StartLimitIntervalSec = 0;
+              partOf = ["systemd-resolved.service"];
               serviceConfig = {
-                ExecStart = "${lib.getExe pkgs.dhcpcd_latest} -B -f /etc/netif/dhcpcd/${interface}.conf ${interface}";
-                # A clean slate after every stop, crash or not: a dhcpcd
-                # that found its address already on the link does not
-                # remove it on exit. IPv4 only; IPv6 "dynamic" addresses
-                # include the kernel's own SLAAC ones.
-                ExecStopPost = pkgs.writeShellScript "netif-dhcpcd-cleanup" ''
-                  export PATH=${path}
-                  ip -4 addr flush dev ${lib.escapeShellArg interface} dynamic 2>/dev/null || true
-                  rm -f ${runtimeDir}/${lib.escapeShellArg interface}.dhcp4.* ${runtimeDir}/${lib.escapeShellArg interface}.dhcp6.*
-                  ${dnsApply} ${lib.escapeShellArg interface}
-                '';
-                Restart = "on-failure";
-                RestartSec = 2;
-                # dhcpcd sets addresses, routes and per-link sysctls and
-                # opens raw and packet sockets. Nothing else.
-                CapabilityBoundingSet = [
-                  "CAP_NET_ADMIN"
-                  "CAP_NET_RAW"
-                  "CAP_NET_BIND_SERVICE"
-                  "CAP_CHOWN"
-                ];
-                NoNewPrivileges = true;
-                ProtectSystem = "strict";
-                ReadWritePaths = [
-                  "/run/dhcpcd"
-                  "/var/lib/dhcpcd"
-                  runtimeDir
-                ];
-                ProtectHome = true;
-                PrivateTmp = true;
-                PrivateDevices = true;
-                ProtectClock = true;
-                ProtectControlGroups = true;
-                ProtectHostname = true;
-                ProtectKernelLogs = true;
-                ProtectKernelModules = true;
-                RestrictAddressFamilies = [
-                  "AF_UNIX"
-                  "AF_INET"
-                  "AF_INET6"
-                  "AF_NETLINK"
-                  "AF_PACKET"
-                ];
-                RestrictNamespaces = true;
-                RestrictRealtime = true;
-                RestrictSUIDSGID = true;
-                LockPersonality = true;
-                MemoryDenyWriteExecute = true;
-                SystemCallArchitectures = "native";
-                SystemCallFilter = ["@system-service"];
+                ExecStart = dnsWatch;
+                Restart = "always";
+                RestartSec = 1;
               };
-            }
-        )
-        dhcpLinks;
-    };
-  };
+            };
+
+            # RA defaults get netif's metric too (N18). IfState's schema has
+            # no key for this sysctl, so it is written before each apply,
+            # while a new link is still down; links IfState creates take the
+            # 'default' value set below.
+            ifstate.serviceConfig.ExecStartPre = [
+              (pkgs.writeShellScript "netif-ra-metric" ''
+                for f in /proc/sys/net/ipv6/conf/*/ra_defrtr_metric; do
+                  [ -w "$f" ] && echo ${toString cfg.routeMetric} > "$f"
+                done
+                exit 0
+              '')
+            ];
+
+            ifstate.serviceConfig.ExecStartPost =
+              [dnsApply]
+              ++ lib.optional (dhcpLinks != {}) (
+                pkgs.writeShellScript "netif-dhcpcd-start" ''
+                  exec ${lib.getExe' pkgs.systemd "systemctl"} start --no-block ${
+                    lib.escapeShellArgs (map (interface: "${dhcpcdUnit interface}.service") (lib.attrNames dhcpLinks))
+                  }
+                ''
+              );
+
+            netif-online = lib.mkIf (onlineLinks != {}) {
+              description = "netif: wait for DHCP addresses on the links required for online";
+              wantedBy = ["network-online.target"];
+              before = ["network-online.target"];
+              after = ["ifstate.service"] ++ map (interface: "${dhcpcdUnit interface}.service") (lib.attrNames onlineLinks);
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = onlineWait;
+              };
+            };
+          }
+          // lib.mapAttrs' (
+            interface: l:
+              lib.nameValuePair (dhcpcdUnit interface) {
+                description = "netif: dhcpcd on ${interface} (netif/${l.instance} link ${l.logical})";
+                # Bound to the link: stopped when the link goes away. Started
+                # at boot, by udev when the link appears later (a dock), and
+                # by IfState after it created or renamed the link. IfState
+                # has finished with the link before dhcpcd touches it.
+                wantedBy = ["multi-user.target"];
+                bindsTo = [(deviceUnit interface)];
+                after = [
+                  (deviceUnit interface)
+                  "ifstate.service"
+                  "systemd-tmpfiles-setup.service"
+                  "systemd-resolved.service"
+                ];
+                wants = ["ifstate.service"];
+                restartTriggers = [(dhcpcdConf interface l)];
+                unitConfig.StartLimitIntervalSec = 0;
+                serviceConfig = {
+                  ExecStart = "${lib.getExe pkgs.dhcpcd_latest} -B -f /etc/netif/dhcpcd/${interface}.conf ${interface}";
+                  # A clean slate after every stop, crash or not: a dhcpcd
+                  # that found its address already on the link does not
+                  # remove it on exit. IPv4 only; IPv6 "dynamic" addresses
+                  # include the kernel's own SLAAC ones.
+                  ExecStopPost = pkgs.writeShellScript "netif-dhcpcd-cleanup" ''
+                    export PATH=${path}
+                    ip -4 addr flush dev ${lib.escapeShellArg interface} dynamic 2>/dev/null || true
+                    rm -f ${runtimeDir}/${lib.escapeShellArg interface}.dhcp4.* ${runtimeDir}/${lib.escapeShellArg interface}.dhcp6.*
+                    ${dnsApply} ${lib.escapeShellArg interface}
+                  '';
+                  Restart = "on-failure";
+                  RestartSec = 2;
+                  # dhcpcd sets addresses, routes and per-link sysctls and
+                  # opens raw and packet sockets. Nothing else.
+                  CapabilityBoundingSet = [
+                    "CAP_NET_ADMIN"
+                    "CAP_NET_RAW"
+                    "CAP_NET_BIND_SERVICE"
+                    "CAP_CHOWN"
+                  ];
+                  NoNewPrivileges = true;
+                  ProtectSystem = "strict";
+                  ReadWritePaths = [
+                    "/run/dhcpcd"
+                    "/var/lib/dhcpcd"
+                    runtimeDir
+                  ];
+                  ProtectHome = true;
+                  PrivateTmp = true;
+                  PrivateDevices = true;
+                  ProtectClock = true;
+                  ProtectControlGroups = true;
+                  ProtectHostname = true;
+                  ProtectKernelLogs = true;
+                  ProtectKernelModules = true;
+                  RestrictAddressFamilies = [
+                    "AF_UNIX"
+                    "AF_INET"
+                    "AF_INET6"
+                    "AF_NETLINK"
+                    "AF_PACKET"
+                  ];
+                  RestrictNamespaces = true;
+                  RestrictRealtime = true;
+                  RestrictSUIDSGID = true;
+                  LockPersonality = true;
+                  MemoryDenyWriteExecute = true;
+                  SystemCallArchitectures = "native";
+                  SystemCallFilter = ["@system-service"];
+                };
+              }
+          )
+          dhcpLinks;
+      };
+    })
+  ];
 }
