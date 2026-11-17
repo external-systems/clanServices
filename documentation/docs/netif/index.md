@@ -6,7 +6,7 @@ links, addresses and routes once in `inventory.nix`. netif renders them for
 whichever network manager the machine's current mode uses.
 
 This section is the human version of the netif contract. The agent edition,
-with numbered decisions `N1`–`N30`, is
+with numbered decisions `N1`–`N42`, is
 [`specs/netif.md`](https://github.com/external-systems/clanServices/blob/main/specs/netif.md).
 
 ## The model

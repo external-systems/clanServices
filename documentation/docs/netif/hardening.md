@@ -7,8 +7,12 @@ phase (P3b). It answers three questions:
 - What would make the network more stable?
 - What would make it easier to use?
 
-Nothing on this page is decided. Each idea has a label (`H1` to `H12`)
-so it can be picked or dropped by name. The agent version is
+**Update, same day:** you adopted all twelve ideas. They are now
+decisions N31 to N42 in `specs/netif.md`. H1, H2, H4 and H8 are built
+and tested, and H3 in part (see [Plan and evidence](plan.md)). The
+others have a phase.
+
+Each idea has a label (`H1` to `H12`). The agent version is
 `specs/netif.md` §11.
 
 ## Decisions with thin proof

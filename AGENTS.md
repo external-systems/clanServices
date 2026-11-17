@@ -43,7 +43,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `ci / flake-check`) and the branch ruleset. Never add steps or jobs here;
   CI changes are pkgs PRs.
 - `specs/netif.md` — the host-networking contract and status authority
-  (decisions N1–N30, use cases U1–U11, the responsibility boundary
+  (decisions N1–N42, use cases U1–U11, the responsibility boundary
   in §1.1): netif, the shared IfState base, modes, the
   ownership registry. It supersedes SPEC.md D50/D53/D61 where they
   conflict; its human pages are `documentation/docs/netif/`. Edit them
@@ -183,13 +183,21 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   event loop (`ipv6_freeaddr`), so after a carrier change DHCPv4 or
   DHCPv6 does not recover (`eloop_event_add: No such file or directory`;
   upstream issue 596, fixed in 10.5.0). org-pkgs `overlays.ifstate`
-  has upstream 10.5.2 as `pkgs.dhcpcd_latest` for netif; `pkgs.dhcpcd`
-  stays 10.3.2 with the two fix commits, because 10.5 does not start
-  under the stock NixOS `dhcpcd.service` (nixpkgs PR 562813). This
-  repo runs `pkgs.dhcpcd` until P3b switches netif. dhcpcd sets `addr_gen_mode` to 1 on
+  has upstream 10.5.2 as `pkgs.dhcpcd_latest`, which netif's dhcpcd
+  units run; `pkgs.dhcpcd` stays 10.3.2 with the two fix commits,
+  because 10.5 does not start under the stock NixOS `dhcpcd.service`
+  (nixpkgs PR 562813). dhcpcd sets `addr_gen_mode` to 1 on
   every link it runs IPv6 on, `noipv6rs` or not; `ipv4only` avoids it.
   A broken networking package is fixed in pkgs, never here: the
   upstream release first, a patch second (`specs/netif.md` N30).
+- dhcpcd does not remove an address it found already on the link when
+  it exits; netif's unit flushes dynamic IPv4 addresses after every
+  stop (`specs/netif.md` N31). A unit file's `WantedBy=<device>` did
+  not start a service in the VM; udev `SYSTEMD_WANTS` does.
+- IfState 2.5.1 ignores routes of `proto dhcp` (16) and `proto ra` (9)
+  and dynamic addresses by default. `ifstatecli check` prints `ok`,
+  `= <value>` or `orphan` for unchanged objects and exits 0 either
+  way; tests use `tests/ifstate-noop.nix`.
 - A test node that sends RAs must forward IPv6, or Linux hosts drop it
   as default router seconds after first use (`specs/netif.md` §7).
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).

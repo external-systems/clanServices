@@ -125,6 +125,16 @@ in {
               default = [];
               description = "Static routes rendered on this link.";
             };
+            prefixDelegation = mkOption {
+              type = types.attrsOf types.anything;
+              default = {};
+              description = ''
+                Prefix-delegation intent of this link: enable, hint and
+                the target links by instance and logical name, with
+                'dynamic = true'. Never a prefix literal: the delegated
+                prefix exists only at runtime (specs/netif.md N16).
+              '';
+            };
             endpoint = mkOption {
               type = types.bool;
               default = false;

@@ -41,6 +41,7 @@ in {
   };
 
   testScript = ''
+    ${import ../../../../tests/ifstate-noop.nix}
     try:
         start_all()
         with subtest("NIC found by permanent MAC under its logical name"):
@@ -53,7 +54,7 @@ in {
             edge.succeed("systemctl restart ifstate.service")
             edge.succeed("test $(systemctl show -p Result --value ifstate.service) = success")
             edge.succeed("ip addr show wan | grep '10.88.0.1/24' >/dev/null")
-            edge.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check")
+            assert_ifstate_noop(edge)
             print("NETIF_MATCH_MAC_OK")
 
         with subtest("a missing NIC fails ifstate.service loudly"):

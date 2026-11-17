@@ -231,14 +231,41 @@
       instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.gateway.ipv4 = "192.168.10.1"; # dock DHCP already owns the default
     }
   );
-  dnsConflictEval = mkEvaled (
+  # Per-link DNS cannot conflict between instances (N9): overlapping but
+  # different server sets on two instances are fine.
+  dnsOverlapEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
       instances.mgmt.roles.default.settings.nameservers = [
         "192.168.10.1"
         "1.1.1.1"
-      ]; # overlaps home-net but differs
+      ];
     }
   );
+  # Prefix delegation (N16): edge-1's uplink-a asks for a /60 and gives
+  # subnet 1 to uplink-b's link, which lives in another instance.
+  pdSettings = extra:
+    lib.recursiveUpdate baseInventory {
+      instances.uplink-a.roles.default.machines.edge-1.settings.links.sfp0.dhcp =
+        lib.recursiveUpdate {
+          ipv6 = true;
+          prefixDelegation = {
+            enable = true;
+            hint = 60;
+            assign = [
+              {
+                instance = "uplink-b";
+                link = "sfp1";
+                subnet = 1;
+              }
+            ];
+          };
+        }
+        extra;
+    };
+  pdEdge = (mkEvaled (pdSettings {})).config.nixosConfigurations.edge-1.config;
+  pdBroken = extra: (mkEvaled (pdSettings extra)).config.nixosConfigurations.edge-1.config;
+  confOf = machineConfig: interface: machineConfig.environment.etc."netif/dhcpcd/${interface}.conf".source.text;
+  confLines = machineConfig: interface: lib.splitString "\n" (confOf machineConfig interface);
   policyTableConflictEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
       instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.routingPolicy = {
@@ -465,7 +492,7 @@ in {
       ];
     };
     test_physicalPresenceCheck = {
-      expr = map (c: builtins.length (lib.toList (c.systemd.services.ifstate.serviceConfig.ExecStartPost or []))) [
+      expr = map (c: lib.count (lib.hasInfix "ifstate-physical-links-present") (map toString (lib.toList (c.systemd.services.ifstate.serviceConfig.ExecStartPost or [])))) [
         edge
         macEdge
       ];
@@ -583,33 +610,141 @@ in {
     test_multiNicDhcp = {
       expr = {
         inherit (kamInterfaces.enp4s0.link) kind mtu;
-        dhcp = kamInterfaces.enp4s0.hooks;
+        hooks = kamInterfaces.enp4s0 ? hooks;
         ra = kamInterfaces.enp4s0.sysctl.ipv6;
-        dns = lib.unique kam.networking.nameservers;
+        globalDns = kam.networking.nameservers;
+        staticDns = kam.environment.etc."netif/dns/enp4s0.dns".text;
+        resolved = kam.services.resolved.enable;
+        host = {
+          inherit
+            (kam.clanServices.netif.links.enp4s0)
+            instance
+            logical
+            dhcp4
+            dhcp6
+            requiredForOnline
+            ;
+        };
       };
       expected = {
         kind = "physical";
         mtu = 1500;
-        dhcp = [
-          {
-            name = "netif-dhcp-home-net-dock";
-            args = {
-              ipv4 = "true";
-              ipv6 = "false";
-            };
-            timeout = 15;
-          }
-        ];
+        hooks = false;
         ra = {
           accept_ra = 1;
           autoconf = 1;
         };
-        dns = ["192.168.10.1"];
+        globalDns = [];
+        staticDns = "192.168.10.1\n";
+        resolved = true;
+        host = {
+          instance = "home-net";
+          logical = "dock";
+          dhcp4 = true;
+          dhcp6 = false;
+          requiredForOnline = true;
+        };
       };
     };
-    test_dhcpHookRegistrationMatchesLinkReference = {
-      expr = lib.attrNames kamIfstate.parameters.hooks;
-      expected = ["netif-dhcp-home-net-dock"];
+    # One supervised dhcpcd unit per DHCP link, bound to the link's device,
+    # running the upstream dhcpcd with netif's own config (N16, N31).
+    test_dhcpcdUnitPerDhcpLink = {
+      expr = let
+        unit = kam.systemd.services."netif-dhcpcd-enp4s0";
+      in {
+        units = lib.filter (lib.hasPrefix "netif-dhcpcd-") (lib.attrNames kam.systemd.services);
+        inherit (unit) bindsTo wantedBy;
+        inherit (unit.serviceConfig) Restart NoNewPrivileges ProtectSystem;
+        upstream = lib.hasInfix "dhcpcd-10.5" unit.serviceConfig.ExecStart;
+        ownConfig = lib.hasInfix "-f /etc/netif/dhcpcd/enp4s0.conf enp4s0" unit.serviceConfig.ExecStart;
+        ifstateHooks = kamIfstate.parameters.hooks or {};
+      };
+      expected = {
+        units = ["netif-dhcpcd-enp4s0"];
+        bindsTo = ["sys-subsystem-net-devices-enp4s0.device"];
+        wantedBy = ["multi-user.target"];
+        Restart = "on-failure";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        upstream = true;
+        ownConfig = true;
+        ifstateHooks = {};
+      };
+    };
+    # dhcpcd's fixed job (N16): no RA handling, no IPv4 link-local, no
+    # stock hooks, the N18 metric; IPv6 left alone on a DHCPv4-only link.
+    test_dhcpcdConfigDhcp4Only = {
+      expr = let
+        lines = confLines kam "enp4s0";
+        has = line: lib.elem line lines;
+      in {
+        noipv6rs = has "noipv6rs";
+        noipv4ll = has "noipv4ll";
+        metric = has "metric 100";
+        backoff = has "backoff_cutoff 16";
+        ipv4only = has "ipv4only";
+        ia_na = lib.any (lib.hasPrefix "ia_na") lines;
+        ia_pd = lib.any (lib.hasPrefix "ia_pd") lines;
+        script = lib.any (lib.hasPrefix "script /nix/store/") lines;
+        iaid = lib.length (lib.filter (lib.hasPrefix "iaid ") lines);
+      };
+      expected = {
+        noipv6rs = true;
+        noipv4ll = true;
+        metric = true;
+        backoff = true;
+        ipv4only = true;
+        ia_na = false;
+        ia_pd = false;
+        script = true;
+        iaid = 1;
+      };
+    };
+    test_prefixDelegationRendersIaPd = {
+      expr = let
+        lines = confLines pdEdge "enp1s0f0np0";
+        iaid = lib.removePrefix "iaid " (lib.findFirst (lib.hasPrefix "iaid ") "" lines);
+      in {
+        ia_na = lib.elem "ia_na ${iaid}" lines;
+        ia_pd = lib.elem "ia_pd ${iaid}/::/60 enp1s0f1np1/1/64" lines;
+        ipv4only = lib.elem "ipv4only" lines;
+        ipv6only = lib.elem "ipv6only" lines;
+        fact = pdEdge.clan.networkFacts.netif.uplink-a.links.sfp0.prefixDelegation;
+      };
+      expected = {
+        ia_na = true;
+        ia_pd = true;
+        ipv4only = false;
+        ipv6only = true;
+        fact = {
+          enable = true;
+          hint = 60;
+          assign = [
+            {
+              instance = "uplink-b";
+              link = "sfp1";
+              subnet = 1;
+              length = 64;
+            }
+          ];
+          dynamic = true;
+        };
+      };
+    };
+    test_onlineWaitsForDhcpLinksOnly = {
+      expr = {
+        kam = kam.systemd.services ? netif-online;
+        after = kam.systemd.services.netif-online.after;
+        edge = edge.systemd.services ? netif-online;
+      };
+      expected = {
+        kam = true;
+        after = [
+          "ifstate.service"
+          "netif-dhcpcd-enp4s0.service"
+        ];
+        edge = false;
+      };
     };
     test_forwardingAcceptsRouterAdvertisements = {
       expr = let
@@ -809,6 +944,12 @@ in {
             gateway6 = null;
             routes = [];
             gatewayInMain = true; # DHCP lease default
+            prefixDelegation = {
+              enable = false;
+              hint = 56;
+              assign = [];
+              dynamic = true;
+            };
           };
           eth = {
             kind = "physical";
@@ -827,6 +968,12 @@ in {
             gateway6 = null;
             routes = [];
             gatewayInMain = false;
+            prefixDelegation = {
+              enable = false;
+              hint = 56;
+              assign = [];
+              dynamic = true;
+            };
           };
         };
       };
@@ -904,8 +1051,63 @@ in {
       expr = failedAssertion duplicateDefaultRouteEval.config.nixosConfigurations.kamrui-h1.config "more than one IPv4 default route";
       expected = true;
     };
-    test_dnsConflictRejected = {
-      expr = failedAssertion dnsConflictEval.config.nixosConfigurations.kamrui-h1.config "conflicting DNS nameservers";
+    test_dnsOverlapAcrossInstancesAccepted = {
+      expr = failedAssertion dnsOverlapEval.config.nixosConfigurations.kamrui-h1.config "netif";
+      expected = false;
+    };
+    test_prefixDelegationNeedsDhcp6 = {
+      expr = failedAssertion (pdBroken {ipv6 = false;}) "enables 'dhcp.prefixDelegation' without 'dhcp.ipv6 = true'";
+      expected = true;
+    };
+    test_prefixDelegationTargetMustExist = {
+      expr = failedAssertion (pdBroken {
+        prefixDelegation.assign = [
+          {
+            link = "nowhere";
+            subnet = 1;
+          }
+        ];
+      }) "assigns a delegated prefix to a link that does not exist on it: uplink-a/sfp0 -> uplink-a/nowhere";
+      expected = true;
+    };
+    test_prefixDelegationNotToItself = {
+      expr = failedAssertion (pdBroken {
+        prefixDelegation.assign = [
+          {
+            link = "sfp0";
+            subnet = 1;
+          }
+        ];
+      }) "assigns a delegated prefix to the link that requests it: uplink-a/sfp0";
+      expected = true;
+    };
+    test_prefixDelegationSubnetMustFit = {
+      expr = failedAssertion (pdBroken {
+        prefixDelegation.assign = [
+          {
+            instance = "uplink-b";
+            link = "sfp1";
+            subnet = 16; # a /60 holds /64 subnets 0..15
+          }
+        ];
+      }) "assigns a subnet that does not fit in its delegated prefix";
+      expected = true;
+    };
+    test_prefixDelegationSubnetIdsUnique = {
+      expr = failedAssertion (pdBroken {
+        prefixDelegation.assign = [
+          {
+            instance = "uplink-b";
+            link = "sfp1";
+            subnet = 1;
+          }
+          {
+            instance = "dmz-net";
+            link = "vswitch";
+            subnet = 1;
+          }
+        ];
+      }) "assigns one subnet id of its delegated prefix twice";
       expected = true;
     };
     test_policyTableCollisionRejected = {
