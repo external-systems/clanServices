@@ -50,6 +50,7 @@
     )
     ownerList;
 
+  ownedAddresses = lib.concatMap (owner: owner.addresses) ownerList;
   ifstateMode = config.clanServices.networking.mode.manager == "ifstate";
   nmOwners = lib.concatMap (owner: owner.interfaces) (builtins.filter (owner: owner.name != "iwd") ownerList);
   isPrefix' = regex: lib.hasPrefix "^" regex && builtins.match "[A-Za-z0-9_.-]+" (lib.removePrefix "^" regex) != null;
@@ -166,6 +167,12 @@
         default = [];
         description = "Named network namespace regexes.";
       };
+      addresses = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        example = ["192.0.2.96/28"];
+        description = "Address ranges (CIDR) whose addresses another program puts on links at run time, such as a floating IP moved by a failover controller. IfState leaves an address inside them alone on every link.";
+      };
       tables = mkOption {
         type = types.listOf types.ints.unsigned;
         default = [];
@@ -232,6 +239,11 @@ in {
           "^cilium"
           "^lxc"
         ];
+        # The CNI gives every pod a named network namespace. IfState
+        # deletes named namespaces it does not know, and with them every
+        # pod's network, on any reapply after the first pod started
+        # (found by k3s-data-plane-netif).
+        netns = ["^cni-"];
         tables = [200];
       };
       # Docker and rootful Podman (N22). Everything is named, so netif
@@ -298,6 +310,7 @@ in {
     networking.ifstate.settings.parameters.ignore = {
       ifname = lib.concatMap (owner: owner.interfaces) ownerList;
       netns = lib.concatMap (owner: owner.netns) ownerList;
+      ipaddr = lib.mkIf (ownedAddresses != []) ownedAddresses;
       routes =
         lib.concatMap (
           owner:
@@ -318,7 +331,9 @@ in {
 
     systemd.services = lib.mkMerge (
       [
-        (lib.mkIf ifstateMode {
+        # Only where IfState runs: the cluster services import this
+        # registry on their own, with or without the shared base.
+        (lib.mkIf (ifstateMode && config.networking.ifstate.enable) {
           # N7: an IfState mode is online once IfState has converged.
           ifstate = {
             before = ["network-online.target"];

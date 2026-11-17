@@ -4,6 +4,23 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 42 (2026-11-17): **netif under Kubernetes: first gate, three
+fixes in this file's services** (`specs/netif.md` round gate-1).
+- **New suite `k3s-data-plane-netif`:** the data-plane suite with the
+  nodes' underlay declared through netif. It adds a phase that reapplies
+  the network on both live nodes and asserts that nothing changes.
+- **Pod namespaces are owned.** The `cilium` registry owner claims
+  `^cni-`. Before, any IfState apply after the first pod started would
+  have deleted every pod's network namespace. The cluster suites did
+  not see it: IfState ran only at boot.
+- **routed-fabric:** the IPv6 transfer address no longer carries
+  `scope = "link"`; IfState re-added it on every apply because the
+  kernel ignores an IPv6 scope.
+- **Floating pools (D8) are owned.** k3s and rke2 register a floating
+  pool's blocks as owned address ranges on its candidate machines, so
+  the address a failover controller places survives a network reapply.
+- k3s and rke2 import the ownership registry themselves.
+
 Round 41 (2026-11-17): **netif P4a: modes** (`specs/netif.md` round
 P4a). Points that touch this file:
 - The shared IfState base follows the machine's mode: IfState in an

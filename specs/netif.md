@@ -11,6 +11,39 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round gate-1 (2026-11-17): **netif carries a Cilium Kubernetes
+cluster with FRR; three defects found on the way.** Proven by the new
+suite `k3s-data-plane-netif` (`NETIF_UNDER_KUBERNETES_OK`,
+`K3S_DATA_PLANE_NETIF_OK`): the whole data-plane suite (k3s, Cilium
+native routing, the routed-fabric WireGuard and FRR plane, BGP to a
+foreign router, load-balancer pools, the firewall phases) with the
+nodes' underlay declared through netif, on links netif does not
+trust. One phase is added: on both live nodes the dry run proposes
+nothing, the drift watch passes, and a real reapply leaves the kernel
+state identical, with the cluster and the BGP sessions unaffected.
+This is the first part of N14's definition of stable.
+- **Defect 1, serious (N6, N8):** IfState would have deleted every
+  pod's network namespace. The CNI names them `cni-<uuid>`, and IfState
+  removes named namespaces it does not know. No suite saw it, because
+  IfState only ran at boot there, before the first pod. The `cilium`
+  owner now owns `^cni-`.
+- **Defect 2 (routed-fabric):** the IPv6 transfer address was declared
+  with `scope = "link"`. The kernel derives an IPv6 scope from the
+  address and ignores a declared one, so IfState deleted and re-added
+  that address on every apply, under the BGP session. The scope is
+  gone from the IPv6 address.
+- **Defect 3 (N6):** an address a failover controller puts on a link
+  had no owner. Owners can now claim address ranges (`addresses`, to
+  IfState `ignore.ipaddr`), and k3s and rke2 claim their floating
+  pools on the candidate machines.
+- **The dry-run parser was too strict (N38, N42, §7):** a long object
+  name leaves one space before its operation, and such lines were read
+  as headings. The preview, the drift watch and the suites' helper now
+  split on any whitespace, and the preview names the interface a
+  change belongs to.
+- Still open for N14: RKE2 on netif, a fabric leaf with FRR alone, and
+  a desktop specialisation (KDE).
+
 Round P4a (2026-11-17): **modes exist: one manager per mode, both
 renderers.** Implemented and proven by `netif-modes`
 (`NETIF_MODES_OK`):
@@ -558,6 +591,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   composable NixOS option. Each owner declares the objects it owns:
   - interface-name regexes;
   - named network namespaces;
+  - address ranges whose addresses another program places at run time
+    (`addresses`, rendered to `ignore.ipaddr`; added in round gate-1);
   - routing tables;
   - policy-rule priorities or tables;
   - route selectors;

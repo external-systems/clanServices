@@ -57,12 +57,15 @@
         exit 1
       fi
       changes=$(printf '%s\n' "$out" | awk '
-        /^  / {
-          n = split($0, f, /  +/)
-          if (n < 3) next
-          if (f[3] == "ok" || f[3] == "orphan" || f[3] ~ /^= /) next
+        # An indented line is "<object> <operation…>"; one word alone
+        # names the interface the following lines belong to. Fields are
+        # split on any whitespace: a long name leaves a single space
+        # before its operation.
+        /^ / {
+          if (NF < 2) { context = $1; next }
+          if ($2 == "ok" || $2 == "orphan" || $2 == "=" || $2 == "pids:") next
           sub(/^ +/, "")
-          print "  " $0
+          print "  " (context == "" ? "" : context ": ") $0
         }')
       if [ -z "$changes" ]; then
         echo "netif-preview: applying $config would change nothing"

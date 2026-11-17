@@ -67,11 +67,13 @@
       output = machine.succeed("ifstatecli --config /etc/ifstate/ifstate.yaml check 2>&1")
       changes = []
       for line in output.split("\n"):
-          match = _noop_re.match(r"^\s{2,}(\S.*?)\s{2,}(\S.*)$", line)
+          # "<object> <operation…>": split on any whitespace, a long
+          # object name leaves a single space before its operation
+          match = _noop_re.match(r"^\s+(\S+)\s+(\S.*)$", line)
           if match is None:
               continue
           operation = match.group(2).strip()
-          if operation in ("ok", "orphan") or operation.startswith("= "):
+          if operation in ("ok", "orphan") or operation.startswith(("= ", "pids:")):
               continue
           changes.append(line.strip())
       return changes

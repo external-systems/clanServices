@@ -1029,10 +1029,11 @@
                   address = "${adjacency.local.ipv4}/31";
                   scope = "link";
                 }
-                {
-                  address = "${adjacency.local.ipv6}/127";
-                  scope = "link";
-                }
+                # No scope here: the kernel derives an IPv6 address's
+                # scope from the address and ignores a declared one, so
+                # IfState would see a mismatch and delete and re-add the
+                # address on every apply, under the BGP session.
+                "${adjacency.local.ipv6}/127"
                 "${adjacency.linkLocal}/64"
               ];
               link = {

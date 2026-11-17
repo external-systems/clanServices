@@ -460,6 +460,7 @@
       ];
     }
     baseInventory);
+  floatingKam = kamOf (withKamrui {clanServices.networking.owners.failover.addresses = ["192.0.2.96/28"];} baseInventory);
   dockerKam = kamOf (withKamrui {virtualisation.docker.enable = true;} baseInventory);
   podmanKam = kamOf (withKamrui {virtualisation.podman.enable = true;} baseInventory);
   dockerV6Kam = kamOf (withKamrui {
@@ -996,14 +997,28 @@ in {
       expr = let
         ignore = k3sKam.networking.ifstate.settings.parameters.ignore;
       in {
-        inherit (ignore) ifname rules;
+        inherit (ignore) ifname rules netns;
       };
       expected = {
+        # every pod's named namespace is the CNI's (found by k3s-data-plane-netif)
+        netns = ["^cni-"];
         ifname = [
           "^cilium"
           "^lxc"
         ];
         rules = [{table = 200;}];
+      };
+    };
+    # An owner can claim address ranges: addresses a failover controller
+    # moves at run time stay through a reapply.
+    test_ownerAddressRanges = {
+      expr = {
+        owned = floatingKam.networking.ifstate.settings.parameters.ignore.ipaddr;
+        none = kam.networking.ifstate.settings.parameters.ignore ? ipaddr;
+      };
+      expected = {
+        owned = ["192.0.2.96/28"];
+        none = false;
       };
     };
     test_presetsCleanOnBaseInventory = {

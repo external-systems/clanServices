@@ -48,6 +48,15 @@ in rec {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
       inherit clan;
     };
+    k3s-data-plane-netif = {
+      imports = [(import ./tests/vm/data-plane-netif.nix {inherit inputs;})];
+      clan =
+        clan
+        // {
+          modules = clan.modules // {inherit (self.clan.modules) netif;};
+          exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
+        };
+    };
     k3s-clustermesh = {
       imports = [./tests/vm/clustermesh.nix];
       inherit clan;
