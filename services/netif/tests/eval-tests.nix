@@ -450,6 +450,16 @@
   kamOf = eval: eval.config.nixosConfigurations.kamrui-h1.config;
   tailscaleKam = kamOf (withKamrui {services.tailscale.enable = true;} baseInventory);
   iwdKam = kamOf (withKamrui {networking.wireless.iwd.enable = true;} baseInventory);
+  desktopKam = kamOf (withKamrui {services.xserver.enable = true;} baseInventory);
+  guardTargetKam = kamOf (withKamrui {
+      clanServices.netif.guard.targets = [
+        {
+          address = "192.0.2.10";
+          port = 22;
+        }
+      ];
+    }
+    baseInventory);
   dockerKam = kamOf (withKamrui {virtualisation.docker.enable = true;} baseInventory);
   podmanKam = kamOf (withKamrui {virtualisation.podman.enable = true;} baseInventory);
   dockerV6Kam = kamOf (withKamrui {
@@ -811,6 +821,35 @@ in {
     test_guestPortsOnNonBridgeRejected = {
       expr = failedAssertion guestPortsOnBondEdge "sets 'bridge.guestPorts' but is not a bridge";
       expected = true;
+    };
+    # The lockout guard (N25, N36): on for a headless machine, off where
+    # a display manager runs; it sits between starting dhcpcd and the
+    # missing-NIC check; the firewall step exists only with targets.
+    test_guardDefaults = {
+      expr = {
+        headless = kam.clanServices.netif.guard.enable;
+        desktop = desktopKam.clanServices.netif.guard.enable;
+        desktopHasGuard = desktopKam.systemd.services ? netif-guard;
+        # after the apply and after dhcpcd, which learns the DHCP gateway
+        order = kam.systemd.services.netif-guard.after;
+        applyStartsIt = lib.any (lib.hasInfix "restart --no-block netif-guard.service") (
+          map toString kam.systemd.services.ifstate.serviceConfig.ExecStartPost
+        );
+        firewallStep = lib.any (lib.hasInfix "netif-guard") (map toString guardTargetKam.systemd.services.nftables.serviceConfig.ExecReload);
+        noFirewallStep = lib.any (lib.hasInfix "netif-guard") (map toString kam.systemd.services.nftables.serviceConfig.ExecReload);
+      };
+      expected = {
+        headless = true;
+        desktop = false;
+        desktopHasGuard = false;
+        order = [
+          "ifstate.service"
+          "netif-dhcpcd-enp4s0.service"
+        ];
+        applyStartsIt = true;
+        firewallStep = true;
+        noFirewallStep = false;
+      };
     };
     test_matchMacCleanInventory = {
       expr = failedAssertion macEdge "netif";

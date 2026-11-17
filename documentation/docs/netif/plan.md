@@ -22,7 +22,7 @@ owner decides.
 | P7 | **Done** (2026-11-17; `netif-containers` and `netif-vmhost` green). The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
-| P8 | The lockout guard | `netif-guard` green |
+| P8 | **Done** (2026-11-17, `netif-guard` green). The lockout guard | `netif-guard` green |
 | P5 | The router module in `modules`, built on P3b's zones and link names | `netif-router` green |
 | Contract gate | netif is stable in this repo | every phase above done, every probe-verified claim VM-proven, every invariant tested |
 | Field gate | home runs netif on each machine class that exists | each one live |
@@ -114,6 +114,28 @@ P7, second half (VM hosts), the same day, proven by the new
 
 Guests are simulated in the test. Real KubeVirt and Incus guests are
 part of the final proof.
+
+P8 (the lockout guard), the same day, proven by the new `netif-guard`
+test. It was taken ahead of P2 and P4 because it does not depend on
+them and it protects the firewall change of slice 4.
+
+| Feature | What the test shows |
+|---|---|
+| A bad change is undone | a change that moves the machine off its gateway's network is rolled back within the timeout; the deploy reports a failure; the old address and route are back |
+| Gateways that ignore pings | the check uses ARP and neighbour discovery, so such a gateway still passes |
+| A good change is kept | it becomes the new "last good" configuration, also across reboots |
+| Your own check targets | you can name an address and port that must stay reachable, such as the machine you deploy from |
+| Firewall changes | the targets are checked again after the firewall reloads; a failure is reported, nothing is rolled back |
+| First install | with nothing to go back to, the failure is only reported |
+
+One design change came out of testing: the guard is its own service
+(`netif-guard.service`) that runs after the network is applied and
+after DHCP has started. As first built it sat inside the apply step
+and could never see a DHCP gateway; the DHCP test caught that.
+
+The guard is on by default on machines without a screen session and
+off on desktops. It cannot see a firewall rule that blocks incoming
+connections: its checks go outwards.
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible

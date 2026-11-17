@@ -6,14 +6,13 @@ relies on, before a suite asserts it (`specs/netif.md` N40, evidence in
 
 | Probe | What it showed | Suite that takes it over |
 |---|---|---|
-| `guard` | the lockout guard prototype (N25) | `netif-guard` (P8) |
 | `wifi` | iwd's route metric in both families beside IfState (N18) | `netif-wifi` (P2) |
 | `modes-eval` | modes as specialisations with a read-only mode option (N24); evaluation only | `netif-modes` (P4) |
 
 Run one on a machine with KVM:
 
 ```sh
-nix build .#netifProbes.guard        # guard, wifi
+nix build .#netifProbes.wifi
 nix eval --json .#netifProbes.modes-eval
 ```
 

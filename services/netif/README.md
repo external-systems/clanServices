@@ -102,6 +102,10 @@ Beside IfState, netif runs (`host.nix`):
   bridge MAC follows a single `match.mac` member or `mac`;
   `bridge.guestPorts` keeps a hypervisor's ports across applies (a
   pre-apply step names them to IfState, a post-apply step checks them);
+- the lockout guard (`guard.nix`, `clanServices.netif.guard`,
+  `netif-guard.service`): after every apply the gateways and declared
+  targets must answer, or the last configuration that passed is
+  re-applied and the guard unit fails;
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

@@ -71,6 +71,11 @@ beside IfState:
   `mac` sets one by hand. `bridge.guestPorts = true` tells netif that
   other ports on the bridge belong to a hypervisor and must be left
   alone.
+- **The lockout guard** (`clanServices.netif.guard`) checks after
+  every network change that the gateways still answer. If not, it puts
+  the last working network back and reports the failure. It is on by
+  default on machines without a desktop. `guard.targets` adds your own
+  addresses to check.
 - **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
   link's `nameservers` plus what its DHCP leases bring. There is no
   global DNS list from netif.

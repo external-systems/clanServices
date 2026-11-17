@@ -4,6 +4,11 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 40 (2026-11-17): **netif P8: lockout guard** (`specs/netif.md`
+round P8). Nothing in this file's contract changes. A headless
+cluster node with a netif link now rolls a network change back when
+its gateway stops answering (N25).
+
 Round 39 (2026-11-17): **netif P7b: VM hosts** (`specs/netif.md`
 round P7b). Nothing in this file's contract changes. For KubeVirt
 nodes later: a netif bridge marked `bridge.guestPorts` keeps the ports
