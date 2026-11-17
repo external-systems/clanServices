@@ -1,9 +1,15 @@
 # netif-match (specs/netif.md P3a). A physical link found by permanent
 # MAC comes up under its logical name, whatever the kernel called it;
 # a declared NIC that does not exist fails ifstate.service loudly.
+# A NIC found by its udev path (N26) is renamed by udev before IfState
+# runs: the way a cloud NIC is matched, whose MAC is not known up front.
 _: let
   # QEMU's deterministic MAC for VLAN 1 on node 1 (the only node).
   mac = "52:54:00:12:01:01";
+  # A virtio NIC in a fixed PCI slot, like a cloud provider's second NIC.
+  cloudSlot = "18"; # free on q35 (1a, 1d and 1f are the chipset's)
+  cloudPath = "pci-0000:00:${cloudSlot}.0";
+  cloudMac = "52:54:00:aa:bb:cc";
 in {
   name = "netif-match";
 
@@ -21,10 +27,25 @@ in {
           static.ipv4 = ["10.88.0.1/24"];
         };
       };
+      instances.private = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines.edge.settings.links.cloud1 = {
+          match.path = cloudPath;
+          static.ipv4 = ["10.89.0.1/24"];
+          defaultRoute.ipv6 = false;
+          # published for tunnels, never set on the link (N17)
+          pathMtu = 1460;
+        };
+      };
     };
   };
 
   nodes.edge = {
+    virtualisation.qemu.options = [
+      "-netdev user,id=cloud,restrict=on"
+      "-device virtio-net-pci,netdev=cloud,addr=0x${cloudSlot},mac=${cloudMac}"
+    ];
     virtualisation = {
       cores = 1;
       memorySize = 1024;
@@ -56,6 +77,19 @@ in {
             edge.succeed("ip addr show wan | grep '10.88.0.1/24' >/dev/null")
             assert_ifstate_noop(edge)
             print("NETIF_MATCH_MAC_OK")
+
+        with subtest("NIC found by udev path under its logical name (N26)"):
+            edge.succeed("udevadm info -q property /sys/class/net/cloud1 | grep -x 'ID_PATH=${cloudPath}' >/dev/null")
+            edge.succeed("test \"$(cat /sys/class/net/cloud1/address)\" = '${cloudMac}'")
+            edge.succeed("ip addr show cloud1 | grep '10.89.0.1/24' >/dev/null")
+            edge.succeed("test -e /etc/systemd/network/10-netif-cloud1.link")
+            # udev renamed it, not IfState: no identify in the rendered config
+            edge.fail("grep -A6 '^  cloud1:' /etc/ifstate/ifstate.yaml | grep identify >/dev/null")
+            edge.fail("ip link show eth2")
+            edge.fail("systemctl is-active systemd-networkd.service")
+            # the path MTU is a published fact; the link keeps its MTU
+            edge.succeed("ip link show cloud1 | grep 'mtu 1500' >/dev/null")
+            print("NETIF_MATCH_PATH_OK")
 
         with subtest("a missing NIC fails ifstate.service loudly"):
             edge.execute("/run/current-system/specialisation/missing/bin/switch-to-configuration test >&2")

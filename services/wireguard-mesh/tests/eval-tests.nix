@@ -25,10 +25,19 @@
         ...
       }: {
         exports = mkExports {
-          netif.links.wan.addresses =
-            if instanceName == "underlay-v6"
-            then ["fd66:6666:6666::1/64"]
-            else ["198.18.128.1/32"];
+          netif =
+            {
+              links.wan.addresses =
+                if instanceName == "underlay-v6"
+                then ["fd66:6666:6666::1/64"]
+                else if lib.hasPrefix "sized-" instanceName
+                then ["192.0.2.1/32"]
+                else ["198.18.128.1/32"];
+            }
+            # MTU fixtures (netif N17): what a sized underlay publishes.
+            // lib.optionalAttrs (lib.hasPrefix "sized-" instanceName) {mtu = 1500;}
+            // lib.optionalAttrs (instanceName == "sized-path") {pathMtu = 1460;}
+            // lib.optionalAttrs (instanceName == "sized-small") {pathMtu = 1300;};
         };
       };
     };
@@ -183,6 +192,20 @@
   );
   missingNodeEval = mkEvaledAt ./fixtures-missing-node allocatedInventory;
   missingPrefixEval = mkEvaledAt ./fixtures-missing-prefix allocatedInventory;
+  # The WireGuard MTU follows the underlay netif publishes (netif N17).
+  meshMtu = netifInstances: extra:
+    (mkEvaled (
+      lib.recursiveUpdate baseInventory (
+        lib.recursiveUpdate {
+          instances = lib.genAttrs netifInstances (_: {
+            module.name = "netif";
+            module.input = "self";
+            roles.default.machines.alpha = {};
+          });
+        }
+        extra
+      )
+    )).config.nixosConfigurations.alpha.config.networking.ifstate.settings.interfaces.wg-mesh.link.mtu;
   netifPoolOverlapEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
       instances.underlay-v4 = {
@@ -337,6 +360,25 @@ in {
       expected = {
         kind = "wireguard";
         mtu = 1420;
+      };
+    };
+    # No netif MTU known: 1420. A link MTU: minus 96. A path MTU wins
+    # over the link MTU, the smallest of several wins, the floor is
+    # 1280, and an explicit 'mtu' wins over all of it.
+    test_mtuFollowsNetif = {
+      expr = {
+        linkMtu = meshMtu ["sized-link"] {};
+        pathMtu = meshMtu ["sized-link" "sized-path"] {};
+        floor = meshMtu ["sized-path" "sized-small"] {};
+        explicit = meshMtu ["sized-path"] {
+          instances.mesh.roles.peer.machines.alpha.settings.mtu = 1400;
+        };
+      };
+      expected = {
+        linkMtu = 1404;
+        pathMtu = 1364;
+        floor = 1280;
+        explicit = 1400;
       };
     };
     test_dualStackHostAddresses = {

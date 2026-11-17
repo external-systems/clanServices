@@ -120,7 +120,7 @@ Every listen port is reserved in `net.ipv4.ip_local_reserved_ports`.
 | `ipv4Pool` | `198.18.128.0/17` | Member-uniform IPv4 allocation pool fed to the shared prefix generator. |
 | `interface` | `null` | Interface name. `null` derives `wg-<instanceName>`; the kernel limit is 15 characters. |
 | `port` | `51820` | UDP listen port for this machine. Peers use each target's own port. |
-| `mtu` | `1420` | WireGuard link MTU. Must be at least 1280 for dual-stack operation. |
+| `mtu` | `null` | WireGuard link MTU, at least 1280. Null derives it from the machine's netif links: the smallest `pathMtu`, else the smallest link `mtu`, minus 96 (floor 1280); 1420 when netif publishes neither. |
 | `domain` | `null` | Mesh hostname suffix. `null` uses the instance name. |
 | `endpoint` | `null` | Explicit hostname or IP, without brackets or port. Overrides `endpointSources`. |
 | `endpointSources` | `[]` | Ordered `{ service, instance }` export sources. The first non-empty `peer.hosts` value wins. |

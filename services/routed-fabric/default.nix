@@ -283,7 +283,16 @@
         exports
       );
     in
-      lib.filter (mtu: mtu != null) (map (value: value.netif.mtu or null) matches);
+      # the declared path MTU first, then the link MTU (netif N17)
+      lib.filter (mtu: mtu != null) (
+        map (
+          value:
+            if (value.netif.pathMtu or null) != null
+            then value.netif.pathMtu
+            else value.netif.mtu or null
+        )
+        matches
+      );
     values = lib.concatMap mtusForSource sources;
   in
     if values == []

@@ -90,6 +90,11 @@ Beside IfState, netif runs (`host.nix`):
 - `zone` labels a link for other modules, which read
   `clanServices.netif.zones.<zone>` (interface names) or
   `clanServices.networking.links.<instance>.<link>`;
+- `match.path` finds a physical NIC by its udev path (a `.link` file
+  renames it before IfState runs); cloud-init's network configuration
+  is rejected next to netif;
+- `pathMtu` is published per link and instance; routed-fabric and
+  wireguard-mesh prefer it over the link MTU;
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

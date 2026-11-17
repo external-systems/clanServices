@@ -137,9 +137,14 @@ in {
           description = "The machine's WireGuard UDP listen port.";
         };
         mtu = lib.mkOption {
-          type = lib.types.ints.positive;
-          default = 1420;
-          description = "The WireGuard link MTU. Dual-stack meshes require at least 1280.";
+          type = lib.types.nullOr lib.types.ints.positive;
+          default = null;
+          description = ''
+            The WireGuard link MTU; dual-stack meshes require at least
+            1280. Null derives it from the machine's netif links: the
+            smallest declared 'pathMtu', else the smallest link 'mtu',
+            minus 96, with a floor of 1280. Without either it is 1420.
+          '';
         };
         domain = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
@@ -218,6 +223,33 @@ in {
       node6Generator = "wireguard-mesh-${instanceName}-node6";
       interface = interfaceName instanceName settings;
       allMembers = roles.peer.machines;
+      # The underlay MTU netif publishes for this machine (netif N17).
+      ownNetif = map (value: value.netif) (
+        lib.attrValues (
+          clanLib.selectExports (
+            scope: scope.serviceName == "netif" && scope.machineName == machine.name
+          )
+          exports
+        )
+      );
+      declared = field: lib.filter (mtu: mtu != null) (map (n: n.${field} or null) ownNetif);
+      underlayMtu = let
+        path = declared "pathMtu";
+        link = declared "mtu";
+        values =
+          if path != []
+          then path
+          else link;
+      in
+        if values == []
+        then null
+        else builtins.foldl' lib.min (builtins.head values) values;
+      effectiveMtu =
+        if settings.mtu != null
+        then settings.mtu
+        else if underlayMtu != null
+        then lib.max 1280 (underlayMtu - 96)
+        else 1420;
       peerMembers = lib.filterAttrs (name: _: name != machine.name) allMembers;
 
       allocation = {
@@ -440,7 +472,7 @@ in {
           instance = instanceName;
           interfaces = {
             ${interface} = {
-              inherit (settings) mtu;
+              mtu = effectiveMtu;
             };
           };
           directRoutingDevice = interface;
@@ -570,7 +602,7 @@ in {
             message = "wireguard-mesh/${instanceName}: interface '${interface}' contains unsupported characters";
           }
           {
-            assertion = settings.mtu >= 1280;
+            assertion = effectiveMtu >= 1280;
             message = "wireguard-mesh/${instanceName}: dual-stack operation requires mtu >= 1280";
           }
           {
@@ -664,7 +696,7 @@ in {
               link = {
                 kind = "wireguard";
                 state = "up";
-                inherit (settings) mtu;
+                mtu = effectiveMtu;
               };
               wireguard = {
                 private_key = "!include ${privateKeyFile}";

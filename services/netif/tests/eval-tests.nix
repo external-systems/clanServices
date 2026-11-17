@@ -507,6 +507,50 @@
       extraSettings.ethtool.features.rx-checksum = false;
     };
   };
+  # Cloud NICs by udev path (N26) and the path MTU (N17).
+  pathEdge = withEdgeLinks {
+    cloud0 = {
+      match.path = "pci-0000:00:03.0";
+      dhcp.ipv4 = true;
+      defaultRoute.ipv4 = false;
+      mtu = 1500;
+      pathMtu = 1460;
+    };
+    vswitch.pathMtu = 1400;
+  };
+  pathAndMacEdge = withEdgeLinks {
+    cloud0 = {
+      match.path = "pci-0000:00:03.0";
+      match.mac = "52:54:00:12:01:02";
+    };
+  };
+  pathOnVlanEdge = withEdgeLinks {
+    dmz10.match.path = "pci-0000:00:03.0";
+  };
+  pathLongNameEdge = withEdgeLinks {
+    the-private-cloud-nic.match.path = "pci-0000:00:03.0";
+  };
+  pathMtuAboveMtuEdge = withEdgeLinks {
+    cloud0 = {
+      interface = "enp9s0";
+      mtu = 1400;
+      pathMtu = 1460;
+    };
+  };
+  cloudInitEdge =
+    (mkEvaledWith (
+        machineConfigs
+        // {
+          edge-1 = {
+            nixpkgs.hostPlatform = "x86_64-linux";
+            services.cloud-init = {
+              enable = true;
+              network.enable = true;
+            };
+          };
+        }
+      )
+      baseInventory).config.nixosConfigurations.edge-1.config;
   macAndInterfaceEdge = withEdgeLinks {
     wan0 = {
       interface = "enp9s0";
@@ -545,12 +589,77 @@ in {
         ethtool.features.rx-checksum = false;
       };
     };
+    # A NIC matched by udev path: a '.link' file renames it, IfState
+    # knows it by its logical name and needs no 'identify'.
+    test_matchPathRendersUdevLink = {
+      expr = {
+        clean = !(failedAssertion pathEdge "netif");
+        link = {inherit (pathEdge.systemd.network.links."10-netif-cloud0") matchConfig linkConfig;};
+        ifstate = {
+          inherit (pathEdge.networking.ifstate.settings.interfaces.cloud0.link) kind;
+          identify = pathEdge.networking.ifstate.settings.interfaces.cloud0 ? identify;
+        };
+        dhcpcd = pathEdge.systemd.services ? netif-dhcpcd-cloud0;
+        networkd = pathEdge.systemd.network.enable;
+      };
+      expected = {
+        clean = true;
+        link = {
+          matchConfig.Path = "pci-0000:00:03.0";
+          linkConfig.Name = "cloud0";
+        };
+        ifstate = {
+          kind = "physical";
+          identify = false;
+        };
+        dhcpcd = true;
+        networkd = false;
+      };
+    };
+    test_matchPathAndMacRejected = {
+      expr = failedAssertion pathAndMacEdge "must set exactly one of 'interface', 'match.mac' and 'match.path'";
+      expected = true;
+    };
+    test_matchPathOnVlanRejected = {
+      expr = failedAssertion pathOnVlanEdge "sets 'match.path' but is not a physical link";
+      expected = true;
+    };
+    test_matchPathLongNameRejected = {
+      expr = failedAssertion pathLongNameEdge "uses 'match.path'";
+      expected = true;
+    };
+    test_cloudInitNetworkRejected = {
+      expr = failedAssertion cloudInitEdge "cloud-init a second writer";
+      expected = true;
+    };
+    # The path MTU is published, never set on the link (N17).
+    test_pathMtuExported = {
+      expr = {
+        facts = {
+          inherit (pathEdge.clan.networkFacts.netif.dmz-net) mtu pathMtu;
+          link = pathEdge.clan.networkFacts.netif.dmz-net.links.cloud0.pathMtu;
+        };
+        linkMtu = pathEdge.networking.ifstate.settings.interfaces.cloud0.link.mtu;
+      };
+      expected = {
+        facts = {
+          mtu = 1500;
+          pathMtu = 1400;
+          link = 1460;
+        };
+        linkMtu = 1500;
+      };
+    };
+    test_pathMtuAboveMtuRejected = {
+      expr = failedAssertion pathMtuAboveMtuEdge "sets 'pathMtu' 1460 above its MTU 1400";
+      expected = true;
+    };
     test_matchMacCleanInventory = {
       expr = failedAssertion macEdge "netif";
       expected = false;
     };
     test_matchMacAndInterfaceRejected = {
-      expr = failedAssertion macAndInterfaceEdge "must set exactly one of 'interface' and 'match.mac'";
+      expr = failedAssertion macAndInterfaceEdge "must set exactly one of 'interface', 'match.mac' and 'match.path'";
       expected = true;
     };
     test_matchMacOnVlanRejected = {
@@ -1085,6 +1194,7 @@ in {
         schemaVersion = 1;
         endpoint = null;
         mtu = 1500;
+        pathMtu = null;
         links = {
           dock = {
             kind = "physical";
@@ -1106,6 +1216,7 @@ in {
             };
             trusted = false; # N19
             zone = null;
+            pathMtu = null;
             prefixDelegation = {
               enable = false;
               hint = 56;
@@ -1136,6 +1247,7 @@ in {
             };
             trusted = false;
             zone = null;
+            pathMtu = null;
             prefixDelegation = {
               enable = false;
               hint = 56;
@@ -1369,7 +1481,7 @@ in {
       expected = true;
     };
     test_physicalWithoutInterfaceRejected = {
-      expr = failedAssertion physicalNoInterfaceEval.config.nixosConfigurations.kamrui-h1.config "physical link 'foo' of machine 'kamrui-h1' must set exactly one of 'interface' and 'match.mac'";
+      expr = failedAssertion physicalNoInterfaceEval.config.nixosConfigurations.kamrui-h1.config "physical link 'foo' of machine 'kamrui-h1' must set exactly one of 'interface', 'match.mac' and 'match.path'";
       expected = true;
     };
     test_dhcpStaticConflictRejected = {

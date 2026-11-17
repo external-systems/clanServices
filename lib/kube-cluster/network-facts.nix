@@ -57,6 +57,7 @@
         kind = str "Physical, VLAN, bond, or bridge.";
         interface = nullableStr "Resolved interface name.";
         mtu = nullableInt "Declared effective MTU.";
+        pathMtu = nullableInt "Declared path MTU towards peers through this link (N17).";
         addresses = strList "Declared static addresses; dynamic addresses are not invented.";
         dhcp4 = bool "Whether DHCPv4 is declared.";
         dhcp6 = bool "Whether DHCPv6 is declared.";
@@ -87,6 +88,7 @@
           options = {
             endpoint = nullableStr "Resolved deploy or fabric endpoint when declared.";
             mtu = nullableInt "Smallest declared underlay MTU in this instance.";
+            pathMtu = nullableInt "Smallest declared path MTU in this instance; consumers prefer it over mtu (N17).";
             links = lib.mkOption {
               type = t.attrsOf link;
               default = {};

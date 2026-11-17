@@ -474,51 +474,57 @@
     }
   );
 
-  mtuEval = mkEvaled (
-    lib.recursiveUpdate baseInventory {
-      instances = {
-        underlay = {
-          module.name = "netif";
-          module.input = "self";
-          roles.default.machines = {
-            spine-a.settings = {
-              endpoint = "203.0.113.2";
-              links.wan = {
-                interface = "enp1s0f0np0";
-                mtu = 1400;
-                static.ipv4 = ["203.0.113.2/30"];
-                endpoint = true;
-              };
+  mtuEval = mkEvaled mtuInventory;
+  mtuInventory = lib.recursiveUpdate baseInventory {
+    instances = {
+      underlay = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines = {
+          spine-a.settings = {
+            endpoint = "203.0.113.2";
+            links.wan = {
+              interface = "enp1s0f0np0";
+              mtu = 1400;
+              static.ipv4 = ["203.0.113.2/30"];
+              endpoint = true;
             };
-            client.settings = {
-              endpoint = "198.51.100.2";
-              links.wan = {
-                interface = "enp1s0f1np1";
-                mtu = 1400;
-                static.ipv4 = ["198.51.100.2/30"];
-                endpoint = true;
-              };
+          };
+          client.settings = {
+            endpoint = "198.51.100.2";
+            links.wan = {
+              interface = "enp1s0f1np1";
+              mtu = 1400;
+              static.ipv4 = ["198.51.100.2/30"];
+              endpoint = true;
             };
           };
         };
-        fleet.roles = {
-          spine.machines.spine-a.settings.endpointSources = [
-            {
-              service = "netif";
-              instance = "underlay";
-            }
-          ];
-          leaf.machines.client.settings.endpointSources = [
-            {
-              service = "netif";
-              instance = "underlay";
-            }
-          ];
-        };
       };
-    }
-  );
+      fleet.roles = {
+        spine.machines.spine-a.settings.endpointSources = [
+          {
+            service = "netif";
+            instance = "underlay";
+          }
+        ];
+        leaf.machines.client.settings.endpointSources = [
+          {
+            service = "netif";
+            instance = "underlay";
+          }
+        ];
+      };
+    };
+  };
   mtuClient = mtuEval.config.nixosConfigurations.client.config;
+  # A declared path MTU below the link MTU wins (netif N17).
+  pathMtuClient =
+    (mkEvaled (
+      lib.recursiveUpdate mtuInventory {
+        instances.underlay.roles.default.machines.client.settings.links.wan.pathMtu = 1380;
+      }
+    )).config.nixosConfigurations.client.config;
 
   borderInventory = lib.recursiveUpdate baseInventory {
     instances.fleet.roles.spine.machines.spine-a.settings = {
@@ -1071,6 +1077,13 @@ in {
       expected = [
         1304
         1304
+      ];
+    };
+    test_netifPathMtuPreferred = {
+      expr = map (interface: interface.link.mtu) (builtins.attrValues (interfacesFor pathMtuClient));
+      expected = [
+        1284
+        1284
       ];
     };
     test_netifAndFabricShareIfstateBase = {
