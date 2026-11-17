@@ -4,6 +4,11 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 39 (2026-11-17): **netif P7b: VM hosts** (`specs/netif.md`
+round P7b). Nothing in this file's contract changes. For KubeVirt
+nodes later: a netif bridge marked `bridge.guestPorts` keeps the ports
+a hypervisor adds, and a bridge over one NIC keeps that NIC's MAC.
+
 Round 38 (2026-11-17): **netif P7a: containers** (`specs/netif.md`
 round P7a). The ownership registry in the shared IfState base gains a
 `containers` preset (Docker, rootful Podman). It is off unless one of

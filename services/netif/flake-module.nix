@@ -22,7 +22,7 @@ in rec {
         overlays = [inputs.org-pkgs.overlays.ifstate];
       };
     in
-      lib.genAttrs ["vmhost" "guard" "wifi"] (
+      lib.genAttrs ["guard" "wifi"] (
         probe: probePkgs.testers.runNixOSTest (import (./tests/probes + "/${probe}.nix"))
       )
       // {
@@ -57,6 +57,10 @@ in rec {
     };
     netif-containers = {
       imports = [./tests/vm/containers.nix];
+      inherit clan;
+    };
+    netif-vmhost = {
+      imports = [./tests/vm/vmhost.nix];
       inherit clan;
     };
     netif-registry = {

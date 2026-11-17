@@ -135,6 +135,21 @@
           then site.firewall.trust
           else false;
         inherit (link) zone pathMtu;
+        guestPorts = link.bridge.guestPorts;
+        # N23: an explicit MAC wins; a bridge over exactly one physical
+        # member found by 'match.mac' takes that MAC; otherwise IfState's.
+        mac = let
+          members = link.bond.members ++ link.bridge.members;
+          only =
+            if lib.length members == 1
+            then links.${builtins.head members} or null
+            else null;
+        in
+          if link.mac != null
+          then link.mac
+          else if kind == "bridge" && only != null && kinds.${builtins.head members} == "physical"
+          then only.match.mac
+          else null;
         matchPath = link.match.path;
         inherit
           (link)
@@ -336,11 +351,36 @@
         type = types.listOf types.str;
         default = [];
         description = ''
-          Logical names of physical links that are this bridge's members.
-          Provider-MAC attachment for day-2 KubeVirt is bridge plumbing;
-          members may be empty when interfaces attach at runtime.
+          Logical names of the links that are this bridge's members:
+          physical, VLAN or bond links of the same instance (a bridge
+          over a VLAN is what a Hetzner vSwitch needs). Members may be
+          empty when interfaces attach at runtime.
         '';
       };
+      guestPorts = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          This bridge's undeclared ports belong to a hypervisor
+          (KubeVirt, Incus, libvirt). netif never deletes, downs or
+          detaches them: before every apply it names the ports it
+          finds on the bridge to IfState, and after the apply it checks
+          that each is still attached (specs/netif.md N23, N37).
+        '';
+      };
+    };
+    mac = mkOption {
+      type = types.nullOr (types.strMatching "([0-9a-f]{2}:){5}[0-9a-f]{2}");
+      default = null;
+      description = ''
+        MAC address of a bridge, bond or VLAN link (lower-case,
+        colon-separated). Without it a bridge with exactly one physical
+        member declared by 'match.mac' takes that member's MAC, so a
+        provider that filters by MAC keeps accepting the host's
+        traffic; any other bridge keeps IfState's generated MAC
+        (specs/netif.md N23). A physical NIC's MAC is not set here.
+      '';
+      example = "52:54:00:12:02:01";
     };
     static = {
       ipv4 = mkOption {
@@ -695,8 +735,16 @@
             assertion =
               r.kind
               != "bridge"
-              || lib.all (member: links ? ${member} && resolved.${member}.kind == "physical") r.members;
-            message = "netif/${instanceName}: bridge link '${logical}' of machine '${machineName}' references a 'bridge.members' entry that is not a physical link declared in instance '${instanceName}'; declare each member as a physical link in this instance";
+              || lib.all (member: links ? ${member} && resolved.${member}.kind != "bridge") r.members;
+            message = "netif/${instanceName}: bridge link '${logical}' of machine '${machineName}' references a 'bridge.members' entry that is not a physical, VLAN or bond link declared in instance '${instanceName}'; declare each member in this instance, and never a bridge inside a bridge (N23)";
+          }
+          {
+            assertion = !link.bridge.guestPorts || r.kind == "bridge";
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'bridge.guestPorts' but is not a bridge; set 'kind = \"bridge\"' or remove it (N23)";
+          }
+          {
+            assertion = link.mac == null || r.kind != "physical";
+            message = "netif/${instanceName}: physical link '${logical}' of machine '${machineName}' sets 'mac'; netif does not change a NIC's MAC. Use 'match.mac' to find the NIC by its MAC, or set 'mac' on the bridge, bond or VLAN above it (N23)";
           }
           {
             assertion = memberOf == null || !hasAddressing link;
@@ -1017,6 +1065,7 @@ in {
               state = "up";
             }
             // lib.optionalAttrs (r.mtu != null) {inherit (r) mtu;}
+            // lib.optionalAttrs (r.mac != null && r.kind != "physical") {address = r.mac;}
             // lib.optionalAttrs (r.memberOf != null) {
               master = resolved.${r.memberOf}.interface;
             }
@@ -1492,7 +1541,21 @@ in {
         && config.networking.nameservers == []
       ) "netif: machine '${machine.name}' takes its IPv6 default from router advertisements and has no DNS source: no link sets 'nameservers' and none uses DHCP. DNS servers from advertisements (RDNSS) are not read; set 'nameservers' on a link or enable 'dhcp.ipv6' (N39)";
 
-      clanServices.netif.links = hostLinks;
+      clanServices.netif = {
+        links = hostLinks;
+        # Guest-ports bridges with the ports netif itself declares (N23).
+        guestBridges = lib.listToAttrs (
+          lib.concatLists (
+            lib.mapAttrsToList (
+              _: resolved:
+                map (r: lib.nameValuePair r.interface (map (member: resolved.${member}.interface) r.members)) (
+                  lib.filter (r: r.guestPorts) (lib.attrValues resolved)
+                )
+            )
+            resolvedByInstance
+          )
+        );
+      };
 
       assertions = [
         {

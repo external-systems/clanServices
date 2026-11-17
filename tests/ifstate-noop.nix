@@ -84,7 +84,8 @@
       proposed = ifstate_proposed_changes(machine)
       assert proposed == [], f"{machine.name}: ifstatecli check proposes changes: {proposed}"
       before = ifstate_snapshot(machine)
-      machine.succeed("systemctl restart ifstate.service")
+      # suites reapply faster than systemd's start limit allows
+      machine.succeed("systemctl reset-failed ifstate.service; systemctl restart ifstate.service")
       machine.wait_until_succeeds('test -z "$(ip -6 addr show tentative)"', timeout=30)
       after = ifstate_snapshot(machine)
       for section, state in before.items():

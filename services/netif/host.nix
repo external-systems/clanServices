@@ -131,6 +131,60 @@
       )
     );
 
+  # Guest ports (N23, N37). IfState's cleanup knows interface names
+  # only, never a port's bridge. So before every apply netif lists the
+  # ports of each guest-ports bridge, drops the members it declares
+  # itself, and writes one regex naming the rest. IfState reads it
+  # through an `!include` in `parameters.ignore.ifname`. After the apply
+  # every listed port must still be on its bridge.
+  guestPortsFile = "/run/netif/guest-ports.yaml";
+  guestPortsList = "/run/netif/guest-ports.list";
+  guestPortsBefore = pkgs.writeShellScript "netif-guest-ports" ''
+    export PATH=${
+      lib.makeBinPath [
+        pkgs.coreutils
+        pkgs.gnused
+      ]
+    }
+    mkdir -p /run/netif
+    : > ${guestPortsList}.new
+    names=""
+    ${lib.concatStrings (
+      lib.mapAttrsToList (bridge: members: ''
+        for p in /sys/class/net/${lib.escapeShellArg bridge}/brif/*; do
+          [ -e "$p" ] || continue
+          n=$(basename "$p")
+          case " ${lib.concatStringsSep " " members} " in *" $n "*) continue ;; esac
+          echo "$n ${bridge}" >> ${guestPortsList}.new
+          names="$names|$(printf '%s' "$n" | sed 's/[.]/\\\\./g')"
+        done
+      '')
+      cfg.guestBridges
+    )}
+    if [ -n "$names" ]; then
+      printf '"^(%s)$"\n' "''${names#|}" > ${guestPortsFile}.new
+    else
+      # no guest port: a regex that matches no name
+      printf '"^$"\n' > ${guestPortsFile}.new
+    fi
+    mv ${guestPortsFile}.new ${guestPortsFile}
+    mv ${guestPortsList}.new ${guestPortsList}
+  '';
+  guestPortsAfter = pkgs.writeShellScript "netif-guest-ports-check" ''
+    export PATH=${lib.makeBinPath [pkgs.coreutils]}
+    lost=""
+    while read -r port bridge; do
+      [ -n "$port" ] || continue
+      if [ "$(basename "$(readlink "/sys/class/net/$port/master" 2>/dev/null)" 2>/dev/null)" != "$bridge" ]; then
+        lost="$lost $port($bridge)"
+      fi
+    done < ${guestPortsList}
+    if [ -n "$lost" ]; then
+      echo "netif: guest ports that were on a guest-ports bridge before the apply are gone or detached:$lost. If no guest stopped during the apply, IfState removed them: check 'bridge.guestPorts' and the ownership registry (specs/netif.md N37)" >&2
+      exit 1
+    fi
+  '';
+
   # "Online" for DHCP links (N32): wait for an address of each family the
   # link asks for, then give up with a warning so a pulled cable never
   # blocks a boot.
@@ -228,6 +282,12 @@ in {
       '';
       type = types.attrsOf (types.listOf types.str);
     };
+    guestBridges = mkOption {
+      internal = true;
+      default = {};
+      description = "Guest-ports bridges of this machine: interface name to the member interfaces netif declares. Set by netif's perMachine module.";
+      type = types.attrsOf (types.listOf types.str);
+    };
     routeMetric = mkOption {
       type = types.ints.positive;
       default = 100;
@@ -304,6 +364,10 @@ in {
 
       boot.kernel.sysctl."net.ipv6.conf.default.ra_defrtr_metric" = cfg.routeMetric;
 
+      # One included string in the ignore list: valid for the build-time
+      # schema check, a regex at run time (N23).
+      networking.ifstate.settings.parameters.ignore.ifname = lib.optional (cfg.guestBridges != {}) "!include ${guestPortsFile}";
+
       # Links are untrusted by default (N19), so netif opens what its own
       # DHCPv6 client needs: replies arrive on UDP 546. DHCPv4 needs no
       # port, dhcpcd reads it from a packet socket.
@@ -343,17 +407,20 @@ in {
             # no key for this sysctl, so it is written before each apply,
             # while a new link is still down; links IfState creates take the
             # 'default' value set below.
-            ifstate.serviceConfig.ExecStartPre = [
-              (pkgs.writeShellScript "netif-ra-metric" ''
-                for f in /proc/sys/net/ipv6/conf/*/ra_defrtr_metric; do
-                  [ -w "$f" ] && echo ${toString cfg.routeMetric} > "$f"
-                done
-                exit 0
-              '')
-            ];
+            ifstate.serviceConfig.ExecStartPre =
+              [
+                (pkgs.writeShellScript "netif-ra-metric" ''
+                  for f in /proc/sys/net/ipv6/conf/*/ra_defrtr_metric; do
+                    [ -w "$f" ] && echo ${toString cfg.routeMetric} > "$f"
+                  done
+                  exit 0
+                '')
+              ]
+              ++ lib.optional (cfg.guestBridges != {}) guestPortsBefore;
 
             ifstate.serviceConfig.ExecStartPost =
-              [dnsApply]
+              lib.optional (cfg.guestBridges != {}) guestPortsAfter
+              ++ [dnsApply]
               ++ lib.optional (dhcpLinks != {}) (
                 pkgs.writeShellScript "netif-dhcpcd-start" ''
                   exec ${lib.getExe' pkgs.systemd "systemctl"} start --no-block ${

@@ -11,6 +11,18 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P7b (2026-11-17): **VM hosts; P7 is complete.** Implemented and
+proven by `netif-vmhost` (`NETIF_VMHOST_OK`):
+- **N23** the bridge MAC rule and `links.<n>.mac`; bridge members may
+  be physical, VLAN or bond links; `bridge.guestPorts` with the
+  run-time include.
+- **N37** after each apply every guest port listed before it must
+  still be on its bridge, or `ifstate.service` fails and names it.
+- The `vmhost` probe is deleted (N40).
+- **§7** the suites' reapply helper resets systemd's start limit:
+  suites restart `ifstate.service` more often than five times in ten
+  seconds, which no operator does.
+
 Round P7a (2026-11-17): **Docker and Podman beside netif.**
 Implemented and proven by `netif-containers` (`NETIF_CONTAINERS_OK`):
 - **N22** the `containers` preset, on with
@@ -1193,8 +1205,24 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     peer on the same VLAN. IfState's generated bridge MAC is stable on
     one machine but differed between two builds of the same VM, so it
     is not a value to write down anywhere.
-  *(bridge MAC, bridge over a VLAN and guest ports probe-verified
-  2026-11-16; planned, phase P7; suite `netif-vmhost`)*
+  - **As built.**
+    - The pre-apply step writes `/run/netif/guest-ports.yaml` (the
+      regex) and `/run/netif/guest-ports.list` (port and bridge per
+      line) atomically. The file is a YAML double-quoted string, so a
+      dot in a name is written `\\.`.
+    - `clanServices.netif.guestBridges` (internal) carries each
+      guest-ports bridge with the member interfaces netif declares.
+    - `mac` on a physical link is an eval error that points to
+      `match.mac`; `bridge.guestPorts` on a link that is not a bridge
+      is an eval error.
+  *(implemented, round P7b: `netif-vmhost` — `NETIF_VMHOST_MAC_OK` (the
+  bridge has its member's MAC and another machine learns it),
+  `NETIF_VMHOST_VLAN_OK`, `NETIF_VMHOST_GUEST_PORTS_OK` (a veth guest
+  in a named namespace, a tap device and a port with a dot in its name
+  survive reapplies; the guest stays reachable from another machine),
+  `NETIF_VMHOST_PLAIN_BRIDGE_OK`, `NETIF_VMHOST_SHRINK_OK`. Guests are
+  simulated by hand; KubeVirt with Multus and Incus are not proven
+  yet and belong to the contract gate)*
 
 - **N24 The `modes` service.**
   - A clanService `modes` in this repo, at most one instance per clan.
@@ -1450,7 +1478,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   patterns stay the first protection. After the apply netif compares
   each guest-ports bridge's members with the list it computed and
   fails the unit when one is gone.
-  *(planned, phase P7)*
+  - The message names the port and its bridge, and says that a guest
+    that stopped during the apply produces the same failure.
+  *(implemented, round P7b: `netif-vmhost` `NETIF_VMHOST_CHECK_OK` — a
+  port removed between the listing and the check fails the unit; the
+  next apply succeeds)*
 
 - **N38 A drift watch (was H7).** A timer runs the dry run and fails
   `netif-drift.service` when IfState would change something. It never
@@ -2000,7 +2032,7 @@ decision. Phase numbers are labels, not the order.
 | P1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
 | P3b | **Done: all five slices** (rounds P3b-1, P3b-3, P3b-4, P3b-5). The tools of N38, N41 and N42 follow as their own slice. Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
-| P7 | **`containers` preset done** (round P7a, N22). Still to do: VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
+| P7 | **Done** (rounds P7a, P7b): `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
 | P8 | Lockout guard (N25), as probed | `netif-guard` green |
