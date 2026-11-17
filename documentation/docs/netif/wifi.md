@@ -45,6 +45,7 @@ reconfiguration (planned, phases N3b and N2).
 
 ## Limits
 
+- netif does not run access points. A machine is always a Wi-Fi client.
 - A Wi-Fi link never carries a static core address, a literal endpoint or
   the deploy target. Roaming machines deploy through a name: LAN DNS or
   Tailscale MagicDNS.

@@ -4,6 +4,24 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 29 (2026-11-16): **the netif contract is widened to the whole
+fleet; docs only** (`specs/netif.md` round use-cases, decisions N20–N29,
+use cases U1–U11). Points that touch this file:
+- netif never renders NAT, tunnels, routing protocols or cluster
+  networking (N20). A NAT gateway for other machines is a separate
+  service, planned later.
+- A `modes` clanService names each machine's modes; routed-fabric,
+  wireguard-mesh, k3s and rke2 gate on it (N24).
+- **Open design, owned by this file:** a roaming single-node cluster
+  (kamrui-h1's `kubernetes` mode) uses its routed-fabric loopback as
+  node address and runs ClusterMesh over the fabric (N27). Not designed
+  yet.
+- **Open design, owned by this file:** the home router's ECMP towards
+  Kubernetes nodes on its LAN, and whether those BGP sessions run
+  directly on the LAN or in tunnels (N10).
+- The netif export is not version-bumped: version rules wait for a real
+  consumer (N14). This replaces round 28's `schemaVersion` 2 note.
+
 Round 28 (2026-11-16): **the netif contract is refined before phase N3b;
 docs only** (`specs/netif.md` round N3b-spec, decisions N16–N19). Points
 that touch this file:
@@ -2793,7 +2811,7 @@ such as external-dns).
   and sysctls and reconciles them live without reboot; FRR/Zebra and
   Cilium retain dynamic ownership. No systemd-networkd, netdevs, or
   scripted network units.
-- **netif contract** — `specs/netif.md` (N1–N19): netif is the only
+- **netif contract** — `specs/netif.md` (N1–N29): netif is the only
   network contract in the inventory; IfState renders IfState modes and
   NetworkManager renders NetworkManager modes, never both in one system
   configuration; iwd owns Wi-Fi in every mode.

@@ -1,14 +1,19 @@
 # Home router
 
-The router has four SFP+ ports: one 10G WAN through an XGS-PON stick, three
-LAN. It does NAT, hands out DHCP and IPv6 addresses to the house, and runs
-headless.
+The router has four SFP+ ports on a PCIe card and one 10G RJ45 port. One
+port is the WAN, through an XGS-PON stick. It does NAT, hands out DHCP and
+IPv6 addresses to the house, and runs headless. It is also the fleet's
+edge: FRR sends traffic for pod and Service IPs to the Kubernetes nodes
+behind it over several equal paths.
+
+Wi-Fi for the house comes from separate access points on the LAN. The
+router has no radio.
 
 ## Who owns what
 
 | Owner | Objects | Lives in |
 |---|---|---|
-| netif (IfState) | the four ports, found by permanent MAC; VLANs and bridges; LAN addresses; forwarding sysctls; static routes | inventory |
+| netif (IfState) | the five ports, found by permanent MAC; VLANs and bridges; LAN addresses; forwarding sysctls; static routes | inventory |
 | dhcpcd, started by a netif hook | WAN DHCPv4 lease; DHCPv6 prefix delegation; the delegated `/64`s on LAN links | inventory (netif link settings) |
 | nftables | NAT and the firewall | `modules` |
 | kea | the DHCP server for the house | `modules` |
@@ -70,8 +75,11 @@ link gets a delegation, never the prefix itself; the router module reads
 the live prefix from the LAN link.
 
 dhcpcd only handles leases and delegations here. The kernel's router
-advertisement handling stays with IfState, and DNS goes to
-systemd-resolved.
+advertisement handling stays with IfState. A netif unit puts each link's
+DNS servers into systemd-resolved.
+
+A probe on 2026-11-16 confirmed that dhcpcd still gets a DHCPv6 address
+and a delegated prefix when it is told to ignore router advertisements.
 
 ## Zones (planned, N3b)
 
@@ -79,6 +87,13 @@ Each link can carry a `zone` label (`wan`, `lan`, `mgmt`). netif does not
 interpret it. It publishes each link's Linux name, kind and zone under
 `clanServices.networking.links.<instance>.<link>`, and the router module
 uses those.
+
+## Lockout guard (planned, phase N8)
+
+The router is headless and remote changes are risky. After every apply,
+netif checks that each default gateway still answers. If one does not
+within 30 seconds, netif re-applies the previous network configuration
+and fails the unit with the reason in the journal.
 
 ## Planned later
 

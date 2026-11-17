@@ -6,7 +6,7 @@ links, addresses and routes once in `inventory.nix`. netif renders them for
 whichever network manager the machine's current mode uses.
 
 This section is the human version of the netif contract. The agent edition,
-with numbered decisions `N1`–`N19`, is
+with numbered decisions `N1`–`N29`, is
 [`specs/netif.md`](https://github.com/external-systems/clanServices/blob/main/specs/netif.md).
 
 ## The model
@@ -19,17 +19,27 @@ with numbered decisions `N1`–`N19`, is
 | iwd | Owns Wi-Fi in every mode. |
 | Ownership registry | Keeps IfState and NetworkManager away from what other software owns: Tailscale, iwd, Cilium. |
 | Modes | NixOS specialisations. You switch by rebooting and picking an entry in the boot menu. |
+| `modes` service | Names each machine's modes and their network manager (planned). |
+| Lockout guard | Rolls the network back on a headless machine when a change cuts its gateway (planned). |
+
+netif owns links and how they are addressed, routed, resolved and
+trusted. It does not do NAT, tunnels, Wi-Fi or cluster networking: see
+[What netif is responsible for](responsibility.md).
 
 ## Supported machines
 
-- **Steam Deck.** Boots into gamescope Steam mode, which uses NetworkManager,
-  Wi-Fi and Tailscale. A `developer` mode adds KDE, IfState, Tailscale and
-  routed access to pod and Service IPs in other clusters.
-- **kamrui-h1.** Boots into gaming with Wi-Fi. `developer` matches the Deck.
-  `kubernetes` adds a single-node k3s server for local testing.
-- **Home router.** Headless, four SFP+ ports, NAT, DHCP server, DHCPv6
-  prefix delegation. See [Home router](router.md).
-- **Servers and cloud nodes.** IfState only, no modes.
+The full list is on [Use cases](use-cases.md). In short:
+
+- **Steam Deck and kamrui-h1.** Boot into a NetworkManager mode for Steam
+  and the desktop. A `developer` mode adds IfState, Tailscale, containers
+  and routed access to pod and Service IPs. kamrui-h1 adds a `kubernetes`
+  mode.
+- **Home router.** Headless, five ports, NAT, DHCP server, DHCPv6 prefix
+  delegation. See [Home router](router.md).
+- **Servers, cloud VMs, Proxmox VMs, bare-metal nodes.** IfState only, no
+  modes.
+- **VM hosts.** Bridges whose guests have their own public addresses and
+  provider MACs.
 
 ## Status
 
@@ -48,8 +58,15 @@ Next is phase N3b. It brings:
 - links that the firewall does not trust unless you say so;
 - a zone label per link for the router.
 
-Modes and the NetworkManager renderer follow in phase N2. See the
-[plan](plan.md).
+It also brings an explicit default-route owner per link, so two DHCP
+NICs can coexist, and NICs found by device path for cloud VMs.
+
+After it come containers and VM hosts (phase N7), the NetworkManager
+renderer (N2), modes (N4), the lockout guard (N8) and the router module
+(N5). See the [plan](plan.md).
+
+netif has no consumers yet. It is not used on real machines until it
+passes the contract gate.
 
 ## Defaults worth knowing
 
@@ -63,6 +80,10 @@ Modes and the NetworkManager renderer follow in phase N2. See the
 
 ## Pages
 
+- [What netif is responsible for](responsibility.md) — what it owns, what
+  it never owns, and where a change goes.
+- [Use cases](use-cases.md) — every machine class and what it needs.
+- [Glossary](glossary.md) — the words these pages use.
 - [Modes and reboots](modes.md) — how gaming, developer and kubernetes modes
   work, and how to deploy without switching modes by accident.
 - [Wi-Fi](wifi.md) — iwd in every mode, cafés and other people's homes.

@@ -10,6 +10,33 @@ kamrui-h1:
 | NixOS (developer) | developer | IfState | Wi-Fi, Tailscale, FRR fabric leaf with admin routes |
 | NixOS (kubernetes) | kubernetes | IfState | developer + single-node k3s |
 
+## Where modes are declared (planned, phase N4)
+
+One small service, `modes`, names each machine's modes and the network
+manager of each:
+
+```nix
+instances.modes = {
+  module.name = "modes";
+  module.input = "clanServices";
+  roles.default.machines.kamrui-h1.settings.modes = {
+    default.manager = "networkmanager";
+    developer.manager = "ifstate";
+    kubernetes.manager = "ifstate";
+  };
+};
+```
+
+- `default` is the parent configuration. It may use either manager.
+- A machine that is not listed has one mode, with IfState.
+- The service creates the boot entries and sets a read-only option,
+  `clanServices.networking.mode`, in each. netif, the fabric and the
+  cluster services read it. Your machine configuration reads it too, to
+  add KDE or Steam to a mode.
+
+A machine's modes can differ in kind: a headless server in one, a
+gamescope box in another.
+
 ## One manager per mode
 
 Each mode has exactly one network manager. A mode with both NetworkManager
