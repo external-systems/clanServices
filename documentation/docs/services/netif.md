@@ -66,6 +66,11 @@ beside IfState:
   **`netif-preview`** shows what an apply would change without
   applying. **`netif-drift.timer`** runs that preview every hour and
   fails when something else changed the network.
+- **Bridges for guests.** A bridge's members can be NICs, VLANs or
+  bonds. A bridge over one NIC found by `match.mac` takes that MAC;
+  `mac` sets one by hand. `bridge.guestPorts = true` tells netif that
+  other ports on the bridge belong to a hypervisor and must be left
+  alone.
 - **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
   link's `nameservers` plus what its DHCP leases bring. There is no
   global DNS list from netif.

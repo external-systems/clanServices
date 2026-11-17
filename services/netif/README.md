@@ -98,6 +98,10 @@ Beside IfState, netif runs (`host.nix`):
 - the operator tools (`tools.nix`): `netif-status [--json]`,
   `netif-preview [system]` and the hourly `netif-drift.timer`, all
   read-only;
+- VM-host bridges: members may be physical, VLAN or bond links; the
+  bridge MAC follows a single `match.mac` member or `mac`;
+  `bridge.guestPorts` keeps a hypervisor's ports across applies (a
+  pre-apply step names them to IfState, a post-apply step checks them);
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

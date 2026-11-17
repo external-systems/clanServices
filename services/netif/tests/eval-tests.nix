@@ -586,6 +586,40 @@
         };
       };
     }).config.nixosConfigurations.edge-1.config;
+  # VM hosts (N23, N37).
+  vmHostEdge = withEdgeLinks {
+    up0.match.mac = "52:54:00:12:02:01";
+    brup = {
+      bridge = {
+        members = ["up0"];
+        guestPorts = true;
+      };
+      static.ipv4 = ["10.61.0.1/24"];
+    };
+    brvlan.bridge.members = ["dmz10x"];
+    dmz10x.vlan = {
+      id = 20;
+      parent = "trunk";
+    };
+    brbond = {
+      bridge.members = ["agg1"];
+      mac = "02:00:00:00:00:33";
+    };
+    agg1.bond.members = ["nic9"];
+    nic9.interface = "enp9s0";
+  };
+  bridgeInBridgeEdge = withEdgeLinks {
+    outer.bridge.members = ["virbr0"];
+  };
+  macOnPhysicalEdge = withEdgeLinks {
+    wan9 = {
+      interface = "enp9s0";
+      mac = "02:00:00:00:00:44";
+    };
+  };
+  guestPortsOnBondEdge = withEdgeLinks {
+    agg0.bridge.guestPorts = true;
+  };
   macAndInterfaceEdge = withEdgeLinks {
     wan0 = {
       interface = "enp9s0";
@@ -720,6 +754,63 @@ in {
         raOnly = true;
         withDns = false;
       };
+    };
+    # A bridge over one NIC found by MAC takes that MAC; an explicit
+    # 'mac' wins; any other bridge keeps IfState's generated one. Bridge
+    # members may be physical, VLAN or bond links.
+    test_bridgeMacAndMembers = let
+      interfaces = vmHostEdge.networking.ifstate.settings.interfaces;
+    in {
+      expr = {
+        clean = !(failedAssertion vmHostEdge "netif");
+        overNic = interfaces.brup.link.address;
+        explicit = interfaces.brbond.link.address;
+        generated = interfaces.brvlan.link ? address;
+        vlanMaster = interfaces."enp2s0.20".link.master;
+        bondMaster = interfaces.agg1.link.master;
+      };
+      expected = {
+        clean = true;
+        overNic = "52:54:00:12:02:01";
+        explicit = "02:00:00:00:00:33";
+        generated = false;
+        vlanMaster = "brvlan";
+        bondMaster = "brbond";
+      };
+    };
+    # Guest ports: one included regex in the ignore list, the bridge and
+    # its own members handed to the pre- and post-apply steps.
+    test_guestPortsRenderInclude = {
+      expr = {
+        include = lib.elem "!include /run/netif/guest-ports.yaml" vmHostEdge.networking.ifstate.settings.parameters.ignore.ifname;
+        bridges = vmHostEdge.clanServices.netif.guestBridges;
+        pre = lib.length vmHostEdge.systemd.services.ifstate.serviceConfig.ExecStartPre;
+        none = {
+          include = lib.elem "!include /run/netif/guest-ports.yaml" edge.networking.ifstate.settings.parameters.ignore.ifname;
+          pre = lib.length edge.systemd.services.ifstate.serviceConfig.ExecStartPre;
+        };
+      };
+      expected = {
+        include = true;
+        bridges.brup = ["up0"];
+        pre = 3;
+        none = {
+          include = false;
+          pre = 2;
+        };
+      };
+    };
+    test_bridgeInBridgeRejected = {
+      expr = failedAssertion bridgeInBridgeEdge "never a bridge inside a bridge";
+      expected = true;
+    };
+    test_macOnPhysicalRejected = {
+      expr = failedAssertion macOnPhysicalEdge "netif does not change a NIC's MAC";
+      expected = true;
+    };
+    test_guestPortsOnNonBridgeRejected = {
+      expr = failedAssertion guestPortsOnBondEdge "sets 'bridge.guestPorts' but is not a bridge";
+      expected = true;
     };
     test_matchMacCleanInventory = {
       expr = failedAssertion macEdge "netif";
