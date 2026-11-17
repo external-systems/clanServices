@@ -22,6 +22,8 @@ _: {
                 ipv6 = ["fd00:99::2/64"];
               };
               endpoint = true;
+              # with a policy table the gateway is that table's default
+              gateway.ipv4 = "10.99.0.1";
               routingPolicy = {
                 table = 300;
                 from = ["10.99.0.2/32"];
@@ -33,6 +35,8 @@ _: {
         dmz = {
           module.name = "netif";
           module.input = "self";
+          # uplink accepts RAs; this segment never carries the IPv6 default (N21)
+          roles.default.settings.defaultRoute.ipv6 = false;
           roles.default.machines.edge-1.settings.links = {
             nic0.interface = "eth2";
             nic1.interface = "eth3";
@@ -57,6 +61,8 @@ _: {
                 ipv4 = ["10.10.10.1/24"];
                 ipv6 = ["fd00:10::1/64"];
               };
+              # the machine's main-table default (N18: metric 100)
+              gateway.ipv4 = "10.10.10.254";
             };
           };
         };
@@ -64,8 +70,25 @@ _: {
     };
   };
 
-  nodes.edge-1 = {pkgs, ...}: {
-    environment.systemPackages = [pkgs.yq];
+  nodes.edge-1 = {
+    lib,
+    pkgs,
+    ...
+  }: {
+    environment.systemPackages = [
+      pkgs.yq
+      pkgs.jq
+    ];
+    # A second generation to switch to: another address on the uplink and
+    # another metric. Switching must apply it live and switching back
+    # must restore the first state.
+    specialisation.moved.configuration = {
+      clanServices.netif.routeMetric = 150;
+      networking.ifstate.settings.interfaces.eth1.addresses = lib.mkForce [
+        "10.99.0.30/24"
+        "fd00:99::2/64"
+      ];
+    };
     virtualisation = {
       cores = 1;
       memorySize = 1536;
@@ -79,6 +102,8 @@ _: {
   };
 
   testScript = ''
+    import json
+
     ${import ../../../../tests/ifstate-noop.nix}
     try:
         start_all()
@@ -124,6 +149,38 @@ _: {
             edge_1.succeed("ip addr show eth1 | grep '10.99.0.2/24' >/dev/null")
             assert_ifstate_noop(edge_1)
             print("NETIF_IFSTATE_LIVE_OK")
+        with subtest("a generation switch reconfigures the links live (U2)"):
+            def main_default():
+                routes = json.loads(edge_1.succeed("ip -j -4 route show default"))
+                return [(r["gateway"], r["dev"], r["metric"]) for r in routes]
+
+            assert main_default() == [("10.10.10.254", "eth4.10", 100)], main_default()
+            table = json.loads(edge_1.succeed("ip -j -4 route show table 300"))
+            assert [(r["dst"], r["gateway"], r["dev"]) for r in table] == [("default", "10.99.0.1", "eth1")], table
+            assert edge_1.succeed("cat /proc/sys/net/ipv6/conf/eth1/ra_defrtr_metric").strip() == "100"
+            assert edge_1.succeed("cat /proc/sys/net/ipv6/conf/eth4.10/ra_defrtr_metric").strip() == "100"
+            assert edge_1.succeed("cat /proc/sys/net/ipv6/conf/eth4.10/accept_ra_defrtr").strip() == "0"
+            assert edge_1.succeed("cat /proc/sys/net/ipv6/conf/eth1/accept_ra_defrtr").strip() == "1"
+            boot_id = edge_1.succeed("cat /proc/sys/kernel/random/boot_id")
+            bond_index = edge_1.succeed("cat /sys/class/net/agg0/ifindex")
+
+            edge_1.succeed("/run/booted-system/specialisation/moved/bin/switch-to-configuration test >&2")
+            edge_1.wait_until_succeeds("ip addr show eth1 | grep '10.99.0.30/24' >/dev/null", timeout=60)
+            edge_1.fail("ip addr show eth1 | grep '10.99.0.2/24' >/dev/null")
+            edge_1.wait_until_succeeds("ip -4 route show default | grep 'metric 150' >/dev/null", timeout=30)
+            assert main_default() == [("10.10.10.254", "eth4.10", 150)], main_default()
+            assert edge_1.succeed("cat /proc/sys/net/ipv6/conf/eth1/ra_defrtr_metric").strip() == "150"
+            # untouched links were not recreated, and nothing rebooted
+            assert edge_1.succeed("cat /sys/class/net/agg0/ifindex") == bond_index
+            assert edge_1.succeed("cat /proc/sys/kernel/random/boot_id") == boot_id
+            assert_ifstate_noop(edge_1)
+
+            edge_1.succeed("/run/booted-system/bin/switch-to-configuration test >&2")
+            edge_1.wait_until_succeeds("ip addr show eth1 | grep '10.99.0.2/24' >/dev/null", timeout=60)
+            edge_1.fail("ip addr show eth1 | grep '10.99.0.30/24' >/dev/null")
+            assert main_default() == [("10.10.10.254", "eth4.10", 100)], main_default()
+            assert_ifstate_noop(edge_1)
+            print("NETIF_SWITCH_OK")
         print("NETIF_OK")
     except Exception:
         for command in [

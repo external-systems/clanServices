@@ -44,6 +44,8 @@
                     ipv6 = ["2001:db8:10::10/64"];
                   };
                   endpoint = true;
+                  # dock owns both defaults (N21)
+                  defaultRoute.ipv6 = false;
                 };
               };
             };
@@ -76,7 +78,10 @@
       uplink-b = {
         module.name = "netif";
         module.input = "self";
-        roles.default.settings.mtu = 9000; # segment-wide default
+        roles.default.settings = {
+          mtu = 9000; # segment-wide default
+          defaultRoute.ipv6 = false; # uplink-a owns the default (N21)
+        };
         roles.default.machines.edge-1.settings.links.sfp1 = {
           interface = "enp1s0f1np1";
           static.ipv4 = ["198.51.100.2/30"]; # no gateway: cross-instance check
@@ -95,6 +100,7 @@
               instance = "home-net";
             }
           ];
+          defaultRoute.ipv6 = false;
           links.mgmt0 = {
             interface = "enp6s0";
             static.ipv4 = ["10.99.0.2/24"];
@@ -107,6 +113,8 @@
       dmz-net = {
         module.name = "netif";
         module.input = "self";
+        # A segment that never carries the default route says so once.
+        roles.default.settings.defaultRoute.ipv6 = false;
         roles.default.machines.edge-1.settings.links = {
           trunk = {
             interface = "enp2s0";
@@ -231,6 +239,49 @@
       instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.gateway.ipv4 = "192.168.10.1"; # dock DHCP already owns the default
     }
   );
+  # One default route per family, chosen explicitly (N21).
+  privateLink = extra:
+    (mkEvaled (
+      lib.recursiveUpdate baseInventory {
+        instances.cloud-private = {
+          module.name = "netif";
+          module.input = "self";
+          roles.default.machines.kamrui-h1.settings.links.priv0 =
+            {
+              interface = "enp7s0";
+              dhcp.ipv4 = true;
+            }
+            // extra;
+        };
+      }
+    )).config.nixosConfigurations.kamrui-h1.config;
+  privateNoDefault = privateLink {
+    defaultRoute = {
+      ipv4 = false;
+      ipv6 = false;
+    };
+  };
+  privateSecondV4 = privateLink {defaultRoute.ipv6 = false;};
+  privateSecondRa = privateLink {defaultRoute.ipv4 = false;};
+  privateNoRa = privateLink {
+    defaultRoute.ipv4 = false;
+    ra = false;
+  };
+  staticNoDefaultEdge =
+    (mkEvaled (
+      lib.recursiveUpdate baseInventory {
+        instances.uplink-b.roles.default.machines.edge-1.settings.links.sfp1 = {
+          gateway.ipv4 = "198.51.100.1";
+          defaultRoute.ipv4 = false;
+          routes = [
+            {
+              destination = "10.50.0.0/16";
+              gateway = "198.51.100.1";
+            }
+          ];
+        };
+      }
+    )).config.nixosConfigurations.edge-1.config;
   # Per-link DNS cannot conflict between instances (N9): overlapping but
   # different server sets on two instances are fine.
   dnsOverlapEval = mkEvaled (
@@ -633,6 +684,7 @@ in {
         ra = {
           accept_ra = 1;
           autoconf = 1;
+          accept_ra_defrtr = 1;
         };
         globalDns = [];
         staticDns = "192.168.10.1\n";
@@ -788,6 +840,7 @@ in {
             to = "0.0.0.0/0";
             via = "203.0.113.1";
             dev = "enp1s0f0np0";
+            preference = 100; # N18
           }
           {
             to = "10.42.0.0/16";
@@ -944,6 +997,10 @@ in {
             gateway6 = null;
             routes = [];
             gatewayInMain = true; # DHCP lease default
+            defaultRoute = {
+              ipv4 = true;
+              ipv6 = true; # router advertisements
+            };
             prefixDelegation = {
               enable = false;
               hint = 56;
@@ -968,6 +1025,10 @@ in {
             gateway6 = null;
             routes = [];
             gatewayInMain = false;
+            defaultRoute = {
+              ipv4 = false;
+              ipv6 = false;
+            };
             prefixDelegation = {
               enable = false;
               hint = 56;
@@ -1046,6 +1107,73 @@ in {
     test_linkOwnershipConflictRejected = {
       expr = failedAssertion ownershipConflictEval.config.nixosConfigurations.kamrui-h1.config "owned by exactly one instance";
       expected = true;
+    };
+    # A second DHCPv4 link is fine once it gives up the default: dhcpcd
+    # keeps the lease and drops the router; RAs give no default router.
+    test_secondDhcpLinkWithoutDefaultAccepted = {
+      expr = {
+        clean = !(failedAssertion privateNoDefault "netif");
+        nogateway = lib.elem "nogateway" (confLines privateNoDefault "enp7s0");
+        ownerKeepsGateway = lib.elem "nogateway" (confLines privateNoDefault "enp4s0");
+        ra = privateNoDefault.networking.ifstate.settings.interfaces.enp7s0.sysctl.ipv6;
+        facts = privateNoDefault.clan.networkFacts.netif.cloud-private.links.priv0.defaultRoute;
+      };
+      expected = {
+        clean = true;
+        nogateway = true;
+        ownerKeepsGateway = false;
+        ra = {
+          accept_ra = 1;
+          autoconf = 1;
+          accept_ra_defrtr = 0;
+        };
+        facts = {
+          ipv4 = false;
+          ipv6 = false;
+        };
+      };
+    };
+    test_secondDhcp4DefaultRejected = {
+      expr = failedAssertion privateSecondV4 "more than one IPv4 default route (links: priv0, dock)";
+      expected = true;
+    };
+    # A link that accepts RAs is a source of an IPv6 default.
+    test_secondRaDefaultRejected = {
+      expr = failedAssertion privateSecondRa "more than one IPv6 default route (links: priv0, dock)";
+      expected = true;
+    };
+    test_raOffIsNoDefaultSource = {
+      expr = failedAssertion privateNoRa "netif";
+      expected = false;
+    };
+    # A static gateway without the default still serves the link's routes.
+    test_staticGatewayWithoutDefault = {
+      expr = {
+        clean = !(failedAssertion staticNoDefaultEdge "netif");
+        routes = builtins.filter (r: r.dev == "enp1s0f1np1") staticNoDefaultEdge.networking.ifstate.settings.routing.routes;
+      };
+      expected = {
+        clean = true;
+        routes = [
+          {
+            to = "10.50.0.0/16";
+            dev = "enp1s0f1np1";
+            via = "198.51.100.1";
+          }
+        ];
+      };
+    };
+    # The RA default gets netif's metric: the sysctl default for links
+    # IfState creates, and a write before each apply for the others (N18).
+    test_raDefaultMetric = {
+      expr = {
+        sysctl = kam.boot.kernel.sysctl."net.ipv6.conf.default.ra_defrtr_metric";
+        pre = lib.length kam.systemd.services.ifstate.serviceConfig.ExecStartPre >= 1;
+      };
+      expected = {
+        sysctl = 100;
+        pre = true;
+      };
     };
     test_duplicateDefaultRouteRejected = {
       expr = failedAssertion duplicateDefaultRouteEval.config.nixosConfigurations.kamrui-h1.config "more than one IPv4 default route";

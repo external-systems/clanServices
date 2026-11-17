@@ -81,6 +81,10 @@ Beside IfState, netif runs (`host.nix`):
   its own config (upstream dhcpcd 10.5, no RA handling, no stock hooks).
   `dhcp.prefixDelegation` asks for a prefix and assigns subnets of it to
   other links of the machine;
+- `defaultRoute.{ipv4,ipv6}` per link (and as a segment default) say
+  whether the link may carry the machine's default route; one link per
+  family may, and a link with `ra = true` counts for IPv6. Every
+  default route has metric 100 (`clanServices.netif.routeMetric`);
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

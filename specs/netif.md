@@ -11,6 +11,21 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P3b-3 (2026-11-17): **default routes: one per family, chosen
+explicitly, at a fixed metric.** Implemented and proven by `netif-dhcp`
+(`NETIF_DHCP_DEFAULT_OK`) and `netif` (`NETIF_SWITCH_OK`):
+- **N21** `links.<n>.defaultRoute.{ipv4,ipv6}`, with a segment default
+  (an addition to the decision: a segment that never carries the
+  default says so once). A link with `ra = true` now counts as a source
+  of an IPv6 default; bond and bridge members never count.
+- **N18** metric 100 on every netif default: IfState `preference` for a
+  static gateway, dhcpcd `metric`, and `ra_defrtr_metric` for RAs. The
+  sysctl is written by `ifstate.service` before each apply and set as
+  the `default` for links IfState creates; there is no link hook any
+  more (N31).
+- **§7** live reconfiguration is proven by switching NixOS generations.
+- The export and `clan.networkFacts` carry `defaultRoute` per link.
+
 Round P3b-1 (2026-11-17): **the first code slice: dhcpcd, DNS and
 "online" are implemented and VM-proven; the hardening candidates are
 decisions.** Owner decisions of this round:
@@ -889,11 +904,14 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     owner's explicit choice and outside this order.
   - **Who writes `ra_defrtr_metric`.** IfState 2.5.1's schema rejects
     this sysctl (`iface-sysctl-ipv6` allows no extra keys), so IfState
-    cannot set it. netif's per-link hook writes
-    `/proc/sys/net/ipv6/conf/<link>/ra_defrtr_metric` when it starts,
-    for every link that accepts RAs, and the no-op helper (§7) reads it
-    back. netif stays the one writer. The missing key is worth reporting
-    to IfState upstream; netif does not depend on a fix.
+    cannot set it. As built (there is no link hook since N31):
+    - `ifstate.service` writes it to every existing interface before
+      each apply (`ExecStartPre`), while a new link is still down;
+    - `net.ipv6.conf.default.ra_defrtr_metric` covers links IfState
+      creates (VLANs, bonds, bridges).
+    The value is `clanServices.netif.routeMetric` (100). netif stays the
+    one writer. The missing key is worth reporting to IfState upstream;
+    netif does not depend on a fix.
   - **Verification gate.** `netif-dhcp` asserts metric 100 for each
     family's default (DHCPv4, RA). `netif-wifi` (phase P2) asserts wired
     over Wi-Fi in both families. If iwd does not apply
@@ -908,8 +926,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     through the wired link; with the wired link down, both left through
     Wi-Fi with no reconfiguration. Two applies changed no default. The
     stop condition above did not trigger.
-  *(probe-verified 2026-11-16 for netif, RA and Wi-Fi metrics; planned:
-  netif metrics in P3b, Wi-Fi and dock in P2)*
+  *(netif metrics implemented: `netif-dhcp` `NETIF_DHCP_DEFAULT_OK`
+  asserts metric 100 for the DHCPv4 and the RA default, `netif`
+  `NETIF_SWITCH_OK` for a static gateway and for a metric changed by a
+  generation switch; Wi-Fi probe-verified 2026-11-16; planned: Wi-Fi
+  and dock in P2)*
 
 - **N19 Links are untrusted unless declared trusted.**
   - `links.<n>.firewall.trust` and the segment `firewall.trust` default
@@ -952,9 +973,14 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - **The rule.** Per machine and family, at most one netif link has
     `defaultRoute` true **and** a source for a default. Sources are: a
     static gateway outside a policy table, DHCPv4, DHCPv6 with RA, and
-    plain RA (`ra = true` on a link with no static IPv6 gateway). Today
-    RA defaults are not counted and two DHCPv4 links always fail; both
-    are fixed here.
+    plain RA (`ra = true` on a link with no static IPv6 gateway). A
+    bond or bridge member is never a source.
+  - **Segment default.** The instance settings carry the same
+    `defaultRoute = { ipv4; ipv6; }` (default true); a link's value is
+    nullable and inherits it. A private segment sets
+    `defaultRoute.ipv6 = false` once instead of on every link.
+  - The export and `clan.networkFacts` say per link which families'
+    default it owns (`defaultRoute.{ipv4,ipv6}`).
   - `ra` stays true by default, so a second RA-accepting link must set
     `defaultRoute.ipv6 = false` (or `ra = false`). The eval error names
     both links and says so.
@@ -972,7 +998,10 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     route from the RA and no default. IfState's schema accepts
     `accept_ra_defrtr`. The machine had exactly one default per family,
     both on the first link at metric 100.
-  *(probe-verified 2026-11-16; planned, phase P3b)*
+  *(implemented: `netif-dhcp` `NETIF_DHCP_DEFAULT_OK` — a second DHCP
+  link with `nogateway` keeps its lease, classless route and DNS, takes
+  a SLAAC address and no default in either family, also after a
+  renewal; eval tests cover the rule)*
 
 - **N22 Containers: Docker and Podman.**
   - One preset, `containers`, switched on by
@@ -1437,12 +1466,6 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     NetworkManager yet (N6, phase P2);
   - there is no `pathMtu` or zone seam (N10, N17; P3b);
   - links default to firewall-trusted (N19; P3b);
-  - default routes carry no metric (N18; P3b);
-  - live reconfiguration is proven by applying hand-edited YAML in the
-    `netif` suite, not by switching NixOS generations (§7; P3b);
-  - every DHCPv4 link counts as a default-route owner, so two DHCP
-    links fail eval, and RA defaults are not counted at all
-    (`services/netif/default.nix` `v4Default`, `v6Default`; N21; P3b);
   - bridges accept physical members only and have no MAC setting (N23;
     phase P7);
   - there is no `containers` preset; Podman's bridge is deleted on
@@ -1867,7 +1890,7 @@ decision. Phase numbers are labels, not the order.
 | P0 | This contract (docs only) | merged |
 | P1 | Ownership registry + presets (iwd, tailscale, cilium, vm), N7 ordering, N11 checks, foreign-daemon-without-preset eval error | `netif-registry` green — **done** |
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
-| P3b | Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
+| P3b | **Slices 1, 2 and 3 are done** (rounds P3b-1, P3b-3). Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
 | P7 | `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |

@@ -64,6 +64,7 @@
         gateway4 = nullableStr "Declared IPv4 gateway.";
         gateway6 = nullableStr "Declared IPv6 gateway.";
         gatewayInMain = bool "Whether this link declares a main-table default route.";
+        defaultRoute = attrs "Which families' main-table default route this link owns: { ipv4; ipv6; } (N21).";
         nameservers = strList "Declared DNS servers.";
         routes = fact (t.listOf t.attrs) [] "Declared static route objects.";
         prefixDelegation = attrs "Declared prefix-delegation intent; the prefix itself is a runtime fact.";

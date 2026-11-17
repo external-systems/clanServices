@@ -46,6 +46,12 @@ beside IfState:
   upstream dhcpcd 10.5 with netif's own config.
   `dhcp.prefixDelegation` asks the ISP for a prefix and gives parts of
   it to other links.
+- **`defaultRoute.ipv4` / `defaultRoute.ipv6`** say whether a link may
+  carry the machine's default route. One link per machine and family
+  may. A link that accepts router advertisements (`ra`, on by default)
+  counts for IPv6, so other links set `defaultRoute.ipv6 = false`, per
+  link or once in the instance settings. Every default route netif
+  installs has metric 100.
 - **`netif-dns.service`** sets each link's DNS in systemd-resolved: the
   link's `nameservers` plus what its DHCP leases bring. There is no
   global DNS list from netif.

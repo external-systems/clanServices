@@ -4,6 +4,15 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 34 (2026-11-17): **netif P3b slice 3: default routes**
+(`specs/netif.md` round P3b-3). Points that touch this file:
+- The `netif` export and `clan.networkFacts.netif` carry
+  `defaultRoute.{ipv4,ipv6}` per link: which link owns each family's
+  main-table default. `gatewayInMain` stays.
+- Every netif default route has metric 100 (N18); a machine with
+  several netif links names the one that carries the IPv6 default
+  (N21).
+
 Round 33 (2026-11-17): **netif P3b slice 1: code** (`specs/netif.md`
 round P3b-1). Points that touch this file:
 - **The shared IfState base enables systemd-resolved** (N9). Every
