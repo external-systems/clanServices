@@ -109,7 +109,9 @@ Beside IfState, netif runs (`host.nix`):
 - modes (`networkmanager.nix`, the `modes` service): in a
   `networkmanager` mode netif renders NetworkManager profiles for its
   plain wired links and none of the units above; an instance's `modes`
-  setting limits it to some modes;
+  setting limits it to some modes. A wired link netif does not declare
+  (a dock, an unknown LAN) stays NetworkManager's own, with its default
+  route at metric 200, behind netif's links;
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

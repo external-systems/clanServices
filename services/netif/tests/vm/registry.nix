@@ -4,14 +4,7 @@
 # The ownership registry must keep IfState away from all of them across
 # reapplies, and IfState must converge before network-online.target.
 _: let
-  certs = pkgs:
-    pkgs.runCommand "headscale-test-certs" {nativeBuildInputs = [pkgs.openssl];} ''
-      openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes \
-        -out cert.pem -keyout key.pem -subj '/CN=headscale' \
-        -addext "subjectAltName=DNS:headscale"
-      mkdir -p $out
-      cp key.pem cert.pem $out
-    '';
+  headscale = import ../../../../tests/headscale-vm.nix {};
 in {
   name = "netif-registry";
 
@@ -38,56 +31,22 @@ in {
   };
 
   nodes = {
-    headscale = {pkgs, ...}: {
+    headscale = {
+      imports = [headscale.server];
       virtualisation = {
         cores = 1;
         memorySize = 1024;
       };
       networking.firewall.enable = false;
-      environment.systemPackages = [pkgs.headscale];
-      services = {
-        headscale = {
-          enable = true;
-          port = 8080;
-          settings = {
-            server_url = "https://headscale";
-            ip_prefixes = ["100.64.0.0/10"];
-            derp = {
-              server = {
-                enabled = true;
-                region_id = 999;
-                stun_listen_addr = "0.0.0.0:3478";
-              };
-              urls = [];
-            };
-            dns = {
-              base_domain = "tailnet";
-              override_local_dns = false;
-            };
-          };
-        };
-        nginx = {
-          enable = true;
-          virtualHosts.headscale = {
-            addSSL = true;
-            sslCertificate = "${certs pkgs}/cert.pem";
-            sslCertificateKey = "${certs pkgs}/key.pem";
-            locations."/" = {
-              proxyPass = "http://127.0.0.1:8080";
-              proxyWebsockets = true;
-            };
-          };
-        };
-      };
     };
 
-    peer = {pkgs, ...}: {
+    peer = {
+      imports = [headscale.client];
       virtualisation = {
         cores = 1;
         memorySize = 1024;
       };
       networking.firewall.enable = false;
-      security.pki.certificateFiles = ["${certs pkgs}/cert.pem"];
       services.tailscale.enable = true;
     };
 
@@ -126,6 +85,7 @@ in {
           --bind-interfaces --dhcp-range=192.168.77.50,192.168.77.99,1h --dhcp-leasefile=/run/dnsmasq-ap.leases --no-resolv --no-hosts
       '';
     in {
+      imports = [headscale.client];
       virtualisation = {
         cores = 2;
         memorySize = 1536;
@@ -138,7 +98,6 @@ in {
         iw
         yq-go
       ];
-      security.pki.certificateFiles = ["${certs pkgs}/cert.pem"];
       networking = {
         # qemu-vm switches wireless off with mkVMOverride.
         wireless.iwd = {

@@ -224,6 +224,15 @@ in {
   };
 
   netifRendering = {
+    # A wired link netif does not declare sits behind netif's own (N18).
+    test_networkManagerAdhocWiredMetric = {
+      expr = deck.networking.networkmanager.settings.connection-netif-adhoc-wired;
+      expected = {
+        match-device = "type:ethernet";
+        "ipv4.route-metric" = 200;
+        "ipv6.route-metric" = 200;
+      };
+    };
     # A NetworkManager mode: one profile per plain wired link, iwd as
     # the Wi-Fi backend, and none of what runs beside IfState.
     test_networkManagerModeProfiles = {
