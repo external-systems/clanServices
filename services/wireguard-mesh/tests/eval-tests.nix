@@ -147,6 +147,7 @@
       modules = {
         wireguard-mesh = module;
         netif = netifModule;
+        modes = ../../modes/default.nix;
         k3s = clusterModule;
       };
       machines = machineConfigs;
@@ -179,6 +180,34 @@
 
   failedAssertion = machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
+
+  # Mode scoping (specs/netif.md N4): alpha is a mesh peer in its
+  # developer mode only.
+  modesInventory = scoped:
+    lib.recursiveUpdate baseInventory {
+      instances = {
+        modes = {
+          module.name = "modes";
+          module.input = "self";
+          roles.default.machines.alpha.settings.modes = {
+            default.manager = "networkmanager";
+            developer.manager = "ifstate";
+          };
+        };
+        mesh.roles.peer.machines.alpha.settings.modes = scoped;
+      };
+    };
+  modesAlpha = (mkEvaled (modesInventory ["developer"])).config.nixosConfigurations.alpha.config;
+  modesUnscopedAlpha = (mkEvaled (modesInventory [])).config.nixosConfigurations.alpha.config;
+  modeView = config: {
+    mode = config.clanServices.networking.mode.name;
+    link = (config.networking.ifstate.settings.interfaces or {}) ? wg-mesh;
+    hosts = config.networking.extraHosts != "";
+    # what clan reads from the parent configuration stays in every mode
+    generator = lib.any (lib.hasPrefix "wireguard-mesh") (builtins.attrNames config.clan.core.vars.generators);
+    fact = config.clan.networkFacts.mesh ? mesh;
+    checks = failedAssertion config "wireguard-mesh/mesh";
+  };
 
   duplicateEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
@@ -698,6 +727,38 @@ in {
     test_ciliumAddressSpaceIsNotSpecial = {
       expr = failedAssertion alpha "Cilium";
       expected = false;
+    };
+  };
+
+  # N4: a peer may be limited to some of its machine's modes.
+  modes = {
+    test_peerRendersOnlyInItsModes = {
+      expr = {
+        default = modeView modesAlpha;
+        developer = modeView modesAlpha.specialisation.developer.configuration;
+      };
+      expected = {
+        default = {
+          mode = "default";
+          link = false;
+          hosts = false;
+          generator = true;
+          fact = true;
+          checks = false;
+        };
+        developer = {
+          mode = "developer";
+          link = true;
+          hosts = true;
+          generator = true;
+          fact = true;
+          checks = false;
+        };
+      };
+    };
+    test_activeInNetworkManagerModeRejected = {
+      expr = failedAssertion modesUnscopedAlpha "is active in mode 'default', which uses NetworkManager";
+      expected = true;
     };
   };
 }

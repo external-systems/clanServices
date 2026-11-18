@@ -37,6 +37,7 @@
         wireguard-mesh = wgModule;
         fake-transport = fakeTransportModule;
         rke2 = rke2Module;
+        modes = ../../modes/default.nix;
         k3s = k3sModule;
       };
       machines = machineConfigs;
@@ -154,6 +155,66 @@
 
   failedAssertion = machineConfig: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) machineConfig.assertions;
+
+  # Mode scoping (specs/netif.md N4): the same gates as k3s.
+  modesInstance = machines: {
+    module.name = "modes";
+    module.input = "self";
+    roles.default.machines = machines;
+  };
+  modesSingle =
+    (mkEvaled {
+      instances = {
+        modes = modesInstance {
+          alpha.settings.modes = {
+            default.manager = "networkmanager";
+            kubernetes.manager = "ifstate";
+          };
+        };
+        rke2 = {
+          module.name = "rke2";
+          module.input = "self";
+          roles.server = {
+            settings = {
+              network.fabric = null;
+              cilium.id = 1;
+            };
+            machines.alpha.settings = {
+              clusterInit = true;
+              modes = ["kubernetes"];
+              network = {
+                ipv4 = "10.0.0.1";
+                ipv6 = "fd00::1";
+              };
+            };
+          };
+        };
+      };
+    }).config.nixosConfigurations.alpha.config;
+  modesVoter =
+    (mkEvaled (
+      lib.recursiveUpdate explicitInventory {
+        instances = {
+          modes = modesInstance {
+            alpha.settings.modes = {
+              default.manager = "ifstate";
+              maintenance.manager = "ifstate";
+            };
+          };
+          rke2.roles.server.machines.alpha.settings.modes = ["default"];
+        };
+      }
+    )).config.nixosConfigurations.alpha.config;
+  modeView = config: {
+    mode = config.clanServices.networking.mode.name;
+    rke2 = config.services.rke2.enable;
+    haproxy = config.services.haproxy.enable;
+    bpffs = config.fileSystems ? "/sys/fs/bpf";
+    pkiSync = lib.any (lib.hasInfix "pki") (builtins.attrNames config.systemd.services);
+    # what clan reads from the parent configuration stays in every mode
+    generator = config.clan.core.vars.generators ? "rancher-pki-rke2";
+    checks = failedAssertion config "rke2/rke2";
+  };
 
   # The rendered bootstrap bundle on the clusterInit node (D40).
   bundleObjs = builtins.fromJSON alphaTransport.clan.kubeClusters.rke2.bundleJson;
@@ -1411,6 +1472,39 @@ in {
 
   test_fakeTransportContradictingOverridesRejected = {
     expr = !(builtins.tryEval (builtins.deepSeq fakeContradictionEvaled.config true)).success;
+    expected = true;
+  };
+
+  # N4: a single-node cluster may be limited to some of its machine's
+  # modes; a voter of a cluster with other machines may not.
+  test_singleNodeClusterRendersOnlyInItsModes = {
+    expr = {
+      default = modeView modesSingle;
+      kubernetes = modeView modesSingle.specialisation.kubernetes.configuration;
+    };
+    expected = {
+      default = {
+        mode = "default";
+        rke2 = false;
+        haproxy = false;
+        bpffs = false;
+        pkiSync = false;
+        generator = true;
+        checks = false;
+      };
+      kubernetes = {
+        mode = "kubernetes";
+        rke2 = true;
+        haproxy = true;
+        bpffs = true;
+        pkiSync = true;
+        generator = true;
+        checks = false;
+      };
+    };
+  };
+  test_voterMustBeInEveryMode = {
+    expr = failedAssertion modesVoter "is an etcd voter of a cluster with other machines and must be active in every mode, but 'modes' leaves out maintenance";
     expected = true;
   };
 }

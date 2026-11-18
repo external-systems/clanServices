@@ -17,6 +17,41 @@ hardware yet; that waits for the contract gate ([plan](plan.md)).
 | U9 | **Machines behind a gateway** | a static default gateway; the gateway's NAT is not netif's | P3b |
 | U10 | **One machine, several roles** | modes that differ in kind: a server in one, a gamescope box in another | P4 |
 | U11 | **VM tests** | suites here; later a fixture other repos can import | after the contract gate |
+| U12 | **Gaming desktop** | default boot: KDE with NetworkManager on a static wired LAN, no Wi-Fi. `developer` mode: IfState, the same static link, Tailscale, a fabric leaf | P2, P4 |
+
+## What is proven, per machine (2026-11-18)
+
+Your list of machines from 2026-11-18, and the VM test that proves each
+part. "Open" is what no test shows yet.
+
+| Machine | Part | Proven by | Open |
+|---|---|---|---|
+| **kamrui-h1** | default: KDE, NetworkManager, Tailscale | `netif-desktop` | Steam itself (cannot run in a VM) |
+| | joins unknown Wi-Fi and wired networks, any mode | `netif-wifi`, `netif-desktop` (wired, NetworkManager), `netif-hotplug` (dock, IfState) | |
+| | `developer`: fabric leaf with FRR and WireGuard in one mode | `netif-modes` | reaching another cluster's pod and Service IPs from that leaf, in one test |
+| | `developer`: Tailscale, Docker, Podman, virtual machines | `netif-registry`, `netif-containers`, `netif-vmhost` | all of them on one machine at once |
+| | `kubernetes`: a single-node k3s with Cilium in one mode | `k3s-modes` | that cluster in a ClusterMesh while its machine roams (N27) |
+| | ClusterMesh, native routing with FRR | `k3s-clustermesh*`, `k3s-data-plane-netif` | |
+| **Steam Deck** | default: NetworkManager, Tailscale, Wi-Fi and wired ad hoc | `netif-desktop`, `netif-wifi` | gamescope and Steam's own network settings: one check on the Deck |
+| | `developer`: fabric leaf, Tailscale, WireGuard, a dock | `netif-modes`, `netif-registry`, `netif-hotplug` | |
+| **euc-hel-0** (Hetzner bare metal) | RKE2 with Cilium on netif, FRR, static addresses | `rke2-data-plane-netif` | |
+| | ClusterMesh, Tailscale, WireGuard | `rke2-clustermesh*`, `netif-registry`, `routed-fabric-netif` | |
+| | guests with their own public address and MAC | `netif-vmhost` (bridge MAC, VLAN members, guest ports kept) | a real KubeVirt with Multus guest |
+| | a bad change does not lock you out | `netif-guard` | |
+| **Gaming desktop** | default: KDE, NetworkManager, static LAN | `netif-desktop` (static IPv4 and IPv6 profile) | |
+| | `developer`: fabric leaf, Tailscale | `netif-modes`, `netif-desktop` | |
+| **Home router** | WAN by DHCP with prefix delegation, zones, untrusted WAN | `netif-dhcp` | the router module itself (NAT, DHCP server, advertisements): phase P5, in `modules` |
+| | fabric border, ECMP towards Kubernetes nodes | `routed-fabric`, `k3s-data-plane`, `rke2-data-plane` | the router as a Kubernetes node behind its own NAT, in one test |
+| **Cloud VMs** | DHCP (preferred) and static addresses, two NICs, NICs by slot | `netif-dhcp`, `netif-match`, `netif` | a run on a real cloud |
+| **Any cluster** | Cilium native routing with FRR | `k3s-data-plane-netif`, `rke2-data-plane-netif` | |
+| | Cilium tunnel mode without FRR | `k3s-clustermesh-tunnel`, `rke2-clustermesh-tunnel` and the single, join and HA tests | tunnel mode on a netif underlay (those tests use the bare fixture) |
+
+One point differs from how you wrote it on 2026-11-18: kamrui-h1's
+`developer` and `kubernetes` modes use IfState, not NetworkManager. The
+fabric's WireGuard links and FRR routes can only be rendered by IfState.
+Joining unknown Wi-Fi and wired networks works in those modes too
+(`iwctl` or an iwd front end, and the hot-plug owner). If you want
+NetworkManager there, that is a redesign: say so.
 
 Across all of them:
 

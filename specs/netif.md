@@ -11,6 +11,11 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round close-out (2026-11-18): the use cases are restated by the owner
+(§2, U12 added) and mapped to the suites that prove them
+(`documentation/docs/netif/use-cases.md`). A suite that hangs is stopped
+after 45 minutes instead of 2 hours (`vmTests.globalTimeout`).
+
 Round P2-hotplug (2026-11-18): **hot-plugged wired links in an
 IfState mode.** Implemented, and proven by the new suite
 `netif-hotplug` (`NETIF_HOTPLUG_OK`). With it phase P2 is done in this
@@ -133,8 +138,12 @@ follows the mode.** Implemented, and proven by `netif-modes`
   are identical before and after.
 - The `modes-eval` probe is deleted (N40): `netif-modes` and the eval
   tests `modes.mechanism.*` assert what it showed.
-- Not VM-proven: `rke2` in a mode (eval-identical gating; k3s is the
-  proof), and a routed-fabric leaf together with a cluster in one mode.
+- Not VM-proven: `rke2` and `wireguard-mesh` alone in a mode (eval
+  tests `rke2.test_singleNodeClusterRendersOnlyInItsModes`,
+  `rke2.test_voterMustBeInEveryMode`, `wireguard-mesh.modes.*`, added
+  in the close-out round; `k3s-modes` boots k3s with a `wireguard-mesh`
+  transport in one mode), and a routed-fabric leaf together with a
+  cluster in one mode.
 
 Round gate-4 (2026-11-18): **netif carries a KDE desktop in both
 kinds of mode.** Proven by the new suite `netif-desktop`
@@ -643,6 +652,31 @@ field gate, N14).
 - **U11 VM tests.** Ephemeral NixOS test VMs in this repo and, later, in
   home and modules.
   - Covered by: §7, N28.
+- **U12 Gaming desktop** (owner, 2026-11-18). No Wi-Fi.
+  - Default boot: KDE for Steam, NetworkManager, a static wired LAN
+    link.
+  - `developer`: IfState, the same static link, Tailscale, a
+    `routed-fabric` leaf with client access to pod and Service IPs.
+  - Covered by: N2, N3, N4, N24.
+
+**Owner restatement of 2026-11-18** (additions to the list above; the
+per-machine proof table is `documentation/docs/netif/use-cases.md`):
+- U2 `developer` also runs Docker, Podman and virtual machines (N22,
+  N23); U1 and U2 must join Wi-Fi and wired networks they have never
+  seen, in every mode (N5, N12).
+- U3 is also a Kubernetes node: it terminates HTTPS (Envoy Gateway,
+  CrowdSec in the cluster), reverse-proxies to the nodes behind it and
+  load-balances to them by ECMP over FRR. All of that is day-2 or
+  SPEC.md's; netif's part is unchanged.
+- U4 runs RKE2 with ClusterMesh, Tailscale and WireGuard, and hosts
+  guests with provider MACs (U5) through KubeVirt and Multus.
+- U6 prefers DHCP.
+- Clans with Cilium in tunnel mode and no FRR are a supported shape
+  (U7, `wireguard-mesh`).
+- **Open point:** the owner wrote that U2's `developer` mode uses
+  NetworkManager. N2 and N4 stand: the fabric needs IfState, so
+  `developer` and `kubernetes` are IfState modes. Changing that is a
+  redesign and an owner decision.
 
 Across all of them: Tailscale is first class in every mode; NetBird and
 Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
