@@ -67,7 +67,7 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   |---|---|
   | Per suite | 96 GiB and 36 vCPUs |
   | Per VM | 16 GiB and 8 vCPUs |
-  | Default timeout | 2 hours |
+  | Suite timeout (`vmTests.globalTimeout`) | 45 minutes |
   | `--all` budget (`vmTests.parallel`) | 24 vCPUs and 96 GiB |
 
 - Artifact source/hash/render and publish-freshness gates.

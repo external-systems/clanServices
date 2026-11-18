@@ -56,7 +56,10 @@
       cores = 24;
       memorySize = 96 * 1024;
     };
-    globalTimeout = 2 * 60 * 60;
+    # A suite that hangs is stopped after 45 minutes. The longest suite
+    # takes 20 minutes beside others on euc-hel-0 (rke2-single,
+    # rke2-clustermesh-tunnel) and under 10 alone.
+    globalTimeout = 45 * 60;
 
     # Evaluating every node of 24 multi-machine suites takes minutes and
     # gigabytes, too much for CI. Run the same checks with

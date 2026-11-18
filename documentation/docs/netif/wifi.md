@@ -41,7 +41,13 @@ work on the very first boot.
 When a cable and Wi-Fi are both up, the cable wins: netif's default route
 has metric 100, iwd's starts at 300, and NetworkManager's Wi-Fi uses 600.
 Wi-Fi stays connected as a fallback, so unplugging needs no
-reconfiguration (planned, phases P3b and P2).
+reconfiguration. The `netif-wifi` test proves all of this page on
+simulated radios, in both kinds of mode (2026-11-18). A dock sits
+between the two, at metric 200.
+
+To turn Wi-Fi on for a machine, set
+`networking.wireless.iwd.enable = true`. netif writes iwd's settings for
+each mode.
 
 A probe on 2026-11-16 confirmed it for IPv4 and IPv6. iwd put both of
 its default routes at metric 307. With a wired default at 100, traffic

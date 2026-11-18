@@ -150,7 +150,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
     rejects `| grep -q`: an early exit SIGPIPEs the writer). Test vars are
     generated during evaluation by clan-core's `clanTest`; there is no
     update-vars step and nothing to commit. The repo's resource limits
-    (96 GiB and 36 vCPUs per suite, 16 GiB and 8 vCPUs per VM, 2 h timeout)
+    (96 GiB and 36 vCPUs per suite, 16 GiB and 8 vCPUs per VM, 45 min timeout)
     are owner-approved for euc-hel-0, because RKE2 nodes need at least
     4 GiB and 2 vCPUs and planned topologies are larger. Raising them needs
     the owner's yes.
