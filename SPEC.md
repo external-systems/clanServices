@@ -4,6 +4,14 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 47 (2026-11-18): **hot-plugged wired links**
+(`specs/netif.md` round P2-hotplug, N12).
+`clanServices.netif.hotplug.interfaces` names the prefixes of links
+that come and go; in an IfState mode the `wired-hotplug` owner keeps
+IfState away and a supervised DHCP client runs on each while it is
+plugged in, with its defaults at metric 200. New suite `netif-hotplug`
+(`NETIF_HOTPLUG_OK`), with a USB adapter hot-plugged by QEMU.
+
 Round 46 (2026-11-18): **Wi-Fi in NetworkManager and IfState modes**
 (`specs/netif.md` round P2-wifi, N5, N18). The `iwd` preset renders
 iwd's settings for the mode. New suite `netif-wifi` (`NETIF_WIFI_OK`):

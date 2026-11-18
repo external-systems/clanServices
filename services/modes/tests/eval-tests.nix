@@ -103,6 +103,27 @@
   serverGaming = server.specialisation.gaming.configuration;
   plain = machine evaled "plain";
 
+  # A hot-plugged wired link (N12): an owner and a DHCP client in the
+  # IfState mode, nothing in the NetworkManager mode.
+  hotplugDeck = patterns:
+    machine (mkEvaledWith (
+        machineConfigs
+        // {
+          deck = {
+            nixpkgs.hostPlatform = "x86_64-linux";
+            clanServices.netif.hotplug.interfaces = patterns;
+          };
+        }
+      )
+      baseInventory) "deck";
+  dockDeck = hotplugDeck ["^enx"];
+  hotplugView = config: {
+    owner = config.clanServices.networking.owners.wired-hotplug.interfaces or [];
+    unit = config.systemd.services ? "netif-hotplug@";
+    udev = lib.hasInfix ''NAME=="enx*"'' config.services.udev.extraRules;
+    unmanaged = lib.elem "interface-name:enx*" config.networking.networkmanager.unmanaged;
+  };
+
   failedAssertion = config: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) config.assertions;
   # Only this repo's assertions: a bare test machine fails NixOS's own
@@ -224,6 +245,30 @@ in {
   };
 
   netifRendering = {
+    test_hotplugOwnerOnlyInIfstateMode = {
+      expr = {
+        default = hotplugView dockDeck;
+        developer = hotplugView dockDeck.specialisation.developer.configuration;
+      };
+      expected = {
+        default = {
+          owner = [];
+          unit = false;
+          udev = false;
+          unmanaged = false;
+        };
+        developer = {
+          owner = ["^enx"];
+          unit = true;
+          udev = true;
+          unmanaged = false;
+        };
+      };
+    };
+    test_hotplugPatternMustBeAPrefix = {
+      expr = failedAssertion (hotplugDeck ["enx.*"]).specialisation.developer.configuration "takes plain name prefixes";
+      expected = true;
+    };
     # A wired link netif does not declare sits behind netif's own (N18).
     test_networkManagerAdhocWiredMetric = {
       expr = deck.networking.networkmanager.settings.connection-netif-adhoc-wired;

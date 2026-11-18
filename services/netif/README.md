@@ -112,6 +112,11 @@ Beside IfState, netif runs (`host.nix`):
   setting limits it to some modes. A wired link netif does not declare
   (a dock, an unknown LAN) stays NetworkManager's own, with its default
   route at metric 200, behind netif's links;
+- hot-plugged wired links (a USB-C dock):
+  `clanServices.netif.hotplug.interfaces = [ "^enx" ]` names them by
+  the start of their interface name. In an IfState mode IfState leaves
+  them alone and `netif-hotplug@<name>.service` runs a DHCP client on
+  each while it is plugged in, with its default routes at metric 200;
 - Wi-Fi is iwd's in every mode, never IfState's. Turn it on with
   `networking.wireless.iwd.enable = true`; the `iwd` preset writes its
   settings for the mode (its own DHCP and DNS with route metric 300 and
