@@ -4,6 +4,12 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 44 (2026-11-18): **a KDE desktop on netif, in a NetworkManager
+and an IfState mode** (`specs/netif.md` round gate-4). New suite
+`netif-desktop` (`NETIF_DESKTOP_OK`). netif's NetworkManager renderer
+gives wired links it does not declare route metric 200. With rounds
+42 and 43 the owner definition of a stable netif (N14) is VM-proven.
+
 Round 43 (2026-11-18): **routed-fabric on a netif underlay**
 (`specs/netif.md` round gate-3). The `routed-fabric` suite body takes
 an `underlay` argument (`services/routed-fabric/tests/vm/suite.nix`);

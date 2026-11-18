@@ -181,7 +181,21 @@ reapplies the network on all five running machines: nothing changes,
 no BGP session restarts, and the routes are the same before and
 after. It passed the first time and found no defect.
 
-Still to prove: a desktop mode such as KDE.
+The third part, the same day: **a KDE desktop**. The new test
+`netif-desktop` boots one KDE Plasma machine into a NetworkManager
+mode, then an IfState mode, then back:
+
+| Feature | What the test shows |
+|---|---|
+| A static link in a NetworkManager mode | IPv4 and IPv6 address, both gateways and the DNS server come from the profile netif wrote; the desktop user sees it |
+| A wired network the machine has never seen | NetworkManager joins it by DHCP with no configuration. Its default route sits behind the declared link (metric 200 against 100); when the declared link goes away, traffic moves over by itself |
+| Tailscale | works in the NetworkManager mode, in the IfState mode and back, without logging in again |
+| KDE in an IfState mode | the desktop starts with NetworkManager off; a network reapply changes nothing |
+
+With this, all three loads of your definition of "stable" are proven
+in VMs: Cilium Kubernetes, FRR, and a desktop with both kinds of mode.
+Not proven yet: Wi-Fi in a NetworkManager mode (it is part of the
+Wi-Fi test).
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible

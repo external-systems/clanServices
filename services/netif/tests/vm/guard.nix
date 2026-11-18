@@ -152,7 +152,9 @@ in {
         return host.execute(f"systemctl reset-failed ifstate.service; {system}/bin/switch-to-configuration test 2>&1")
 
     def journal(pattern):
-        host.succeed(f"journalctl -b -u netif-guard.service --no-pager | grep '{pattern}' >/dev/null")
+        # journald writes behind the unit: sync, or a line the guard just
+        # printed is missing under load
+        host.succeed(f"journalctl --sync; journalctl -b -u netif-guard.service --no-pager | grep '{pattern}' >/dev/null")
 
     try:
         start_all()

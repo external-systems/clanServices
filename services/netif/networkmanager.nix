@@ -101,7 +101,18 @@ in {
       # NetworkManager creates a DHCP profile for every wired device it
       # sees, before netif's profile exists. Not on the links netif
       # declares: there the declared profile is the only one.
-      settings.main.no-auto-default = lib.concatStringsSep "," (builtins.attrNames cfg.links);
+      settings = {
+        main.no-auto-default = lib.concatStringsSep "," (builtins.attrNames cfg.links);
+        # A wired link netif does not declare (a dock, an unknown LAN)
+        # sits behind netif's own links and ahead of Wi-Fi (N18): the
+        # same order as the 'wired-hotplug' owner in an IfState mode.
+        # netif's profiles set their metric themselves.
+        connection-netif-adhoc-wired = {
+          match-device = "type:ethernet";
+          "ipv4.route-metric" = cfg.routeMetric + 100;
+          "ipv6.route-metric" = cfg.routeMetric + 100;
+        };
+      };
       # A NIC that belongs to another mode of this machine is nobody's
       # here (N4). Links netif never declares, such as a dock, stay
       # NetworkManager's own.

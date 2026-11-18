@@ -11,6 +11,40 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round gate-4 (2026-11-18): **netif carries a KDE desktop in both
+kinds of mode.** Proven by the new suite `netif-desktop`
+(`NETIF_DESKTOP_OK`): one KDE Plasma machine (SDDM, Wayland, a logged-in
+user) with a NetworkManager `default` mode and an IfState `developer`
+mode, booted into each in turn. This is the third of N14's three
+loads; with it the owner definition of stable is VM-proven.
+- **A static profile and IPv6 in a NetworkManager mode (N2):** the
+  declared link has its static IPv4 and IPv6 address, both gateways at
+  metric 100 and its DNS server, from the profile netif wrote; the
+  desktop user sees it (`NETIF_DESKTOP_STATIC_OK`).
+- **A wired network never seen before (N18, amended):** a NIC netif
+  does not declare is joined by NetworkManager's own DHCP profile. Its
+  default route has metric 200 (`routeMetric` + 100, a NetworkManager
+  connection default for Ethernet), so it sits behind netif's links
+  and ahead of Wi-Fi, the order the `wired-hotplug` owner gives an
+  IfState mode. With the declared link disconnected the ad hoc link
+  carries the default with no reconfiguration (`NETIF_DESKTOP_ADHOC_OK`).
+  Before this round both defaults had metric 100.
+- **Tailscale beside NetworkManager (N6):** logged in to an offline
+  Headscale; `tailscale0` is unmanaged; the tailnet answers in the
+  NetworkManager mode, in the IfState mode after a reapply that
+  changes nothing, and back (`NETIF_DESKTOP_TAILSCALE_OK`,
+  `NETIF_DESKTOP_IFSTATE_OK`, `NETIF_DESKTOP_BACK_OK`).
+- **KDE needs nothing special in an IfState mode:** Plasma asks for
+  NetworkManager by default; the shared base switches it off there and
+  the session starts.
+- `tests/headscale-vm.nix` is the Headscale fixture, shared with
+  `netif-registry` (its `headscale` node differs only in the order of
+  its package list).
+- `netif-guard`'s test read the journal before journald had written a
+  line the guard had just printed, and failed under load. It syncs the
+  journal first.
+- Not proven: Wi-Fi in a NetworkManager mode (phase P2, `netif-wifi`).
+
 Round gate-3 (2026-11-18): **netif carries FRR alone.** Proven by the
 new suite `routed-fabric-netif` (`NETIF_UNDER_FRR_OK`,
 `ROUTED_FABRIC_NETIF_OK`): the whole `routed-fabric` suite (two spines,
@@ -30,7 +64,8 @@ N14's three loads.
 - `suite-compare` now accepts a byte-identical test script whatever it
   contains; a baseline that already had subtests was reported as
   different.
-- Still open for N14: a desktop specialisation (KDE).
+- Still open for N14 then: a desktop specialisation (KDE) (done, round
+  gate-4).
 
 Round gate-1 (2026-11-17): **netif carries a Cilium Kubernetes
 cluster with FRR; three defects found on the way.** Proven by the new
@@ -534,8 +569,9 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     - dhcpcd, the DNS writer, "online", the tools and the guard are
       IfState-mode only.
   *(implemented, round P4a: `netif-modes` `NETIF_MODES_NETWORKMANAGER_OK`;
-  eval tests in `services/modes/tests`. Not proven: a static profile in
-  a VM, IPv6 in a NetworkManager mode, Wi-Fi)*
+  eval tests in `services/modes/tests`; a static IPv4 and IPv6 profile,
+  round gate-4: `netif-desktop` `NETIF_DESKTOP_STATIC_OK`. Not proven:
+  Wi-Fi in a NetworkManager mode)*
 
 - **N3 Modes are NixOS specialisations, switched by reboot.**
   - The parent configuration is the default boot entry; each further mode is
@@ -892,7 +928,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     2. FRR on `routed-fabric` *(proven, round gate-3:
        `routed-fabric-netif`)*;
     3. desktop specialisations such as KDE: NetworkManager modes
-       beside IfState modes on one machine (N3, N24).
+       beside IfState modes on one machine (N3, N24) *(proven, round
+       gate-4: `netif-desktop`)*.
     Every machine moves to netif once it is stable.
 
 - **N15 Physical NICs: identity, presence, passthrough.**
@@ -1102,7 +1139,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   | netif link (static gateway, DHCP lease, RA) | 100 | IfState route `preference`; dhcpcd `metric`; `ra_defrtr_metric` written by the link hook |
   | `wired-hotplug` owner (N12) | 200 | its dhcpcd `metric` |
   | iwd (Wi-Fi) | 300 and up | iwd `RoutePriorityOffset = 300`, pinned by the `iwd` preset |
-  | NetworkManager modes | wired 100, Wi-Fi 600 | the renderer sets wired profiles' route metric to 100 explicitly; NetworkManager's Wi-Fi default is already higher |
+  | NetworkManager modes | netif's wired links 100, any other wired link 200, Wi-Fi 600 | the renderer sets its profiles' route metric to 100 explicitly; a connection default for Ethernet (`connection-netif-adhoc-wired`) gives every profile without a metric of its own, such as a dock's, `routeMetric` + 100; NetworkManager's Wi-Fi default is already higher |
 
   - Effect: with a cable plugged in, wired wins and Wi-Fi stays up as a
     fallback; unplugging falls back with no reconfiguration.

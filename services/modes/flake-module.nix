@@ -9,8 +9,7 @@ in {
   clan.modules.modes = module;
 
   # netif-modes boots one machine into each of its modes (N2, N3, N24).
-  clanTests.netif-modes = {
-    imports = [./tests/vm/default.nix];
+  clanTests = let
     clan = {
       modules = {
         modes = module;
@@ -18,6 +17,16 @@ in {
       };
       # the schema file itself, as every other suite registers it
       exportInterfaces.netif = ../netif/netif-interface.nix;
+    };
+  in {
+    netif-modes = {
+      imports = [./tests/vm/default.nix];
+      inherit clan;
+    };
+    # netif-desktop: a KDE machine in a NetworkManager and an IfState mode (N14).
+    netif-desktop = {
+      imports = [./tests/vm/desktop.nix];
+      inherit clan;
     };
   };
 
