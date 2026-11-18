@@ -20,7 +20,7 @@ owner decides.
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
 | P3b | **Done**, all five slices (2026-11-17; `netif-dhcp`, `netif` and `netif-match` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | **Done** (2026-11-17; `netif-containers` and `netif-vmhost` green). The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
-| P2 | The NetworkManager part (2026-11-17, `netif-modes`) and Wi-Fi in both kinds of mode (2026-11-18, `netif-wifi`) are **done**. Still to do: hot-plugged dock Ethernet in an IfState mode, the Deck check. Original scope: NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
+| P2 | The NetworkManager part (2026-11-17, `netif-modes`) and Wi-Fi in both kinds of mode (2026-11-18, `netif-wifi`) are **done**. Hot-plugged dock Ethernet in an IfState mode is **done** too (2026-11-18, `netif-hotplug`). Still to do: the Deck check, on the hardware. Original scope: NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | **Done** (2026-11-18; `netif-modes` and `k3s-modes` green): the `modes` service, netif follows the mode, and the fabric and cluster services take a `modes` setting. Original scope: The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
 | P8 | **Done** (2026-11-17, `netif-guard` green). The lockout guard | `netif-guard` green |
 | P5 | The router module in `modules`, built on P3b's zones and link names | `netif-router` green |
@@ -225,6 +225,25 @@ test on simulated radios:
 To turn Wi-Fi on for a machine, set
 `networking.wireless.iwd.enable = true`. netif writes iwd's settings
 for each mode; do not set them by hand.
+
+Docks (the last part of P2 in this repo), the same day, proven by the
+new `netif-hotplug` test. QEMU plugs a USB network adapter into a
+running machine and pulls it out again:
+
+| Feature | What the test shows |
+|---|---|
+| Plugging in | the adapter gets an address by DHCP, an IPv6 route and DNS within seconds, with no configuration for that network |
+| Order | traffic keeps using the machine's own wired link; the dock is second (metric 200), Wi-Fi third |
+| Losing the main cable | the dock takes over both address families by itself |
+| IfState keeps out | a network reapply changes nothing on the dock |
+| Unplugging | the DHCP client stops; no route, DNS entry or failed service is left |
+| Plugging in again | the same result |
+
+You name the adapters once per machine, by the start of their
+interface name: `clanServices.netif.hotplug.interfaces = [ "^enx" ];`.
+This is for IfState modes. In a NetworkManager mode NetworkManager
+already does it. A built-in network port that should work on any
+network is simpler: declare it in netif with `dhcp.ipv4 = true`.
 
 With this, all three loads of your definition of "stable" are proven
 in VMs: Cilium Kubernetes, FRR, and a desktop with both kinds of mode.

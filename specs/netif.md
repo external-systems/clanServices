@@ -11,6 +11,53 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P2-hotplug (2026-11-18): **hot-plugged wired links in an
+IfState mode.** Implemented, and proven by the new suite
+`netif-hotplug` (`NETIF_HOTPLUG_OK`). With it phase P2 is done in this
+repo; only the Deck hardware check is left.
+- **N12 as built** (`services/netif/host.nix`):
+  `clanServices.netif.hotplug.interfaces` lists name prefixes
+  (`^enx`, a dock's USB path prefix). In an IfState mode:
+  - the registry owner `wired-hotplug` claims them, so IfState never
+    touches the link, its addresses or its routes;
+  - a udev rule per prefix starts `netif-hotplug@<name>.service` when
+    such a link appears. The unit is bound to the device, so
+    unplugging stops it;
+  - the unit sets the link up and runs dhcpcd 10.5 (`dhcpcd_latest`)
+    with the sandbox of netif's other clients. DHCPv4 with metric
+    `routeMetric` + 100 (200); the kernel reads router advertisements,
+    with `ra_defrtr_metric` 200 written before the link comes up
+    (and `accept_ra` 2 on a machine that forwards IPv6);
+  - the lease's DNS servers go to systemd-resolved through netif's
+    writer; after a stop the dynamic address, the lease files and the
+    link's DNS are removed.
+  A pattern that is not a plain `^prefix` is an eval error (udev
+  matches a prefix as a glob). In a NetworkManager mode nothing is
+  rendered: NetworkManager does this itself (round gate-4).
+- **Proof:** QEMU hot-plugs a USB network adapter into a running
+  machine. DHCPv4, the advertised IPv6 default and DNS arrive; both
+  defaults are at 200 behind the declared link's 100; a reapply and
+  the drift watch change nothing; with the declared link down the
+  dock carries both families; the client, killed, comes back with its
+  lease; unplugging stops the unit and leaves no route, no DNS entry
+  and no failed unit; a second plug gives the same result
+  (`NETIF_HOTPLUG_PLUG_OK`, `NETIF_HOTPLUG_REAPPLY_OK`,
+  `NETIF_HOTPLUG_FALLBACK_OK`, `NETIF_HOTPLUG_UNPLUG_OK`,
+  `NETIF_HOTPLUG_AGAIN_OK`).
+- **Defect found by the suite:** before every apply netif writes
+  `ra_defrtr_metric` 100 to every interface (N18). That reset a
+  plugged-in dock to 100, and its next advertised default tied with
+  the declared link's. The writer now skips the hot-plug prefixes, and
+  the suite asserts the sysctl and a freshly learned default after a
+  reapply.
+- A built-in NIC that should join any LAN is not a hot-plug case: it
+  is a declared netif link with `dhcp.ipv4 = true` (`netif-dhcp`).
+- Harness note (§7): a PCI NIC added with `device_add` did not show up
+  in the guest (no hot-plug event in the test VM's machine type); a
+  USB adapter on a `qemu-xhci` controller does.
+- Not proven: DHCPv6 on a hot-plugged link (not rendered: DHCPv4 and
+  advertisements only), and a real dock's interface name.
+
 Round P2-wifi (2026-11-18): **Wi-Fi in both kinds of mode.**
 Implemented, and proven by the new suite `netif-wifi`
 (`NETIF_WIFI_OK`):
@@ -45,9 +92,9 @@ Implemented, and proven by the new suite `netif-wifi`
   `mac80211_hwsim` radios, the access points in a foreign namespace).
 - The `wifi` probe is deleted (N40), and with it the last probe: the
   `netifProbes` output and `services/netif/tests/probes/` are gone.
-- Still open in P2: hot-plugged wired links in an IfState mode
-  (`netif-hotplug`), and the Deck hardware check of Steam over the iwd
-  backend (owner only).
+- Still open in P2 then: hot-plugged wired links in an IfState mode
+  (done, round P2-hotplug), and the Deck hardware check of Steam over
+  the iwd backend (owner only).
 
 Round P4b (2026-11-18): **every networking and cluster service
 follows the mode.** Implemented, and proven by `netif-modes`
@@ -982,8 +1029,10 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   so hot-plugged links are not IfState's. A `wired-hotplug` registry owner
   (a standalone dhcpcd limited to matching names, for example `^enx`) owns
   them in IfState modes. NetworkManager handles them natively in
-  NetworkManager modes. *(planned, phase P2; must be VM-proven with QEMU
-  device hot-plug before it is offered)*
+  NetworkManager modes. *(implemented, round P2-hotplug:
+  `clanServices.netif.hotplug.interfaces`, `netif-hotplug`
+  `NETIF_HOTPLUG_OK`; eval tests
+  `modes.netifRendering.test_hotplug*`)*
 
 - **N13 Deploy target.** Rule 11 stands: `targetHost` is an underlay
   address or name, never a clanServices fabric or tunnel address. A roaming
@@ -2330,7 +2379,7 @@ decision. Phase numbers are labels, not the order.
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
 | P3b | **Done: all five slices** (rounds P3b-1, P3b-3, P3b-4, P3b-5). The tools of N38, N41 and N42 follow as their own slice. Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
 | P7 | **Done** (rounds P7a, P7b): `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
-| P2 | **Renderer done** (round P4a, with P4a because a mode needs it). **Wi-Fi done** (round P2-wifi: iwd settings and metric per mode, `netif-wifi`). **To do:** `wired-hotplug`, the Deck check. Original scope: NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
+| P2 | **Renderer done** (round P4a, with P4a because a mode needs it). **Wi-Fi done** (round P2-wifi: iwd settings and metric per mode, `netif-wifi`). **Hot-plug done** (round P2-hotplug: the `wired-hotplug` owner, `netif-hotplug`). **To do:** the Deck check (owner, hardware). Original scope: NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | **Done** (rounds P4a and P4b): the `modes` service, the base and netif follow the mode; `modes` on the other services with the spine/border/voter rules (`netif-modes`, `k3s-modes`). Original scope: The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
 | P8 | **Done** (round P8). Lockout guard (N25, N36) | `netif-guard` green |
 | P5 | Router module in `modules` on the P3b seam | `netif-router` green |

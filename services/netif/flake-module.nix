@@ -33,6 +33,10 @@ in rec {
       imports = [./tests/vm/dhcp.nix];
       inherit clan;
     };
+    netif-hotplug = {
+      imports = [./tests/vm/hotplug.nix];
+      inherit clan;
+    };
     netif-guard = {
       imports = [./tests/vm/guard.nix];
       inherit clan;

@@ -131,6 +131,94 @@
       )
     );
 
+  # dhcpcd sets addresses, routes and per-link sysctls and opens raw and
+  # packet sockets. Nothing else.
+  dhcpcdSandbox = {
+    CapabilityBoundingSet = [
+      "CAP_NET_ADMIN"
+      "CAP_NET_RAW"
+      "CAP_NET_BIND_SERVICE"
+      "CAP_CHOWN"
+    ];
+    NoNewPrivileges = true;
+    ProtectSystem = "strict";
+    ReadWritePaths = [
+      "/run/dhcpcd"
+      "/var/lib/dhcpcd"
+      runtimeDir
+    ];
+    ProtectHome = true;
+    PrivateTmp = true;
+    PrivateDevices = true;
+    ProtectClock = true;
+    ProtectControlGroups = true;
+    ProtectHostname = true;
+    ProtectKernelLogs = true;
+    ProtectKernelModules = true;
+    RestrictAddressFamilies = [
+      "AF_UNIX"
+      "AF_INET"
+      "AF_INET6"
+      "AF_NETLINK"
+      "AF_PACKET"
+    ];
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    LockPersonality = true;
+    MemoryDenyWriteExecute = true;
+    SystemCallArchitectures = "native";
+    SystemCallFilter = ["@system-service"];
+  };
+  dhcpcdDirs = [
+    "d ${runtimeDir} 0755 root root -"
+    "d /run/dhcpcd 0755 root root -"
+    "d /var/lib/dhcpcd 0755 root root -"
+  ];
+
+  # Hot-plugged wired links (N12): a dock or a USB adapter that is not
+  # there when IfState runs. One config for all of them.
+  inherit (cfg) hotplug;
+  hotplugMetric = cfg.routeMetric + 100;
+  hotplugConf = pkgs.writeText "netif-dhcpcd-hotplug.conf" (
+    lib.concatLines [
+      "# netif hot-plugged wired links (specs/netif.md N12)"
+      "duid"
+      "hostname"
+      "option domain_name_servers, domain_name, domain_search, classless_static_routes"
+      "require dhcp_server_identifier"
+      # the kernel reads router advertisements on these links
+      "noipv6rs"
+      "noipv4ll"
+      "ipv4only"
+      "metric ${toString hotplugMetric}"
+      "backoff_cutoff ${toString cfg.dhcpBackoffCutoff}"
+      "script ${dhcpcdScript}"
+    ]
+  );
+  hotplugPrefixes = map (lib.removePrefix "^") hotplug.interfaces;
+  hotplugBadPatterns =
+    builtins.filter (
+      regex: !(lib.hasPrefix "^" regex && builtins.match "[A-Za-z0-9_.-]+" (lib.removePrefix "^" regex) != null)
+    )
+    hotplug.interfaces;
+  hotplugUp = pkgs.writeShellScript "netif-hotplug-up" ''
+    export PATH=${path}
+    # an advertised IPv6 default sits where the DHCPv4 one does (N18)
+    echo ${toString hotplugMetric} > "/proc/sys/net/ipv6/conf/$1/ra_defrtr_metric"
+    # a machine that forwards IPv6 only accepts advertisements with 2
+    if [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding)" = 1 ]; then
+      echo 2 > "/proc/sys/net/ipv6/conf/$1/accept_ra"
+    fi
+    ip link set dev "$1" up
+  '';
+  hotplugCleanup = pkgs.writeShellScript "netif-hotplug-cleanup" ''
+    export PATH=${path}
+    ip -4 addr flush dev "$1" dynamic 2>/dev/null || true
+    rm -f "${runtimeDir}/$1".dhcp4.* "${runtimeDir}/$1".dhcp6.*
+    resolvectl revert "$1" 2>/dev/null || true
+  '';
+
   # Guest ports (N23, N37). IfState's cleanup knows interface names
   # only, never a port's bridge. So before every apply netif lists the
   # ports of each guest-ports bridge, drops the members it declares
@@ -312,6 +400,22 @@ in {
       default = 16;
       description = "Longest wait in seconds between two DHCPv4 tries (dhcpcd 'backoff_cutoff', specs/netif.md N34).";
     };
+    hotplug.interfaces = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      example = [
+        "^enx"
+        "^enp0s20f0u"
+      ];
+      description = ''
+        Name prefixes ('^prefix') of wired links that come and go, such
+        as a USB-C dock. In an IfState mode IfState leaves them alone and
+        netif runs a DHCP client on each while it is plugged in. Their
+        default routes sit behind netif's own links and ahead of Wi-Fi
+        (metric 'routeMetric' + 100). A NetworkManager mode needs
+        nothing: NetworkManager does this itself (specs/netif.md N12).
+      '';
+    };
     onlineTimeout = mkOption {
       type = types.ints.positive;
       default = 30;
@@ -396,11 +500,7 @@ in {
       '') (lib.attrNames dhcpLinks);
 
       systemd = {
-        tmpfiles.rules = [
-          "d ${runtimeDir} 0755 root root -"
-          "d /run/dhcpcd 0755 root root -"
-          "d /var/lib/dhcpcd 0755 root root -"
-        ];
+        tmpfiles.rules = dhcpcdDirs;
 
         services =
           {
@@ -426,7 +526,15 @@ in {
             ifstate.serviceConfig.ExecStartPre =
               [
                 (pkgs.writeShellScript "netif-ra-metric" ''
-                  for f in /proc/sys/net/ipv6/conf/*/ra_defrtr_metric; do
+                  for f in /proc/sys/net/ipv6/conf/*/ra_defrtr_metric; do${
+                    lib.optionalString (hotplugPrefixes != []) ''
+
+                      # a hot-plugged link keeps the metric its own unit wrote (N12)
+                      n=''${f%/ra_defrtr_metric}
+                      case "''${n##*/}" in
+                        ${lib.concatMapStringsSep "|" (prefix: "${prefix}*") hotplugPrefixes}) continue ;;
+                      esac''
+                  }
                     [ -w "$f" ] && echo ${toString cfg.routeMetric} > "$f"
                   done
                   exit 0
@@ -476,61 +584,81 @@ in {
                 wants = ["ifstate.service"];
                 restartTriggers = [(dhcpcdConf interface l)];
                 unitConfig.StartLimitIntervalSec = 0;
-                serviceConfig = {
-                  ExecStart = "${lib.getExe pkgs.dhcpcd_latest} -B -f /etc/netif/dhcpcd/${interface}.conf ${interface}";
-                  # A clean slate after every stop, crash or not: a dhcpcd
-                  # that found its address already on the link does not
-                  # remove it on exit. IPv4 only; IPv6 "dynamic" addresses
-                  # include the kernel's own SLAAC ones.
-                  ExecStopPost = pkgs.writeShellScript "netif-dhcpcd-cleanup" ''
-                    export PATH=${path}
-                    ip -4 addr flush dev ${lib.escapeShellArg interface} dynamic 2>/dev/null || true
-                    rm -f ${runtimeDir}/${lib.escapeShellArg interface}.dhcp4.* ${runtimeDir}/${lib.escapeShellArg interface}.dhcp6.*
-                    ${dnsApply} ${lib.escapeShellArg interface}
-                  '';
-                  Restart = "on-failure";
-                  RestartSec = 2;
-                  # dhcpcd sets addresses, routes and per-link sysctls and
-                  # opens raw and packet sockets. Nothing else.
-                  CapabilityBoundingSet = [
-                    "CAP_NET_ADMIN"
-                    "CAP_NET_RAW"
-                    "CAP_NET_BIND_SERVICE"
-                    "CAP_CHOWN"
-                  ];
-                  NoNewPrivileges = true;
-                  ProtectSystem = "strict";
-                  ReadWritePaths = [
-                    "/run/dhcpcd"
-                    "/var/lib/dhcpcd"
-                    runtimeDir
-                  ];
-                  ProtectHome = true;
-                  PrivateTmp = true;
-                  PrivateDevices = true;
-                  ProtectClock = true;
-                  ProtectControlGroups = true;
-                  ProtectHostname = true;
-                  ProtectKernelLogs = true;
-                  ProtectKernelModules = true;
-                  RestrictAddressFamilies = [
-                    "AF_UNIX"
-                    "AF_INET"
-                    "AF_INET6"
-                    "AF_NETLINK"
-                    "AF_PACKET"
-                  ];
-                  RestrictNamespaces = true;
-                  RestrictRealtime = true;
-                  RestrictSUIDSGID = true;
-                  LockPersonality = true;
-                  MemoryDenyWriteExecute = true;
-                  SystemCallArchitectures = "native";
-                  SystemCallFilter = ["@system-service"];
-                };
+                serviceConfig =
+                  {
+                    ExecStart = "${lib.getExe pkgs.dhcpcd_latest} -B -f /etc/netif/dhcpcd/${interface}.conf ${interface}";
+                    # A clean slate after every stop, crash or not: a dhcpcd
+                    # that found its address already on the link does not
+                    # remove it on exit. IPv4 only; IPv6 "dynamic" addresses
+                    # include the kernel's own SLAAC ones.
+                    ExecStopPost = pkgs.writeShellScript "netif-dhcpcd-cleanup" ''
+                      export PATH=${path}
+                      ip -4 addr flush dev ${lib.escapeShellArg interface} dynamic 2>/dev/null || true
+                      rm -f ${runtimeDir}/${lib.escapeShellArg interface}.dhcp4.* ${runtimeDir}/${lib.escapeShellArg interface}.dhcp6.*
+                      ${dnsApply} ${lib.escapeShellArg interface}
+                    '';
+                    Restart = "on-failure";
+                    RestartSec = 2;
+                  }
+                  // dhcpcdSandbox;
               }
           )
           dhcpLinks;
+      };
+    })
+    # Hot-plugged wired links (N12), IfState modes only.
+    (lib.mkIf (hotplug.interfaces != [] && config.clanServices.networking.mode.manager == "ifstate") {
+      assertions = [
+        {
+          assertion = hotplugBadPatterns == [];
+          message = "netif: 'clanServices.netif.hotplug.interfaces' takes plain name prefixes such as '^enx' (udev matches them as 'enx*'); got ${lib.concatStringsSep ", " hotplugBadPatterns} (specs/netif.md N12)";
+        }
+        {
+          assertion = lib.versionAtLeast pkgs.dhcpcd_latest.version "10.5.0";
+          message = "netif: hot-plugged links need dhcpcd 10.5.0 or newer as pkgs.dhcpcd_latest (got ${pkgs.dhcpcd_latest.version}); apply inputs.org-pkgs.overlays.ifstate (specs/netif.md N30)";
+        }
+      ];
+
+      # IfState never touches them: the links, their addresses and routes
+      # are this owner's (N6). A declared link with such a name is an
+      # eval error from the registry.
+      clanServices.networking.owners.wired-hotplug.interfaces = hotplug.interfaces;
+
+      environment.etc."netif/dhcpcd/hotplug.conf".source = hotplugConf;
+
+      # udev starts the client when such a link appears, under the name
+      # udev gave it or, with no rename, the kernel's.
+      services.udev.extraRules =
+        lib.concatMapStrings (prefix: ''
+          SUBSYSTEM=="net", ACTION=="add", NAME=="${prefix}*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="netif-hotplug@$name.service"
+          SUBSYSTEM=="net", ACTION=="add", NAME=="", KERNEL=="${prefix}*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="netif-hotplug@%k.service"
+        '')
+        hotplugPrefixes;
+
+      systemd = {
+        tmpfiles.rules = lib.mkIf (links == {}) dhcpcdDirs;
+        services."netif-hotplug@" = {
+          description = "netif: dhcpcd on the hot-plugged link %I";
+          # Bound to the link: unplugging stops the client.
+          bindsTo = ["sys-subsystem-net-devices-%i.device"];
+          after = [
+            "sys-subsystem-net-devices-%i.device"
+            "ifstate.service"
+            "systemd-tmpfiles-setup.service"
+            "systemd-resolved.service"
+          ];
+          restartTriggers = [hotplugConf];
+          unitConfig.StartLimitIntervalSec = 0;
+          serviceConfig =
+            {
+              ExecStartPre = "${hotplugUp} %I";
+              ExecStart = "${lib.getExe pkgs.dhcpcd_latest} -B -f /etc/netif/dhcpcd/hotplug.conf %I";
+              ExecStopPost = "${hotplugCleanup} %I";
+              Restart = "on-failure";
+              RestartSec = 2;
+            }
+            // dhcpcdSandbox;
+        };
       };
     })
   ];
