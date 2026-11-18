@@ -4,6 +4,7 @@
   ...
 }: let
   kube = import ../../lib/kube-cluster {inherit lib;};
+  modeScope = import ../../lib/mode-scope.nix {inherit lib;};
 
   # Resolve the per-machine node_transport export from the configured
   # transport instance (D58: the ONLY transport view rke2 consumes —
@@ -462,6 +463,8 @@
         else "agent";
       isServer = role == "server";
       machineSettings = allMembers.${machine.name}.settings;
+      # Mode scoping (N4): rendered only in the instance's modes.
+      modeActive = modeScope.active config machineSettings.modes;
 
       # --- Per-node kube-apiserver / supervisor load balancer -------
       # EVERY node runs a local haproxy bound to its own transport
@@ -767,6 +770,7 @@
         ../../lib/kube-cluster/network-facts.nix
         # the ownership registry: this service declares what it owns
         ../../lib/ownership.nix
+        ../../lib/modes.nix
       ];
 
       # D19: the ONE host routing stack (FRR) is owned by
@@ -798,7 +802,7 @@
       };
 
       config = lib.mkMerge [
-        {
+        (modeScope.scope modeActive {
           nixpkgs.overlays = lib.mkAfter [inputs.org-pkgs.overlays.kubernetes];
 
           clan = {
@@ -810,7 +814,17 @@
           };
 
           assertions =
-            (kube.assertions.mkClusterAssertions {
+            modeScope.assertions {
+              service = "rke2";
+              inherit instanceName config;
+              machineName = machine.name;
+              inherit (machineSettings) modes;
+              everyMode =
+                if isServer && builtins.length (builtins.attrNames allMembers) > 1
+                then "an etcd voter of a cluster with other machines"
+                else null;
+            }
+            ++ (kube.assertions.mkClusterAssertions {
               inherit
                 instanceName
                 roleMembers
@@ -1036,12 +1050,12 @@
             after = ["ifstate.service"];
             unitConfig.StartLimitIntervalSec = 0;
           };
-        }
+        })
 
         # --- PKI sync (servers only): the pre-generated rancher-pki
         # CA tree lands in rke2's tls dir BEFORE rke2-server starts, so
         # rke2 adopts the custom CAs instead of generating its own.
-        (lib.mkIf isServer (
+        (lib.mkIf (modeActive && isServer) (
           kube.nixos.mkPkiSync {
             inherit pkgs;
             pkiGenerator = config.clan.core.vars.generators."rancher-pki-${instanceName}";
@@ -1053,7 +1067,7 @@
 
         # The bootstrap bundle + apply oneshot on the clusterInit node
         # only (D40). bootstrap.apply = false is the day-2 off-ramp.
-        (lib.mkIf (isInit && settings.bootstrap.apply) (
+        (lib.mkIf (modeActive && isInit && settings.bootstrap.apply) (
           kube.mkBootstrapApply {
             inherit pkgs instanceName;
             namePrefix = "rke2";
@@ -1066,7 +1080,7 @@
         # The ClusterMesh apiserver TLS secrets from clan vars (D60) on
         # the clusterInit node — after the bundle created the apiserver
         # objects. Key material never enters the bundle/Nix store.
-        (lib.mkIf isInit (
+        (lib.mkIf (modeActive && isInit) (
           kube.mkClustermeshSecretsApply {
             inherit pkgs instanceName;
             namePrefix = "rke2";
@@ -1082,7 +1096,7 @@
         # its name@digest alias on every node. Only when the default
         # preload set is in effect (x86_64; an admin packages.images
         # override owns its own digest resolution).
-        (lib.mkIf (pkgs.stdenv.hostPlatform.isx86_64 && settings.packages.images == []) (
+        (lib.mkIf (modeActive && pkgs.stdenv.hostPlatform.isx86_64 && settings.packages.images == []) (
           kube.mkImageDigestAliases {
             inherit pkgs instanceName;
             runtimeUnit =

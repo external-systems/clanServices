@@ -57,6 +57,16 @@ in rec {
           exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
         };
     };
+    # A single-node cluster that exists in one mode of its machine (N4, U2).
+    k3s-modes = {
+      imports = [./tests/vm/modes.nix];
+      clan =
+        clan
+        // {
+          modules = clan.modules // {inherit (self.clan.modules) netif modes;};
+          exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
+        };
+    };
     k3s-clustermesh = {
       imports = [./tests/vm/clustermesh.nix];
       inherit clan;

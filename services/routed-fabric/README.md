@@ -114,3 +114,13 @@ deploy only to their owner.
 vm-test routed-fabric --remote --quiet   # hermetic VM suite on euc-hel-0
 nix build .#checks.x86_64-linux.coverage
 ```
+
+## Modes
+
+On a machine with network modes (the `modes` service), the per-machine
+setting `modes = [ "developer" ]` limits this instance to those modes.
+In the others the machine has none of its units, links, firewall rules
+or sysctls; its secrets, exports and facts stay. Empty means every mode.
+The service needs IfState, so a machine with a NetworkManager mode must
+name the modes. A leaf may be limited to some modes. A spine and a border must stay in every mode: other machines route through them.
+(`specs/netif.md` N4.)

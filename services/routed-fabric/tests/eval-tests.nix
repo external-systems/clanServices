@@ -205,6 +205,7 @@
           ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         };
         k3s = clusterModule;
+        modes = ../../modes/default.nix;
       };
       inherit inventory;
     };
@@ -226,7 +227,7 @@
     lib.filterAttrs (
       name: _: lib.hasPrefix "rf" name && !lib.hasPrefix "rflo" name
     )
-    config.networking.ifstate.settings.interfaces;
+    (config.networking.ifstate.settings.interfaces or {});
   allowedFor = config:
     map (interface: (builtins.head (lib.attrValues interface.wireguard.peers)).allowedips) (
       builtins.attrValues (interfacesFor config)
@@ -276,6 +277,61 @@
     }
   );
   allocatedClient = allocatedEval.config.nixosConfigurations.client.config;
+
+  # Mode scoping (N4): the client leaf has a NetworkManager default mode
+  # and an IfState developer mode, and is a fabric leaf in the latter.
+  modesInstance = machines: {
+    module.name = "modes";
+    module.input = "self";
+    roles.default.machines = machines;
+  };
+  twoModes = {
+    default.manager = "networkmanager";
+    developer.manager = "ifstate";
+  };
+  modesInventory = lib.recursiveUpdate baseInventory {
+    instances = {
+      modes = modesInstance {client.settings.modes = twoModes;};
+      fleet.roles.leaf.machines.client.settings.modes = ["developer"];
+    };
+  };
+  modesClient = (mkEvaled modesInventory).config.nixosConfigurations.client.config;
+  modesDeveloper = modesClient.specialisation.developer.configuration;
+  modesUnscopedClient =
+    (mkEvaled (
+      lib.recursiveUpdate modesInventory {
+        instances.fleet.roles.leaf.machines.client.settings.modes = lib.mkForce [];
+      }
+    )).config.nixosConfigurations.client.config;
+  modesUnknownClient =
+    (mkEvaled (
+      lib.recursiveUpdate modesInventory {
+        instances.fleet.roles.leaf.machines.client.settings.modes = lib.mkForce ["kubernetes"];
+      }
+    )).config.nixosConfigurations.client.config;
+  modesScopedSpine =
+    (mkEvaled (
+      lib.recursiveUpdate baseInventory {
+        instances = {
+          modes = modesInstance {
+            spine-a.settings.modes = {
+              default.manager = "ifstate";
+              maintenance.manager = "ifstate";
+            };
+          };
+          fleet.roles.spine.machines.spine-a.settings.modes = ["default"];
+        };
+      }
+    )).config.nixosConfigurations.spine-a.config;
+  modeView = config: {
+    mode = config.clanServices.networking.mode.name;
+    links = builtins.attrNames (interfacesFor config) != [];
+    bgp = config.services.frr.bgpd.enable;
+    firewall = config.networking.firewall.interfaces != {};
+    # what clan reads from the parent configuration stays in every mode
+    generator = config.clan.core.vars.generators ? "routed-fabric-fleet";
+    fact = config.clan.networkFacts.fabric ? fleet;
+  };
 
   pairInventory = {
     instanceName ? "fleet",
@@ -1722,6 +1778,57 @@ in {
         port = 52820;
         collision = false;
       };
+    };
+  };
+
+  # N4: a leaf may be limited to some of its machine's modes; a spine
+  # may not.
+  modes = {
+    test_leafRendersOnlyInItsModes = {
+      expr = {
+        default = modeView modesClient;
+        developer = modeView modesDeveloper;
+      };
+      expected = {
+        default = {
+          mode = "default";
+          links = false;
+          bgp = false;
+          firewall = false;
+          generator = true;
+          fact = true;
+        };
+        developer = {
+          mode = "developer";
+          links = true;
+          bgp = true;
+          firewall = true;
+          generator = true;
+          fact = true;
+        };
+      };
+    };
+    test_scopedLeafPassesItsChecks = {
+      expr = {
+        default = failedAssertion modesClient "routed-fabric/fleet";
+        developer = failedAssertion modesDeveloper "routed-fabric/fleet";
+      };
+      expected = {
+        default = false;
+        developer = false;
+      };
+    };
+    test_activeInNetworkManagerModeRejected = {
+      expr = failedAssertion modesUnscopedClient "is active in mode 'default', which uses NetworkManager";
+      expected = true;
+    };
+    test_unknownModeRejected = {
+      expr = failedAssertion modesUnknownClient "limits this instance to mode(s) it does not have: kubernetes";
+      expected = true;
+    };
+    test_spineMustBeInEveryMode = {
+      expr = failedAssertion modesScopedSpine "is a spine and must be active in every mode, but 'modes' leaves out maintenance";
+      expected = true;
     };
   };
 }
