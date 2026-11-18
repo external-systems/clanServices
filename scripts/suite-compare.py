@@ -70,15 +70,20 @@ def main(base, after):
             for node in sorted(set(bn) | set(an)):
                 if bn.get(node) != an.get(node):
                     problems.append(f"node {node}: {bn.get(node)} -> {an.get(node)}")
-            diff = significant(
-                difflib.unified_diff(
-                    baseline_lines(script.read_text()),
-                    after_lines((after / script.name).read_text()),
-                    lineterm="",
-                    n=0,
+            b_text, a_text = script.read_text(), (after / script.name).read_text()
+            # an unchanged script is faithful whatever it contains (a
+            # baseline that already has subtests would not survive the
+            # normalization below)
+            if b_text != a_text:
+                diff = significant(
+                    difflib.unified_diff(
+                        baseline_lines(b_text),
+                        after_lines(a_text),
+                        lineterm="",
+                        n=0,
+                    )
                 )
-            )
-            problems += [f"script {d}" for d in diff]
+                problems += [f"script {d}" for d in diff]
         status = "same" if not problems else f"DIFFERS ({len(problems)})"
         print(f"{suite:36} {status}")
         for p in problems[:40]:
