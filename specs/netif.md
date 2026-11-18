@@ -11,6 +11,27 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round gate-3 (2026-11-18): **netif carries FRR alone.** Proven by the
+new suite `routed-fabric-netif` (`NETIF_UNDER_FRR_OK`,
+`ROUTED_FABRIC_NETIF_OK`): the whole `routed-fabric` suite (two spines,
+three leaves, a WireGuard link, two BGP sessions and two BFD peers per
+adjacency, ECMP, source-return rules, an FRR reload, a spine failure
+and recovery) with every machine's underlay declared through netif, on
+links netif does not trust, and with no Kubernetes on the machines.
+One phase is added: on all five live machines the dry run proposes
+nothing, the drift watch passes and a real reapply leaves the kernel
+state identical; no BGP session restarts and a leaf's RIB and FIB are
+the same before and after. No defect was found. This is the second of
+N14's three loads.
+- The suite body is `services/routed-fabric/tests/vm/suite.nix` with
+  an `underlay` argument, as the data-plane suites have; `default.nix`
+  and `netif.nix` are thin wrappers. The `routed-fabric` suite's node
+  derivations and test script are unchanged (`suite-compare`).
+- `suite-compare` now accepts a byte-identical test script whatever it
+  contains; a baseline that already had subtests was reported as
+  different.
+- Still open for N14: a desktop specialisation (KDE).
+
 Round gate-1 (2026-11-17): **netif carries a Cilium Kubernetes
 cluster with FRR; three defects found on the way.** Proven by the new
 suite `k3s-data-plane-netif` (`NETIF_UNDER_KUBERNETES_OK`,
@@ -44,7 +65,8 @@ This is the first part of N14's definition of stable.
 - **RKE2 too** (round gate-2, same day): `rke2-data-plane-netif`
   passes the same suite and the same added phase
   (`RKE2_DATA_PLANE_NETIF_OK`), with no further fix.
-- Still open for N14: a fabric leaf with FRR alone, and a desktop
+- Still open for N14 then: a fabric leaf with FRR alone (done, round
+  gate-3), and a desktop
   specialisation (KDE).
 
 Round P4a (2026-11-17): **modes exist: one manager per mode, both
@@ -867,7 +889,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     the fleet needs:
     1. a Cilium Kubernetes node (k3s and RKE2 suites on the netif
        base);
-    2. FRR on `routed-fabric`;
+    2. FRR on `routed-fabric` *(proven, round gate-3:
+       `routed-fabric-netif`)*;
     3. desktop specialisations such as KDE: NetworkManager modes
        beside IfState modes on one machine (N3, N24).
     Every machine moves to netif once it is stable.

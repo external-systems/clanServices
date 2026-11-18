@@ -4,6 +4,14 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 43 (2026-11-18): **routed-fabric on a netif underlay**
+(`specs/netif.md` round gate-3). The `routed-fabric` suite body takes
+an `underlay` argument (`services/routed-fabric/tests/vm/suite.nix`);
+the new suite `routed-fabric-netif` runs it with every machine's
+underlay declared through netif and adds a reapply-changes-nothing
+phase (`NETIF_UNDER_FRR_OK`, `ROUTED_FABRIC_NETIF_OK`). No service
+code changed; the `routed-fabric` suite is unchanged (`suite-compare`).
+
 Round 42 (2026-11-17): **netif under Kubernetes: first gate, three
 fixes in this file's services** (`specs/netif.md` round gate-1).
 - **New suite `k3s-data-plane-netif`:** the data-plane suite with the

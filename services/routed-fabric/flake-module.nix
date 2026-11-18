@@ -32,8 +32,14 @@ in rec {
     };
   };
 
-  clanTests.routed-fabric = {
-    imports = [./tests/vm/default.nix];
-    inherit clan;
+  clanTests = {
+    routed-fabric = {
+      imports = [./tests/vm/default.nix];
+      inherit clan;
+    };
+    routed-fabric-netif = {
+      imports = [./tests/vm/netif.nix];
+      clan = clan // {modules = clan.modules // {inherit (self.clan.modules) netif;};};
+    };
   };
 }

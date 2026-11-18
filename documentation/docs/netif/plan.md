@@ -171,8 +171,17 @@ real defects that no earlier test could see:
 
 All three are fixed, and the tools that show "what would change" now
 catch such cases. RKE2 passes the same test on netif
-(`rke2-data-plane-netif`) with no further fix. Still to prove: a
-machine that only runs FRR, and a desktop mode such as KDE.
+(`rke2-data-plane-netif`) with no further fix.
+
+The second part, 2026-11-18: **netif under FRR alone**. The new test
+`routed-fabric-netif` runs the whole fabric test (two spines, three
+leaves, WireGuard, BGP, BFD, a spine failure and recovery) on links
+declared through netif, with no Kubernetes on the machines. It then
+reapplies the network on all five running machines: nothing changes,
+no BGP session restarts, and the routes are the same before and
+after. It passed the first time and found no defect.
+
+Still to prove: a desktop mode such as KDE.
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible
