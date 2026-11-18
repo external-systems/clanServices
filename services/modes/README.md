@@ -25,6 +25,10 @@ inventory.instances.modes = {
 - netif renders IfState in an `ifstate` mode and NetworkManager
   profiles in a `networkmanager` mode. A netif instance can be limited
   to some modes with its `modes` setting.
+- `routed-fabric`, `wireguard-mesh`, `k3s` and `rke2` take the same
+  per-machine `modes` setting. They need IfState: in a machine with a
+  NetworkManager mode, name their modes. A spine, a border and a
+  server of a cluster with other machines must stay in every mode.
 - Deploy without switching modes: `clan machines update <machine>`
   activates the default mode; `--specialisation <mode>` re-activates
   the mode the machine is booted into.

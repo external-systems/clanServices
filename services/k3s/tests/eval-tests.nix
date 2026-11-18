@@ -36,6 +36,7 @@
         wireguard-mesh = wgModule;
         fake-transport = fakeTransportModule;
         k3s = k3sModule;
+        modes = ../../modes/default.nix;
       };
       machines = machineConfigs;
       inherit inventory;
@@ -73,6 +74,67 @@
   };
 
   explicitEvaled = mkEvaled explicitInventory;
+
+  # Mode scoping (specs/netif.md N4, U2): a single-node cluster that
+  # exists only in the machine's `kubernetes` mode.
+  modesInstance = machines: {
+    module.name = "modes";
+    module.input = "self";
+    roles.default.machines = machines;
+  };
+  modesSingle =
+    (mkEvaled {
+      instances = {
+        modes = modesInstance {
+          alpha.settings.modes = {
+            default.manager = "networkmanager";
+            kubernetes.manager = "ifstate";
+          };
+        };
+        k3s = {
+          module.name = "k3s";
+          module.input = "self";
+          roles.server = {
+            settings = {
+              network.fabric = null;
+              cilium.id = 1;
+            };
+            machines.alpha.settings = {
+              clusterInit = true;
+              modes = ["kubernetes"];
+              network = {
+                ipv4 = "10.0.0.1";
+                ipv6 = "fd00::1";
+              };
+            };
+          };
+        };
+      };
+    }).config.nixosConfigurations.alpha.config;
+  modesVoter =
+    (mkEvaled (
+      lib.recursiveUpdate explicitInventory {
+        instances = {
+          modes = modesInstance {
+            alpha.settings.modes = {
+              default.manager = "ifstate";
+              maintenance.manager = "ifstate";
+            };
+          };
+          k3s.roles.server.machines.alpha.settings.modes = ["default"];
+        };
+      }
+    )).config.nixosConfigurations.alpha.config;
+  modeView = config: {
+    mode = config.clanServices.networking.mode.name;
+    k3s = config.services.k3s.enable;
+    haproxy = config.services.haproxy.enable;
+    bpffs = config.fileSystems ? "/sys/fs/bpf";
+    seed = config.systemd.services ? "k3s-k3s-pki-seed";
+    # what clan reads from the parent configuration stays in every mode
+    generator = config.clan.core.vars.generators ? "rancher-pki-k3s";
+    checks = failedAssertion config "k3s/k3s";
+  };
   alphaExplicit = explicitEvaled.config.nixosConfigurations.alpha.config;
 
   # Inventory backed by a real wireguard-mesh instance: two servers plus
@@ -1443,6 +1505,39 @@ in {
   # Contradicting cilium.helmValues on the fake transport eval-fail (D58).
   test_fakeTransportContradictingOverridesRejected = {
     expr = !(builtins.tryEval (builtins.deepSeq fakeContradictionEvaled.config true)).success;
+    expected = true;
+  };
+
+  # N4: a single-node cluster may be limited to some of its machine's
+  # modes; a voter of a cluster with other machines may not.
+  test_singleNodeClusterRendersOnlyInItsModes = {
+    expr = {
+      default = modeView modesSingle;
+      kubernetes = modeView modesSingle.specialisation.kubernetes.configuration;
+    };
+    expected = {
+      default = {
+        mode = "default";
+        k3s = false;
+        haproxy = false;
+        bpffs = false;
+        seed = false;
+        generator = true;
+        checks = false;
+      };
+      kubernetes = {
+        mode = "kubernetes";
+        k3s = true;
+        haproxy = true;
+        bpffs = true;
+        seed = true;
+        generator = true;
+        checks = false;
+      };
+    };
+  };
+  test_voterMustBeInEveryMode = {
+    expr = failedAssertion modesVoter "is an etcd voter of a cluster with other machines and must be active in every mode, but 'modes' leaves out maintenance";
     expected = true;
   };
 }

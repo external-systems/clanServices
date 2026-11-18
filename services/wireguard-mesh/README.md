@@ -182,3 +182,13 @@ secrets are used.
 vm-test wireguard-mesh --remote --quiet   # hermetic VM suite on euc-hel-0
 nix build .#checks.x86_64-linux.coverage
 ```
+
+## Modes
+
+On a machine with network modes (the `modes` service), the per-machine
+setting `modes = [ "developer" ]` limits this instance to those modes.
+In the others the machine has none of its units, links, firewall rules
+or sysctls; its secrets, exports and facts stay. Empty means every mode.
+The service needs IfState, so a machine with a NetworkManager mode must
+name the modes. Any peer may be limited to some modes; the other peers see it as away.
+(`specs/netif.md` N4.)

@@ -3,7 +3,8 @@
 #
 #   default    NetworkManager: the wired link by DHCP from a profile
 #   developer  IfState: the same link through netif's dhcpcd, plus a VLAN
-#              that only an IfState mode can render
+#              that only an IfState mode can render, and a routed-fabric
+#              leaf (WireGuard, FRR) towards the spine on gw (N4)
 #
 # Modes are switched by rebooting. The test boots a mode the way the boot
 # menu does: the kernel gets that mode's init.
@@ -40,6 +41,28 @@ in {
           roles.default.machines.deck.settings.links.wired = {
             interface = "eth1";
             dhcp.ipv4 = true;
+            # a fabric member says how large its path is (N17)
+            pathMtu = 1500;
+          };
+        };
+        # gw's fabric endpoint: a literal underlay address
+        underlay = {
+          module.name = "internet";
+          roles.default.machines.gw.settings.host = "192.0.2.1";
+        };
+        # The deck is a fabric leaf in its developer mode only (N4). It
+        # has no endpoint of its own: a roaming machine dials out.
+        fleet = {
+          module.name = "routed-fabric";
+          module.input = "self";
+          roles = {
+            spine.machines.gw.settings.endpointSources = [
+              {
+                service = "clan-core/internet";
+                instance = "underlay";
+              }
+            ];
+            leaf.machines.deck.settings.modes = ["developer"];
           };
         };
         lab = {
@@ -136,6 +159,8 @@ in {
 
   testScript = {nodes, ...}: let
     developer = "${nodes.deck.system.build.toplevel}/specialisation/developer";
+    spine = nodes.gw.clan.networkFacts.fabric.fleet;
+    leaf = nodes.deck.clan.networkFacts.fabric.fleet;
   in ''
     import json
     import os
@@ -163,6 +188,10 @@ in {
         deck.fail("systemctl cat ifstate.service")
         deck.fail("systemctl cat netif-dhcpcd-eth1.service")
         deck.fail("systemctl cat netif-guard.service")
+        # the fabric belongs to the developer mode: no FRR, no tunnel, no fabric address (N4)
+        deck.fail("systemctl cat frr.service")
+        assert deck.succeed("ip -o link show type wireguard").strip() == "", "a fabric tunnel in the NetworkManager mode"
+        deck.fail("ip -o addr | grep -F '${leaf.ipv4}' >/dev/null")
         deck.fail("test -e /etc/ifstate/ifstate.yaml")
         lease()
         deck.succeed("nmcli -t -f NAME,DEVICE connection show --active | grep '^netif-eth1:eth1$' >/dev/null")
@@ -204,9 +233,33 @@ in {
             deck.succeed("systemctl is-active sshd.service")
             print("NETIF_MODES_IFSTATE_OK")
 
+        with subtest("the developer mode is a fabric leaf: WireGuard, BGP and BFD to the spine (N4)"):
+            deck.wait_for_unit("frr.service", timeout=180)
+            deck.succeed("ip -br addr show ${leaf.loopback} | grep -F '${leaf.ipv4}/32' >/dev/null")
+            for machine in [deck, gw]:
+                machine.wait_until_succeeds(
+                    "vtysh -c 'show bgp neighbors' | grep -c 'BGP state = Established' | grep '^2$' >/dev/null",
+                    timeout=240,
+                )
+            deck.wait_until_succeeds("vtysh -c 'show bfd peers brief' | grep -c ' up ' | grep '^2$' >/dev/null", timeout=120)
+            # the leaf dials out from a DHCP address; both ends reach the other's fabric address
+            deck.wait_until_succeeds("ping -c 2 -W 2 ${spine.ipv4}", timeout=120)
+            deck.wait_until_succeeds("ping -6 -c 2 -W 2 ${spine.ipv6}", timeout=120)
+            gw.wait_until_succeeds("ping -c 2 -W 2 ${leaf.ipv4}", timeout=120)
+            gw.wait_until_succeeds("ping -6 -c 2 -W 2 ${leaf.ipv6}", timeout=120)
+            # the fabric's links and routes are its own: netif proposes no change
+            deck.succeed("netif-preview | grep 'would change nothing' >/dev/null")
+            print("NETIF_MODES_FABRIC_OK")
+
         with subtest("back in the default mode: a fresh kernel state, NetworkManager again (N3)"):
             boot(None)
             network_manager_mode()
+            # the spine keeps its side; the leaf is simply away
+            gw.wait_until_fails(
+                "vtysh -c 'show bgp neighbors' | grep 'BGP state = Established' >/dev/null",
+                timeout=120,
+            )
+            gw.fail("ping -c 1 -W 2 ${leaf.ipv4}")
             print("NETIF_MODES_BACK_OK")
 
         print("NETIF_MODES_OK")
@@ -216,6 +269,7 @@ in {
             "systemctl --failed --no-pager >&2",
             "nmcli device >&2; nmcli connection show >&2",
             "journalctl -b --no-pager | grep -E 'NetworkManager|ifstate|netif|dhcpcd' | tail -n 150 >&2",
+            "wg show >&2; vtysh -c 'show bgp summary' >&2; vtysh -c 'show bfd peers brief' >&2",
         ]:
             deck.execute(command)
         raise

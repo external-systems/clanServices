@@ -19,9 +19,19 @@ in {
       exportInterfaces.netif = ../netif/netif-interface.nix;
     };
   in {
+    # netif-modes also runs a routed-fabric leaf in one mode (N4).
     netif-modes = {
       imports = [./tests/vm/default.nix];
-      inherit clan;
+      clan = {
+        modules = clan.modules // {inherit (self.clan.modules) routed-fabric;};
+        exportInterfaces =
+          clan.exportInterfaces
+          // {
+            node_transport = ../../lib/node-transport-interface.nix;
+            kube_cluster = ../../lib/kube-cluster/kube-cluster-interface.nix;
+            routed_fabric = ../routed-fabric/routed-fabric-interface.nix;
+          };
+      };
     };
     # netif-desktop: a KDE machine in a NetworkManager and an IfState mode (N14).
     netif-desktop = {

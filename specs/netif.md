@@ -11,6 +11,46 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P4b (2026-11-18): **every networking and cluster service
+follows the mode.** Implemented, and proven by `netif-modes`
+(`NETIF_MODES_FABRIC_OK`) and the new suite `k3s-modes`
+(`K3S_MODES_OK`):
+- **N4** `routed-fabric`, `wireguard-mesh`, `k3s` and `rke2` have the
+  per-machine `modes` setting. One helper, `lib/mode-scope.nix`, splits
+  each service's configuration: `clan` (vars generators, facts, the
+  eval seams), the checks and the package set stay in every mode; units,
+  IfState objects, FRR, HAProxy, Kubernetes, firewall rules, sysctls
+  and mounts render only in the instance's modes.
+- **The rules.** Evaluation rejects: a mode name the machine does not
+  have; an instance active in a NetworkManager mode (the message says
+  to set `modes`); a spine, a border, or a server of a cluster with
+  other machines limited to fewer than all of its machine's modes.
+- **N24, amended:** the rules read `clanServices.networking.modes`,
+  which every configuration has. The mode list is not copied into
+  `clan.networkFacts`: one source is enough.
+- **A fabric leaf in one mode** (`netif-modes`): the machine's
+  NetworkManager mode has no FRR unit, no tunnel and no fabric
+  address; in its IfState mode it dials out from a DHCP address and
+  has BGP and BFD with the spine in both families; back in the default
+  mode the spine sees the sessions go down and nothing else changes.
+- **A cluster in one mode** (`k3s-modes`, use case U2): a single-node
+  k3s with Cilium and its `wireguard-mesh` transport exist only in the
+  machine's `kubernetes` mode. The default mode has no unit, link,
+  mount, firewall rule or forwarding sysctl of the cluster. After a
+  round trip through the default mode the same cluster returns: the
+  same node UID, its objects, a running pod.
+- **Defect found (shared base):** a configuration with no IfState
+  interface at all (a NetworkManager mode whose only instances are
+  scoped away) failed evaluation on a missing attribute. Fixed in
+  `lib/ifstate.nix`.
+- Machines without modes are unaffected: the `routed-fabric`,
+  `wireguard-mesh`, `k3s-single` and `rke2-single` suite derivations
+  are identical before and after.
+- The `modes-eval` probe is deleted (N40): `netif-modes` and the eval
+  tests `modes.mechanism.*` assert what it showed.
+- Not VM-proven: `rke2` in a mode (eval-identical gating; k3s is the
+  proof), and a routed-fabric leaf together with a cluster in one mode.
+
 Round gate-4 (2026-11-18): **netif carries a KDE desktop in both
 kinds of mode.** Proven by the new suite `netif-desktop`
 (`NETIF_DESKTOP_OK`): one KDE Plasma machine (SDDM, Wayland, a logged-in
@@ -117,7 +157,7 @@ renderers.** Implemented and proven by `netif-modes`
 - **N3** one machine is booted into its NetworkManager mode, then its
   IfState mode, then back.
 - **N4** `modes` on a netif instance: its links are rendered only in
-  those modes. The other services follow in P4b.
+  those modes. The other services follow in P4b (done, round P4b).
 - Two findings from the first boot, both fixed in the renderer:
   NetworkManager's automatic profile took the link before netif's
   existed, and it started DHCP on a NIC that belongs to another mode.
@@ -612,9 +652,14 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   *(implemented for netif, round P4a: an instance's links, firewall
   trust and `.link` files are rendered only in its modes; its exports
   and facts stay; an unknown mode name is an eval error; the same NIC
-  may belong to one instance per mode. Planned, phase P4b: the setting
-  on `routed-fabric`, `wireguard-mesh`, `k3s`, `rke2`, and the rules
-  for spines, borders and voters)*
+  may belong to one instance per mode. Implemented for
+  `routed-fabric`, `wireguard-mesh`, `k3s` and `rke2`, round P4b:
+  `lib/mode-scope.nix`; eval tests `routed-fabric.modes.*`,
+  `k3s.test_singleNodeClusterRendersOnlyInItsModes`,
+  `k3s.test_voterMustBeInEveryMode`; `netif-modes`
+  `NETIF_MODES_FABRIC_OK`; `k3s-modes` `K3S_MODES_OK`. "An etcd voter
+  of a multi-node cluster" is checked as: a server of a cluster with
+  more than one machine)*
 
 - **N5 iwd owns Wi-Fi in every mode.**
   - **NetworkManager modes:** NetworkManager drives iwd as its Wi-Fi
@@ -1407,8 +1452,10 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     - home's machine configuration adds KDE, Steam or nothing to a mode
       with `lib.mkIf (config.clanServices.networking.mode.name == …)`.
     No other module defines a specialisation for networking purposes.
-  - The mode list is also in `clan.networkFacts`, so N4's eval rules
-    (spines, borders, voters in every mode) read one source.
+  - N4's eval rules (spines, borders, voters in every mode) read the
+    mode list from `clanServices.networking.modes`, which every
+    configuration has. (Amended in round P4b: it was to be copied into
+    `clan.networkFacts`; one source is enough.)
   - It is a separate service because modes are per machine, while netif
     settings are per instance and a machine may be in several.
   - **Mechanism** (eval probe, §8.2):
@@ -1436,8 +1483,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     `default`, a mode name that is not `[a-z][a-z0-9-]*`, and a machine
     in two instances.
   *(implemented, round P4a: `netif-modes`; eval tests
-  `modes.mechanism.*`. The mode list is not in `clan.networkFacts`
-  yet: P4b, with the rules that read it)*
+  `modes.mechanism.*`)*
 
 - **N25 Lockout guard.** IfState has no rollback, and a bad change on a
   headless machine cuts the only way in.
@@ -1731,11 +1777,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   outside `checks` and `vmTests`. The DNS and dhcpcd probes are
   retired: `netif-dhcp` asserts what they showed.
   - They are exposed as `legacyPackages.<system>.netifProbes.<name>`
-    (`nix build .#netifProbes.guard`; `nix eval --json
-    .#netifProbes.modes-eval`), so they follow the repo's nixpkgs and
+    (`nix build .#netifProbes.wifi`), so they follow the repo's nixpkgs and
     linters. `services/netif/tests/probes/README.md` names the suite
     that takes each one over; the probe is deleted in that change.
-  *(implemented for containers, vmhost, guard, wifi, modes-eval)*
+  *(implemented; `wifi` is the one probe left, the others are deleted
+  with the suites that took them over)*
 
 - **N41 `netif-status` (was H11).** One read-only command per machine.
   - Per netif link: instance and link name, interface, state, zone,
@@ -1825,9 +1871,6 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   `NETIF_MATCH_OK`): `match.mac`, the loud missing-NIC check and the
   checked `extraSettings` passthrough (N15).
 - **Drift against this contract** (fixed by the phases in §9):
-  - `modes` is a setting of netif only; `routed-fabric`,
-    `wireguard-mesh`, `k3s` and `rke2` are active in every mode, so
-    they are rejected in a NetworkManager mode (N4; phase P4b);
   - iwd's settings for IfState modes and its route metric are not
     rendered yet, and hot-plugged wired links have no owner in IfState
     modes (N5, N12, N18; rest of phase P2);
@@ -2247,7 +2290,7 @@ decision. Phase numbers are labels, not the order.
 | P3b | **Done: all five slices** (rounds P3b-1, P3b-3, P3b-4, P3b-5). The tools of N38, N41 and N42 follow as their own slice. Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
 | P7 | **Done** (rounds P7a, P7b): `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
 | P2 | **Renderer done** (round P4a, with P4a because a mode needs it). **To do:** iwd settings and metric in IfState modes, `wired-hotplug`, the Deck check. Original scope: NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
-| P4 | **P4a done** (round P4a): the `modes` service, the base and netif follow the mode. **P4b to do:** `modes` on the other services, the spine/border/voter rules. Original scope: The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
+| P4 | **Done** (rounds P4a and P4b): the `modes` service, the base and netif follow the mode; `modes` on the other services with the spine/border/voter rules (`netif-modes`, `k3s-modes`). Original scope: The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
 | P8 | **Done** (round P8). Lockout guard (N25, N36) | `netif-guard` green |
 | P5 | Router module in `modules` on the P3b seam | `netif-router` green |
 | Contract gate | netif is stable (N14) | every phase above done; every probe-verified claim VM-proven; every §4 invariant asserted by a suite |

@@ -175,3 +175,13 @@ vm-test rke2-data-plane --remote --quiet
 - `rke2-data-plane` — same data-plane suite as `k3s-data-plane` (bundle
   oneshot, pool allocation, Node IPAM classless Service with ETP-Local
   candidate restriction, firewall positive/negative), hermetic.
+
+## Modes
+
+On a machine with network modes (the `modes` service), the per-machine
+setting `modes = [ "developer" ]` limits this instance to those modes.
+In the others the machine has none of its units, links, firewall rules
+or sysctls; its secrets, exports and facts stay. Empty means every mode.
+The service needs IfState, so a machine with a NetworkManager mode must
+name the modes. An agent and a single-node cluster may be limited to some modes. A server of a cluster with other machines must stay in every mode: it is an etcd voter.
+(`specs/netif.md` N4.)

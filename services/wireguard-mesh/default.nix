@@ -6,6 +6,7 @@
   ...
 }: let
   cidr = import ../../lib/kube-cluster/cidr.nix {inherit lib;};
+  modeScope = import ../../lib/mode-scope.nix {inherit lib;};
 
   pairs = values:
     lib.concatMap (
@@ -103,6 +104,7 @@ in {
     description = "A dual-stack member that connects directly to every other member of the mesh";
     interface = {lib, ...}: {
       options = {
+        modes = modeScope.option;
         ipv4 = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -591,237 +593,250 @@ in {
               ownPool = "loopback6";
             }
           );
+        # Mode scoping (N4): rendered only in the instance's modes.
+        modeActive = modeScope.active config settings.modes;
       in {
-        assertions = [
-          {
-            assertion = lib.stringLength interface <= 15;
-            message = "wireguard-mesh/${instanceName}: interface '${interface}' exceeds the 15-character kernel limit; set a shorter interface name";
-          }
-          {
-            assertion = builtins.match "[A-Za-z0-9_.-]+" interface != null;
-            message = "wireguard-mesh/${instanceName}: interface '${interface}' contains unsupported characters";
-          }
-          {
-            assertion = effectiveMtu >= 1280;
-            message = "wireguard-mesh/${instanceName}: dual-stack operation requires mtu >= 1280";
-          }
-          {
-            assertion = !lib.hasInfix "/" ownAddr.ipv4 && !lib.hasInfix ":" ownAddr.ipv4;
-            message = "wireguard-mesh/${instanceName}: ipv4 must be an IPv4 host address without a prefix length (got '${ownAddr.ipv4}' for machine '${machine.name}')";
-          }
-          {
-            assertion = !lib.hasInfix "/" ownAddr.ipv6 && lib.hasInfix ":" ownAddr.ipv6;
-            message = "wireguard-mesh/${instanceName}: ipv6 must be an IPv6 host address without a prefix length (got '${ownAddr.ipv6}' for machine '${machine.name}')";
-          }
-          {
-            assertion = ipv4CollisionMachines == [];
-            message = "wireguard-mesh/${instanceName}: mesh IPv4 ${ownAddr.ipv4} collides on owners ${machine.name}, ${
-              lib.concatStringsSep ", " ipv4CollisionMachines
-            }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node4Generator} --regenerate";
-          }
-          {
-            assertion = ipv6CollisionMachines == [];
-            message = "wireguard-mesh/${instanceName}: mesh IPv6 ${ownAddr.ipv6} collides on owners ${machine.name}, ${
-              lib.concatStringsSep ", " ipv6CollisionMachines
-            }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node6Generator} --regenerate";
-          }
-          {
-            assertion = allocationMembershipErrors == [];
-            message = "wireguard-mesh/${instanceName}: allocated values escaped their pools: ${
-              lib.concatStringsSep "; " allocationMembershipErrors
-            }";
-          }
-          {
-            assertion = !poolRecordDrift;
-            message = "wireguard-mesh/${instanceName}: recorded ipv4Pool differs from the setting; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate to update the record, then regenerate ${node4Generator} on each machine to re-roll only unpinned IPv4 addresses. ULA and IPv6 are unchanged";
-          }
-          {
-            assertion = cidr.validV4Pool settings.ipv4Pool;
-            message = "wireguard-mesh/${instanceName}: ipv4Pool must be a canonical IPv4 CIDR with host bits clear and at least four addresses";
-          }
-          {
-            assertion = unequalPoolMembers == [];
-            message = "wireguard-mesh/${instanceName}: ipv4Pool differs on ${
-              lib.concatStringsSep ", " unequalPoolMembers
-            }; set ipv4Pool identically on every member";
-          }
-          {
-            assertion = internalPoolOverlaps == [];
-            message = "wireguard-mesh/${instanceName}: allocation pools overlap (${
-              lib.concatMapStringsSep "; " (
-                pair: "${pair.first.name}=${pair.first.cidr} with ${pair.second.name}=${pair.second.cidr}"
-              )
-              internalPoolOverlaps
-            }); set ipv4Pool to a member-uniform CIDR disjoint from the ULA";
-          }
-          {
-            assertion = externalPoolOverlaps == [];
-            message = "wireguard-mesh/${instanceName}: allocation pools overlap underlay or cluster CIDRs (${
-              lib.concatMapStringsSep "; " (
-                overlap: "${overlap.pool.name}=${overlap.pool.cidr} with ${overlap.prefix}"
-              )
-              externalPoolOverlaps
-            }); move the conflicting prefix or set ipv4Pool away from it; a deliberate ULA renumber requires: clan vars generate ${machine.name} --generator ${ulaGenerator} --regenerate";
-          }
-          {
-            assertion = explicitAddressOverlaps == [];
-            message = "wireguard-mesh/${instanceName}: explicit addresses overlap foreign pools or member underlay/cluster CIDRs: ${
-              lib.concatStringsSep "; " explicitAddressOverlaps
-            }; choose addresses outside those prefixes";
-          }
-          {
-            assertion = unreachablePeers == [];
-            message = "wireguard-mesh/${instanceName}: every member pair needs an endpoint on at least one side; unreachable from '${machine.name}' to ${
-              lib.concatMapStringsSep ", " (peer: peer.name) unreachablePeers
-            }";
-          }
-          {
-            assertion = overlappingExtraAllowedIPs == [];
-            message = "wireguard-mesh/${instanceName}: extraAllowedIPs overlap between peers: ${
-              lib.concatMapStringsSep "; " (
-                pair: "${pair.first.peer}=${pair.first.prefix} overlaps ${pair.second.peer}=${pair.second.prefix}"
-              )
-              overlappingExtraAllowedIPs
-            }";
-          }
-        ];
+        imports = [../../lib/modes.nix];
 
-        networking = {
-          ifstate.settings = {
-            interfaces.${interface} = {
-              addresses = [
-                "${ownAddr.ipv4}/32"
-                "${ownAddr.ipv6}/128"
-              ];
-              link = {
-                kind = "wireguard";
-                state = "up";
-                mtu = effectiveMtu;
+        config = modeScope.scope modeActive {
+          assertions =
+            modeScope.assertions {
+              service = "wireguard-mesh";
+              inherit instanceName config;
+              machineName = machine.name;
+              inherit (settings) modes;
+            }
+            ++ [
+              {
+                assertion = lib.stringLength interface <= 15;
+                message = "wireguard-mesh/${instanceName}: interface '${interface}' exceeds the 15-character kernel limit; set a shorter interface name";
+              }
+              {
+                assertion = builtins.match "[A-Za-z0-9_.-]+" interface != null;
+                message = "wireguard-mesh/${instanceName}: interface '${interface}' contains unsupported characters";
+              }
+              {
+                assertion = effectiveMtu >= 1280;
+                message = "wireguard-mesh/${instanceName}: dual-stack operation requires mtu >= 1280";
+              }
+              {
+                assertion = !lib.hasInfix "/" ownAddr.ipv4 && !lib.hasInfix ":" ownAddr.ipv4;
+                message = "wireguard-mesh/${instanceName}: ipv4 must be an IPv4 host address without a prefix length (got '${ownAddr.ipv4}' for machine '${machine.name}')";
+              }
+              {
+                assertion = !lib.hasInfix "/" ownAddr.ipv6 && lib.hasInfix ":" ownAddr.ipv6;
+                message = "wireguard-mesh/${instanceName}: ipv6 must be an IPv6 host address without a prefix length (got '${ownAddr.ipv6}' for machine '${machine.name}')";
+              }
+              {
+                assertion = ipv4CollisionMachines == [];
+                message = "wireguard-mesh/${instanceName}: mesh IPv4 ${ownAddr.ipv4} collides on owners ${machine.name}, ${
+                  lib.concatStringsSep ", " ipv4CollisionMachines
+                }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node4Generator} --regenerate";
+              }
+              {
+                assertion = ipv6CollisionMachines == [];
+                message = "wireguard-mesh/${instanceName}: mesh IPv6 ${ownAddr.ipv6} collides on owners ${machine.name}, ${
+                  lib.concatStringsSep ", " ipv6CollisionMachines
+                }; regenerate the newer machine: clan vars generate <newer-machine> --generator ${node6Generator} --regenerate";
+              }
+              {
+                assertion = allocationMembershipErrors == [];
+                message = "wireguard-mesh/${instanceName}: allocated values escaped their pools: ${
+                  lib.concatStringsSep "; " allocationMembershipErrors
+                }";
+              }
+              {
+                assertion = !poolRecordDrift;
+                message = "wireguard-mesh/${instanceName}: recorded ipv4Pool differs from the setting; run: clan vars generate ${machine.name} --generator ${prefixGenerator} --regenerate to update the record, then regenerate ${node4Generator} on each machine to re-roll only unpinned IPv4 addresses. ULA and IPv6 are unchanged";
+              }
+              {
+                assertion = cidr.validV4Pool settings.ipv4Pool;
+                message = "wireguard-mesh/${instanceName}: ipv4Pool must be a canonical IPv4 CIDR with host bits clear and at least four addresses";
+              }
+              {
+                assertion = unequalPoolMembers == [];
+                message = "wireguard-mesh/${instanceName}: ipv4Pool differs on ${
+                  lib.concatStringsSep ", " unequalPoolMembers
+                }; set ipv4Pool identically on every member";
+              }
+              {
+                assertion = internalPoolOverlaps == [];
+                message = "wireguard-mesh/${instanceName}: allocation pools overlap (${
+                  lib.concatMapStringsSep "; " (
+                    pair: "${pair.first.name}=${pair.first.cidr} with ${pair.second.name}=${pair.second.cidr}"
+                  )
+                  internalPoolOverlaps
+                }); set ipv4Pool to a member-uniform CIDR disjoint from the ULA";
+              }
+              {
+                assertion = externalPoolOverlaps == [];
+                message = "wireguard-mesh/${instanceName}: allocation pools overlap underlay or cluster CIDRs (${
+                  lib.concatMapStringsSep "; " (
+                    overlap: "${overlap.pool.name}=${overlap.pool.cidr} with ${overlap.prefix}"
+                  )
+                  externalPoolOverlaps
+                }); move the conflicting prefix or set ipv4Pool away from it; a deliberate ULA renumber requires: clan vars generate ${machine.name} --generator ${ulaGenerator} --regenerate";
+              }
+              {
+                assertion = explicitAddressOverlaps == [];
+                message = "wireguard-mesh/${instanceName}: explicit addresses overlap foreign pools or member underlay/cluster CIDRs: ${
+                  lib.concatStringsSep "; " explicitAddressOverlaps
+                }; choose addresses outside those prefixes";
+              }
+              {
+                assertion = unreachablePeers == [];
+                message = "wireguard-mesh/${instanceName}: every member pair needs an endpoint on at least one side; unreachable from '${machine.name}' to ${
+                  lib.concatMapStringsSep ", " (peer: peer.name) unreachablePeers
+                }";
+              }
+              {
+                assertion = overlappingExtraAllowedIPs == [];
+                message = "wireguard-mesh/${instanceName}: extraAllowedIPs overlap between peers: ${
+                  lib.concatMapStringsSep "; " (
+                    pair: "${pair.first.peer}=${pair.first.prefix} overlaps ${pair.second.peer}=${pair.second.prefix}"
+                  )
+                  overlappingExtraAllowedIPs
+                }";
+              }
+            ];
+
+          networking = {
+            ifstate.settings = {
+              interfaces.${interface} = {
+                addresses = [
+                  "${ownAddr.ipv4}/32"
+                  "${ownAddr.ipv6}/128"
+                ];
+                link = {
+                  kind = "wireguard";
+                  state = "up";
+                  mtu = effectiveMtu;
+                };
+                wireguard = {
+                  private_key = "!include ${privateKeyFile}";
+                  listen_port = settings.port;
+                  peers = wireguardPeers;
+                };
               };
-              wireguard = {
-                private_key = "!include ${privateKeyFile}";
-                listen_port = settings.port;
-                peers = wireguardPeers;
+              routing.routes = peerRoutes;
+            };
+            firewall = {
+              allowedUDPPorts = lib.optionals settings.firewall.openPort [settings.port];
+              trustedInterfaces = lib.optionals settings.firewall.trust [interface];
+            };
+            extraHosts = hostEntries;
+          };
+
+          clan.core.vars.generators = {
+            ${generatorName} = {
+              files.privatekey = {
+                owner = "root";
+                group = "root";
+                mode = "0400";
+                restartUnits = ["ifstate.service"];
               };
+              files.publickey = {
+                secret = false;
+                deploy = false;
+              };
+              runtimeInputs = [pkgs.wireguard-tools];
+              script = ''
+                wg genkey > "$out"/privatekey
+                wg pubkey < "$out"/privatekey > "$out"/publickey
+              '';
             };
-            routing.routes = peerRoutes;
+            ${ulaGenerator} = {
+              share = true;
+              files.ula48 = {
+                secret = false;
+                deploy = false;
+              };
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import os
+                import secrets
+                from pathlib import Path
+
+                out = Path(os.environ["out"])
+                ula = f"fd{secrets.randbits(40):010x}"
+                (out / "ula48").write_text(f"{ula[:4]}:{ula[4:8]}:{ula[8:12]}::/48\n")
+                PY
+              '';
+            };
+            ${prefixGenerator} = {
+              share = true;
+              files.ipv4-pool = {
+                secret = false;
+                deploy = false;
+              };
+              validation.ipv4Pool = settings.ipv4Pool;
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import os
+                from pathlib import Path
+
+                out = Path(os.environ["out"])
+                (out / "ipv4-pool").write_text("${settings.ipv4Pool}\n")
+                PY
+              '';
+            };
+            ${node4Generator} = {
+              dependencies = [prefixGenerator];
+              files.ipv4 = {
+                secret = false;
+                deploy = false;
+              };
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import ipaddress
+                import os
+                import secrets
+                from pathlib import Path
+
+                inputs = Path(os.environ["in"])
+                out = Path(os.environ["out"])
+                pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "ipv4-pool").read_text().strip())
+                if pool.num_addresses < 4:
+                    raise ValueError("ipv4Pool must contain at least four addresses")
+                ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
+                (out / "ipv4").write_text(f"{ipv4}\n")
+                PY
+              '';
+            };
+            ${node6Generator} = {
+              dependencies = [ulaGenerator];
+              files.ipv6 = {
+                secret = false;
+                deploy = false;
+              };
+              runtimeInputs = [pkgs.python3];
+              script = ''
+                python3 - <<'PY'
+                import ipaddress
+                import os
+                import secrets
+                from pathlib import Path
+
+                inputs = Path(os.environ["in"])
+                out = Path(os.environ["out"])
+                ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
+                loopback6 = ipaddress.IPv6Network((int(ula.network_address), 64))
+                ipv6 = loopback6.network_address + secrets.randbits(64)
+                (out / "ipv6").write_text(f"{ipv6}\n")
+                PY
+              '';
+            };
           };
-          firewall = {
-            allowedUDPPorts = lib.optionals settings.firewall.openPort [settings.port];
-            trustedInterfaces = lib.optionals settings.firewall.trust [interface];
+
+          clan._networkFacts = {
+            allocationPools."wireguard-mesh/${instanceName}" = allocationPools;
+            mesh.${instanceName} = ownAddr;
           };
-          extraHosts = hostEntries;
+          environment.systemPackages = [pkgs.wireguard-tools];
         };
-
-        clan.core.vars.generators = {
-          ${generatorName} = {
-            files.privatekey = {
-              owner = "root";
-              group = "root";
-              mode = "0400";
-              restartUnits = ["ifstate.service"];
-            };
-            files.publickey = {
-              secret = false;
-              deploy = false;
-            };
-            runtimeInputs = [pkgs.wireguard-tools];
-            script = ''
-              wg genkey > "$out"/privatekey
-              wg pubkey < "$out"/privatekey > "$out"/publickey
-            '';
-          };
-          ${ulaGenerator} = {
-            share = true;
-            files.ula48 = {
-              secret = false;
-              deploy = false;
-            };
-            runtimeInputs = [pkgs.python3];
-            script = ''
-              python3 - <<'PY'
-              import os
-              import secrets
-              from pathlib import Path
-
-              out = Path(os.environ["out"])
-              ula = f"fd{secrets.randbits(40):010x}"
-              (out / "ula48").write_text(f"{ula[:4]}:{ula[4:8]}:{ula[8:12]}::/48\n")
-              PY
-            '';
-          };
-          ${prefixGenerator} = {
-            share = true;
-            files.ipv4-pool = {
-              secret = false;
-              deploy = false;
-            };
-            validation.ipv4Pool = settings.ipv4Pool;
-            runtimeInputs = [pkgs.python3];
-            script = ''
-              python3 - <<'PY'
-              import os
-              from pathlib import Path
-
-              out = Path(os.environ["out"])
-              (out / "ipv4-pool").write_text("${settings.ipv4Pool}\n")
-              PY
-            '';
-          };
-          ${node4Generator} = {
-            dependencies = [prefixGenerator];
-            files.ipv4 = {
-              secret = false;
-              deploy = false;
-            };
-            runtimeInputs = [pkgs.python3];
-            script = ''
-              python3 - <<'PY'
-              import ipaddress
-              import os
-              import secrets
-              from pathlib import Path
-
-              inputs = Path(os.environ["in"])
-              out = Path(os.environ["out"])
-              pool = ipaddress.IPv4Network((inputs / "${prefixGenerator}" / "ipv4-pool").read_text().strip())
-              if pool.num_addresses < 4:
-                  raise ValueError("ipv4Pool must contain at least four addresses")
-              ipv4 = pool.network_address + 1 + secrets.randbelow(pool.num_addresses - 2)
-              (out / "ipv4").write_text(f"{ipv4}\n")
-              PY
-            '';
-          };
-          ${node6Generator} = {
-            dependencies = [ulaGenerator];
-            files.ipv6 = {
-              secret = false;
-              deploy = false;
-            };
-            runtimeInputs = [pkgs.python3];
-            script = ''
-              python3 - <<'PY'
-              import ipaddress
-              import os
-              import secrets
-              from pathlib import Path
-
-              inputs = Path(os.environ["in"])
-              out = Path(os.environ["out"])
-              ula = ipaddress.IPv6Network((inputs / "${ulaGenerator}" / "ula48").read_text().strip())
-              loopback6 = ipaddress.IPv6Network((int(ula.network_address), 64))
-              ipv6 = loopback6.network_address + secrets.randbits(64)
-              (out / "ipv6").write_text(f"{ipv6}\n")
-              PY
-            '';
-          };
-        };
-
-        clan._networkFacts = {
-          allocationPools."wireguard-mesh/${instanceName}" = allocationPools;
-          mesh.${instanceName} = ownAddr;
-        };
-        environment.systemPackages = [pkgs.wireguard-tools];
       };
     };
   };

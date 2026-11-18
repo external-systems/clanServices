@@ -1,5 +1,9 @@
 {lib, ...}: {
   options = {
+    # Mode scoping (specs/netif.md N4), the same setting on every
+    # networking and cluster service.
+    modes = (import ../mode-scope.nix {inherit lib;}).option;
+
     clusterInit = lib.mkOption {
       type = lib.types.bool;
       default = false;

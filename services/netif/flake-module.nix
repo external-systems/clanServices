@@ -24,13 +24,7 @@ in rec {
     in
       lib.genAttrs ["wifi"] (
         probe: probePkgs.testers.runNixOSTest (import (./tests/probes + "/${probe}.nix"))
-      )
-      // {
-        modes-eval = import ./tests/probes/modes-eval.nix {
-          inherit (inputs) nixpkgs;
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-        };
-      };
+      );
 
     nix-unit.tests.netif = import ./tests/eval-tests.nix {
       inherit

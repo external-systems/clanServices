@@ -11,7 +11,7 @@
   # What only IfState can render: anything but a plain physical link.
   ifstateOnly =
     builtins.attrNames (
-      lib.filterAttrs (_: interface: (interface.link.kind or null) != "physical") config.networking.ifstate.settings.interfaces
+      lib.filterAttrs (_: interface: (interface.link.kind or null) != "physical") (config.networking.ifstate.settings.interfaces or {})
     )
     ++ lib.optional ((config.networking.ifstate.settings.routing.rules or []) != []) "policy-routing rules";
   cidr = import ./kube-cluster/cidr.nix {inherit lib;};
@@ -25,7 +25,7 @@
   # exits 0. netif makes that loud (specs/netif.md P3a): the unit fails
   # and the journal names the link.
   physicalNames = builtins.attrNames (
-    lib.filterAttrs (_: interface: (interface.link.kind or null) == "physical") config.networking.ifstate.settings.interfaces
+    lib.filterAttrs (_: interface: (interface.link.kind or null) == "physical") (config.networking.ifstate.settings.interfaces or {})
   );
   physicalCheck = pkgs.writeShellScript "ifstate-physical-links-present" ''
     missing=""
@@ -39,7 +39,7 @@
   '';
   wireguardInterfaces = builtins.filter (
     interface: (interface.link.kind or null) == "wireguard" && (interface.wireguard.listen_port or null) != null
-  ) (builtins.attrValues config.networking.ifstate.settings.interfaces);
+  ) (builtins.attrValues (config.networking.ifstate.settings.interfaces or {}));
   wireguardPortClaims = map (interface: interface.wireguard.listen_port) wireguardInterfaces;
   wireguardPorts = lib.sort builtins.lessThan (lib.unique wireguardPortClaims);
   fabricAddresses = lib.concatMap (

@@ -21,7 +21,7 @@ owner decides.
 | P3b | **Done**, all five slices (2026-11-17; `netif-dhcp`, `netif` and `netif-match` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | **Done** (2026-11-17; `netif-containers` and `netif-vmhost` green). The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
 | P2 | The NetworkManager part is **done** (2026-11-17, `netif-modes` green). Still to do: Wi-Fi settings for IfState modes, hot-plugged dock Ethernet, the Deck check. Original scope: NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
-| P4 | First half **done** (2026-11-17, `netif-modes` green): the `modes` service, and netif follows the mode. Still to do: the mode setting on the fabric and cluster services. Original scope: The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
+| P4 | **Done** (2026-11-18; `netif-modes` and `k3s-modes` green): the `modes` service, netif follows the mode, and the fabric and cluster services take a `modes` setting. Original scope: The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
 | P8 | **Done** (2026-11-17, `netif-guard` green). The lockout guard | `netif-guard` green |
 | P5 | The router module in `modules`, built on P3b's zones and link names | `netif-router` green |
 | Contract gate | netif is stable in this repo | every phase above done, every probe-verified claim VM-proven, every invariant tested |
@@ -152,8 +152,8 @@ its manager; a netif instance can say `modes = ["developer"]`.
 Anything of your own that belongs to one mode hangs on
 `config.clanServices.networking.mode.name`.
 
-Not done yet: tunnels and clusters cannot be limited to a mode, so a
-machine that runs them cannot have a NetworkManager mode today.
+Tunnels and clusters could not be limited to a mode at this point;
+that came on 2026-11-18 (below).
 
 The first part of the final proof, the same day: **netif under a
 Kubernetes cluster**. The new test `k3s-data-plane-netif` runs the
@@ -191,6 +191,23 @@ mode, then an IfState mode, then back:
 | A wired network the machine has never seen | NetworkManager joins it by DHCP with no configuration. Its default route sits behind the declared link (metric 200 against 100); when the declared link goes away, traffic moves over by itself |
 | Tailscale | works in the NetworkManager mode, in the IfState mode and back, without logging in again |
 | KDE in an IfState mode | the desktop starts with NetworkManager off; a network reapply changes nothing |
+
+Modes for everything else (second half of P4), the same day. The
+fabric, wireguard-mesh, k3s and RKE2 each take a `modes` setting per
+machine, so kamrui-h1 can boot into a NetworkManager desktop and still
+be a fabric member or a cluster in another mode:
+
+| Feature | What shows it |
+|---|---|
+| A fabric leaf in one mode | `netif-modes`: the desktop mode has no FRR and no tunnel; the developer mode dials the spine from a DHCP address and gets BGP in both families; back in the desktop mode the spine only sees the session go down |
+| A cluster in one mode | the new `k3s-modes` test: a single-node k3s with Cilium exists only in the `kubernetes` mode. After booting the desktop mode and coming back, it is the same cluster with its objects and a running pod |
+| Secrets in every mode | keys and certificates are generated once and exist in every mode, so switching needs no new secrets |
+| Rules that protect other machines | the build fails when a spine, a border or a server of a cluster with other machines is limited to some modes |
+| A clear error | a fabric or cluster instance left active in a NetworkManager mode fails the build and says to set `modes` |
+
+Machines without modes are built exactly as before (the test
+derivations are identical). One defect was found and fixed: a machine
+whose desktop mode had no IfState objects at all failed to evaluate.
 
 With this, all three loads of your definition of "stable" are proven
 in VMs: Cilium Kubernetes, FRR, and a desktop with both kinds of mode.

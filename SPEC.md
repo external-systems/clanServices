@@ -4,6 +4,16 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 45 (2026-11-18): **mode scoping on routed-fabric,
+wireguard-mesh, k3s and rke2** (`specs/netif.md` round P4b, N4). Each
+has a per-machine `modes` setting; `lib/mode-scope.nix` keeps vars,
+facts and checks in every mode and renders the rest only in the named
+modes. Evaluation rejects a spine, a border or a server of a
+multi-machine cluster that is limited to some modes, and any of these
+services active in a NetworkManager mode. Suites: `netif-modes`
+(`NETIF_MODES_FABRIC_OK`), new `k3s-modes` (`K3S_MODES_OK`). Machines
+without modes render exactly as before.
+
 Round 44 (2026-11-18): **a KDE desktop on netif, in a NetworkManager
 and an IfState mode** (`specs/netif.md` round gate-4). New suite
 `netif-desktop` (`NETIF_DESKTOP_OK`). netif's NetworkManager renderer
