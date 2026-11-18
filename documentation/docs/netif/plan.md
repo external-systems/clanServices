@@ -20,7 +20,7 @@ owner decides.
 | P3a | NICs by MAC, a missing NIC fails loudly, a checked IfState passthrough | `netif-match` green — done |
 | P3b | **Done**, all five slices (2026-11-17; `netif-dhcp`, `netif` and `netif-match` green). Five slices, each merged with its own passing test. **1 dhcpcd:** switch netif to dhcpcd 10.5.2 from pkgs (`dhcpcd_latest`) with a check that it is in use, dhcpcd with its own config and prefix delegation, `ipv4only` on IPv4-only DHCP links, link-flap tests. **2 DNS:** the DNS unit. **3 routes:** default-route metrics, an explicit default-route owner. **4 firewall:** untrusted links by default, a zone per link. **5 the rest:** path MTU, NICs by device path. Fixes found in review (below) go with the slice they touch | `netif-dhcp`, `netif` and `netif-match` extended, every suite green |
 | P7 | **Done** (2026-11-17; `netif-containers` and `netif-vmhost` green). The `containers` preset; VM hosts: bridge MAC, bridges over VLANs and bonds, guest ports | `netif-containers`, `netif-vmhost` green |
-| P2 | The NetworkManager part is **done** (2026-11-17, `netif-modes` green). Still to do: Wi-Fi settings for IfState modes, hot-plugged dock Ethernet, the Deck check. Original scope: NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
+| P2 | The NetworkManager part (2026-11-17, `netif-modes`) and Wi-Fi in both kinds of mode (2026-11-18, `netif-wifi`) are **done**. Still to do: hot-plugged dock Ethernet in an IfState mode, the Deck check. Original scope: NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | **Done** (2026-11-18; `netif-modes` and `k3s-modes` green): the `modes` service, netif follows the mode, and the fabric and cluster services take a `modes` setting. Original scope: The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
 | P8 | **Done** (2026-11-17, `netif-guard` green). The lockout guard | `netif-guard` green |
 | P5 | The router module in `modules`, built on P3b's zones and link names | `netif-router` green |
@@ -86,7 +86,8 @@ The tools slice, the same day, proven by `netif`:
 Also in this slice: every older build error now ends with what to
 change; a machine that would have no DNS server at all gets a
 warning; and the five remaining test probes are in the repository
-(`nix build .#netifProbes.<name>`).
+(`nix build .#netifProbes.<name>`; all of them have since been
+replaced by tests and deleted).
 
 P7, first half (containers), the same day, proven by the new
 `netif-containers` test:
@@ -209,10 +210,25 @@ Machines without modes are built exactly as before (the test
 derivations are identical). One defect was found and fixed: a machine
 whose desktop mode had no IfState objects at all failed to evaluate.
 
+Wi-Fi (part of P2), the same day, proven by the new `netif-wifi`
+test on simulated radios:
+
+| Feature | What the test shows |
+|---|---|
+| A network never seen before, desktop mode | joined through NetworkManager, the way the KDE applet and Steam do; address, IPv6 and DNS arrive |
+| The same network in the developer mode | after a reboot iwd joins it by itself; nothing to type again |
+| A new network in the developer mode | joined with `iwctl`; after rebooting back, NetworkManager knows it too |
+| Cable before Wi-Fi | in both modes and both address families traffic uses the cable; pull it and Wi-Fi takes over with no reconfiguration |
+| Roaming | with two access points of one network, losing one moves the machine to the other |
+| IfState keeps out | a network reapply changes nothing on the Wi-Fi link |
+
+To turn Wi-Fi on for a machine, set
+`networking.wireless.iwd.enable = true`. netif writes iwd's settings
+for each mode; do not set them by hand.
+
 With this, all three loads of your definition of "stable" are proven
 in VMs: Cilium Kubernetes, FRR, and a desktop with both kinds of mode.
-Not proven yet: Wi-Fi in a NetworkManager mode (it is part of the
-Wi-Fi test).
+Wi-Fi is proven in both kinds of mode too (above).
 
 One thing to know when writing a config: a link accepts router
 advertisements unless you say `ra = false`, so it counts as a possible

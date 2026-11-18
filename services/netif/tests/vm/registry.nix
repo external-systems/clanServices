@@ -99,14 +99,9 @@ in {
         yq-go
       ];
       networking = {
-        # qemu-vm switches wireless off with mkVMOverride.
-        wireless.iwd = {
-          enable = lib.mkOverride 0 true;
-          settings = {
-            General.EnableNetworkConfiguration = true;
-            Network.NameResolvingService = "systemd";
-          };
-        };
+        # qemu-vm switches wireless off with mkVMOverride. The iwd
+        # preset renders iwd's settings for the mode (N5).
+        wireless.iwd.enable = lib.mkOverride 0 true;
         firewall.checkReversePath = "loose";
       };
       services = {

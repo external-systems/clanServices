@@ -112,6 +112,12 @@ Beside IfState, netif runs (`host.nix`):
   setting limits it to some modes. A wired link netif does not declare
   (a dock, an unknown LAN) stays NetworkManager's own, with its default
   route at metric 200, behind netif's links;
+- Wi-Fi is iwd's in every mode, never IfState's. Turn it on with
+  `networking.wireless.iwd.enable = true`; the `iwd` preset writes its
+  settings for the mode (its own DHCP and DNS with route metric 300 and
+  up in an IfState mode; NetworkManager's backend in a NetworkManager
+  mode). Networks are joined ad hoc (`iwctl`, the KDE applet, Steam)
+  and are known in every mode;
 - `netif-dns.service`, which sets each link's DNS in systemd-resolved:
   the link's `nameservers` plus the servers of its DHCP leases;
 - `netif-online.service`, which holds `network-online.target` until the

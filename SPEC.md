@@ -4,6 +4,13 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+Round 46 (2026-11-18): **Wi-Fi in NetworkManager and IfState modes**
+(`specs/netif.md` round P2-wifi, N5, N18). The `iwd` preset renders
+iwd's settings for the mode. New suite `netif-wifi` (`NETIF_WIFI_OK`):
+an unknown network joined in each mode, known networks shared between
+modes, wired before Wi-Fi in both families, roaming. The last netif
+probe is deleted.
+
 Round 45 (2026-11-18): **mode scoping on routed-fabric,
 wireguard-mesh, k3s and rke2** (`specs/netif.md` round P4b, N4). Each
 has a per-machine `modes` setting; `lib/mode-scope.nix` keeps vars,
