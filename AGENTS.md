@@ -28,11 +28,11 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   - `coverage.nix`: every `clan.modules` entry needs a nix-unit test;
   - `docs.nix`: the site nav and deck settings;
   - `overlays.nix`: re-exports the org-pkgs overlays.
-- `services/netif/tests/probes/` — VM probes for findings no suite
-  asserts yet (`nix build .#netifProbes.<name>`; never in `checks` or
-  `vmTests`; its README names the suite that replaces each one).
-- `tests/ifstate-vm.nix` — the shared IfState node fixture for VM suites.
-  Each service registers its suites (35 in all) in its `flake-module.nix`
+- `tests/` — fixtures shared by VM suites: `ifstate-vm.nix` (the
+  IfState node), `ifstate-noop.nix` (the "a reapply changes nothing"
+  helper), `headscale-vm.nix` (an offline Headscale), `wifi-ap.nix`
+  (simulated access points).
+  Each service registers its suites (36 in all) in its `flake-module.nix`
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`

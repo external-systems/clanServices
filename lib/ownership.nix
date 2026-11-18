@@ -301,6 +301,24 @@ in {
 
     warnings = lib.optional (owners ? tailscale && acceptsRoutes && fabricMember) "clanServices: this fabric member accepts Tailscale subnet routes; Tailscale's rule 5270 sits before main, so an accepted route wins over a fabric route for the same prefix (specs/netif.md N11)";
 
+    # iwd's settings follow the mode (N5, N18). In an IfState mode iwd
+    # runs on its own: it configures the link, sends DNS to
+    # systemd-resolved, and puts its default routes behind every wired
+    # link (netif's at 100, a hot-plugged one at 200). In a
+    # NetworkManager mode it is NetworkManager's Wi-Fi backend and must
+    # leave addresses and routes to it.
+    networking.wireless.iwd.settings = lib.mkIf config.networking.wireless.iwd.enable (
+      if ifstateMode
+      then {
+        General.EnableNetworkConfiguration = true;
+        Network = {
+          NameResolvingService = "systemd";
+          RoutePriorityOffset = 300;
+        };
+      }
+      else {General.EnableNetworkConfiguration = false;}
+    );
+
     # In a NetworkManager mode the same owners are marked unmanaged (N2).
     # iwd is the exception: NetworkManager drives it as its Wi-Fi backend.
     networking.networkmanager.unmanaged = lib.mkIf (!ifstateMode) (

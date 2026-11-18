@@ -33,6 +33,11 @@ in {
           };
       };
     };
+    # netif-wifi: iwd in a NetworkManager and an IfState mode (N5, N18).
+    netif-wifi = {
+      imports = [./tests/vm/wifi.nix];
+      inherit clan;
+    };
     # netif-desktop: a KDE machine in a NetworkManager and an IfState mode (N14).
     netif-desktop = {
       imports = [./tests/vm/desktop.nix];

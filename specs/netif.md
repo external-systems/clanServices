@@ -11,6 +11,44 @@ SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round P2-wifi (2026-11-18): **Wi-Fi in both kinds of mode.**
+Implemented, and proven by the new suite `netif-wifi`
+(`NETIF_WIFI_OK`):
+- **N5** the `iwd` preset renders iwd's settings for the mode
+  (`lib/ownership.nix`), whenever iwd is enabled. IfState mode:
+  `EnableNetworkConfiguration = true`, `NameResolvingService =
+  systemd`, `RoutePriorityOffset = 300`. NetworkManager mode:
+  `EnableNetworkConfiguration = false`, because NetworkManager
+  configures the link and iwd is only its backend. A machine turns
+  Wi-Fi on with `networking.wireless.iwd.enable = true`; in a
+  NetworkManager mode the backend turns it on by itself.
+- **A network never seen before, NetworkManager mode:** joined with
+  `nmcli device wifi connect` (the call the KDE applet and Steam
+  make); DHCPv4, the RA default and DNS arrive on the Wi-Fi link;
+  both Wi-Fi defaults are at 600 or more and the wired link at 100
+  wins; with the wired link disconnected Wi-Fi carries both families
+  (`NETIF_WIFI_NETWORKMANAGER_OK`).
+- **Known networks are shared (N5):** rebooted into the IfState mode,
+  iwd joins that network with nobody asking; a network joined there
+  with `iwctl` is a NetworkManager profile after rebooting back
+  (`NETIF_WIFI_IFSTATE_OK`, `NETIF_WIFI_ADHOC_OK`,
+  `NETIF_WIFI_SHARED_OK`).
+- **N18 in an IfState mode:** iwd's IPv4 and IPv6 defaults are
+  between 300 and 600, the wired defaults at 100; traffic leaves
+  through the wire in both families, and through Wi-Fi when the cable
+  is gone (`NETIF_WIFI_FALLBACK_OK`). A reapply changes nothing: the
+  Wi-Fi link, its addresses and routes are iwd's.
+- **Roaming:** with two access points of one network, stopping the one
+  in use moves the client to the other; address, default and
+  reachability hold (`NETIF_WIFI_ROAM_OK`).
+- `tests/wifi-ap.nix` is the simulated Wi-Fi fixture (four
+  `mac80211_hwsim` radios, the access points in a foreign namespace).
+- The `wifi` probe is deleted (N40), and with it the last probe: the
+  `netifProbes` output and `services/netif/tests/probes/` are gone.
+- Still open in P2: hot-plugged wired links in an IfState mode
+  (`netif-hotplug`), and the Deck hardware check of Steam over the iwd
+  backend (owner only).
+
 Round P4b (2026-11-18): **every networking and cluster service
 follows the mode.** Implemented, and proven by `netif-modes`
 (`NETIF_MODES_FABRIC_OK`) and the new suite `k3s-modes`
@@ -83,7 +121,8 @@ loads; with it the owner definition of stable is VM-proven.
 - `netif-guard`'s test read the journal before journald had written a
   line the guard had just printed, and failed under load. It syncs the
   journal first.
-- Not proven: Wi-Fi in a NetworkManager mode (phase P2, `netif-wifi`).
+- Not proven then: Wi-Fi in a NetworkManager mode (done, round
+  P2-wifi).
 
 Round gate-3 (2026-11-18): **netif carries FRR alone.** Proven by the
 new suite `routed-fabric-netif` (`NETIF_UNDER_FRR_OK`,
@@ -610,8 +649,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
       IfState-mode only.
   *(implemented, round P4a: `netif-modes` `NETIF_MODES_NETWORKMANAGER_OK`;
   eval tests in `services/modes/tests`; a static IPv4 and IPv6 profile,
-  round gate-4: `netif-desktop` `NETIF_DESKTOP_STATIC_OK`. Not proven:
-  Wi-Fi in a NetworkManager mode)*
+  round gate-4: `netif-desktop` `NETIF_DESKTOP_STATIC_OK`; Wi-Fi,
+  round P2-wifi: `netif-wifi` `NETIF_WIFI_NETWORKMANAGER_OK`)*
 
 - **N3 Modes are NixOS specialisations, switched by reboot.**
   - The parent configuration is the default boot entry; each further mode is
@@ -1777,11 +1816,13 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   outside `checks` and `vmTests`. The DNS and dhcpcd probes are
   retired: `netif-dhcp` asserts what they showed.
   - They are exposed as `legacyPackages.<system>.netifProbes.<name>`
-    (`nix build .#netifProbes.wifi`), so they follow the repo's nixpkgs and
+    (`nix build .#netifProbes.<name>`), so they follow the repo's nixpkgs and
     linters. `services/netif/tests/probes/README.md` names the suite
     that takes each one over; the probe is deleted in that change.
-  *(implemented; `wifi` is the one probe left, the others are deleted
-  with the suites that took them over)*
+  *(implemented, and now empty: every probe is deleted with the suite
+  that took it over, the last one, `wifi`, in round P2-wifi. The
+  `netifProbes` output and the directory are removed; a new probe
+  brings them back)*
 
 - **N41 `netif-status` (was H11).** One read-only command per machine.
   - Per netif link: instance and link name, interface, state, zone,
@@ -2289,7 +2330,7 @@ decision. Phase numbers are labels, not the order.
 | P3a | `match.mac`, missing NIC fails loudly, checked `extraSettings` passthrough (N15) | `netif-match` green; existing suites green — **done** |
 | P3b | **Done: all five slices** (rounds P3b-1, P3b-3, P3b-4, P3b-5). The tools of N38, N41 and N42 follow as their own slice. Five slices, each merged with its own green suite. **1 dhcpcd:** bump `org-pkgs` and `sync-locks`, run netif's hook with `pkgs.dhcpcd_latest` (10.5.2) and assert `>= 10.5.0` in the base (N30), per-link config and PD (N16), `ipv4only` on DHCPv4-only links, a forwarding RA server and the carrier-change assertions in `netif-dhcp`, anchored ignores, the no-op helper. **2 DNS:** the netif DNS unit as probed (N9). **3 routes:** default-route metrics (N18), `defaultRoute` and RA in the one-default rule (N21), live reconfiguration by generation switch. **4 firewall:** untrusted default (N19), zone seam (N10). **5 the rest:** `pathMtu` and its consumers (N17), `match.path` and the cloud-init check (N26). Brief: `documentation/docs/plans/phase-4-netif-underlay/prompt.md` | `netif-dhcp`, `netif` and `netif-match` extended (§7); every existing suite green |
 | P7 | **Done** (rounds P7a, P7b): `containers` preset (N22); VM hosts: bridge MAC, VLAN and bond members, guest ports (N23) | `netif-containers`, `netif-vmhost` green |
-| P2 | **Renderer done** (round P4a, with P4a because a mode needs it). **To do:** iwd settings and metric in IfState modes, `wired-hotplug`, the Deck check. Original scope: NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
+| P2 | **Renderer done** (round P4a, with P4a because a mode needs it). **Wi-Fi done** (round P2-wifi: iwd settings and metric per mode, `netif-wifi`). **To do:** `wired-hotplug`, the Deck check. Original scope: NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | **Done** (rounds P4a and P4b): the `modes` service, the base and netif follow the mode; `modes` on the other services with the spine/border/voter rules (`netif-modes`, `k3s-modes`). Original scope: The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
 | P8 | **Done** (round P8). Lockout guard (N25, N36) | `netif-guard` green |
 | P5 | Router module in `modules` on the P3b seam | `netif-router` green |
