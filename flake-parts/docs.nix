@@ -34,6 +34,15 @@ _: {
             {Glossary = "netif/glossary.md";}
           ];
         }
+        {
+          "Router and NAT gateway" = [
+            {Overview = "gateway/index.md";}
+            {"Home and on-prem router" = "gateway/router.md";}
+            {"Cloud NAT gateway" = "gateway/nat-gateway.md";}
+            {"Exposing services" = "gateway/exposure.md";}
+            {"Plan and probes" = "gateway/plan.md";}
+          ];
+        }
         {Decisions = [{"Decision record" = "decisions/index.md";}];}
         {
           Services = [

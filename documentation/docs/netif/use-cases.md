@@ -18,6 +18,10 @@ hardware yet; that waits for the contract gate ([plan](plan.md)).
 | U10 | **One machine, several roles** | modes that differ in kind: a server in one, a gamescope box in another | P4 |
 | U11 | **VM tests** | suites here; later a fixture other repos can import | after the contract gate |
 | U12 | **Gaming desktop** | default boot: KDE with NetworkManager on a static wired LAN, no Wi-Fi. `developer` mode: IfState, the same static link, Tailscale, a fabric leaf | P2, P4 |
+| U13 | **IPv6-only cloud machine** | one public IPv6 link, no IPv4 on any NIC; reaches IPv4 through the [NAT gateway](../gateway/nat-gateway.md) | planned |
+| U14 | **Cloud gateway** | as U6, with a public IPv4; carries the NAT gateway role | planned |
+| U15 | **On-prem site with two carriers** | two routers, each with its own WAN | planned, design only |
+| U16 | **Router with a backup WAN** | U3 plus a second WAN link; one default route per WAN | planned |
 
 ## What is proven, per machine (2026-11-18)
 
@@ -40,7 +44,7 @@ part. "Open" is what no test shows yet.
 | | a bad change does not lock you out | `netif-guard` | |
 | **Gaming desktop** | default: KDE, NetworkManager, static LAN | `netif-desktop` (static IPv4 and IPv6 profile) | |
 | | `developer`: fabric leaf, Tailscale | `netif-modes`, `netif-desktop` | |
-| **Home router** | WAN by DHCP with prefix delegation, zones, untrusted WAN | `netif-dhcp` | the router module itself (NAT, DHCP server, advertisements): phase P5, in `modules` |
+| **Home router** | WAN by DHCP with prefix delegation, zones, untrusted WAN | `netif-dhcp` | the [router service](../gateway/router.md) itself (NAT, DHCP server, advertisements): phase P5, in this repo |
 | | fabric border, ECMP towards Kubernetes nodes | `routed-fabric`, `k3s-data-plane`, `rke2-data-plane` | the router as a Kubernetes node behind its own NAT, in one test |
 | **Cloud VMs** | DHCP (preferred) and static addresses, two NICs, NICs by slot | `netif-dhcp`, `netif-match`, `netif` | a run on a real cloud |
 | **Any cluster** | Cilium native routing with FRR | `k3s-data-plane-netif`, `rke2-data-plane-netif` | |

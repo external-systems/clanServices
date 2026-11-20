@@ -6,10 +6,23 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N42` so they never collide with
-SPEC.md's `D1`–`D66`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
+together.** Decisions are numbered `N1`–`N45` so they never collide with
+SPEC.md's `D1`–`D68` or `specs/gateway.md`'s `G1`–`G19`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
+
+Round G0 (2026-11-20): **the router moves into this repo; docs only.**
+The owner decided that the router and a NAT gateway are clanServices
+here (`services/router`, `services/nat-gateway`), governed by
+`specs/gateway.md`. For netif:
+- **N10** the router's daemons are configured by `services/router`, not
+  by `modules`; corerad replaces "radvd or corerad"; CoreDNS is the DNS
+  server.
+- **N21** will allow one default per WAN link for multi-WAN (planned).
+- **N43** a MAC override on a physical link, **N44** a priority-tagged
+  WAN, **N45** IPv6-only links as first-class. All planned.
+- **U13–U16** added; U3 amended (§2).
+Nothing is implemented in this round.
 
 Round close-out (2026-11-18): the use cases are restated by the owner
 (§2, U12 added) and mapped to the suites that prove them
@@ -575,8 +588,8 @@ how does each get its addresses, routes, DNS and firewall trust.**
 | netif never owns | Owner |
 |---|---|
 | Wi-Fi association, its DHCP and roaming | iwd (N5) |
-| NAT, port forwarding, firewall rules beyond trust | a gateway or router module built on netif's zones (N10) |
-| DHCP server, router advertisements sent to others, DNS server | the router module in `modules` (N10) |
+| NAT, NAT64, port forwarding, firewall rules beyond trust | `services/router` and `services/nat-gateway`, built on netif's zones (N10, `specs/gateway.md`) |
+| DHCP server, router advertisements sent to others, DNS server | `services/router` (N10, `specs/gateway.md`) |
 | WireGuard tunnels, BGP, fabric addresses | `routed-fabric`, `wireguard-mesh` |
 | Pod and Service networking, node addresses | `k3s`, `rke2`, Cilium (SPEC.md) |
 | VPN clients | Tailscale and other registry owners (N6, N29) |
@@ -618,9 +631,12 @@ field gate, N14).
   10G RJ45 port; one port is the WAN. NAT gateway, DHCP server and IPv6
   for the house, the fleet's edge with ECMP towards the Kubernetes nodes
   behind it. Wi-Fi for the house comes from separate access points on
-  the LAN: the router has no radio. Router services live in `modules`;
-  netif owns the links.
-  - Covered by: N10, N15, N16, N19, N25.
+  the LAN: the router has no radio. Router services are
+  `services/router` in this repo (`specs/gateway.md`); netif owns the
+  links. The LAN is split into zones (G11): routed ports and VLANs on a
+  trunk port, no bridge. The WAN presents the ISP gateway's MAC (N43).
+  No inbound port by default (G12).
+  - Covered by: N10, N15, N16, N19, N25, N43, N44.
 - **U4 Headless servers.** euc-hel-0: a single-node RKE2 server with a
   stable address, FRR, and ClusterMesh in native-routing mode. IfState
   only, no modes.
@@ -658,6 +674,21 @@ field gate, N14).
   - `developer`: IfState, the same static link, Tailscale, a
     `routed-fabric` leaf with client access to pod and Service IPs.
   - Covered by: N2, N3, N4, N24.
+- **U13 IPv6-only cloud machine** (owner, 2026-11-20). One public IPv6
+  link and no IPv4 address on any NIC, because a public IPv4 costs
+  money. It reaches IPv4 through `nat-gateway` (`specs/gateway.md` G4).
+  It may be a dual-stack Kubernetes node (SPEC.md D67).
+  - Covered by: N45, N15 or N26. *(planned)*
+- **U14 Cloud gateway.** A fleet machine with a public IPv4 and the
+  `nat-gateway` `gateway` role. For netif it is a dual-stack machine.
+  - Covered by: U6's list.
+- **U15 On-prem site with two carriers.** Two routers, each with its own
+  WAN, serving devices nobody can configure (`specs/gateway.md` G17).
+  - Covered by: N10, N21 as amended. *(planned, design only)*
+- **U16 Router with a backup WAN.** U3 plus a second WAN link, for
+  example a modem that presents Ethernet with DHCP
+  (`specs/gateway.md` G16).
+  - Covered by: N21 as amended. *(planned)*
 
 **Owner restatement of 2026-11-18** (additions to the list above; the
 per-machine proof table is `documentation/docs/netif/use-cases.md`):
@@ -687,7 +718,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
 - **N1 netif is the single contract; the name stays `netif`.** Every link,
   address mode, route, policy rule, MTU, DNS server and firewall trust a
   machine has is declared through netif instances in the inventory, in every
-  mode. Supporting modules (for example the router services in `modules`)
+  mode. Supporting services (for example `services/router`)
   consume netif's facts; they never declare links or addresses themselves.
   The service is not renamed to `ifstate`: it also renders NetworkManager
   modes, and the name would collide with the upstream project, the NixOS
@@ -1007,8 +1038,10 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - **A per-link dhcpcd hook owns** the WAN DHCPv4 lease and DHCPv6 prefix
     delegation (N16). Delegated LAN addresses and their routes (`proto dhcp`,
     finite lifetimes) are dynamic and survive IfState reapply.
-  - **Other daemons, configured in `modules`:** nftables NAT, the DHCP
-    server (kea), router advertisements (radvd or corerad) and DNS.
+  - **Other daemons, configured by `services/router` in this repo
+    (`specs/gateway.md`; amended 2026-11-20, was "in `modules`"):**
+    nftables (NAT and the zone firewall), the DHCP server (kea), router
+    advertisements (corerad, G15) and DNS (CoreDNS, G14).
   - **Seam:** netif publishes each link's resolved Linux name and a `zone`
     (`wan`, `lan`, `mgmt`, …) as read-only NixOS options and in
     `clan.networkFacts`. Router modules reference those, never the
@@ -1025,11 +1058,12 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
       zone. A NAT rule wants "all `wan` interfaces", not one link.
     - The seam ships in phase P3b with the other export changes (N16,
       N17). *(implemented, round P3b-4; eval tests `test_zoneSeam`,
-      `test_zoneNameChecked`)* Phase P5 builds the router
-      module in `modules` on it.
+      `test_zoneNameChecked`)* Phase P5 builds `services/router`
+      on it (`specs/gateway.md` §7, slice S2).
   - **NAT is never netif's (N20).** The home router's NAT lives in the
-    router module. A NAT gateway for other machines (U9) is a separate
-    clanService built on the same seam, planned after the contract gate.
+    router service. A NAT gateway for other machines (U9, U13) is the
+    separate clanService `nat-gateway`, built on the same seam
+    (`specs/gateway.md` G1).
   - **No access point.** The house's Wi-Fi comes from access points on
     the LAN (§6).
   - **ECMP towards Kubernetes nodes** on the LAN is FRR's, through
@@ -1041,7 +1075,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     a /60 delegated with a /64 on the LAN, kea, SLAAC from radvd, and NAT
     to the ISP. An IfState reapply changed nothing (§8).
   *(probe-verified; `match.mac` implemented (N15); PD settings and the
-  seam planned, phase P3b; the router module and `netif-router`, phase P5)*
+  seam planned, phase P3b; `services/router` and `netif-router`, phase P5.
+  The probe used radvd; corerad is re-proven by `specs/gateway.md` PR3)*
 
 - **N11 Tailscale and the fabric.** Tailscale's rule 5270 (`lookup 52`) sits
   before `main`, where FRR installs fabric routes. A subnet route accepted
@@ -1384,6 +1419,10 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
       drops the router option (`nogateway`);
     - RAs are still accepted for prefixes, but not for a default router
       (`accept_ra_defrtr = 0`, which IfState's schema allows).
+  - **To amend for multi-WAN (2026-11-20, planned).** A router with two
+    WAN links (U16, `specs/gateway.md` G16) needs one default per WAN
+    with distinct metrics. The rule below then becomes "at most one per
+    metric". Design it with N18 before any code.
   - **The rule.** Per machine and family, at most one netif link has
     `defaultRoute` true **and** a source for a default. Sources are: a
     static gateway outside a policy table, DHCPv4, DHCPv6 with RA, and
@@ -1933,6 +1972,23 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   not covered: firewall, DHCP and DNS changes, which IfState does not
   own)*
 
+- **N43 A MAC override on a physical link.** `links.<n>.mac` is applied
+  only to non-physical links today. A WAN link that replaces an ISP's
+  gateway must present that gateway's MAC, while `match.mac` still finds
+  the NIC by its permanent MAC (N15). *(planned; `specs/gateway.md` S1,
+  probe PR5)*
+
+- **N44 A priority-tagged WAN (VLAN 0).** Some ISPs send and expect
+  frames tagged with VLAN 0. Probe PR5 decides whether the optical
+  module handles it or netif must render it. *(planned; PR5)*
+
+- **N45 An IPv6-only link is first-class.** A machine with no IPv4
+  address on any NIC (U13): a static or learned IPv6 address, an on-link
+  link-local gateway (`gateway.onLink`), static nameservers, and the
+  guard (N25) and "online" working with IPv6 alone. RA-only DNS stays
+  uncovered (N39). *(planned; suite `netif-v6only`,
+  `specs/gateway.md` S1)*
+
 
 ## 4. Invariants
 
@@ -2429,7 +2485,7 @@ Terms as this file uses them. One term per thing.
   (`ifstate.service`). It converges the whole kernel network state to
   the configuration. A reapply is a run with an unchanged configuration.
 - **Contract gate, field gate** — the two conditions for "stable" (N14).
-- **Decision** — a numbered rule in §3, written `N1`…`N42`.
+- **Decision** — a numbered rule in §3, written `N1`…`N45`.
 - **Default route owner** — the one netif link per family that may
   install a main-table default route (N21).
 - **Deploy target** — `clan.core.networking.targetHost`: where clan

@@ -181,6 +181,19 @@ tested the open netif assumptions. netif's delivery phases are renamed
   parent device; netif will use a udev `.link` rename for `match.path`
   (N26). D61 is unchanged: `.link` files are udev's, not networkd's.
 
+Round 30 (2026-11-20): **router and NAT gateway designed; docs only.**
+The owner decided that the home router and a NAT gateway are
+clanServices in this repo, with their own contract `specs/gateway.md`
+(D68). Points that touch this file:
+- Cloud clan machines get an IPv6-only underlay; clusters stay
+  dual-stack inside, on fabric addresses (D67, planned, probe first).
+- Pod IPv4 egress on such nodes is `specs/gateway.md` G5.
+- Exposure has three classes (G12); the home router opens no inbound
+  port by default. ECMP from the router to a cluster gateway stays
+  available as class 3.
+- Metrics endpoints of host services are scraped from a monitoring
+  cluster over the fabric; Prometheus and Grafana are day-2 (G18).
+Nothing is implemented in this round.
 Round 29 (2026-11-16): **the netif contract is widened to the whole
 fleet; docs only** (`specs/netif.md` round use-cases, decisions N20–N29,
 use cases U1–U11). Points that touch this file:
@@ -649,7 +662,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D66)
+## 4. Decision record (D1–D68)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1821,6 +1834,30 @@ unless noted) — revoked entries keep one-line reasons for history.
     imports `org-pkgs/devenv`). CI is the org `ci.yml` (`ci / flake-check`;
     Pages at `clanservices.external.systems`; `0.0.<commits>` releases).
     nixd settings are in `.vscode/`.
+
+- **D67 Clusters run on an IPv6-only underlay.** *(planned, 2026-11-20;
+  probe PR4 in `specs/gateway.md` §6, then a suite per distro)*
+  - **Why.** A public IPv4 costs money in the cloud. Clan machines
+    there have no IPv4 address on any NIC (`specs/netif.md` U13, N45).
+  - **Clusters stay dual-stack inside** (§3.2): applications hard-code
+    IPv4, so single-stack IPv6 clusters are not a goal.
+  - **How.** Node addresses stay the stable dual-stack fabric loopbacks
+    (D47); the control-plane endpoint stays IPv4 on the fabric (D60).
+    The IPv4 a node needs is a private fabric address. IPv4 routes ride
+    IPv6 BGP sessions (`extended-nexthop`) and tunnels with IPv6
+    endpoints.
+  - **IPv4 egress.** The host uses `nat-gateway` (NAT64 and DNS64). Pod
+    IPv4 egress is `specs/gateway.md` G5: a CLAT on the node, or NAT44
+    over the fabric as the fallback.
+  - Every suite today runs on a dual-stack underlay, so nothing here is
+    proven yet.
+
+- **D68 `router` and `nat-gateway` are governed by `specs/gateway.md`.**
+  *(planned, 2026-11-20)* Two clanServices over the private
+  `lib/gateway/`: the edge of a LAN, and IPv4 reach for machines that
+  have none. They are host networking, outside the two cluster
+  contracts (D39). That file is their contract and status authority
+  (decisions G1–G19), as `specs/netif.md` is for netif.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
