@@ -15,6 +15,7 @@ depends on the answer.
 | PR3 | Does corerad handle a delegated prefix, the NAT64 hint and DNS options? | corerad instead of radvd |
 | PR4 | Do k3s and rke2 run on IPv6-only machines? | clusters in the cloud without IPv4 |
 | PR5 | Do a MAC override and VLAN 0 work on the WAN port? | replacing the ISP's gateway |
+| PR6 | Can the router swap the prefix of a routed /64 when the public side is only known at runtime? | public Service addresses at home, the backup WAN |
 
 ## Build order
 
@@ -27,6 +28,8 @@ depends on the answer.
 | S5 | clusters on IPv6-only machines | a suite per distribution passes |
 | S6 | a second WAN on one router | `router-dual-wan` passes |
 | S7 | two routers with two carriers | design review first |
+| S8 | the service prefix: public Service addresses behind a router | `router-service-prefix` passes |
+| S9 | your own address block on a fabric border | design review first, then `routed-fabric-transit` passes |
 
 The home router is installed once the steps it needs are done and
 stable. There is no migration plan and no compatibility layer.
@@ -36,6 +39,7 @@ stable. There is no migration plan and no compatibility layer.
 - Whether the network card accepts the optical module, and how hot the
   module runs.
 - Whether replacing the ISP's gateway still gets the full /60 prefix.
+- Whether the ISP keeps that prefix stable.
 
 ## Decided, and why
 
@@ -49,3 +53,5 @@ stable. There is no migration plan and no compatibility layer.
 | Headscale in the cloud | at home, in Kubernetes | stable address, survives a home outage |
 | Cloudflare Tunnel for public web | open ports | no inbound port at home |
 | Prefix rewrite on a backup WAN | advertising two prefixes | devices switch slowly between prefixes |
+| A stable private pool behind a prefix rewrite | the ISP's prefix in the cluster's pool | the cluster does not change when the ISP renumbers |
+| The fabric border announces your own block | BGP in the router service | one owner for upstream BGP |

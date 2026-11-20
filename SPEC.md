@@ -191,6 +191,14 @@ clanServices in this repo, with their own contract `specs/gateway.md`
 - Exposure has three classes (G12); the home router opens no inbound
   port by default. ECMP from the router to a cluster gateway stays
   available as class 3.
+- A Service behind a router gets a public IPv6 address from the ISP's
+  delegated prefix (G20). The pool model is D8, unchanged; the router
+  is the edge and joins `routed-fabric`. D10's non-goals stand.
+- Owned address space is announced by `routed-fabric` borders only
+  (G21). The border was built for a private upstream router; what it
+  lacks for a transit provider (a public AS number, aggregates only, a
+  default or full table inbound, per-peer session options, RPKI) is
+  listed in G21 and needs a decision here before code.
 - Metrics endpoints of host services are scraped from a monitoring
   cluster over the fabric; Prometheus and Grafana are day-2 (G18).
 Nothing is implemented in this round.
@@ -1857,7 +1865,7 @@ unless noted) — revoked entries keep one-line reasons for history.
   `lib/gateway/`: the edge of a LAN, and IPv4 reach for machines that
   have none. They are host networking, outside the two cluster
   contracts (D39). That file is their contract and status authority
-  (decisions G1–G19), as `specs/netif.md` is for netif.
+  (decisions G1–G21), as `specs/netif.md` is for netif.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 

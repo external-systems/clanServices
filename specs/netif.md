@@ -7,7 +7,7 @@ keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
 together.** Decisions are numbered `N1`–`N45` so they never collide with
-SPEC.md's `D1`–`D68` or `specs/gateway.md`'s `G1`–`G19`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
+SPEC.md's `D1`–`D68` or `specs/gateway.md`'s `G1`–`G21`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
@@ -21,7 +21,10 @@ here (`services/router`, `services/nat-gateway`), governed by
 - **N21** will allow one default per WAN link for multi-WAN (planned).
 - **N43** a MAC override on a physical link, **N44** a priority-tagged
   WAN, **N45** IPv6-only links as first-class. All planned.
-- **U13–U16** added; U3 amended (§2).
+- **N16** will get `prefixDelegation.reserve`: a subnet id that no link
+  receives, for a router's service prefix (`specs/gateway.md` G20,
+  planned).
+- **U13–U18** added; U3 amended (§2).
 Nothing is implemented in this round.
 
 Round close-out (2026-11-18): the use cases are restated by the owner
@@ -689,6 +692,22 @@ field gate, N14).
   example a modem that presents Ethernet with DHCP
   (`specs/gateway.md` G16).
   - Covered by: N21 as amended. *(planned)*
+- **U17 A public address for a Kubernetes Service at home** (owner,
+  2026-11-20). A Service in a cluster behind the home router, for
+  example a game server, gets a public IPv6 address out of the block
+  the ISP delegates. It works as in the cloud: an LB-IPAM pool,
+  Cilium and BGP (SPEC.md D8). Only the edge differs: at home the
+  router holds the prefix, in the cloud a node or a floating block
+  does.
+  - Covered by: `specs/gateway.md` G20; SPEC.md D8; N16 with `reserve`.
+    *(planned)*
+- **U18 Owned address space** (owner, 2026-11-20). Later the owner
+  holds an AS number and IPv6 prefixes from a regional registry
+  (Europe, North America or both) through a sponsor, and announces
+  them to providers by BGP. Services at any site, the home included,
+  then keep their addresses when a provider changes.
+  - Covered by: `specs/gateway.md` G21; SPEC.md D8, D9, D56. For netif
+    a border is an ordinary machine. *(planned, design only)*
 
 **Owner restatement of 2026-11-18** (additions to the list above; the
 per-machine proof table is `documentation/docs/netif/use-cases.md`):
@@ -1201,6 +1220,13 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     - subnet ids are unique per delegating link and fit in
       `2^(length - hint)`;
     - a target link receives delegation from at most one link.
+  - **To amend for a service prefix (2026-11-20, planned).**
+    `prefixDelegation.reserve` is a list of `{ subnet; length ? 64; }`:
+    subnet ids that no link receives. They join the uniqueness and size
+    checks above and are exported with `assign`. A router routes such a
+    subnet to Kubernetes Service addresses (`specs/gateway.md` G20).
+    Whether dhcpcd's own route for the delegated prefix already refuses
+    unused addresses is part of probe PR6.
   - **Runtime fact.** Delegated prefixes exist only at runtime. Exports and
     `clan.networkFacts` carry
     `prefixDelegation = { enable; hint; assign; dynamic = true; }`,

@@ -93,6 +93,7 @@ CoreDNS answers for the house and forwards to Cloudflare over TLS.
 |---|---|---|
 | Private IPv6 prefix (ULA) | off; **on for the home router** | A second, stable prefix beside the public one. Service addresses and firewall rules survive a change of the ISP's prefix |
 | IPv6-mostly | off | Devices that can cope drop IPv4 by themselves (DHCP option 108). The router adds NAT64 for them |
+| Service prefix | off | One /64 of the ISP's block for public Kubernetes Service addresses, see [Exposing services](exposure.md) |
 | Metrics | off | Prometheus endpoints, see [Exposing services](exposure.md) |
 
 IPv6-mostly brings no speed. It saves IPv4 leases, which matters on
@@ -125,9 +126,14 @@ Built after the single-WAN router is proven.
 | `dhcp` | each router NATs to its own carrier | change |
 | `bgp` | the site has its own AS number and prefixes; FRR peers with both carriers | stay |
 
+The `bgp` mode uses the fabric border, see
+[Your own address block](exposure.md#your-own-address-block).
+
 ## What netif still needs for this
 
 - A MAC override on the WAN port, so the router can stand in for the
   ISP's gateway.
 - A check of VLAN 0 on the WAN, which some ISPs use.
 - One default route per WAN, for the second WAN.
+- A subnet of the ISP's block that no link receives, for the service
+  prefix.

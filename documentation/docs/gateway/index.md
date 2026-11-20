@@ -2,7 +2,7 @@
 
 Two services are planned for this repo. Nothing on these pages is built
 yet: this is the design you decided on 2026-11-20. The contract is
-`specs/gateway.md` (decisions G1 to G19).
+`specs/gateway.md` (decisions G1 to G21).
 
 | Service | What it is | Who uses it |
 |---|---|---|
@@ -54,6 +54,7 @@ flake for all networking.
   second WAN.
 - [Cloud NAT gateway](nat-gateway.md) — IPv6-only machines, translation,
   redundancy.
-- [Exposing services](exposure.md) — three classes, Headscale, metrics.
+- [Exposing services](exposure.md) — three classes, Headscale, public
+  addresses for Kubernetes Services, your own address block, metrics.
 - [Plan and probes](plan.md) — what is checked first and the build
   order.

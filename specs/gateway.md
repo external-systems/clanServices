@@ -6,9 +6,9 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G19`, so they never collide
+pages together.** Decisions are numbered `G1`–`G21`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
-`specs/netif.md` §2 (U3, U13–U16).
+`specs/netif.md` §2 (U3, U13–U18).
 
 Round G0 (2026-11-20): **design round; docs only.** The owner decided the
 shape in a deciding session. Nothing in this file is implemented. Every
@@ -215,7 +215,8 @@ any code (AGENTS.md rule 3).
     - on a cloud gateway, Jool SIIT maps a public IPv4 to an IPv6
       service address, statelessly.
   - IPv6 needs no sharing: a host has its own public address and the
-    firewall opens one pinhole.
+    firewall opens one pinhole. A Kubernetes Service gets its own
+    public IPv6 address through G20.
   - Class 2's cost: Cloudflare terminates the TLS and can read the
     traffic.
   *(planned)*
@@ -280,7 +281,9 @@ any code (AGENTS.md rule 3).
     - `dhcp`: each router NATs to its own carrier; IPv6 as in G16.
     - `bgp`: the site owns an AS number and provider-independent
       prefixes; FRR speaks eBGP to both carriers. No NAT for IPv6, and
-      inbound addresses survive a carrier failure.
+      inbound addresses survive a carrier failure. The sessions are
+      `routed-fabric` border sessions (G21): this mode adds no second
+      BGP implementation.
   - No session sync (G6).
   *(planned)*
 
@@ -300,6 +303,105 @@ any code (AGENTS.md rule 3).
   and flow records first; Suricata on the WAN optional; packet capture
   on demand only. *(planned)*
 
+### Public addresses for services
+
+- **G20 A public service prefix on a router** (owner, 2026-11-20; use
+  case U17). A Kubernetes Service behind a router gets a public IPv6
+  address out of the prefix the ISP delegates. Example: a game server
+  as a `type: LoadBalancer` Service.
+  - **The cluster side is SPEC.md D8, unchanged, and the same at home
+    and in the cloud.** An explicit LB-IPAM pool with `shared-bgp` or
+    `node-bgp` delivery; Cilium advertises each address as a /128 to
+    the node's FRR; the fabric carries it to the edge. Only the edge
+    differs:
+
+    | Site | Who routes the prefix to the fleet | Edge |
+    |---|---|---|
+    | Cloud | the provider, to a node (node-bound) or as a floating block | the node itself, or a border (D8) |
+    | Home, on-prem | the ISP, to the router (prefix delegation) | the router (this decision) |
+    | Owned space | a transit provider, to a border | the border (G21) |
+
+  - **The service prefix.** `servicePrefix.subnet` reserves one subnet
+    id of the delegated prefix (a /64) for Services. No link gets it
+    (netif N16, `reserve`, to amend). The home /60 has 16 subnets; six
+    zones and one service prefix use seven.
+  - **The router learns the /128 routes as a `routed-fabric` member**
+    (N10, U3). This decision adds no BGP of its own and no session to
+    the ISP. A `shared-bgp` pool gives ECMP over the nodes.
+    `externalTrafficPolicy: Local` keeps the client's address.
+  - **Two pool modes**, because a delegated prefix is a runtime fact
+    (N16) and a pool is a literal (D8):
+    - `translated`, the default: the cluster pool is a stable /64 of
+      the router's ULA /48 (G10). The router rewrites the prefix of
+      inbound destinations, and of the replies, between the public
+      service prefix and that /64. The host part is kept. The public
+      side of the rule is a runtime value, never a literal. The
+      cluster's configuration does not change when the ISP renumbers.
+      G16 needs the same mechanism on a backup WAN.
+    - `literal`: the owner states that the prefix is static (a static
+      ISP assignment, or owned space, G21). The pool is that prefix and
+      nothing is rewritten.
+  - **Pinholes.** `servicePrefix.expose` is a list of
+    `{ host; protocol; ports; }`, empty by default. The router forwards
+    from a `wan` zone only to those. A LAN zone reaches an exposed
+    service the same way; `allowTo` does not apply to it.
+  - **Unused addresses are unreachable** on the router, so a packet to
+    one never returns to the ISP.
+  - **IPv4 for the same Service** is G12's port forward to its IPv4
+    address in the fabric pool. A home has one dynamic IPv4, shared by
+    port.
+  - **Limits.**
+    - The address is as stable as the ISP's delegation. A stable DHCP
+      identity helps (netif N33). A fully static address
+      needs owned space (G21) or a cloud prefix carried over the
+      fabric.
+    - DNS must follow a renumbering. Only the router knows the public
+      prefix; how a DNS updater learns it is open, and the updater is
+      day-2.
+    - SPEC.md D10's non-goals stand: no public BGP for a residential
+      IPv4 address.
+  - Rejected: a slice of a zone's /64 with an NDP proxy (for an ISP
+    that delegates a single /64). Design only; not planned.
+  *(planned; PR6)*
+
+- **G21 Owned address space** (owner, 2026-11-20; use case U18). The
+  owner will hold an AS number and provider-independent IPv6 prefixes
+  from a regional registry (Europe, North America or both), through a
+  sponsor. The fleet announces them itself.
+  - **One owner for upstream BGP: the `routed-fabric` border**
+    (SPEC.md D9, D56). `border.upstreamPeers` and
+    `border.ownedPrefixes` exist; pools must lie inside the owned
+    prefixes (D8). G17's `bgp` mode is a router that is also a border.
+  - **Where the prefixes are announced.** On any border whose provider
+    offers a BGP session: a cloud machine first, an on-prem site with
+    carriers later (G17). A residential ISP offers none, so a home
+    reaches owned space over the fabric, from a border elsewhere. A
+    home Service then uses G20's `literal` mode and keeps its address
+    when the ISP changes.
+  - **What the border lacks today.** It was built for a private
+    upstream router. Each point needs its own SPEC.md decision before
+    code:
+    - a public AS number on upstream sessions; private fabric AS
+      numbers (D64) never leave the fleet;
+    - only aggregates are announced (IPv6 /48 or shorter, IPv4 /24 or
+      shorter); exact Service routes stay inside the fabric. Today the
+      filter permits owned prefixes down to /128 and /32;
+    - inbound, a default route or a full table, per peer. Today only
+      the owned prefixes are accepted, with a limit of 4096 prefixes;
+    - per peer: BFD optional (forced today), multihop, and a session
+      password as a clan var (AGENTS.md rule 6);
+    - route-origin validation (RPKI) on inbound routes, optional.
+  - **Kept:** a border announces nothing outside its owned prefixes and
+    never passes one upstream's routes to another.
+  - **Several sites.** One prefix announced from several borders is
+    anycast: a flow may enter at one border and leave at another, so it
+    suits stateless services. One prefix per region is the simple
+    shape. A /48 is the smallest announcement, so two regions need two
+    /48s.
+  - **Never rendered:** registry objects (route objects, ROAs, reverse
+    DNS delegation). They are the owner's tasks at the registry.
+  *(planned; design only, after G16)*
+
 ## 3. Invariants (target)
 
 1. Neither service declares a link, an address or a route: netif does.
@@ -309,10 +411,15 @@ any code (AGENTS.md rule 3).
 4. A NAT64 gateway translates only for its declared clients.
 5. A metrics endpoint is never reachable from a `wan` zone or a LAN zone.
 6. Every global is namespaced by `instanceName` (AGENTS.md rule 5).
+7. A router forwards from a `wan` zone into the service prefix only to
+   the declared `expose` entries (G20).
+8. Neither service renders a BGP session: `routed-fabric` does (G21).
 
 ## 4. Out of scope
 
 - IPv4-only networks (P1).
+- Registry work for owned address space (G21).
+- A DNS updater for a renumbered service prefix (G20): day-2.
 - Access points and switch configuration.
 - Prometheus, Grafana, Cloudflare Tunnel, the cluster's gateway: day-2.
 - NetBird; the Headscale service itself (G13).
@@ -326,7 +433,11 @@ any code (AGENTS.md rule 3).
   DHCPv4, prefix delegation, advertisements, NAT44, zone isolation,
   blocklist, a prefix change and a reboot), `router-ipv6-mostly`,
   `nat-gateway` (two gateways, an IPv6-only client, a gateway failure),
-  `router-dual-wan`.
+  `router-dual-wan`, `router-service-prefix` (ISP, router, a cluster
+  with a Service: reached from the ISP side on its public address, a
+  closed port and an unused address refused, a prefix change),
+  `routed-fabric-transit` (a border and two fake transit providers:
+  aggregates only, no private AS number, no route passed between them).
 - Every `clan.modules` entry needs a nix-unit test (`coverage.nix`).
 
 ## 6. Probes
@@ -340,6 +451,7 @@ Each runs before the code it gates. A finding goes into this file first.
 | PR3 | corerad with a delegated prefix, PREF64 and DNS options | G15 |
 | PR4 | k3s and rke2 on an IPv6-only underlay | SPEC.md D67 |
 | PR5 | MAC override and a priority-tagged WAN (VLAN 0) | netif N43, N44 |
+| PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? | G20, G16 |
 
 ## 7. Delivery plan
 
@@ -354,13 +466,16 @@ Each slice: spec, code, eval tests, VM suite, docs.
 | S5 | SPEC.md D67 and G5: PR4, PR1 | a suite per distro |
 | S6 | G16 dual WAN on one router; netif N21 amended | `router-dual-wan` green |
 | S7 | G17 several routers | design review first |
+| S8 | G20 service prefix (PR6); netif N16 `reserve` | `router-service-prefix` green |
+| S9 | G21 owned address space: the border changes in SPEC.md | design review first, then `routed-fabric-transit` |
 
 ## 8. Owner hardware (does not gate the spec)
 
 - Whether the planned NIC accepts the XGS-PON module, and the module's
   heat.
-- Whether the ISP gateway bypass gets the full /60 (16 zones' worth of
-  /64s).
+- Whether the ISP gateway bypass gets the full /60 (16 /64s: one per
+  zone and one for the service prefix, G20).
+- Whether the ISP keeps the delegated prefix stable (G20's limits).
 
 ## 9. Glossary
 
@@ -373,8 +488,12 @@ Each slice: spec, code, eval tests, VM suite, docs.
 - **NAT44 / NAT64** — stateful translation from private IPv4, or from
   IPv6, to a public IPv4.
 - **NPTv6** — stateless rewrite of an IPv6 prefix.
+- **Owned address space** — prefixes and an AS number registered to the
+  owner, not lent by a provider (provider-independent).
 - **PREF64** — the router-advertisement option that tells a host the
   NAT64 prefix.
+- **Service prefix** — the /64 of a router's delegated prefix that is
+  reserved for Kubernetes Service addresses (G20).
 - **SIIT** — stateless one-to-one translation between IPv4 and IPv6.
 - **ULA** — a private IPv6 prefix (`fd00::/8`).
 - **VRRP** — a protocol by which routers share one virtual gateway

@@ -22,6 +22,8 @@ hardware yet; that waits for the contract gate ([plan](plan.md)).
 | U14 | **Cloud gateway** | as U6, with a public IPv4; carries the NAT gateway role | planned |
 | U15 | **On-prem site with two carriers** | two routers, each with its own WAN | planned, design only |
 | U16 | **Router with a backup WAN** | U3 plus a second WAN link; one default route per WAN | planned |
+| U17 | **A public address for a Kubernetes Service at home** | one subnet of the ISP's block kept free of links, for Service addresses. See [Exposing services](../gateway/exposure.md) | planned |
+| U18 | **Your own address block** | nothing new: the machine that announces it is an ordinary fabric border. See [Exposing services](../gateway/exposure.md) | planned, design only |
 
 ## What is proven, per machine (2026-11-18)
 

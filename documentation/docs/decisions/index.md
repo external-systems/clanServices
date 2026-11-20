@@ -224,8 +224,15 @@ first; every suite today runs on a dual-stack underlay.
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 
 Two new services, the edge of a LAN and IPv4 reach for machines that
-have none, are governed by `specs/gateway.md` (decisions G1–G19). See
+have none, are governed by `specs/gateway.md` (decisions G1–G21). See
 [Router and NAT gateway](../gateway/index.md).
+
+Two of its decisions touch the cluster contract. G20: a Service behind
+a router gets a public IPv6 address from the ISP's block; the pool
+model (D8) is unchanged. G21: your own address block is announced by
+fabric borders only (D9, D56); what the border still lacks for that
+needs a decision here first.
+
 ## Round 25: host networking gets its own contract
 
 Host networking moved to `specs/netif.md`, with decisions N1–N14, and to the

@@ -47,14 +47,14 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `ci / flake-check`) and the branch ruleset. Never add steps or jobs here;
   CI changes are pkgs PRs.
 - `specs/netif.md` — the host-networking contract and status authority
-  (decisions N1–N45, use cases U1–U16, the responsibility boundary
+  (decisions N1–N45, use cases U1–U18, the responsibility boundary
   in §1.1): netif, the shared IfState base, modes, the
   ownership registry. It supersedes SPEC.md D50/D53/D61 where they
   conflict; its human pages are `documentation/docs/netif/`. Edit them
   together.
 - `specs/gateway.md` — the contract and status authority for the planned
   `router` and `nat-gateway` services and `lib/gateway/` (decisions
-  G1–G19, probes PR1–PR5, slices S1–S7). Nothing is implemented yet.
+  G1–G21, probes PR1–PR6, slices S1–S9). Nothing is implemented yet.
   Its human pages are `documentation/docs/gateway/`. Edit them together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
