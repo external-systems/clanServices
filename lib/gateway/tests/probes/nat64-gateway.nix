@@ -49,6 +49,9 @@
       filterForward = true;
       extraForwardRules = ''
         iifname != "eth2" oifname "j0" ip6 daddr ${pool} ip6 saddr ${allow} accept
+        # a /96 destination that embeds a private IPv4 address is not the
+        # internet (specs/gateway.md G5): refuse it after translation
+        iifname "j0" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } counter reject with icmp type net-prohibited comment "nat64-private"
         iifname "j0" oifname "eth2" accept
       '';
       extraInputRules = ''

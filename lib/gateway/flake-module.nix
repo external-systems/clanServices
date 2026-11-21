@@ -20,6 +20,10 @@
     imports = [(import ./tests/probes/v6only-join.nix {inherit lib inputs distro;})];
     clan = kube distro;
   };
+  clat = distro: transport: device: {
+    imports = [(import ./tests/probes/kube-clat.nix {inherit inputs distro transport device;})];
+    clan = kube distro;
+  };
   netif = lib.modules.importApply ../../services/netif/default.nix {
     ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   };
@@ -28,10 +32,14 @@ in {
     probe-nat64.imports = [./tests/probes/nat64.nix];
     probe-k3s-v6only = v6only "k3s";
     probe-rke2-v6only = v6only "rke2";
-    probe-k3s-clat = {
-      imports = [./tests/probes/k3s-clat.nix];
-      clan = kube "k3s";
-    };
+    probe-k3s-clat-fabric = clat "k3s" "fabric" false;
+    probe-k3s-clat-mesh = clat "k3s" "mesh" false;
+    probe-rke2-clat-fabric = clat "rke2" "fabric" false;
+    probe-rke2-clat-mesh = clat "rke2" "mesh" false;
+    probe-k3s-clat-fabric-device = clat "k3s" "fabric" true;
+    probe-k3s-clat-mesh-device = clat "k3s" "mesh" true;
+    probe-rke2-clat-fabric-device = clat "rke2" "fabric" true;
+    probe-rke2-clat-mesh-device = clat "rke2" "mesh" true;
     probe-v6only-host = {
       imports = [./tests/probes/v6only-host.nix];
       clan.modules.netif = netif;
