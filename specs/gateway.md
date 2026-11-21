@@ -512,10 +512,10 @@ any code (AGENTS.md rule 3).
   corerad's configuration is thus a runtime file, not a store path.
   Advertised lifetimes are also shortened (RFC 9096: preferred 45 min,
   valid 90 min) for the case the hook misses.
-  - **netif's part (N16, to amend):** netif owns dhcpcd's exit script.
-    It publishes the delegated prefix as a runtime file per link and
-    starts a systemd target when it changes. Consumers bind to that;
-    nobody else hooks dhcpcd.
+  - **netif's part (N16, amended):** netif owns dhcpcd's exit script.
+    It writes the delegated prefix to `/run/netif/pd/<interface>`, only
+    when it changes. The router watches that file with a systemd path
+    unit; nobody else hooks dhcpcd.
   *(proposed; the deprecation and the rule update are probe-verified)*
 
 - **G23 The CLAT** (proposed 2026-11-20; PR2, §10.1). A machine without

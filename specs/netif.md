@@ -21,6 +21,8 @@ here (`services/router`, `services/nat-gateway`), governed by
 - **N21** will allow one default per WAN link for multi-WAN (planned).
 - **N43** a MAC override on a physical link, **N44** a priority-tagged
   WAN, **N45** IPv6-only links as first-class. All planned.
+- **N16** will publish the delegated prefix as a runtime file, so a
+  consumer can react to a prefix change (`specs/gateway.md` G22).
 - **N16** will get `prefixDelegation.reserve`: a subnet id that no link
   receives, for a router's service prefix (`specs/gateway.md` G20,
   planned).
@@ -1225,8 +1227,23 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     subnet ids that no link receives. They join the uniqueness and size
     checks above and are exported with `assign`. A router routes such a
     subnet to Kubernetes Service addresses (`specs/gateway.md` G20).
-    Whether dhcpcd's own route for the delegated prefix already refuses
-    unused addresses is part of probe PR6.
+    dhcpcd's own route for the delegated prefix already refuses unused
+    addresses: `unreachable <prefix> dev lo proto dhcp metric 1001`
+    (PR6, `specs/gateway.md` §10.2).
+  - **To amend: the delegated prefix as a runtime file (2026-11-20,
+    planned; `specs/gateway.md` G22).** Consumers must react when the
+    ISP delegates another prefix, and only netif's exit script sees
+    dhcpcd's events.
+    - The exit script writes `/run/netif/pd/<interface>`: one delegated
+      prefix per line (`2001:db8:1000::/60`), for the link that asked.
+    - It writes the file only when the content changes, and atomically
+      (a rename), so a systemd path unit on it fires once per change.
+    - It removes the file when the delegation expires. A stop or a
+      restart of dhcpcd leaves it: a restart is not a prefix change.
+    - netif starts nothing and keeps no history. A consumer watches the
+      file with its own path unit and remembers the last prefix itself.
+    - The path is published per link in `clanServices.networking.links`
+      and the export, beside `prefixDelegation`.
   - **Runtime fact.** Delegated prefixes exist only at runtime. Exports and
     `clan.networkFacts` carry
     `prefixDelegation = { enable; hint; assign; dynamic = true; }`,
