@@ -224,7 +224,7 @@ first; every suite today runs on a dual-stack underlay.
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 
 Two new services, the edge of a LAN and IPv4 reach for machines that
-have none, are governed by `specs/gateway.md` (decisions G1–G21). See
+have none, are governed by `specs/gateway.md` (decisions G1–G23). See
 [Router and NAT gateway](../gateway/index.md).
 
 Two of its decisions touch the cluster contract. G20: a Service behind

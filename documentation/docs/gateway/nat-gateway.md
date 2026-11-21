@@ -24,7 +24,10 @@ carry an IPv4 and the role, and one is IPv6-only.
 
 The gateway does not sit in the path of other traffic, and no tunnel or
 fabric is needed. A machine with a broken fabric can still fetch its own
-fix. Each gateway only serves its declared clients.
+fix. Each gateway only serves its declared clients, for translation and
+for DNS.
+
+A probe proved this path on 2026-11-20, with two gateways.
 
 ## Who translates what
 
@@ -37,6 +40,23 @@ fix. Each gateway only serves its declared clients.
 Jool does all translation. It runs in the kernel, and one tool covers
 both the stateful and the stateless kind.
 
+**Jool gets a network namespace of its own on the gateway.** A probe
+showed why: in the machine's main namespace Jool takes packets before
+the firewall's forward rules and hands them back after, so the firewall
+never sees them. A gateway set up that way relayed traffic from a
+machine that was not a client. In its own namespace the ordinary
+firewall rules apply.
+
+## IPv4 addresses written as numbers
+
+DNS64 only helps when a program asks for a name. A program that
+connects to `198.51.100.80` directly needs a **CLAT** on the machine:
+a small Jool instance that turns the machine's own IPv4 packets into
+IPv6 towards a gateway. A probe proved it for a plain machine.
+
+A CLAT points at one gateway. The client therefore runs a health check
+that moves it to a live gateway. In the probe one command moved it.
+
 ## Pods and IPv4
 
 Clusters stay dual-stack inside. Two ways for a pod's IPv4 traffic to
@@ -48,7 +68,8 @@ leave an IPv6-only node:
   ordinary NAT.
 
 A probe decides. B needs no fabric and uses one mechanism for
-everything, but it is untested with Cilium.
+everything. It works for the machine itself; with Cilium it is the
+next probe.
 
 ## Redundancy
 
@@ -57,8 +78,13 @@ everything, but it is untested with Cilium.
   the gateway that knows the connection. Nothing is synchronized.
 - A client lists both gateways as DNS servers. When one dies it stops
   answering DNS, and the client gets addresses that lead to the other.
-- **Connections through a dead gateway reset** and are opened again
-  through the other. This is failover, not seamless high availability.
+  Measured: 5.6 seconds.
+- **Connections through a dead gateway hang.** Nothing tells the client
+  that the gateway is gone, so a program notices through its own
+  timeout. New connections go through the other gateway. This is
+  failover, not seamless high availability.
+- Gateways keep DNS answers short-lived, so a program that caches them
+  does not hold on to a dead gateway for long.
 - The number of public IPv4 addresses you pay for equals the number of
   gateways.
 
@@ -67,7 +93,8 @@ everything, but it is untested with Cilium.
 A node needs an IPv4 address, but not on its card. Every fabric node
 already has a stable private IPv4 and an IPv6 address on a loopback, and
 Kubernetes uses those. IPv4 only exists inside the fabric, so it costs
-nothing. This is decision D67, and a probe comes before any code.
+nothing. This is decision D67. A probe showed k3s joining a second node
+with no IPv4 on any network card.
 
 ## What netif still needs for this
 

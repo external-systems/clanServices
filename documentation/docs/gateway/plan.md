@@ -1,7 +1,8 @@
 # Plan and probes
 
-Nothing is built yet. The design was decided on 2026-11-20 and is
-written down first; later sessions build and prove it.
+No service is built yet. The design was decided on 2026-11-20 and is
+written down first. A first round of probes ran the same day; their
+results are below and in `specs/gateway.md` §10.
 
 ## Probes first
 
@@ -16,6 +17,27 @@ depends on the answer.
 | PR4 | Do k3s and rke2 run on IPv6-only machines? | clusters in the cloud without IPv4 |
 | PR5 | Do a MAC override and VLAN 0 work on the WAN port? | replacing the ISP's gateway |
 | PR6 | Can the router swap the prefix of a routed /64 when the public side is only known at runtime? | public Service addresses at home, the backup WAN |
+
+## Probe results (2026-11-20)
+
+| Probe | Answer | Changed |
+|---|---|---|
+| PR2 | In the main namespace Jool bypasses the firewall's forward rules. In a namespace of its own it does not | Jool always gets its own namespace |
+| PR3 | corerad handles the delegated prefix, a private prefix, DNS options and the NAT64 hint. It does nothing when the prefix changes | the router handles a prefix change itself |
+| PR4 | k3s joins a second node with no IPv4 on any network card | rke2 is next |
+| PR5 | A port presents another MAC while it is found by its real one. A VLAN 0 link gets a DHCP lease | netif gets both as options |
+| PR6 | The prefix swap keeps the host part and the visitor's address, refuses unused addresses, and moves with one rule after a prefix change | nothing |
+
+Found on the way:
+
+- An open connection through a dead gateway hangs; it is not reset.
+- A CLAT follows one gateway, so it needs a health check.
+- The DNS on a gateway must also be limited to its clients.
+- CoreDNS must listen on named addresses: every machine already runs a
+  local resolver on port 53.
+
+New probes: PR7 (the CLAT's health check) and PR8 (the prefix change
+from end to end).
 
 ## Build order
 

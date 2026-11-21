@@ -23,6 +23,24 @@ the first thing tested.
 IPv6 has no NAT in front of devices, so the firewall drops inbound IPv6
 unless you open something.
 
+A probe on 2026-11-20 ran this base with netif's links: leases, a
+delegated prefix on two zones, advertisements from corerad, NAT, and
+no traffic between the zones.
+
+## When the ISP changes your prefix
+
+Your devices build their IPv6 addresses from the ISP's prefix. When the
+ISP hands out another one, devices keep using the old addresses for
+hours, and IPv6 to the internet stops working for them. The probe
+showed this with corerad and with radvd.
+
+The router therefore reacts to the change itself:
+
+- it tells devices that the old prefix is retired (they switch within
+  seconds);
+- it moves the public Service addresses to the new prefix;
+- it remembers the last prefix across a reboot.
+
 ## Zones
 
 The LAN is split into zones. Traffic between two zones must pass the
@@ -82,7 +100,8 @@ CoreDNS answers for the house and forwards to Cloudflare over TLS.
 - **Ad blocking** uses HaGeZi's blocklists, which are free and open
   source (GPL-3.0). The list is pinned in the `pkgs` repo and updated
   with a lock bump. You choose a strictness tier; the default is
-  Pro++.
+  Pro++. A list of 300 000 names cost about 140 MB of memory in the
+  probe and answered at once.
 - A device that uses its own encrypted DNS skips the blocklist.
 - Device names come from mDNS and from static records. Machines you
   name are kept in Cloudflare.
@@ -132,8 +151,11 @@ The `bgp` mode uses the fabric border, see
 ## What netif still needs for this
 
 - A MAC override on the WAN port, so the router can stand in for the
-  ISP's gateway.
-- A check of VLAN 0 on the WAN, which some ISPs use.
+  ISP's gateway. Proven in a probe; the option is a small change.
+- VLAN 0 on the WAN, which some ISPs use. Proven in a probe: netif
+  renders a VLAN link with id 0, and the ISP's side ignores the router
+  without it.
+- A signal when the delegated prefix changes, for the section above.
 - One default route per WAN, for the second WAN.
 - A subnet of the ISP's block that no link receives, for the service
   prefix.

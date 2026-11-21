@@ -592,7 +592,7 @@ suite asserts what it showed (as `specs/netif.md` N40).
 | PR1 | Node CLAT with Jool SIIT under Cilium: does pod IPv4 egress work? | G5 |
 | PR2 | Jool beside the nftables firewall: where is traffic filtered? **Answered, §10.1** | G2 |
 | PR3 | corerad with a delegated prefix, PREF64 and DNS options. **Answered, §10.2** | G15, G22 |
-| PR4 | k3s and rke2 on an IPv6-only underlay | SPEC.md D67 |
+| PR4 | k3s and rke2 on an IPv6-only underlay. **k3s answered, §10.5** | SPEC.md D67 |
 | PR5 | MAC override and a priority-tagged WAN (VLAN 0). **Answered, §10.4** | netif N43, N44 |
 | PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? **Answered, §10.3** | G20, G16 |
 | PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? | G23 |
@@ -779,3 +779,15 @@ frames tagged with VLAN 0; a router whose links netif renders.
   real WAN the child needs `mac` too.
 - Not shown in a VM: the 802.1p priority bits (they were 0), and what
   an optical module does with the tag.
+
+### 10.5 `probe-k3s-v6only` (PR4; SPEC.md D67)
+
+The `k3s-join` suite, unchanged, with two differences: each node's only
+NIC address is IPv6 (`2001:db8:1::1/64`, `::2`), and the WireGuard
+endpoints are those addresses. Every subtest passed: the dual-stack
+mesh, the agent joining through its own HAProxy, both nodes Ready with
+dual-stack fabric addresses as InternalIP, Cilium healthy. No IPv4
+address was on a NIC at any point.
+
+Not covered by this probe: pulling images (they are preloaded), pod
+IPv4 egress (PR1), `routed-fabric` as the transport, and rke2.
