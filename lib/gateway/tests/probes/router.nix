@@ -1,4 +1,4 @@
-# Probes PR3 and PR6 (specs/gateway.md §6; G8, G10, G11, G14, G15, G20).
+# Probes PR3, PR6 and PR8 (specs/gateway.md §6; G8, G10, G11, G14, G15, G20, G22).
 #
 #   isp ── vlan 1 ── router ── vlan 2 ── client   (zone home)
 #                       └───── vlan 3 ── node     (zone servers; stands in
@@ -17,13 +17,15 @@
 #     addresses and closed ports refused, what happens on a prefix
 #     change. (PR6)
 #   - Zones: default deny, read from netif's zone seam. (G11)
+#   - The prefix hook from end to end: netif's prefix file, a path unit,
+#     corerad restarted with the old prefix retired, the service rule
+#     moved; also when the prefix changed while the router was off. (PR8)
 #   - CoreDNS with a blocklist of 300 000 names in the hosts plugin. (G14)
 #
 # Lines that start with FINDING are the result.
 {
   inputs,
   lib,
-  pkgs,
   ...
 }: let
   ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
@@ -159,29 +161,80 @@ in {
       blocklist = pkgs.runCommand "blocklist-300k" {} ''
         seq 1 300000 | sed 's/.*/0.0.0.0 ad&.block.test/' > $out
       '';
-      # The public side of the service prefix is a runtime value: subnet f
-      # of the delegated /60, read from the address dhcpcd put on a zone
-      # link. The stable side is a ULA /64.
-      svcUpdate = pkgs.writers.writePython3 "svc-prefix-update" {flakeIgnore = ["E501"];} ''
+      # The prefix hook (specs/gateway.md G22). netif writes the delegated
+      # prefix to /run/netif/pd/<wan>; a path unit runs this on a change.
+      # It retires the old prefix in corerad's configuration, moves the
+      # service prefix rule, and remembers the prefix across a reboot.
+      prefixHook = pkgs.writers.writePython3 "router-prefix" {flakeIgnore = ["E501"];} ''
         import ipaddress
         import json
+        import os
         import subprocess
+        import time
 
-        addrs = json.loads(subprocess.check_output(["ip", "-j", "-6", "addr", "show", "dev", "eth2", "scope", "global"]))
-        dynamic = [
-            a for i in addrs for a in i["addr_info"]
-            if a.get("local", "fd").startswith("2") and not a.get("deprecated")
-        ]
-        if not dynamic:
-            raise SystemExit("no delegated address on eth2")
-        delegated = ipaddress.ip_interface(f'{dynamic[0]["local"]}/60').network
-        public = list(delegated.subnets(new_prefix=64))[15]
-        rules = f"""
-        flush chain inet router svc_dnat
-        add rule inet router svc_dnat dnat ip6 prefix to ip6 daddr map {{ {public} : fd00:10:5::/64 }}
-        """
-        subprocess.run(["nft", "-f", "-"], input=rules.encode(), check=True)
-        print(public)
+        PD = "/run/netif/pd/eth1"
+        STATE = "/var/lib/router/prefix.json"
+        CONF = "/run/router/corerad.toml"
+        ZONES = {"eth2": (1, "fd00:10:1::1"), "eth3": (2, "fd00:10:2::1")}
+        SERVICE_SUBNET = 15
+        STABLE = "fd00:10:5::/64"
+
+
+        def subnet(prefix, number):
+            return str(list(ipaddress.ip_network(prefix).subnets(new_prefix=64))[number])
+
+
+        def replace(path, text):
+            if os.path.exists(path) and open(path).read() == text:
+                return False
+            with open(path + ".tmp", "w") as handle:
+                handle.write(text)
+            os.rename(path + ".tmp", path)
+            return True
+
+
+        try:
+            state = json.load(open(STATE))
+        except (OSError, ValueError):
+            state = {"current": None, "retired": {}}
+        new = None
+        if os.path.exists(PD):
+            lines = open(PD).read().split()
+            new = lines[0] if lines else None
+        now = time.time()
+        if new:
+            if state["current"] and state["current"] != new:
+                state["retired"][state["current"]] = now
+            state["retired"].pop(new, None)
+            state["current"] = new
+        state["retired"] = {p: t for p, t in state["retired"].items() if now - t < 7200}
+
+        out = ["[debug]", 'address = "[::1]:9430"', "prometheus = true", ""]
+        for name, (number, dns) in ZONES.items():
+            out += [
+                "[[interfaces]]", f'name = "{name}"', "advertise = true",
+                "  [[interfaces.prefix]]", '  prefix = "::/64"',
+                '  preferred_lifetime = "45m"', '  valid_lifetime = "90m"',
+            ]
+            for old in state["retired"]:
+                out += [
+                    "  [[interfaces.prefix]]", f'  prefix = "{subnet(old, number)}"',
+                    "  deprecated = true", '  preferred_lifetime = "1s"', '  valid_lifetime = "2h"',
+                ]
+            out += [
+                "  [[interfaces.rdnss]]", f'  servers = ["{dns}"]',
+                "  [[interfaces.dnssl]]", '  domain_names = ["home.test"]',
+                "  [[interfaces.pref64]]", '  prefix = "64:ff9b::/96"', "",
+            ]
+        changed = replace(CONF, "\n".join(out))
+        if new:
+            public = subnet(new, SERVICE_SUBNET)
+            rules = f"flush chain inet router svc_dnat\nadd rule inet router svc_dnat dnat ip6 prefix to ip6 daddr map {{ {public} : {STABLE} }}\n"
+            subprocess.run(["nft", "-f", "-"], input=rules.encode(), check=True)
+        replace(STATE, json.dumps(state))
+        if changed:
+            subprocess.run(["systemctl", "try-restart", "corerad.service"], check=True)
+        print(f"router-prefix: current {state['current']}, retired {sorted(state['retired'])}, corerad {'restarted' if changed else 'unchanged'}")
       '';
     in {
       virtualisation = {
@@ -206,7 +259,6 @@ in {
           pkgs.tcpdump
           pkgs.curl
           pkgs.dig
-          (pkgs.runCommand "svc-prefix-update" {} "mkdir -p $out/bin; ln -s ${svcUpdate} $out/bin/svc-prefix-update")
         ];
         etc."blocklist".source = blocklist;
       };
@@ -281,25 +333,8 @@ in {
         };
         corerad = {
           enable = true;
-          settings = {
-            debug = {
-              address = "[::1]:9430";
-              prometheus = true;
-            };
-            interfaces =
-              map (name: {
-                inherit name;
-                advertise = true;
-                # every /64 on the link: the ULA and the delegated one
-                prefix = [{prefix = "::/64";}];
-                rdnss = [{servers = ["::"];}];
-                dnssl = [{domain_names = ["home.test"];}];
-                pref64 = [{prefix = "64:ff9b::/96";}];
-              }) [
-                "eth2"
-                "eth3"
-              ];
-          };
+          # written by the prefix hook: a retired prefix is listed there
+          configFile = "/run/router/corerad.toml";
         };
         coredns = {
           enable = true;
@@ -316,9 +351,40 @@ in {
           '';
         };
       };
-      systemd.services = {
-        coredns.after = ["ifstate.service"];
-        corerad.after = ["ifstate.service"];
+      systemd = {
+        tmpfiles.rules = [
+          "d /run/router 0755 root root -"
+          "d /var/lib/router 0755 root root -"
+        ];
+        paths.router-prefix = {
+          wantedBy = ["multi-user.target"];
+          pathConfig.PathChanged = "/run/netif/pd/eth1";
+        };
+        services = {
+          coredns.after = ["ifstate.service"];
+          corerad = {
+            after = [
+              "ifstate.service"
+              "router-prefix.service"
+            ];
+            wants = ["router-prefix.service"];
+          };
+          router-prefix = {
+            wantedBy = ["multi-user.target"];
+            after = [
+              "nftables.service"
+              "systemd-tmpfiles-setup.service"
+            ];
+            path = [
+              pkgs.nftables
+              pkgs.systemd
+            ];
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = prefixHook;
+            };
+          };
+        };
       };
     };
 
@@ -536,9 +602,9 @@ in {
         observe("forward and input counters", router, "nft list table inet router | grep counter")
 
     def service_checks(tag):
-        public = router.succeed("svc-prefix-update").strip()
-        base = public.split("/")[0]
-        print(f"FINDING {tag}: the public service prefix is {public}")
+        delegated = router.succeed("cat /run/netif/pd/eth1").strip()
+        base = delegated.split("::/")[0] + ":f::"
+        print(f"FINDING {tag}: netif's prefix file says {delegated}; the service prefix is {base}/64")
         observe(f"{tag}: the rewrite rule", router, "nft list chain inet router svc_dnat")
         timed(f"{tag}: the ISP to the service address (the answer is the client address the node saw)", isp, f"curl -s --max-time 5 'http://[{base}80]/'")
         timed(f"{tag}: 2 MB", isp, f"curl -s --max-time 20 -o /dev/null -w '%{{size_download}} bytes' 'http://[{base}80]/big'")
@@ -558,74 +624,68 @@ in {
         node.succeed("ip -6 addr add fd00:10:2::10/64 dev eth1 nodad")
         router.succeed("ip -6 route add unreachable fd00:10:5::/64 metric 4096 proto bgp")
         old_base = service_checks("first prefix")
-        observe("a named map as the rewrite table", router, "nft -f - <<'EOF'\ntable ip6 scratch {\n  map svc { type ipv6_addr : ipv6_addr; flags interval; elements = { 2001:db8:ffff:f::/64 : fd00:10:5::/64 } }\n  chain pre { type nat hook prerouting priority dstnat; dnat ip6 prefix to ip6 daddr map @svc }\n}\nEOF\nnft list table ip6 scratch; nft delete table ip6 scratch")
 
-    def has_prefix(machine, prefix):
-        return machine.execute(f"ip -6 -o addr show dev eth1 scope global | grep '{prefix}' >/dev/null")[0] == 0
+    def client_state(new):
+        """(has a preferred address in the new prefix, every other public address is deprecated)"""
+        fresh = False
+        stale = False
+        for info in json.loads(client.succeed("ip -j -6 addr show dev eth1 scope global"))[0]["addr_info"]:
+            local = info.get("local", "")
+            if not local.startswith("2001:"):
+                continue
+            if local.startswith(new):
+                fresh = fresh or not info.get("deprecated")
+            elif not info.get("deprecated"):
+                stale = True
+        return fresh, stale
 
-    def renumber(isp_command, new, label):
-        isp.succeed(isp_command + " >&2")
-        isp.wait_until_succeeds("ss -uln | grep ':547 ' >/dev/null", timeout=60)
-        router.succeed("systemctl restart netif-dhcpcd-eth1.service")
-        router.wait_until_succeeds(f"ip -6 -o addr show dev eth2 scope global | grep '{new}[0-9a-f][0-9a-f]:1::1/64' >/dev/null", timeout=120)
-        changed = time.time()
-        observe(f"{label}: router addresses and routes after", router, "ip -6 addr show dev eth2 scope global; ip -6 route | grep -v fe80")
-        # does the client learn the new prefix with no solicitation?
-        learned = None
-        while time.time() - changed < 45:
-            if has_prefix(client, new):
-                learned = round(time.time() - changed, 1)
+    def settle(label, new, started):
+        """Seconds until the client prefers the new prefix, has retired the others and reaches the internet."""
+        done = None
+        while time.time() - started < 90:
+            fresh, stale = client_state(new)
+            if fresh and not stale and client.execute("curl -s --max-time 3 'http://[2001:db8::1]/' >/dev/null")[0] == 0:
+                done = round(time.time() - started, 1)
                 break
             time.sleep(1)
-        print(f"FINDING {label}: the client learned the new prefix unasked after {learned}s (None: not within 45 s)")
-        observe(f"{label}: client addresses (is the old prefix deprecated?)", client, "ip -6 addr show dev eth1 scope global")
-        observe(f"{label}: which source the client uses for the internet", client, "ip -6 route get 2001:db8::1 | head -1; curl -s --max-time 5 'http://[2001:db8::1]/'")
+        print(f"FINDING {label}: the client was on the new prefix, with the old one retired and the internet reachable, after {done}s (None: not within 90 s)")
+        observe(f"{label}: client addresses", client, "ip -6 addr show dev eth1 scope global | grep -v valid_lft; ip -6 route show default")
+        observe(f"{label}: the hook", router, "journalctl -u router-prefix --no-pager | grep router-prefix: | tail -4; cat /var/lib/router/prefix.json; echo; grep -B1 -A4 deprecated /run/router/corerad.toml")
+        observe(f"{label}: corerad", router, "systemctl is-active corerad; journalctl -u corerad --no-pager | grep -i 'deprecated\\|starting with' | tail -4")
+        return done
 
-    with subtest("the ISP changes the delegated prefix: corerad"):
-        renumber("/run/current-system/specialisation/renumber/bin/switch-to-configuration test", "2001:db8:20", "corerad")
-        observe("corerad log", router, "journalctl -u corerad --no-pager | tail -8")
-        observe("corerad: a solicited advertisement", client, "rdisc6 -1 -w 3000 eth1 | grep -i -A3 prefix")
-        client.execute("sleep 3")
-        observe("corerad: client addresses after soliciting", client, "ip -6 addr show dev eth1 scope global")
-        observe("corerad: source after soliciting", client, "ip -6 route get 2001:db8::1 | head -1; curl -s --max-time 5 'http://[2001:db8::1]/'")
-        timed("the old service address before the rule is updated", isp, f"curl -sS --max-time 5 'http://[{old_base}80]/'")
-        service_checks("second prefix")
-        timed("the old service address after the update", isp, f"curl -sS --max-time 5 'http://[{old_base}80]/'")
-        # corerad's own means: the old prefix listed as deprecated
-        old_prefix = old_base.replace(":f::", ":1::") + "/64"
-        router.succeed("systemctl stop corerad.service")
-        router.succeed(f"""cat > /run/corerad-deprecate.toml <<EOF
-    [[interfaces]]
-    name = "eth2"
-    advertise = true
-      [[interfaces.prefix]]
-      prefix = "::/64"
-      [[interfaces.prefix]]
-      prefix = "{old_prefix}"
-      deprecated = true
-      preferred_lifetime = "1s"
-      valid_lifetime = "2h"
-    EOF""")
-        observe("corerad with the old prefix deprecated: start", router, "systemd-run --unit=corerad-deprecate ${lib.getExe pkgs.corerad} -c=/run/corerad-deprecate.toml; sleep 5; journalctl -u corerad-deprecate --no-pager | tail -12")
-        observe("corerad deprecated: client addresses", client, "ip -6 addr show dev eth1 scope global")
-        observe("corerad deprecated: routes on the router", router, "ip -6 route | grep -v fe80")
-        observe("corerad deprecated: source", client, "ip -6 route get 2001:db8::1 | head -1; curl -s --max-time 5 'http://[2001:db8::1]/'")
-        router.succeed("systemctl stop corerad-deprecate.service")
+    def hook_runs():
+        return int(router.succeed("journalctl -u router-prefix --no-pager | grep -c 'router-prefix: current' || true").strip())
 
-    with subtest("the ISP changes the delegated prefix again: radvd, for comparison"):
-        router.succeed("""cat > /run/radvd.conf <<EOF
-    interface eth2 {
-      AdvSendAdvert on;
-      prefix ::/64 { };
-    };
-    EOF""")
-        router.succeed("systemd-run --unit=radvd-probe ${lib.getExe' pkgs.radvd "radvd"} -n -m stderr -C /run/radvd.conf")
+    with subtest("PR8: a restart of dhcpcd that changes nothing does not fire the hook"):
+        before = hook_runs()
+        router.succeed("systemctl restart netif-dhcpcd-eth1.service")
+        router.wait_until_succeeds("ip -6 -o addr show dev eth2 scope global | grep '2001:db8:10' >/dev/null", timeout=120)
         time.sleep(5)
-        renumber("/run/booted-system/bin/switch-to-configuration test", "2001:db8:10", "radvd")
-        observe("radvd log", router, "journalctl -u radvd-probe --no-pager | tail -12")
-        observe("radvd: a solicited advertisement", client, "rdisc6 -1 -w 3000 eth1 | grep -i -A3 prefix")
-        client.execute("sleep 3")
-        observe("radvd: client addresses after soliciting", client, "ip -6 addr show dev eth1 scope global")
+        print(f"FINDING hook runs before the restart {before}, after {hook_runs()}; prefix file: {router.succeed('cat /run/netif/pd/eth1').strip()}")
+        observe("the default route on the client across a corerad restart", client, "ip -6 route show default")
+
+    with subtest("PR8: the ISP changes the prefix while the router runs"):
+        isp.succeed("/run/current-system/specialisation/renumber/bin/switch-to-configuration test >&2")
+        isp.wait_until_succeeds("ss -uln | grep ':547 ' >/dev/null", timeout=60)
+        router.succeed("systemctl restart netif-dhcpcd-eth1.service")
+        router.wait_until_succeeds("ip -6 -o addr show dev eth2 scope global | grep '2001:db8:20[0-9a-f][0-9a-f]:1::1/64' >/dev/null", timeout=120)
+        settle("live change", "2001:db8:20", time.time())
+        timed("the old service address", isp, f"curl -sS --max-time 5 'http://[{old_base}80]/'")
+        second_base = service_checks("second prefix")
+
+    with subtest("PR8: the ISP changes the prefix while the router is off"):
+        router.shutdown()
+        isp.succeed("/run/booted-system/bin/switch-to-configuration test >&2")
+        isp.wait_until_succeeds("ss -uln | grep ':547 ' >/dev/null", timeout=60)
+        router.start()
+        router.wait_for_unit("multi-user.target", timeout=300)
+        router.wait_until_succeeds("ip -6 -o addr show dev eth2 scope global | grep '2001:db8:10[0-9a-f][0-9a-f]:1::1/64' >/dev/null", timeout=120)
+        settle("change across a reboot", "2001:db8:10", time.time())
+        node.succeed("ip -6 addr replace fd00:10:5::80/128 dev lo")
+        router.succeed("ip -6 route replace fd00:10:5::80/128 via fd00:10:2::10 dev eth3 proto bgp; ip -6 route replace unreachable fd00:10:5::/64 metric 4096 proto bgp")
+        timed("the second service address", isp, f"curl -sS --max-time 5 'http://[{second_base}80]/'")
+        service_checks("third prefix")
 
     print("PROBE_ROUTER_OK")
   '';

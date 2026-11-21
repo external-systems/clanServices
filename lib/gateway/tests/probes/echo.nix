@@ -1,5 +1,6 @@
 # A dual-stack HTTP server for probes: GET / answers with the client's
-# address as the server saw it, GET /big with 2 MB.
+# address as the server saw it, GET /big with 2 MB, POST with the
+# number of bytes received.
 pkgs: ports:
 pkgs.writeText "echo-server.py" ''
   import http.server
@@ -13,6 +14,17 @@ pkgs.writeText "echo-server.py" ''
               body = b"x" * 2000000
           else:
               body = (self.client_address[0] + "\n").encode()
+          self.send_response(200)
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+
+      def do_POST(self):
+          size = int(self.headers.get("Content-Length", "0"))
+          got = 0
+          while got < size:
+              got += len(self.rfile.read(min(65536, size - got)))
+          body = f"{got}\n".encode()
           self.send_response(200)
           self.send_header("Content-Length", str(len(body)))
           self.end_headers()

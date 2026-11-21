@@ -9,12 +9,41 @@
   lib,
   ...
 }: let
+  kube = distro: {
+    modules.${distro} = lib.modules.importApply (../../services + "/${distro}/default.nix") {inherit inputs;};
+    exportInterfaces = {
+      node_transport = ../node-transport-interface.nix;
+      kube_cluster = ../kube-cluster/kube-cluster-interface.nix;
+    };
+  };
+  v6only = distro: {
+    imports = [(import ./tests/probes/v6only-join.nix {inherit lib inputs distro;})];
+    clan = kube distro;
+  };
   netif = lib.modules.importApply ../../services/netif/default.nix {
     ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   };
 in {
   clanTests = {
     probe-nat64.imports = [./tests/probes/nat64.nix];
+    probe-k3s-v6only = v6only "k3s";
+    probe-rke2-v6only = v6only "rke2";
+    probe-k3s-clat = {
+      imports = [./tests/probes/k3s-clat.nix];
+      clan = kube "k3s";
+    };
+    probe-v6only-host = {
+      imports = [./tests/probes/v6only-host.nix];
+      clan.modules.netif = netif;
+    };
+    probe-dual-wan = {
+      imports = [./tests/probes/dual-wan.nix];
+      clan.modules.netif = netif;
+    };
+    probe-wan = {
+      imports = [./tests/probes/wan.nix];
+      clan.modules.netif = netif;
+    };
     probe-router = {
       imports = [./tests/probes/router.nix];
       clan.modules.netif = netif;

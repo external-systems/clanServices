@@ -1,4 +1,4 @@
-# Probe PR2 (specs/gateway.md §6; G2, G4, G6, and the host half of G5).
+# Probes PR2 and PR7 (specs/gateway.md §6; G2, G4, G6, G23).
 #
 #   client   ─┐                      ┌─ gw1 (Jool in the host namespace) ─┐
 #   outsider ─┼─ vlan 1, IPv6 only ──┤                                    ├─ vlan 2, IPv4 only ── server4
@@ -85,6 +85,8 @@
       bind ${address}
       hosts {
         198.51.100.80 web.long.test fresh.long.test web.short.test
+        192.0.0.170 ipv4only.arpa
+        192.0.0.171 ipv4only.arpa
         2001:db8:c::66 six.long.test
         ttl 3600
       }
@@ -309,6 +311,42 @@ in {
           ip netns exec clat jool_siit -i clat eamt add ${clatAddr} 192.0.0.1
           # an IPv4 packet grows by 20 bytes when it becomes IPv6
           ip route replace default via 192.0.0.2 dev clat0 mtu 1480
+        '';
+      };
+      # PR7: the CLAT follows a live gateway. Each nameserver is asked for
+      # ipv4only.arpa (RFC 7050); the first answer names that gateway's
+      # /96, and a ping through it shows that it translates.
+      systemd.services.clat-follow = {
+        wantedBy = ["multi-user.target"];
+        after = ["clat.service"];
+        requires = ["clat.service"];
+        path = [
+          pkgs.iproute2
+          pkgs.jool-cli
+          pkgs.dig
+          pkgs.iputils
+          pkgs.gnused
+          pkgs.gnugrep
+          pkgs.coreutils
+        ];
+        serviceConfig.Restart = "always";
+        script = ''
+          current=${pool1}
+          while sleep 2; do
+            for ns in 2001:db8:c::1 2001:db8:c::2; do
+              answer=$(dig +short +time=1 +tries=1 AAAA ipv4only.arpa @"$ns" | grep -i 'c000:aa$' | head -1) || true
+              [ -n "$answer" ] || continue
+              prefix="$(echo "$answer" | sed 's/c000:aa$//')/96"
+              # the server's address inside that prefix must answer
+              ping -c1 -W1 "$(echo "$answer" | sed 's/c000:aa$/c633:6450/')" >/dev/null 2>&1 || continue
+              if [ "$prefix" != "$current" ]; then
+                ip netns exec clat jool_siit -i clat global update pool6 "$prefix"
+                echo "clat-follow: pool6 $current -> $prefix (nameserver $ns)"
+                current=$prefix
+              fi
+              break
+            done
+          done
         '';
       };
     };
@@ -567,6 +605,8 @@ in {
         observe("CLAT stats", client, "ip netns exec clat jool_siit -i clat stats display")
 
     with subtest("gateway failure"):
+        observe("ipv4only.arpa from each gateway", client, "dig +short AAAA ipv4only.arpa @2001:db8:c::1; dig +short AAAA ipv4only.arpa @2001:db8:c::2")
+        observe("the follower before the failure", client, "systemctl is-active clat-follow; journalctl -u clat-follow --no-pager | tail -3")
         client.succeed(f"systemd-run --unit=stream sh -c '/run/current-system/sw/bin/nc {S1} 9000 > /tmp/stream'")
         client.wait_until_succeeds("test $(wc -l < /tmp/stream) -ge 3", timeout=30)
         client.succeed("curl -s --max-time 10 http://web.long.test/ && curl -s --max-time 10 http://web.short.test/")
@@ -582,9 +622,9 @@ in {
         time.sleep(20)
         after = client.succeed("wc -l < /tmp/stream").strip()
         observe(f"open flow: {before} lines, 20 s later {after} lines; the client's connection", client, "systemctl is-active stream.service; ss -tni | grep -A1 ':9000'")
-        observe("IPv4 literal with the CLAT still on gw1's prefix", client, "curl -s --max-time 5 http://198.51.100.80/")
-        observe("switch the CLAT to gw2's prefix", client, "ip netns exec clat jool_siit -i clat global update pool6 ${pool2}")
-        observe("IPv4 literal after the switch", client, "curl -s --max-time 5 http://198.51.100.80/")
+        took, out = seconds_until(client, "curl -s --max-time 3 http://198.51.100.80/")
+        print(f"FINDING an IPv4 literal works again {took}s later ({round(time.time() - crashed, 1)}s after the crash) with the CLAT follower, answer {out}")
+        observe("the follower's log", client, "journalctl -u clat-follow --no-pager | tail -5; ip netns exec clat jool_siit -i clat global display | grep pool6")
         observe("client resolved after failover", client, "resolvectl status | head -12")
 
     print("PROBE_NAT64_OK")
