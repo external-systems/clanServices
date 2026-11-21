@@ -223,7 +223,9 @@ any code (AGENTS.md rule 3).
     IPv4 nameserver, and the gateway translated that private IPv4
     destination. Two rules follow: an IPv6-only machine has IPv6
     nameservers only (G4), and a gateway refuses a /96 destination that
-    embeds a non-global IPv4 address.
+    embeds a non-global IPv4 address. The refusal is a firewall rule
+    behind the translator, probed in §10.11; Jool itself translates
+    such a packet.
   - **A, the fallback,** stays unused: carry pod IPv4 over the fabric
     to NAT44 on a gateway.
   *(probe-verified on both transports, PR1 and PR10; planned)*
@@ -1063,8 +1065,24 @@ IPv4-only server. Six runs on 2026-11-21, all green:
   unreachable" from the gateway to cluster pods: the test fixture's
   IPv4 nameserver, forwarded to by the cluster's CoreDNS, translated by
   the gateway. See G5 for the two rules this gives.
-- **Not covered:** the device variant on rke2; a node failure; a
-  gateway failure under pod load; ClusterMesh on IPv6-only NICs.
+- **An IfState apply changes nothing for pods** (second round,
+  2026-11-21). After `systemctl restart ifstate.service` on each node,
+  the CLAT unit was up again, a pod reached the IPv4 server, and pods
+  pinged each other in both families.
+- **The gateway refuses private IPv4 destinations, in its firewall.**
+  The rule sits in the forward chain behind the translator: a
+  translated packet to `10.0.0.0/8`, `100.64.0.0/10`, `169.254.0.0/16`,
+  `172.16.0.0/12` or `192.168.0.0/16` is rejected with an ICMP error.
+  A pod's request to `172.20.0.1` failed at once with "No route to
+  host" and the rule counted it. The translator itself translated the
+  packet: Jool does not refuse it.
+- **A test trap.** The first run of that check counted nothing. The
+  fixture's gateway had no IPv4 default route, so the kernel dropped
+  the packet at the routing step. A real gateway has a default route.
+  The fixture has one now, and the rule is a firewall rule, never a
+  missing route.
+- **Not covered:** a node failure; a gateway failure under pod load;
+  ClusterMesh on IPv6-only NICs.
 
 ## 11. Rough implementation design (draft, 2026-11-20)
 
