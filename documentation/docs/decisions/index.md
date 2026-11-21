@@ -208,7 +208,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D62 | revised (r24) | `org-pkgs` (external-systems/pkgs) owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
 | D66 | active (r24) | Org standard: one `org-pkgs` input and `flakeModules.default` (treefmt, docs, lock-sync, VM runner), no dev partition, devenv shell, org CI; VM suites in `clanTests` on euc-hel-0 (96 GiB / 36 vCPUs per suite, 2 h), side by side within `vmTests.parallel`, shared k3s/RKE2 bodies, `subtest` phases, exit status is the result |
 
-## Round 30: router and NAT gateway (2026-11-20)
+## Round 48: router and NAT gateway (2026-11-20)
 
 Design only; nothing is built yet.
 
@@ -220,6 +220,9 @@ applications hard-code IPv4. The IPv4 a node needs is its private
 fabric address: node addresses stay the fabric loopbacks (D47) and the
 control-plane endpoint stays IPv4 on the fabric (D60). A probe comes
 first; every suite today runs on a dual-stack underlay.
+
+Probed on 2026-11-21 (round 49): both transports, k3s and rke2, run on
+machines whose network cards have no IPv4. No code changed.
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 

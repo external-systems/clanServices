@@ -38,7 +38,7 @@ Round G2 (2026-11-21): **retrospective and the routed fabric.**
   k3s and rke2, and pod IPv4 leaves through each node's CLAT in both
   modes. G5 gains a simpler variant (the CLAT link in Cilium's
   `devices`), proposed.
-- New suites `k3s-ha-fabric` and `rke2-ha-fabric` (SPEC.md round 45).
+- New suites `k3s-ha-fabric` and `rke2-ha-fabric` (SPEC.md round 49).
 - §12 is the retrospective: what is not proven, the design risks, the
   coverage of the two Cilium modes, suite stability.
 
