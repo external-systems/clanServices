@@ -376,6 +376,9 @@ in {
         with subtest("prefix delegation: a /64 of the delegated /60 on the LAN link (N16)"):
             router.wait_until_succeeds("ip -6 -o addr show dev eth2 scope global | grep '2001:db8:10[0-9a-f][0-9a-f]:1::1/64' >/dev/null", timeout=60)
             router.succeed("grep '^ia_pd [0-9]*/::/60 eth2/1/64$' /etc/netif/dhcpcd/eth1.conf")
+            # the delegated prefix as a runtime file, for consumers (N16)
+            router.wait_until_succeeds("grep -x '2001:db8:10[0-9a-f][0-9a-f]::/60' /run/netif/pd/eth1", timeout=30)
+            router.fail("test -e /run/netif/pd/eth2")
             print("NETIF_DHCP_PD_OK")
 
         with subtest("a DHCPv4-only link: lease, DNS, IPv6 left to the kernel (N16)"):

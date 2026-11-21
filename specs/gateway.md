@@ -14,9 +14,10 @@ Round G0 (2026-11-20): **design round; docs only.** The owner decided the
 shape in a deciding session. Nothing in this file is implemented. Every
 decision is *(planned)* and several wait for a probe (§6).
 
-Round G1 (2026-11-20): **probe round.** Probes ran on euc-hel-0 from the
-branch `gateway-probes` (`lib/gateway/tests/probes/`, suites `probe-*`).
-Evidence is §10. No service code exists yet.
+Round G1 (2026-11-20): **probe round.** Probes ran on euc-hel-0
+(`lib/gateway/tests/probes/`, suites `probe-*`). Evidence is §10. No
+service code exists yet; netif got two small changes (N43, and the
+prefix file of N16).
 - **PR2 answered:** Jool in the host namespace bypasses the forward
   chain. G2 is amended: Jool runs in a namespace of its own.
 - **PR3 answered:** corerad works with a delegated prefix, a ULA, RDNSS,
@@ -953,9 +954,10 @@ Settings per machine (zone names are netif zone labels):
 
 ### 11.4 What netif needs first (slice S1)
 
-1. `mac` on a physical link (N43).
+1. `mac` on a physical link (N43). **Done.**
 2. A VLAN link with id 0 in a suite, with `mac` (N44).
-3. The delegated prefix as a runtime file (N16).
+3. The delegated prefix as a runtime file (N16). **Done**; the path in
+   netif's facts is left.
 4. `prefixDelegation.reserve` (N16).
 5. `netif-v6only` (N45): the probe `probe-v6only-host` is its draft.
 

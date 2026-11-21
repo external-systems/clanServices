@@ -23,10 +23,12 @@ here (`services/router`, `services/nat-gateway`), governed by
   default in a table of its own (`routingPolicy.table`, which works
   today for a static gateway), the primary's default also in main. To
   add: a DHCP gateway in a table, and the primary's default in both.
-- **N43** a MAC override on a physical link, **N44** a priority-tagged
+- **N43** a MAC override on a physical link (implemented, see above), **N44** a priority-tagged
   WAN, **N45** IPv6-only links as first-class. All planned.
-- **N16** will publish the delegated prefix as a runtime file, so a
-  consumer can react to a prefix change (`specs/gateway.md` G22).
+- **N16** publishes the delegated prefix as a runtime file,
+  `/run/netif/pd/<interface>`, so a consumer can react to a prefix
+  change (`specs/gateway.md` G22). Implemented.
+- **N43** `mac` on a physical link. Implemented.
 - **N16** will get `prefixDelegation.reserve`: a subnet id that no link
   receives, for a router's service prefix (`specs/gateway.md` G20,
   planned).
@@ -1234,8 +1236,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     dhcpcd's own route for the delegated prefix already refuses unused
     addresses: `unreachable <prefix> dev lo proto dhcp metric 1001`
     (PR6, `specs/gateway.md` §10.2).
-  - **To amend: the delegated prefix as a runtime file (2026-11-20,
-    planned; `specs/gateway.md` G22).** Consumers must react when the
+  - **The delegated prefix as a runtime file (2026-11-20;
+    `specs/gateway.md` G22).** Consumers must react when the
     ISP delegates another prefix, and only netif's exit script sees
     dhcpcd's events.
     - The exit script writes `/run/netif/pd/<interface>`: one delegated
@@ -1246,8 +1248,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
       restart of dhcpcd leaves it: a restart is not a prefix change.
     - netif starts nothing and keeps no history. A consumer watches the
       file with its own path unit and remembers the last prefix itself.
-    - The path is published per link in `clanServices.networking.links`
-      and the export, beside `prefixDelegation`.
+    - *(implemented; `netif-dhcp`, marker `NETIF_DHCP_PD_OK`; a
+      consumer is shown in `probe-router`)* Still planned: the path in
+      `clanServices.networking.links` and the export, beside
+      `prefixDelegation`. Until then a consumer builds it from the
+      delegating link's interface name.
   - **Runtime fact.** Delegated prefixes exist only at runtime. Exports and
     `clan.networkFacts` carry
     `prefixDelegation = { enable; hint; assign; dynamic = true; }`,
@@ -2026,12 +2031,14 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - Probe PR5 showed it with `extraSettings.link.address`
     (`specs/gateway.md` §10.4): IfState sets the MAC before dhcpcd
     starts, the DHCP server sees it, and it holds across an apply and a
-    reboot. The change is to apply `mac` to physical links too and to
-    drop the assertion that forbids it.
+    reboot.
+  - `mac` is now applied to a physical link. A member of a bond or a
+    bridge still may not set it: it takes the MAC of the link above.
   - dhcpcd's DUID does not follow the override: it came from another
     link's MAC. N33 owns the DHCP identity.
-  *(probe-verified, PR5; the option change is planned,
-  `specs/gateway.md` S1)*
+  *(implemented; eval tests `test_macOnPhysical`,
+  `test_macOnMemberRejected`; VM proof in `probe-wan`, a suite assertion
+  is planned with `specs/gateway.md` S1)*
 
 - **N44 A priority-tagged WAN (VLAN 0).** Some ISPs send and expect
   frames tagged with VLAN 0. netif renders it: a VLAN link with

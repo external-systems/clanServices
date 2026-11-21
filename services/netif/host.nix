@@ -23,11 +23,15 @@
   onlineLinks = lib.filterAttrs (_: l: l.requiredForOnline && (l.dhcp4 || l.dhcp6)) links;
 
   runtimeDir = "/run/netif-dns";
+  # One file per delegating link: its delegated prefixes, one per line
+  # (N16). Consumers watch it; it changes only when a prefix does.
+  pdDir = "/run/netif/pd";
   path = lib.makeBinPath [
     pkgs.coreutils
     pkgs.systemd
     pkgs.iproute2
     pkgs.gnugrep
+    pkgs.gnused
   ];
 
   deviceUnit = interface: "${utils.escapeSystemdPath "/sys/subsystem/net/devices/${interface}"}.device";
@@ -91,6 +95,28 @@
       EXPIRE6|RELEASE6|STOP6|NOCARRIER|STOPPED)
         rm -f "$d/$interface.dhcp6.dns" "$d/$interface.dhcp6.domain" ;;
     esac
+    # The delegated prefix as a runtime file (N16). Written only when it
+    # changes, by a rename, so a path unit fires once per change. A stop
+    # or a restart of dhcpcd leaves it: that is not a prefix change.
+    # shellcheck disable=SC2154
+    case "$reason" in
+      BOUND6|RENEW6|REBIND6|REBOOT6)
+        tmp="${pdDir}/.$interface.tmp"
+        : > "$tmp"
+        for name in $(env | sed -n 's/^\(new_dhcp6_ia_pd[0-9]*_prefix[0-9]*\)=.*/\1/p' | sort); do
+          eval "prefix=\$$name; length=\$''${name}_length; valid=\$''${name}_vltime"
+          if [ -n "$prefix" ] && [ -n "$length" ] && [ "$valid" != 0 ]; then
+            echo "$prefix/$length" >> "$tmp"
+          fi
+        done
+        if [ -s "$tmp" ] && [ "$(cat "$tmp")" != "$(cat "${pdDir}/$interface" 2>/dev/null)" ]; then
+          mv "$tmp" "${pdDir}/$interface"
+        else
+          rm -f "$tmp"
+        fi ;;
+      EXPIRE6)
+        rm -f "${pdDir}/$interface" ;;
+    esac
     # shellcheck disable=SC2154
     ${dnsApply} "$interface"
   '';
@@ -146,6 +172,7 @@
       "/run/dhcpcd"
       "/var/lib/dhcpcd"
       runtimeDir
+      pdDir
     ];
     ProtectHome = true;
     PrivateTmp = true;
@@ -172,6 +199,8 @@
   };
   dhcpcdDirs = [
     "d ${runtimeDir} 0755 root root -"
+    "d /run/netif 0755 root root -"
+    "d ${pdDir} 0755 root root -"
     "d /run/dhcpcd 0755 root root -"
     "d /var/lib/dhcpcd 0755 root root -"
   ];
