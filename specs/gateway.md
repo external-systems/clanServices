@@ -1027,16 +1027,23 @@ topologies: `fabric` is the `data-plane` suite's (routed-fabric, FRR,
 per-pair WireGuard, Cilium native routing), `mesh` is the `join`
 suite's (wireguard-mesh, VXLAN tunnel). Two nodes, each NIC IPv6 only,
 each node with the CLAT of G23; one NAT64 gateway built as G2; an
-IPv4-only server. Six runs on 2026-11-21, all green:
+IPv4-only server. Eight suites, all green on 2026-11-21 (second
+round; seconds are the run's wall time):
 
 | Suite | Seconds | As shipped | Pod pool mapped | CLAT link in `devices` |
 |---|---|---|---|---|
-| `probe-k3s-clat-fabric` | 208 | fails | works | |
-| `probe-k3s-clat-mesh` | 243 | fails | works | |
-| `probe-rke2-clat-fabric` | 603 | fails | works | |
-| `probe-rke2-clat-mesh` | 417 | fails | works | |
-| `probe-k3s-clat-fabric-device` | 351 | | | works |
-| `probe-k3s-clat-mesh-device` | 407 | | | works |
+| `probe-k3s-clat-fabric` | 220 | fails | works | |
+| `probe-k3s-clat-mesh` | 175 | fails | works | |
+| `probe-rke2-clat-fabric` | 329 | fails | works | |
+| `probe-rke2-clat-mesh` | 321 | fails | works | |
+| `probe-k3s-clat-fabric-device` | 154 | | | works |
+| `probe-k3s-clat-mesh-device` | 149 | | | works |
+| `probe-rke2-clat-fabric-device` | 276 | | | works |
+| `probe-rke2-clat-mesh-device` | 289 | | | works |
+
+The same day, every suite of the repo ran fresh on euc-hel-0
+(`vm-test --all --remote --rebuild`): the 46 suites outside this
+probe passed side by side, none needed a rerun alone.
 
 - **The routed fabric runs on IPv6-only NICs.** WireGuard endpoints
   were `[2001:db8:1::N]:port`, the BGP sessions established, node
