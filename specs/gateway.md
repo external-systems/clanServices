@@ -519,7 +519,18 @@ any code (AGENTS.md rule 3).
     It writes the delegated prefix to `/run/netif/pd/<interface>`, only
     when it changes. The router watches that file with a systemd path
     unit; nobody else hooks dhcpcd.
-  *(proposed; the deprecation and the rule update are probe-verified)*
+  - **Proven from end to end (PR8, §10.7):** 5.1 s from the new
+    prefix on the router to a client that prefers it, has retired the
+    old one and reaches the internet; the same when the prefix changed
+    while the router was off; no run of the hook when dhcpcd restarts
+    with the same prefix.
+  - The hook restarts corerad with `systemctl --no-block`. corerad is
+    ordered after the hook, so a blocking restart from inside the hook
+    never returns: in the first run it left corerad stopped and hung
+    the next boot.
+  - A restart of corerad keeps the clients' default route (the NixOS
+    unit restarts it with SIGHUP).
+  *(proposed; probe-verified, PR8)*
 
 - **G23 The CLAT** (proposed 2026-11-20; PR2, §10.1). A machine without
   IPv4 that must reach IPv4 literals runs a CLAT:
@@ -601,7 +612,7 @@ suite asserts what it showed (as `specs/netif.md` N40).
 | PR5 | MAC override and a priority-tagged WAN (VLAN 0). **Answered, §10.4** | netif N43, N44 |
 | PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? **Answered, §10.3** | G20, G16 |
 | PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? | G23 |
-| PR8 | The prefix hook end to end: netif's trigger, corerad restarted with the old prefix deprecated, the rule replaced, a reboot in between | G22 |
+| PR8 | The prefix hook end to end: netif's trigger, corerad restarted with the old prefix deprecated, the rule replaced, a reboot in between. **Answered, §10.7** | G22 |
 
 ## 7. Delivery plan
 
@@ -933,3 +944,28 @@ and NAT64 in front of an IPv4-only server. netif renders both machines.
 
 What is left for N45 is a suite, not code: `netif-v6only` asserts the
 lines above, and adds a guard rollback over IPv6.
+
+### 10.7 `probe-router`, the prefix hook (PR8; G22, netif N16)
+
+The same topology as §10.2, with the hook instead of manual steps:
+netif's exit script writes `/run/netif/pd/eth1`, a systemd path unit
+watches it, and the hook rewrites corerad's configuration (a runtime
+file), replaces the service prefix rule and keeps its state in
+`/var/lib/router/prefix.json`.
+
+- **No false trigger.** A restart of netif's dhcpcd unit that brought
+  the same prefix left the hook's run count at 2.
+- **A live change.** 5.1 s after the router had the new prefix, the
+  client had a preferred address in it, every address of the old prefix
+  was `deprecated`, and `curl` to the ISP answered. corerad logged the
+  old /64s as "DEPRECATED, preferred: 1s, valid: 2h0m0s". The client's
+  default route was never withdrawn.
+- **The service prefix** moved with the same run: the new address
+  answered, the old one timed out.
+- **A change while the router was off.** After the boot the hook first
+  restored its state from disk, then saw the new prefix and retired the
+  other one. The client was on the right prefix as soon as the router's
+  links were up.
+- **The trap.** `systemctl try-restart corerad` from inside the hook
+  blocked: corerad is ordered after the hook. corerad stayed stopped
+  and the next boot hung for 300 s. `--no-block` fixed it.
