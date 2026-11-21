@@ -37,8 +37,11 @@ Found on the way:
 - CoreDNS must listen on named addresses: every machine already runs a
   local resolver on port 53.
 
-New probes: PR7 (the CLAT's health check) and PR8 (the prefix change
-from end to end).
+| Probe | Answer | Changed |
+|---|---|---|
+| PR7 | A small health check moves a machine's CLAT to a live gateway by itself | the client role runs it |
+| PR8 | The router handles a prefix change in 5 seconds, also when it happened while the router was off | netif publishes the prefix as a file |
+| PR9 | One router with two WANs fails over in 6 seconds and back in 4, for IPv4 and IPv6 | failover changes no route, only one firewall rule |
 
 ## Build order
 

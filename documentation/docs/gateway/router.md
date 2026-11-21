@@ -129,6 +129,10 @@ Built after the single-WAN router is proven.
 - IPv6: the LAN keeps one prefix. On the backup WAN the router rewrites
   the prefix (NPTv6).
 - Open connections reset on failover.
+- A probe on 2026-11-20 showed it with fixed addresses: 6 seconds to
+  the backup, 4 seconds back, for both IPv4 and IPv6. The switch
+  changes one firewall rule and no route, so nothing else on the router
+  can undo it.
 - A modem that offers plain Ethernet with DHCP is the simplest: to netif
   it is just one more WAN port.
 

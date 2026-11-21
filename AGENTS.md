@@ -54,7 +54,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   together.
 - `specs/gateway.md` — the contract and status authority for the planned
   `router` and `nat-gateway` services and `lib/gateway/` (decisions
-  G1–G23, probes PR1–PR8, slices S1–S9). Nothing is implemented yet.
+  G1–G23, probes PR1–PR9, slices S1–S9). Nothing is implemented yet.
   Its human pages are `documentation/docs/gateway/`. Edit them together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision

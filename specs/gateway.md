@@ -357,7 +357,40 @@ any code (AGENTS.md rule 3).
   - Flows reset on failover. Class 3 services do not survive a backup
     WAN behind carrier NAT; classes 1 and 2 do.
   - A modem that presents Ethernet with DHCP is just a second WAN link.
-  *(planned)*
+  - **Mechanism (proposed 2026-11-20; PR9, §10.10): failover changes
+    no route.**
+    - Each WAN has a routing table of its own with its default route
+      (netif `routingPolicy.table`), and IfState declares one fwmark
+      rule per WAN and family.
+    - One nftables rule sets the mark of the active WAN on traffic that
+      the main table would send to a WAN. The health check replaces
+      that one rule and flushes conntrack. IfState never sees a change,
+      so an apply cannot undo a failover.
+    - The primary's default route stays in the main table: the
+      router's own sockets need a route when they connect, before the
+      mark exists, and replies must pass the reverse-path check.
+    - The health check pings a target through each WAN with that WAN's
+      mark. Three failures move traffic off the primary, three
+      successes move it back.
+    - IPv6 on the backup: a stateful prefix rewrite of the source
+      (`snat ip6 prefix to`), from the primary's delegated prefix and
+      from the ULA prefix. The host part is kept.
+    - Measured: 6.2 s to fail over (dead upstream with the link up, and
+      a dead link), 4.4 s to fail back, both families, also for the
+      router's own traffic.
+  - **Open, before code:**
+    - traffic from the router to a neighbour on a WAN's own subnet is
+      steered to the active WAN too, and fails for the other WAN. The
+      clean fix is a rule "main table, ignore default routes" before
+      the mark rules; IfState 2.5.1 cannot declare it
+      (`suppress_prefixlength`). The alternative is an nftables set of
+      the WANs' subnets;
+    - the probe's WANs were static. A DHCP WAN's gateway must reach
+      its table: netif renders a table's default only for a static
+      gateway today (N21, to amend);
+    - the backup's delegated prefix is a runtime value, as in G20: the
+      rewrite rule is written by G22's hook.
+  *(planned; the mechanism is probe-verified for static WANs, PR9)*
 
 - **G17 Multi-WAN with several routers (on-prem, two carriers).** Design
   only until G16 is proven.
@@ -563,13 +596,15 @@ any code (AGENTS.md rule 3).
     gateway died, IPv4 literals failed until `pool6` was changed; one
     `jool_siit global update pool6` repaired it without touching the
     namespace. The client role therefore runs a small health check
-    that points the CLAT at a live gateway. Asking each nameserver for
-    `ipv4only.arpa` (RFC 7050) would test DNS64 and name the prefix in
-    one step; that is not probed yet.
+    that points the CLAT at a live gateway. It asks each nameserver
+    for `ipv4only.arpa` (RFC 7050): the answer names that gateway's
+    /96, and a ping through the /96 shows that it translates. Proven
+    (PR7, §10.9): the follower moved the CLAT by itself after a gateway
+    died. Each gateway's DNS therefore serves `ipv4only.arpa`.
   - Rejected for the host path: one shared /96 for all gateways. It
     needs a route that follows gateway health, which is the fabric,
     and G4 keeps the host path off the fabric.
-  *(proposed; the CLAT and the switch are probe-verified)*
+  *(proposed; probe-verified, PR2 and PR7)*
 
 ## 3. Invariants (target)
 
@@ -627,7 +662,8 @@ suite asserts what it showed (as `specs/netif.md` N40).
 | PR4 | k3s and rke2 on an IPv6-only underlay. **Answered for the join topology, §10.5** | SPEC.md D67 |
 | PR5 | MAC override and a priority-tagged WAN (VLAN 0). **Answered, §10.4** | netif N43, N44 |
 | PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? **Answered, §10.3** | G20, G16 |
-| PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? | G23 |
+| PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? **Answered, §10.9** | G23 |
+| PR9 | One router, two WANs: failover without changing a route, IPv6 prefix translation on the backup. **Answered for static WANs, §10.10** | G16, netif N21 |
 | PR8 | The prefix hook end to end: netif's trigger, corerad restarted with the old prefix deprecated, the rule replaced, a reboot in between. **Answered, §10.7** | G22 |
 
 ## 7. Delivery plan
@@ -1009,3 +1045,51 @@ host routing), a NAT64 gateway built as G2, an IPv4-only server.
   2 MB down, ping. Cluster DNS kept answering.
 - The gateway saw one conntrack entry per flow, from Jool's private
   address to its public one.
+
+### 10.9 `probe-nat64`, the CLAT follower (PR7; G23)
+
+Each gateway's CoreDNS serves `ipv4only.arpa`. A unit on the client
+asks each nameserver for it every 2 s, takes the /96 of the first
+answer, pings the server's address inside that /96, and updates the
+CLAT's `pool6` when the /96 differs.
+
+- Both gateways answered `ipv4only.arpa` with addresses inside their
+  own /96.
+- After `gw1` crashed the follower logged "pool6 ... -> 2001:db8:a2:0:64:0::/96
+  (nameserver 2001:db8:c::2)", and an IPv4 literal answered through
+  `gw2` with no manual step.
+- **Traps.** The first follower built a malformed prefix and exited 22
+  on every cycle; a real one validates what it parses. And the CLAT's
+  unit must be idempotent, or an IfState apply fails it and everything
+  bound to it.
+
+### 10.10 `probe-dual-wan` (PR9; G16, netif N21)
+
+Topology: a client, a router with two static WANs, two ISPs, and one
+server behind both. netif renders every link; each WAN has
+`routingPolicy.table`.
+
+- **First run, no default route in the main table: nothing worked.**
+  The router's own `curl` failed at once (no route at connect time),
+  and replies to forwarded IPv4 were dropped by the reverse-path check.
+- **Second run, marking everything from the LAN: IPv6 was dead.** The
+  router's own answers to LAN hosts, neighbour advertisements included,
+  were marked and left through the WAN, because a WAN's table has no
+  LAN route.
+- **Third run: works.** The mark is set only on traffic the main table
+  would send to a WAN.
+
+| Event | IPv4 | IPv6 |
+|---|---|---|
+| Both WANs up | from the primary's address | the client's own address |
+| Primary's upstream dies, link up | backup after 6.2 s | backup after 6.2 s, source rewritten to the backup's prefix, host part kept |
+| Primary returns | primary after 4.4 s | primary after 4.4 s |
+| Primary's cable pulled | backup after 6.2 s | backup after 6.2 s |
+
+- The router's own traffic followed in both families.
+- A ULA source was rewritten on either WAN.
+- An IfState apply during the failover changed nothing: the fwmark
+  rules were listed as unchanged and traffic stayed on the backup.
+- netif's guard stayed green with a WAN down.
+- **Still wrong:** from the router, a ping to the backup's gateway
+  failed while the primary was active. It was steered to the primary.

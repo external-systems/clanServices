@@ -19,6 +19,10 @@ here (`services/router`, `services/nat-gateway`), governed by
   by `modules`; corerad replaces "radvd or corerad"; CoreDNS is the DNS
   server.
 - **N21** will allow one default per WAN link for multi-WAN (planned).
+  A probe showed the shape (`specs/gateway.md` §10.10): each WAN's
+  default in a table of its own (`routingPolicy.table`, which works
+  today for a static gateway), the primary's default also in main. To
+  add: a DHCP gateway in a table, and the primary's default in both.
 - **N43** a MAC override on a physical link, **N44** a priority-tagged
   WAN, **N45** IPv6-only links as first-class. All planned.
 - **N16** will publish the delegated prefix as a runtime file, so a
