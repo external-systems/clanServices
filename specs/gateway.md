@@ -903,3 +903,31 @@ Settings per machine (zone names are netif zone labels):
 | `nat-gateway` | client, outsider, gw1, gw2, server4 | `probe-nat64` |
 | `netif-v6only` | static, slaac, provider, server4 | `probe-v6only-host` |
 | `k3s-v6only`, `rke2-v6only` | the join suites on IPv6-only NICs | `probe-<distro>-v6only` |
+
+### 10.6 `probe-v6only-host` (netif N45; U13)
+
+Topology: a provider node that routes a /64 to a machine and is its
+gateway at `fe80::1` (no advertisement, no DHCP), a second machine that
+learns everything from router advertisements, and the provider's DNS64
+and NAT64 in front of an IPv4-only server. netif renders both machines.
+
+- **netif already brings such a machine up.** Static: one global
+  address, `default via fe80::1 dev eth1 metric 100`, an empty IPv4
+  routing table, no IPv4 address but loopback. The lockout guard
+  accepted the link-local gateway ("gateways and targets answer").
+  `ifstatecli check` listed nothing to change. No unit failed.
+- **Advertisements only:** an address by SLAAC, the default route from
+  the advertisement at netif's metric, DNS from the link's static
+  `nameservers`.
+- **Names.** `getent ahosts` returned only the synthesized address, and
+  `curl` to an IPv4-only name answered through NAT64.
+  `resolvectl query` also listed the IPv4 address: a program that picks
+  the IPv4 answer itself fails.
+- **An IPv4 literal without a CLAT** fails at once ("could not connect",
+  no route), not after a timeout.
+- **Reaching the machine:** SSH answered over IPv6; an unopened port
+  did not.
+- Listening sockets on `0.0.0.0` exist (SSH, LLMNR) and harm nothing.
+
+What is left for N45 is a suite, not code: `netif-v6only` asserts the
+lines above, and adds a guard rollback over IPv6.

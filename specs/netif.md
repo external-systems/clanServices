@@ -2046,7 +2046,12 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   address on any NIC (U13): a static or learned IPv6 address, an on-link
   link-local gateway (`gateway.onLink`), static nameservers, and the
   guard (N25) and "online" working with IPv6 alone. RA-only DNS stays
-  uncovered (N39). *(planned; suite `netif-v6only`,
+  uncovered (N39).
+  - A probe ran both shapes with today's netif and found nothing to
+    change in the code: a static address with the gateway `fe80::1`,
+    and an address and default route from router advertisements
+    (`specs/gateway.md` §10.6). The suite is what is missing.
+  *(probe-verified 2026-11-20; suite `netif-v6only` planned,
   `specs/gateway.md` S1)*
 
 
