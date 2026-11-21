@@ -1,4 +1,4 @@
-# Decision record (D1–D66)
+# Decision record (D1–D68)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history. D64 (allocations in
@@ -207,6 +207,31 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D61 | active (r18) | IfState 2.5.1 is the exclusive static network renderer; live reconciliation, no networkd/netdev/scripted networking, per-link DHCP hooks, runtime-secret includes, FRR/Cilium ownership boundaries |
 | D62 | revised (r24) | `org-pkgs` (external-systems/pkgs) owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
 | D66 | active (r24) | Org standard: one `org-pkgs` input and `flakeModules.default` (treefmt, docs, lock-sync, VM runner), no dev partition, devenv shell, org CI; VM suites in `clanTests` on euc-hel-0 (96 GiB / 36 vCPUs per suite, 2 h), side by side within `vmTests.parallel`, shared k3s/RKE2 bodies, `subtest` phases, exit status is the result |
+
+## Round 30: router and NAT gateway (2026-11-20)
+
+Design only; nothing is built yet.
+
+### D67 — Clusters on an IPv6-only underlay (planned)
+
+A public IPv4 costs money in the cloud, so clan machines there get no
+IPv4 address on their NICs. Clusters stay dual-stack inside, because
+applications hard-code IPv4. The IPv4 a node needs is its private
+fabric address: node addresses stay the fabric loopbacks (D47) and the
+control-plane endpoint stays IPv4 on the fabric (D60). A probe comes
+first; every suite today runs on a dual-stack underlay.
+
+### D68 — `router` and `nat-gateway` have their own contract (planned)
+
+Two new services, the edge of a LAN and IPv4 reach for machines that
+have none, are governed by `specs/gateway.md` (decisions G1–G23). See
+[Router and NAT gateway](../gateway/index.md).
+
+Two of its decisions touch the cluster contract. G20: a Service behind
+a router gets a public IPv6 address from the ISP's block; the pool
+model (D8) is unchanged. G21: your own address block is announced by
+fabric borders only (D9, D56); what the border still lacks for that
+needs a decision here first.
 
 ## Round 25: host networking gets its own contract
 

@@ -15,14 +15,20 @@ router has no radio.
 |---|---|---|
 | netif (IfState) | the five ports, found by permanent MAC; VLANs and bridges; LAN addresses; forwarding sysctls; static routes | inventory |
 | dhcpcd, started by a netif hook | WAN DHCPv4 lease; DHCPv6 prefix delegation; the delegated `/64`s on LAN links | inventory (netif link settings) |
-| nftables | NAT and the firewall | `modules` |
-| kea | the DHCP server for the house | `modules` |
-| radvd or corerad | router advertisements | `modules` |
-| pppd | PPPoE, only if the ISP needs it | `modules` |
+| nftables | NAT and the zone firewall | the `router` service |
+| kea | the DHCP server for the house | the `router` service |
+| corerad | router advertisements | the `router` service |
+| CoreDNS | DNS for the house, with a blocklist | the `router` service |
+| pppd | PPPoE, only if the ISP needs it | the `router` service |
 
 netif publishes each link's Linux name and a zone (`wan`, `lan`, `mgmt`) as
-read-only NixOS options. The router module in `modules` uses those names and
+read-only NixOS options. The `router` service uses those names and
 never reads the inventory.
+
+Since 2026-11-20 the router's services are planned as a clanService in
+this repo, not in the `modules` repo, so a consumer needs one flake. The
+design (zones, DNS, IPv6, a backup WAN) is on
+[Router and NAT gateway](../gateway/index.md).
 
 ## What the probe showed
 
@@ -125,7 +131,9 @@ corrected configuration.
 
 ## Planned later
 
-- the router module in `modules`;
+- the `router` service ([design](../gateway/router.md));
+- a MAC override on the WAN port, so it can stand in for the ISP's
+  gateway, and a check of VLAN 0 on the WAN;
 - a full `netif-router` suite with a prefix change and a reboot.
 
 Both are phase P5 of the [plan](plan.md).
