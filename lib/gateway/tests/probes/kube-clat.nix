@@ -234,8 +234,16 @@ in
           allow = "{ 2001:db8:1::/64, 2001:db8:a0::/44 }";
           inside = ["2001:db8:1::64/64"];
           outside = ["198.51.100.1/24"];
+          # an IPv4 default route, as a real gateway has: without one the
+          # kernel drops a private destination before the firewall sees it
           routes =
-            lib.mapAttrsToList (_: n: {
+            [
+              {
+                to = "0.0.0.0/0";
+                via = "198.51.100.80";
+              }
+            ]
+            ++ lib.mapAttrsToList (_: n: {
               to = "${routed n}::/64";
               via = underlay n;
             })
@@ -359,10 +367,30 @@ in
           for address in ips["beta"]:
               status, _ = in_pod(f"after the mapping: pod on alpha pings the pod on beta at {address}", "alpha", f"ping -c2 -W3 {address}")
               assert status == 0, address
-          # the cluster's CoreDNS forwards to the fixture's IPv4 nameserver
-          in_pod("pod to a private IPv4 address beyond the cluster", "alpha", "wget -T 4 -qO- http://192.168.1.254/", timeout=10)
-          observe("gateway: private IPv4 destinations refused", gw, "nft list ruleset | grep nat64-private")
-          assert "packets 0 " not in gw.succeed("nft list ruleset | grep nat64-private"), "the gateway refused nothing"
+          # a /96 destination that embeds a private IPv4 address: who refuses it?
+          def jool_stats(machine, command):
+              lines = machine.succeed(f"{command} stats display").splitlines()
+              pairs = (line.rpartition(":") for line in lines if ":" in line)
+              return {key.strip(): int(value) for key, _, value in pairs if value.strip().isdigit()}
+
+          def moved(before, after):
+              return {key: value - before.get(key, 0) for key, value in after.items() if value != before.get(key, 0)}
+
+          clat_stats = "ip netns exec clat jool_siit -i clat"
+          gw_stats = "ip netns exec nat64 jool -i default"
+          observe("gateway: its IPv4 addresses", gw, "ip -4 -br addr; ip netns exec nat64 ip -4 route")
+          for private in ["172.20.0.1", "192.168.1.254"]:
+              observe(f"alpha: route to {private}", alpha, f"ip route get {private}")
+              observe(f"gateway NAT64 namespace: route to {private}", gw, f"ip netns exec nat64 ip route get {private}")
+              before = (jool_stats(alpha, clat_stats), jool_stats(gw, gw_stats))
+              rule = gw.succeed("nft list ruleset | grep nat64-private")
+              status, _ = in_pod(f"pod to the private IPv4 address {private}", "alpha", f"wget -T 4 -qO- http://{private}/", timeout=10)
+              assert status != 0, f"{private} was reachable through the NAT64 prefix"
+              print(f"FINDING {private}: CLAT counters that moved: {moved(before[0], jool_stats(alpha, clat_stats))}")
+              print(f"FINDING {private}: gateway NAT64 counters that moved: {moved(before[1], jool_stats(gw, gw_stats))}")
+              refused = gw.succeed("nft list ruleset | grep nat64-private") != rule
+              print(f"FINDING {private}: the gateway firewall rule counted it: {refused}")
+              assert refused, f"the gateway did not refuse {private}"
           observe("gateway conntrack", gw, "conntrack -L 2>/dev/null | grep 198.51.100.80 | head -6")
           assert all(mapped.values()), f"pod IPv4 egress with the pool mapping: {mapped}"
 
