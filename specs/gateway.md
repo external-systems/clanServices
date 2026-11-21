@@ -31,6 +31,17 @@ Evidence is §10. No service code exists yet.
 - G22 and G23 were *proposed* in this round. The owner accepted them,
   and the G16 mechanism, on 2026-11-21 (round G2).
 
+Round G2 (2026-11-21): **retrospective and the routed fabric.**
+- The owner accepted G16's mechanism, G22 and G23. Probes stay on the
+  branch until real suites replace them.
+- **PR10 answered (§10.11):** both transports run on IPv6-only NICs,
+  k3s and rke2, and pod IPv4 leaves through each node's CLAT in both
+  modes. G5 gains a simpler variant (the CLAT link in Cilium's
+  `devices`), proposed.
+- New suites `k3s-ha-fabric` and `rke2-ha-fabric` (SPEC.md round 45).
+- §12 is the retrospective: what is not proven, the design risks, the
+  coverage of the two Cilium modes, suite stability.
+
 ## 0. Status vocabulary
 
 As in `specs/netif.md` §0: *(planned)*, *(probe-verified)*,
@@ -1216,7 +1227,7 @@ the tunnel mode kept equal where the mode allows it.
 |---|---|---|
 | One server | covered inside `data-plane` | `single` |
 | A second node joins | covered inside `data-plane` | `join` |
-| Three servers, one dies | **no suite** | `ha` |
+| Three servers, one dies | `ha-fabric` (added 2026-11-21; the dead server is a spine) | `ha` |
 | LoadBalancer pools, Node IPAM, firewall, a node dies | `data-plane` | **no suite** (BGP delivery cannot apply; pool allocation, Node IPAM and the firewall can) |
 | netif renders the underlay | `data-plane-netif`, `routed-fabric-netif` | **no suite** |
 | ClusterMesh | `clustermesh` | `clustermesh-tunnel` |
@@ -1230,10 +1241,11 @@ Closing the gaps without doubling the suite count: a suite body takes
 script runs on both. Phases that only one mode has branch explicitly,
 as bodies already do on `distro`. Proposed order:
 
-1. `ha` on the fabric: the control plane losing a server is the
-   failure the owner's clusters will see most.
+1. `ha` on the fabric: **done.** `k3s-ha-fabric` and `rke2-ha-fabric`
+   reuse the `ha` test script unchanged and passed on the first run.
 2. The mode-neutral phases of `data-plane` on the mesh.
 3. `data-plane-netif` on the mesh.
+4. A cluster inside a mode on the fabric.
 
 ### 12.4 Suite stability
 

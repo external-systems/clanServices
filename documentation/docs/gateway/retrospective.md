@@ -42,7 +42,7 @@ Written on 2026-11-21, after the probe rounds. The contract is
 | What is tested | Routed fabric, native routing | WireGuard mesh, tunnel |
 |---|---|---|
 | One server, a second node | yes | yes |
-| Three servers, one dies | **no** | yes |
+| Three servers, one dies | yes, since 2026-11-21 | yes |
 | LoadBalancer pools, Node IPAM, firewall | yes | **no** |
 | netif renders the underlay | yes | **no** |
 | ClusterMesh, all three kinds | yes | yes |
@@ -51,7 +51,9 @@ Written on 2026-11-21, after the probe rounds. The contract is
 | Pod IPv4 through a CLAT | probe | probe |
 
 The plan: one test body takes the transport as an argument and runs the
-same script on both. First the three-server suite on the fabric.
+same script on both. The three-server suite on the fabric is done and
+passed first time, for k3s and rke2. Next: LoadBalancer pools and the
+firewall on the mesh.
 
 ## Making the suites more stable
 

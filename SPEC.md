@@ -181,6 +181,22 @@ tested the open netif assumptions. netif's delivery phases are renamed
   parent device; netif will use a udev `.link` rename for `match.path`
   (N26). D61 is unchanged: `.link` files are udev's, not networkd's.
 
+Round 45 (2026-11-21): **both transports proven on IPv6-only NICs; the
+HA contract on the routed fabric** (`specs/gateway.md` round G2, §10.11,
+§12.3). Points that touch this file:
+- D67 is probe-verified on both transports: `routed-fabric` with
+  native routing and `wireguard-mesh` with the tunnel, k3s and rke2,
+  two nodes whose NICs have no IPv4 (`probe-<distro>-clat-<transport>`).
+  No code changed. D67 stays *planned* until a suite replaces the
+  probes.
+- New suites `k3s-ha-fabric` and `rke2-ha-fabric`
+  (`K3S_HA_FABRIC_OK`, `RKE2_HA_FABRIC_OK`): the `ha` contract and its
+  test script, on the routed fabric. alpha and beta are spines, gamma
+  is a leaf; the manager that dies is a spine. Body:
+  `lib/kube-cluster/tests/vm/ha-fabric.nix`.
+- The coverage of each Cilium mode is the table in
+  `specs/gateway.md` §12.3.
+
 Round 30 (2026-11-20): **router and NAT gateway designed; docs only.**
 The owner decided that the home router and a NAT gateway are
 clanServices in this repo, with their own contract `specs/gateway.md`

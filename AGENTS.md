@@ -32,7 +32,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   IfState node), `ifstate-noop.nix` (the "a reapply changes nothing"
   helper), `headscale-vm.nix` (an offline Headscale), `wifi-ap.nix`
   (simulated access points).
-  Each service registers its suites (37 in all) in its `flake-module.nix`
+  Each service registers its suites (39 in all) in its `flake-module.nix`
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
