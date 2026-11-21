@@ -24,7 +24,7 @@ depends on the answer.
 |---|---|---|
 | PR2 | In the main namespace Jool bypasses the firewall's forward rules. In a namespace of its own it does not | Jool always gets its own namespace |
 | PR3 | corerad handles the delegated prefix, a private prefix, DNS options and the NAT64 hint. It does nothing when the prefix changes | the router handles a prefix change itself |
-| PR4 | k3s joins a second node with no IPv4 on any network card | rke2 is next |
+| PR4 | k3s and rke2 each join a second node with no IPv4 on any network card | nothing; the routed fabric is still to test |
 | PR5 | A port presents another MAC while it is found by its real one. A VLAN 0 link gets a DHCP lease | netif gets both as options |
 | PR6 | The prefix swap keeps the host part and the visitor's address, refuses unused addresses, and moves with one rule after a prefix change | nothing |
 

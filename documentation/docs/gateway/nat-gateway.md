@@ -93,8 +93,8 @@ next probe.
 A node needs an IPv4 address, but not on its card. Every fabric node
 already has a stable private IPv4 and an IPv6 address on a loopback, and
 Kubernetes uses those. IPv4 only exists inside the fabric, so it costs
-nothing. This is decision D67. A probe showed k3s joining a second node
-with no IPv4 on any network card.
+nothing. This is decision D67. A probe showed k3s and rke2 each joining
+a second node with no IPv4 on any network card.
 
 ## What netif still needs for this
 
