@@ -67,13 +67,22 @@ leave an IPv6-only node:
 - **A, the fallback, unused:** carry it over the fabric to a gateway
   that does ordinary NAT.
 
-A probe decided on 2026-11-20. B works when the node maps the pod
-addresses one to one into IPv6, with no NAT on the node. Hiding pods
-behind the node's address does not work: Cilium's own NAT only knows
-its own network devices, and a firewall rule never sees pod traffic.
+Probes decided on 2026-11-20 and 2026-11-21. B works on both
+transports (the routed fabric with native routing and the WireGuard mesh
+tunnel) and on k3s and rke2, with IPv6-only network cards. Two ways to
+do it both pass:
 
-Still open: the test ran with the tunnel transport, not the routed
-fabric, and the pod address range per node must be known to the CLAT.
+| | Map the pod pool | Let Cilium hide the pods |
+|---|---|---|
+| How | the CLAT maps the cluster's pod pool one to one into a prefix of the node | the CLAT link is added to Cilium's devices; Cilium hides pods behind the CLAT's address |
+| Needs a prefix routed to each node | yes | no |
+| The gateway sees which pod | yes | no |
+| Tested | k3s and rke2 | k3s |
+
+The proposal is the second: less to set up. You decide.
+
+Out of the box neither happens: a pod's packet reaches the CLAT with
+the pod's own address and gets no answer.
 
 ## Redundancy
 

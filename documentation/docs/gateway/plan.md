@@ -25,7 +25,7 @@ depends on the answer.
 | PR1 | Pod IPv4 leaves an IPv6-only node through the node's CLAT when the pod range is mapped one to one. Hiding pods behind the node's address fails | way B is chosen, without NAT on the node |
 | PR2 | In the main namespace Jool bypasses the firewall's forward rules. In a namespace of its own it does not | Jool always gets its own namespace |
 | PR3 | corerad handles the delegated prefix, a private prefix, DNS options and the NAT64 hint. It does nothing when the prefix changes | the router handles a prefix change itself |
-| PR4 | k3s and rke2 each join a second node with no IPv4 on any network card | nothing; the routed fabric is still to test |
+| PR4 | k3s and rke2 each join a second node with no IPv4 on any network card | nothing |
 | PR5 | A port presents another MAC while it is found by its real one. A VLAN 0 link gets a DHCP lease | netif gets both as options |
 | PR6 | The prefix swap keeps the host part and the visitor's address, refuses unused addresses, and moves with one rule after a prefix change | nothing |
 
@@ -41,6 +41,7 @@ Found on the way:
 |---|---|---|
 | PR7 | A small health check moves a machine's CLAT to a live gateway by itself | the client role runs it |
 | PR8 | The router handles a prefix change in 5 seconds, also when it happened while the router was off | netif publishes the prefix as a file |
+| PR10 | The routed fabric and the mesh both run on IPv6-only network cards, k3s and rke2. Pod IPv4 leaves through each node's CLAT in both modes. Adding the CLAT link to Cilium's devices works with no address mapping | a simpler way for pod IPv4 is proposed |
 | PR9 | One router with two WANs fails over in 6 seconds and back in 4, for IPv4 and IPv6 | failover changes no route, only one firewall rule |
 
 ## Build order

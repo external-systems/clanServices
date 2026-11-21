@@ -185,18 +185,37 @@ any code (AGENTS.md rule 3).
       packets reached the CLAT with the pod's address;
     - an nftables masquerade on the CLAT link counted no packet: with
       eBPF host routing, pod traffic never passes that hook.
-  - **Open, before code:**
-    - the pod range per node is not static with multi-pool IPAM. The
-      mapping either follows the node's allocations, or maps the whole
-      cluster pool on every node into that node's /64 (a /16 needs a
-      /112). The second needs no daemon and is the proposal;
-    - the probe ran in tunnel mode (`wireguard-mesh`). Native routing
-      (`routed-fabric`) sets a native-routing CIDR and is not probed;
-    - uploads from a pod were not measured (the probe's tool sent no
-      body).
+  - **Proven on both transports and both distributions (PR10,
+    §10.11):** native routing on `routed-fabric` and the VXLAN tunnel
+    on `wireguard-mesh`, k3s and rke2, two nodes, IPv6-only NICs. Each
+    node maps the whole cluster IPv4 pod pool (a /16) into a /112 of a
+    prefix routed to that node. Only a node's own pods leave through
+    its CLAT, so the mapping needs no per-node pod range and no daemon.
+    This closes the multi-pool question.
+  - **A simpler variant also works (PR10; proposed 2026-11-21, owner
+    to decide):** the CLAT link joins Cilium's `devices`. Cilium's own
+    eBPF masquerade then hides pods behind the CLAT's IPv4 address
+    (`192.0.0.1`), and the CLAT needs only its one host mapping.
+    | | Pod pool mapping | CLAT link in `devices` |
+    |---|---|---|
+    | State on the node | none | Cilium's NAT table (already used for all other egress) |
+    | Needs a prefix routed to the node | yes (a /112) | no: one address |
+    | Gateway allowlist | node prefixes | node CLAT addresses |
+    | Gateway can tell pods from the host | yes, by address | no |
+    | Cluster configuration | none | the kube service adds the link to `devices` |
+    | Proven | k3s and rke2, both transports | k3s, both transports |
+    The proposal is the second: less to configure, no address plan per
+    node, and it works where a node has one address only. The first
+    stays as the documented alternative for a site that wants pod
+    addresses visible at the gateway.
+  - **Found on the way:** the cluster's CoreDNS forwarded to the node's
+    IPv4 nameserver, and the gateway translated that private IPv4
+    destination. Two rules follow: an IPv6-only machine has IPv6
+    nameservers only (G4), and a gateway refuses a /96 destination that
+    embeds a non-global IPv4 address.
   - **A, the fallback,** stays unused: carry pod IPv4 over the fabric
     to NAT44 on a gateway.
-  *(probe-verified in tunnel mode, PR1; planned)*
+  *(probe-verified on both transports, PR1 and PR10; planned)*
 
 ### Redundancy
 
@@ -656,14 +675,15 @@ suite asserts what it showed (as `specs/netif.md` N40).
 
 | Probe | Question | Gates |
 |---|---|---|
-| PR1 | Node CLAT with Jool SIIT under Cilium: does pod IPv4 egress work? **Answered for tunnel mode, §10.8** | G5 |
+| PR1 | Node CLAT with Jool SIIT under Cilium: does pod IPv4 egress work? **Answered, §10.8 and §10.11** | G5 |
 | PR2 | Jool beside the nftables firewall: where is traffic filtered? **Answered, §10.1** | G2 |
 | PR3 | corerad with a delegated prefix, PREF64 and DNS options. **Answered, §10.2** | G15, G22 |
-| PR4 | k3s and rke2 on an IPv6-only underlay. **Answered for the join topology, §10.5** | SPEC.md D67 |
+| PR4 | k3s and rke2 on an IPv6-only underlay. **Answered for both transports, §10.5 and §10.11** | SPEC.md D67 |
 | PR5 | MAC override and a priority-tagged WAN (VLAN 0). **Answered, §10.4** | netif N43, N44 |
 | PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? **Answered, §10.3** | G20, G16 |
 | PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? **Answered, §10.9** | G23 |
 | PR9 | One router, two WANs: failover without changing a route, IPv6 prefix translation on the backup. **Answered for static WANs, §10.10** | G16, netif N21 |
+| PR10 | Two nodes with IPv6-only NICs on both transports (`routed-fabric` with native routing, `wireguard-mesh` with the tunnel): does the fabric come up, does the pod network work, does pod IPv4 leave through each node's CLAT? **Answered, §10.11** | G5, G23, SPEC.md D67 |
 | PR8 | The prefix hook end to end: netif's trigger, corerad restarted with the old prefix deprecated, the rule replaced, a reboot in between. **Answered, §10.7** | G22 |
 
 ## 7. Delivery plan
@@ -987,6 +1007,54 @@ server behind both. netif renders every link; each WAN has
 - **Still wrong:** from the router, a ping to the backup's gateway
   failed while the primary was active. It was steered to the primary.
 
+### 10.11 `probe-<distro>-clat-<transport>` (PR10; G5, G23, SPEC.md D67)
+
+One probe body (`kube-clat.nix`) with the same test script on two
+topologies: `fabric` is the `data-plane` suite's (routed-fabric, FRR,
+per-pair WireGuard, Cilium native routing), `mesh` is the `join`
+suite's (wireguard-mesh, VXLAN tunnel). Two nodes, each NIC IPv6 only,
+each node with the CLAT of G23; one NAT64 gateway built as G2; an
+IPv4-only server. Six runs on 2026-11-21, all green:
+
+| Suite | Seconds | As shipped | Pod pool mapped | CLAT link in `devices` |
+|---|---|---|---|---|
+| `probe-k3s-clat-fabric` | 208 | fails | works | |
+| `probe-k3s-clat-mesh` | 243 | fails | works | |
+| `probe-rke2-clat-fabric` | 603 | fails | works | |
+| `probe-rke2-clat-mesh` | 417 | fails | works | |
+| `probe-k3s-clat-fabric-device` | 351 | | | works |
+| `probe-k3s-clat-mesh-device` | 407 | | | works |
+
+- **The routed fabric runs on IPv6-only NICs.** WireGuard endpoints
+  were `[2001:db8:1::N]:port`, the BGP sessions established, node
+  addresses stayed dual-stack on the fabric loopback, and Cilium
+  reported "Routing: Network: Native, Host: BPF". No code changed: the
+  endpoint is an IPv6 literal and the upstream peer list has no IPv4.
+- **The pod network works in both families** between the nodes, before
+  and after the CLAT change, in both modes.
+- **As shipped, both modes fail the same way.** The pod's SYN reached
+  the CLAT link with the pod's address (`10.1.0.58`). Cilium masquerades
+  only on its `devices`; in native mode those were the fabric loopback,
+  the fabric link and `eth1`.
+- **Pod pool mapped: works in both modes.** `eamt add
+  <node prefix>::a:0:0/112 10.1.0.0/16` on each node. A pod at
+  `10.1.1.8` left as `<node prefix>::a:0:108`.
+- **CLAT link in `devices`: works in both modes, with no mapping.**
+  Cilium reported "Masquerading: BPF [eth1, clat0, ...]" and the pod's
+  SYN reached the CLAT link as `192.0.0.1`. The node's own IPv4 kept
+  working with Cilium attached to the link.
+- From a pod on each node, in every run: a page, 2 MB down, 2 MB up,
+  ping, cluster DNS.
+- **Not a network fault:** the earlier "upload sent no body" (§10.8)
+  was the test tool. busybox `wget --post-file` reads the file as a C
+  string, and a file of zero bytes is an empty string.
+- **Stray traffic.** The CLAT link carried "ICMP host 192.168.1.254
+  unreachable" from the gateway to cluster pods: the test fixture's
+  IPv4 nameserver, forwarded to by the cluster's CoreDNS, translated by
+  the gateway. See G5 for the two rules this gives.
+- **Not covered:** the device variant on rke2; a node failure; a
+  gateway failure under pod load; ClusterMesh on IPv6-only NICs.
+
 ## 11. Rough implementation design (draft, 2026-11-20)
 
 A draft for the owner's review, shaped by the probes. Names may change;
@@ -1154,7 +1222,7 @@ the tunnel mode kept equal where the mode allows it.
 | ClusterMesh | `clustermesh` | `clustermesh-tunnel` |
 | ClusterMesh, external and selective | `clustermesh-external-native`, `clustermesh-selective` | `clustermesh-external`, `clustermesh-selective-tunnel` |
 | A cluster inside a mode | **no suite** (`modes` has a fabric, no cluster) | `k3s-modes` |
-| IPv6-only NICs, two nodes | PR10 | PR4, PR10 |
+| IPv6-only NICs, two nodes | PR10 (probe) | PR4, PR10 (probes) |
 | Pod IPv4 egress through a CLAT | PR10 | PR1, PR10 |
 
 Closing the gaps without doubling the suite count: a suite body takes
