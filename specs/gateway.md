@@ -169,18 +169,34 @@ any code (AGENTS.md rule 3).
   *(planned; the path, the allowlist and the failover are
   probe-verified, PR2)*
 
-- **G5 Pod IPv4 egress in the cloud.**
-  - **B, the target:** each node runs a CLAT (Jool SIIT). Pod IPv4
-    leaves the node as IPv6 towards the same NAT64. One mechanism, no
-    fabric dependency, and IPv4 literals work on the host too.
-  - **A, the fallback:** carry pod IPv4 over the fabric to NAT44 on a
-    gateway.
-  - Probe PR1 decides. Amend this decision with the result before code.
-  - The host half is proven (PR2): a CLAT built as G23 carries IPv4
-    literals, ping and bulk traffic from an IPv6-only host. Under
-    Cilium the open question is whether pod traffic passes the hook
-    Jool uses at all.
-  *(planned; PR1)*
+- **G5 Pod IPv4 egress in the cloud: the node's CLAT, with the pod
+  range mapped statelessly** (decided by PR1, 2026-11-20).
+  - Each node runs the CLAT of G23. Pod IPv4 that leaves the cluster
+    takes the node's IPv4 default route into the CLAT and continues as
+    IPv6 to the same NAT64 as the host's own traffic. One mechanism, no
+    fabric dependency.
+  - **Pod addresses are not masqueraded on the node.** The CLAT maps
+    the pod range one to one into IPv6 (an explicit address mapping: a
+    pod /24 to a /120 of the node's own /64). The gateway is the only
+    place that keeps state. Its allowlist names that range, and the
+    range is routed to the node.
+  - Why not a masquerade (PR1, §10.8):
+    - Cilium's eBPF masquerade covers only Cilium's own devices. Pod
+      packets reached the CLAT with the pod's address;
+    - an nftables masquerade on the CLAT link counted no packet: with
+      eBPF host routing, pod traffic never passes that hook.
+  - **Open, before code:**
+    - the pod range per node is not static with multi-pool IPAM. The
+      mapping either follows the node's allocations, or maps the whole
+      cluster pool on every node into that node's /64 (a /16 needs a
+      /112). The second needs no daemon and is the proposal;
+    - the probe ran in tunnel mode (`wireguard-mesh`). Native routing
+      (`routed-fabric`) sets a native-routing CIDR and is not probed;
+    - uploads from a pod were not measured (the probe's tool sent no
+      body).
+  - **A, the fallback,** stays unused: carry pod IPv4 over the fabric
+    to NAT44 on a gateway.
+  *(probe-verified in tunnel mode, PR1; planned)*
 
 ### Redundancy
 
@@ -605,7 +621,7 @@ suite asserts what it showed (as `specs/netif.md` N40).
 
 | Probe | Question | Gates |
 |---|---|---|
-| PR1 | Node CLAT with Jool SIIT under Cilium: does pod IPv4 egress work? | G5 |
+| PR1 | Node CLAT with Jool SIIT under Cilium: does pod IPv4 egress work? **Answered for tunnel mode, §10.8** | G5 |
 | PR2 | Jool beside the nftables firewall: where is traffic filtered? **Answered, §10.1** | G2 |
 | PR3 | corerad with a delegated prefix, PREF64 and DNS options. **Answered, §10.2** | G15, G22 |
 | PR4 | k3s and rke2 on an IPv6-only underlay. **Answered for the join topology, §10.5** | SPEC.md D67 |
@@ -969,3 +985,27 @@ file), replaces the service prefix rule and keeps its state in
 - **The trap.** `systemctl try-restart corerad` from inside the hook
   blocked: corerad is ordered after the hook. corerad stayed stopped
   and the next boot hung for 300 s. `--no-block` fixed it.
+
+### 10.8 `probe-k3s-clat` (PR1; G5)
+
+Topology: the `k3s-single` node with an IPv6-only NIC and the CLAT of
+G23 (Cilium 1.20, tunnel mode over `wireguard-mesh`, eBPF masquerade and
+host routing), a NAT64 gateway built as G2, an IPv4-only server.
+
+- **The node itself** reached the server through its CLAT before and
+  after Cilium started.
+- **Cilium** reported `devices=wg-mesh` and "Masquerading: BPF
+  [wg-mesh]". It added no netfilter rule.
+- **As shipped: fails.** The pod's SYN arrived on the CLAT link as
+  `10.1.0.5 > 198.51.100.80`, with the pod's address. Jool translated
+  that source through `pool6` into an address nothing routes back, and
+  `wget` timed out.
+- **An nftables masquerade on the CLAT link: fails.** Its counter
+  stayed at 0 packets while the pod's packets went out of that link.
+- **The pod /24 mapped statelessly: works.**
+  `eamt add 2001:db8:1::a:0/120 10.1.0.0/24` in the CLAT, the /120
+  routed to the node. The capture showed `10.1.0.201` leaving as
+  `2001:db8:1::a:c9` and the answer coming back. From a pod: a page,
+  2 MB down, ping. Cluster DNS kept answering.
+- The gateway saw one conntrack entry per flow, from Jool's private
+  address to its public one.

@@ -62,14 +62,18 @@ that moves it to a live gateway. In the probe one command moved it.
 Clusters stay dual-stack inside. Two ways for a pod's IPv4 traffic to
 leave an IPv6-only node:
 
-- **B, the target:** the node itself turns the pod's IPv4 into IPv6 (a
+- **B, chosen:** the node itself turns the pod's IPv4 into IPv6 (a
   CLAT), and it takes the same road as above.
-- **A, the fallback:** carry it over the fabric to a gateway that does
-  ordinary NAT.
+- **A, the fallback, unused:** carry it over the fabric to a gateway
+  that does ordinary NAT.
 
-A probe decides. B needs no fabric and uses one mechanism for
-everything. It works for the machine itself; with Cilium it is the
-next probe.
+A probe decided on 2026-11-20. B works when the node maps the pod
+addresses one to one into IPv6, with no NAT on the node. Hiding pods
+behind the node's address does not work: Cilium's own NAT only knows
+its own network devices, and a firewall rule never sees pod traffic.
+
+Still open: the test ran with the tunnel transport, not the routed
+fabric, and the pod address range per node must be known to the CLAT.
 
 ## Redundancy
 
