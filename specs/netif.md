@@ -24,7 +24,8 @@ here (`services/router`, `services/nat-gateway`), governed by
   today for a static gateway), the primary's default also in main. To
   add: a DHCP gateway in a table, and the primary's default in both.
 - **N43** a MAC override on a physical link (implemented, see above), **N44** a priority-tagged
-  WAN, **N45** IPv6-only links as first-class. All planned.
+  WAN, **N45** IPv6-only links as first-class. All three have a suite
+  (`gateway-wan`, `netif-v6only`).
 - **N16** publishes the delegated prefix as a runtime file,
   `/run/netif/pd/<interface>`, so a consumer can react to a prefix
   change (`specs/gateway.md` G22). Implemented.
@@ -1249,7 +1250,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     - netif starts nothing and keeps no history. A consumer watches the
       file with its own path unit and remembers the last prefix itself.
     - *(implemented; `netif-dhcp`, marker `NETIF_DHCP_PD_OK`; a
-      consumer is shown in `probe-router`)* Still planned: the path in
+      consumer is shown in `gateway-router`)* Still planned: the path in
       `clanServices.networking.links` and the export, beside
       `prefixDelegation`. Until then a consumer builds it from the
       delegating link's interface name.
@@ -2037,21 +2038,21 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - dhcpcd's DUID does not follow the override: it came from another
     link's MAC. N33 owns the DHCP identity.
   *(implemented; eval tests `test_macOnPhysical`,
-  `test_macOnMemberRejected`; VM proof in `probe-wan`, a suite assertion
-  is planned with `specs/gateway.md` S1)*
+  `test_macOnMemberRejected`; suite `gateway-wan`,
+  `GATEWAY_WAN_OK`)*
 
 - **N44 A priority-tagged WAN (VLAN 0).** Some ISPs send and expect
   frames tagged with VLAN 0. netif renders it: a VLAN link with
   `vlan.id = 0` on the WAN port (amended 2026-11-20 after PR5).
   - IfState accepts id 0, the child is named `<parent>.0`, DHCP runs
-    over it and the frames carry the tag. Without the child no frame
-    passed in either direction (`specs/gateway.md` §10.4).
+    over it and the frames carry the tag. Without the child nothing
+    is answered in either direction (`specs/gateway.md` §10.4).
   - The child gets a generated MAC, so it needs `mac` as well (N43).
   - Open: the 802.1p priority bits (IfState's egress map is not
     probed), and whether an optical module strips or adds the tag
     itself. The second is hardware (`specs/gateway.md` §8).
-  *(probe-verified, PR5, for the tag and DHCP; a suite is planned,
-  `specs/gateway.md` S1)*
+  *(implemented; suite `gateway-wan`, `GATEWAY_WAN_OK`; the priority
+  bits and the optical module stay open)*
 
 - **N45 An IPv6-only link is first-class.** A machine with no IPv4
   address on any NIC (U13): a static or learned IPv6 address, an on-link
@@ -2062,8 +2063,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     change in the code: a static address with the gateway `fe80::1`,
     and an address and default route from router advertisements
     (`specs/gateway.md` §10.6). The suite is what is missing.
-  *(probe-verified 2026-11-20; suite `netif-v6only` planned,
-  `specs/gateway.md` S1)*
+  *(implemented, no code needed; suite `netif-v6only`,
+  `NETIF_V6ONLY_OK`, also with the guard over IPv6)*
 
 
 ## 4. Invariants

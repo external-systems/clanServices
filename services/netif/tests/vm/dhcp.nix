@@ -298,6 +298,7 @@ in {
     import time
 
     ${noopHelper}
+    ${import ../../../../tests/suite-lib.nix}
 
     def dns(machine, link):
         return machine.succeed(f"resolvectl dns {link}").split(":", 1)[1].split()
@@ -308,8 +309,30 @@ in {
             current = dns(machine, link)
             if all(server in current for server in servers):
                 return
+            # the polling interval of this loop; `timeout` is its deadline
             time.sleep(1)
         raise AssertionError(f"{machine.name}: {link} DNS is {dns(machine, link)}, wanted {servers}")
+
+    def wait_no_dns(machine, link, timeout=30):
+        machine.wait_until_succeeds(f"out=$(resolvectl dns {link}) && test -z \"$(echo \"$out\" | cut -d: -f2- | tr -d '[:space:]')\"", timeout=timeout)
+
+    def wait_dns_stable(machine, link, server, seconds, timeout=60):
+        """DNS is on the link and stays for `seconds`: the settled state,
+        not a moment between two link events."""
+        end = time.time() + timeout
+        while True:
+            wait_dns(machine, link, server, timeout=max(1, end - time.time()))
+            try:
+                holds_for(machine, f"resolvectl dns {link} | grep -F {server} >/dev/null", seconds)
+                return
+            except Exception:
+                if time.time() >= end:
+                    raise
+
+    def wait_lease_dropped(machine, interface, timeout=30):
+        # dhcpcd saw the link go down: its NOCARRIER run of netif's exit
+        # script removes the lease's DNS files
+        machine.wait_until_succeeds(f"test ! -e /run/netif-dns/{interface}.dhcp4.dns && test ! -e /run/netif-dns/{interface}.dhcp6.dns", timeout=timeout)
 
     def eloop_errors(machine):
         return int(machine.succeed("journalctl -b --no-pager | grep -c eloop_event_add || true").strip())
@@ -332,6 +355,11 @@ in {
         isp.wait_for_unit("kea-dhcp6-server.service", timeout=120)
         isp.wait_for_unit("radvd.service", timeout=120)
         isp.wait_until_succeeds("ss -uln | grep ':547 ' >/dev/null", timeout=60)
+
+        with subtest("versions"):
+            print_versions(router, ["kernel", "ifstate", "dhcpcd", "nftables"])
+            print("VERSION router dhcpcd unit:", router.succeed("systemctl show -p ExecStart --value netif-dhcpcd-eth1.service | grep -o 'dhcpcd-[0-9][0-9.]*' | head -n1").strip())
+            print_versions(isp, ["kernel", "ifstate", "kea"])
 
         with subtest("leases: DHCPv4, DHCPv6 and the RA default"):
             router.wait_for_unit("multi-user.target", timeout=180)
@@ -407,8 +435,15 @@ in {
                 assert [(r["dev"], r["protocol"], r["metric"]) for r in v4] == [("eth1", "dhcp", 100)], v4
                 v6 = json.loads(machine.succeed("ip -j -6 route show default"))
                 assert [(r["dev"], r["protocol"], r["metric"]) for r in v6] == [("eth1", "ra", 100)], v6
-            # the same holds after the private lease renews (60 s lease)
-            time.sleep(35)
+            # The same holds across a renewal of the private lease, watched
+            # for 35 s. kea4 sets 'valid-lifetime = 60' and sends no T1, so
+            # dhcpcd renews at half the lease, every 30 s: 35 s outlasts one
+            # renewal. The exit script rewrites the lease's DNS file on
+            # RENEW, which proves the renewal happened inside the window.
+            lease_stamp = "stat -c %y /run/netif-dns/eth2.dhcp4.dns"
+            before_renewal = client4.succeed(lease_stamp)
+            holds_for(client4, "ip -j -4 route show default | jq -e '[.[].dev] == [\"eth1\"]' >/dev/null", 35)
+            assert client4.succeed(lease_stamp) != before_renewal, "the private lease did not renew within 35 s"
             v4 = json.loads(client4.succeed("ip -j -4 route show default"))
             assert [r["dev"] for r in v4] == ["eth1"], v4
             print("NETIF_DHCP_DEFAULT_OK")
@@ -452,7 +487,10 @@ in {
         with subtest("a real carrier loss: both protocols, DNS and the RA default return (N16)"):
             router.send_monitor_command("set_link vlan1 off")
             router.wait_until_succeeds("test \"$(cat /sys/class/net/eth1/carrier)\" = 0", timeout=20)
-            time.sleep(4)
+            # the link stays down until dhcpcd dropped the lease and
+            # resolved holds no DNS for it
+            wait_lease_dropped(router, "eth1")
+            wait_no_dns(router, "eth1")
             assert dns(router, "eth1") == [], dns(router, "eth1")
             router.send_monitor_command("set_link vlan1 on")
             wait_wan_back(new_dns)
@@ -461,7 +499,10 @@ in {
 
         with subtest("five down/up cycles (N16)"):
             for cycle in range(5):
-                router.succeed("ip link set eth1 down; sleep 3; ip link set eth1 up")
+                # down until dhcpcd dropped the lease, then up
+                router.succeed("ip link set eth1 down")
+                wait_lease_dropped(router, "eth1")
+                router.succeed("ip link set eth1 up")
                 wait_wan_back(new_dns)
                 assert eloop_errors(router) == 0, f"cycle {cycle}"
             # the delegated prefix is still on the LAN link
@@ -469,22 +510,33 @@ in {
             print("NETIF_DHCP_FLAP_OK")
 
         with subtest("a static link down/up, ten fast flaps, a resolved restart (N9)"):
-            router.succeed("ip link set eth2 down; sleep 2")
+            router.succeed("ip link set eth2 down")
+            wait_no_dns(router, "eth2")
             assert dns(router, "eth2") == []
             router.succeed("ip link set eth2 up")
             wait_dns(router, "eth2", "192.168.10.53", timeout=20)
             router.succeed("for i in $(seq 10); do ip link set eth2 down; ip link set eth2 up; done")
-            time.sleep(6)
-            wait_dns(router, "eth2", "192.168.10.53", timeout=5)
+            # After the storm DNS must be back and stay: present on every
+            # check for 6 s. No timer sets the 6 s; it is the window in
+            # which a late link event in resolved or the watcher would
+            # still remove the servers.
+            wait_dns_stable(router, "eth2", "192.168.10.53", 6)
             router.succeed("systemctl restart systemd-resolved.service")
             wait_dns(router, "eth1", *new_dns, "2001:db8::53", timeout=30)
             wait_dns(router, "eth2", "192.168.10.53", timeout=30)
             print("NETIF_DHCP_DNS_FLAP_OK")
 
         with subtest("the DNS watcher and dhcpcd are restarted when they die (N31)"):
+            old_watcher = router.succeed("systemctl show -p MainPID --value netif-dns.service").strip()
             router.succeed("systemctl kill -s KILL netif-dns.service")
             router.wait_until_succeeds("systemctl is-active netif-dns.service", timeout=20)
-            router.succeed("ip link set eth2 down; sleep 1; ip link set eth2 up")
+            # a new watcher process, and its `ip monitor` is running
+            router.wait_until_succeeds(f"pid=$(systemctl show -p MainPID --value netif-dns.service); test \"$pid\" != 0 && test \"$pid\" != {old_watcher} && pgrep -P \"$pid\" -x ip >/dev/null", timeout=30)
+            # the link is down until resolved forgot its DNS: only the new
+            # watcher can bring the servers back
+            router.succeed("ip link set eth2 down")
+            wait_no_dns(router, "eth2")
+            router.succeed("ip link set eth2 up")
             wait_dns(router, "eth2", "192.168.10.53", timeout=20)
             router.succeed("systemctl kill -s KILL netif-dhcpcd-eth1.service")
             router.wait_until_succeeds("systemctl is-active netif-dhcpcd-eth1.service && test \"$(systemctl show -p NRestarts --value netif-dhcpcd-eth1.service)\" -ge 1", timeout=30)

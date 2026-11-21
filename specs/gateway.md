@@ -15,7 +15,8 @@ shape in a deciding session. Nothing in this file is implemented. Every
 decision is *(planned)* and several wait for a probe (§6).
 
 Round G1 (2026-11-20): **probe round.** Probes ran on euc-hel-0
-(`lib/gateway/tests/probes/`, suites `probe-*`). Evidence is §10. No
+(then `lib/gateway/tests/probes/`, suites `probe-*`; suites of
+`lib/gateway/tests/vm/` since round G3). Evidence is §10. No
 service code exists yet; netif got two small changes (N43, and the
 prefix file of N16).
 - **PR2 answered:** Jool in the host namespace bypasses the forward
@@ -33,8 +34,7 @@ prefix file of N16).
   and the G16 mechanism, on 2026-11-21 (round G2).
 
 Round G2 (2026-11-21): **retrospective and the routed fabric.**
-- The owner accepted G16's mechanism, G22 and G23. Probes stay on the
-  branch until real suites replace them.
+- The owner accepted G16's mechanism, G22 and G23.
 - **PR10 answered (§10.11):** both transports run on IPv6-only NICs,
   k3s and rke2, and pod IPv4 leaves through each node's CLAT in both
   modes. G5 gains a simpler variant (the CLAT link in Cilium's
@@ -42,6 +42,21 @@ Round G2 (2026-11-21): **retrospective and the routed fabric.**
 - New suites `k3s-ha-fabric` and `rke2-ha-fabric` (SPEC.md round 49).
 - §12 is the retrospective: what is not proven, the design risks, the
   coverage of the two Cilium modes, suite stability.
+
+Round G3 (2026-11-21): **the probes became suites; mode parity.**
+- The owner decided G5: the CLAT link joins Cilium's `devices`.
+- The probe branch merged into this one. Every probe is now a suite
+  that asserts what it showed (§5, §6, §10): `gateway-wan`,
+  `gateway-nat64`, `gateway-router`, `gateway-dual-wan`,
+  `netif-v6only`, `<distro>-v6only`, `<distro>-clat-<transport>`,
+  `k3s-clat-<transport>-mapped`. They run on fixtures in
+  `lib/gateway/tests/vm/`; no service code exists yet.
+- The suites corrected the design in G16 (four points), G22 (state
+  loss across a reboot), G23 (hysteresis, the gateway's own health
+  check, an ICMP limit) and §10.4. Each is marked where it stands.
+- Both Cilium modes now have the same suites where the mode allows it
+  (§12.3): `data-plane-tunnel`, `join-netif`, `k3s-modes-fabric`.
+- §12 is updated: closed rows say so, new risks are added.
 
 ## 0. Status vocabulary
 
@@ -181,45 +196,54 @@ any code (AGENTS.md rule 3).
   *(planned; the path, the allowlist and the failover are
   probe-verified, PR2)*
 
-- **G5 Pod IPv4 egress in the cloud: the node's CLAT, with the pod
-  range mapped statelessly** (decided by PR1, 2026-11-20).
+- **G5 Pod IPv4 egress in the cloud: the node's CLAT, with the CLAT
+  link in Cilium's `devices`** (the CLAT path decided by PR1,
+  2026-11-20; the variant decided by the owner, 2026-11-21).
   - Each node runs the CLAT of G23. Pod IPv4 that leaves the cluster
     takes the node's IPv4 default route into the CLAT and continues as
     IPv6 to the same NAT64 as the host's own traffic. One mechanism, no
     fabric dependency.
-  - **Pod addresses are not masqueraded on the node.** The CLAT maps
-    the pod range one to one into IPv6 (an explicit address mapping: a
-    pod /24 to a /120 of the node's own /64). The gateway is the only
-    place that keeps state. Its allowlist names that range, and the
-    range is routed to the node.
-  - Why not a masquerade (PR1, §10.8):
-    - Cilium's eBPF masquerade covers only Cilium's own devices. Pod
-      packets reached the CLAT with the pod's address;
+  - **Decided 2026-11-21 (owner): the CLAT link joins Cilium's
+    `devices`.** Cilium's own eBPF masquerade hides pods behind the
+    CLAT's IPv4 address (`192.0.0.1`). The CLAT needs only its one host
+    mapping, the node needs one address and no routed prefix, and the
+    gateway's allowlist names node CLAT addresses. The kube service
+    adds the link to `devices` on a machine that has a CLAT.
+  - Why Cilium must do it (PR1, §10.8; pinned by the `-mapped` suites):
+    - Cilium's eBPF masquerade covers only its own devices. Without the
+      CLAT link in `devices`, pod packets reach the CLAT with the pod's
+      address;
     - an nftables masquerade on the CLAT link counted no packet: with
       eBPF host routing, pod traffic never passes that hook.
-  - **Proven on both transports and both distributions (PR10,
-    §10.11):** native routing on `routed-fabric` and the VXLAN tunnel
-    on `wireguard-mesh`, k3s and rke2, two nodes, IPv6-only NICs. Each
+  - **The documented alternative: map the pod pool statelessly.** Each
     node maps the whole cluster IPv4 pod pool (a /16) into a /112 of a
-    prefix routed to that node. Only a node's own pods leave through
-    its CLAT, so the mapping needs no per-node pod range and no daemon.
-    This closes the multi-pool question.
-  - **A simpler variant also works (PR10; proposed 2026-11-21, owner
-    to decide):** the CLAT link joins Cilium's `devices`. Cilium's own
-    eBPF masquerade then hides pods behind the CLAT's IPv4 address
-    (`192.0.0.1`), and the CLAT needs only its one host mapping.
-    | | Pod pool mapping | CLAT link in `devices` |
+    prefix routed to that node (`eamt add <node prefix>::a:0:0/112
+    10.1.0.0/16`). No state on the node, and the gateway can tell pods
+    from the host by address. It costs a routed prefix per node. For a
+    site that wants pod addresses visible at the gateway.
+    | | CLAT link in `devices` (decided) | Pod pool mapping |
     |---|---|---|
-    | State on the node | none | Cilium's NAT table (already used for all other egress) |
-    | Needs a prefix routed to the node | yes (a /112) | no: one address |
-    | Gateway allowlist | node prefixes | node CLAT addresses |
-    | Gateway can tell pods from the host | yes, by address | no |
-    | Cluster configuration | none | the kube service adds the link to `devices` |
-    | Proven | k3s and rke2, both transports | k3s, both transports |
-    The proposal is the second: less to configure, no address plan per
-    node, and it works where a node has one address only. The first
-    stays as the documented alternative for a site that wants pod
-    addresses visible at the gateway.
+    | State on the node | Cilium's NAT table (already used for all other egress) | none |
+    | Needs a prefix routed to the node | no: one address | yes (a /112) |
+    | Gateway allowlist | node CLAT addresses | node prefixes |
+    | Gateway can tell pods from the host | no | yes, by address |
+    | Cluster configuration | the kube service adds the link to `devices` | none |
+  - Masquerading on the CLAT link changes nothing inside the cluster:
+    a ClusterIP Service sees the pod's own address in both families,
+    and a node never sees `192.0.0.1` as the source of a pod.
+  - **Unit order does not matter.** Nothing orders the cluster unit
+    after the CLAT, and on the mesh k3s started first. Cilium attaches
+    to a `clat0` that appears, or is deleted and made again, after it
+    started. An IfState apply does not recreate the link.
+  - **Open: Cilium attaches late.** The agent lists `clat0` as a
+    masquerade device, and is Ready, up to about 12 s before its
+    program is on the link (measured 0.1 to 12.5 s; the mesh is the
+    slow one). A pod's IPv4 packet in that window was not tested; it
+    most likely leaves with the pod's address and is lost. The window
+    opens at boot and when the link is really recreated.
+  - **Proven on both transports** (native routing on `routed-fabric`,
+    the VXLAN tunnel on `wireguard-mesh`), two nodes, IPv6-only NICs:
+    the decided design on k3s and rke2, the alternative on k3s (§10.11).
   - **Found on the way:** the cluster's CoreDNS forwarded to the node's
     IPv4 nameserver, and the gateway translated that private IPv4
     destination. Two rules follow: an IPv6-only machine has IPv6
@@ -397,7 +421,8 @@ any code (AGENTS.md rule 3).
       rule per WAN and family.
     - One nftables rule sets the mark of the active WAN on traffic that
       the main table would send to a WAN. The health check replaces
-      that one rule and flushes conntrack. IfState never sees a change,
+      that one rule and deletes the conntrack entries of the WAN it
+      leaves. IfState never sees a change,
       so an apply cannot undo a failover.
     - The primary's default route stays in the main table: the
       router's own sockets need a route when they connect, before the
@@ -411,20 +436,54 @@ any code (AGENTS.md rule 3).
     - Measured: 6.2 s to fail over (dead upstream with the link up, and
       a dead link), 4.4 s to fail back, both families, also for the
       router's own traffic.
+  - **Added by the suite (`gateway-dual-wan`, 2026-11-21, DHCPv4 WANs):**
+    - The health check deletes only the conntrack entries of the WAN
+      it leaves: a new flow copies the packet mark into `ct mark`, and
+      the check runs `conntrack -D -m <mark>`. Flows to the router and
+      between LANs keep their entries. `conntrack -F` is gone.
+    - **Every WAN that can become active has a default route in the
+      main table**, the primary's first by metric. With only the
+      primary's, an expired DHCP lease on the primary removes it, the
+      steering rule matches nothing, and IPv4 is dead for forwarded
+      and local traffic. This corrects "the primary's default route
+      stays in the main table": it does not stay when the lease ends.
+    - A health ping is bound to its WAN's link as well as marked. A
+      WAN's table is empty without a lease; a marked packet then falls
+      through to the main table and the dead WAN looks healthy.
+    - **The forward chain drops WAN to LAN and WAN to WAN for new
+      flows.** Inbound to the translated prefix has no LAN route (the
+      rewrite is source-only) and would leave through the other WAN:
+      without the drop the router is a transit between its ISPs.
+    - Start state: the health check must not count failures before
+      the primary had time to get its lease. Seen once: the router
+      started on the backup and corrected itself after three good
+      checks.
+    - Hysteresis of three checks is enough: a primary that flapped
+      3 s down, 3 s up for 24 s moved nothing; 7 s down, 1 s up moved
+      once.
   - **Open, before code:**
     - traffic from the router to a neighbour on a WAN's own subnet is
-      steered to the active WAN too, and fails for the other WAN. The
-      clean fix is a rule "main table, ignore default routes" before
-      the mark rules; IfState 2.5.1 cannot declare it
-      (`suppress_prefixlength`). The alternative is an nftables set of
-      the WANs' subnets;
-    - the probe's WANs were static. A DHCP WAN's gateway must reach
-      its table: netif renders a table's default only for a static
-      gateway today (N21, to amend);
+      steered to the active WAN too, and fails for the other WAN (the
+      suite pins this). The clean fix is a rule "main table, ignore
+      default routes" before the mark rules; IfState 2.5.1 cannot
+      declare it (`suppress_prefixlength`). The alternative is an
+      nftables set of the WANs' subnets;
+    - **netif N21 to amend** (proven with a fixture unit, `wan-routes`):
+      netif renders a DHCP lease's gateway into the link's
+      `routingPolicy.table`, and a second default in the main table
+      for a backup link. Today `defaultRoute.ipv4 = false` means
+      dhcpcd's `nogateway`, and a DHCP link's table gets no default;
+    - **netif's guard and a dead WAN:** the guard requires a DHCP
+      default and a neighbour answer per gateway. After a boot with
+      the primary's ISP box dead, `netif-guard` failed. No rollback
+      happened only because the configuration was the last good one.
+      A deploy during a primary outage would be rolled back. With two
+      WANs the guard must accept one live WAN;
     - the backup's delegated prefix is a runtime value, as in G20: the
-      rewrite rule is written by G22's hook.
-  *(planned; the mechanism is probe-verified for static WANs, PR9)*
-
+      rewrite rule is written by G22's hook. Not proven: the suite's
+      WANs have static IPv6.
+  *(planned; the mechanism is suite-verified for DHCPv4 WANs with
+  static IPv6: `gateway-dual-wan`, `GATEWAY_DUAL_WAN_OK`)*
 - **G17 Multi-WAN with several routers (on-prem, two carriers).** Design
   only until G16 is proven.
   - Inside: G7's set for unmanaged devices (VRRP, advertisements from
@@ -612,7 +671,34 @@ any code (AGENTS.md rule 3).
     the next boot.
   - A restart of corerad keeps the clients' default route (the NixOS
     unit restarts it with SIGHUP).
-  *(planned; probe-verified, PR8)*
+  - **Added by the suite (`gateway-router`, 2026-11-21):**
+    - **The hook's state file must be on persistent storage, and that
+      is not enough.** With the file lost and the prefix changed while
+      the router was off, the router advertises only the new prefix.
+      Clients keep the old one preferred beside it (up to the
+      advertised 45 min), the kernel picked the old source, and IPv6
+      to the internet was dead. Only the shortened lifetimes bound
+      it. Open: a way to retire a stale prefix without state (for
+      example: retire every global prefix seen on a zone link that is
+      not inside the current delegation).
+    - A subnet id that does not fit the delegation gets nothing, never
+      a wrong prefix: dhcpcd refuses it ("invalid prefix"), the hook
+      lists no /64 for the zone and writes no service rule. IPv4 and
+      the ULA keep working. The service asserts at evaluation that
+      every subnet id fits the delegation hint. Proven with a /56, a
+      /60 and a bare /64.
+    - Several retired prefixes are advertised together (two changes
+      11 s apart); both survive a reboot.
+    - corerad counts a deprecated prefix down: clients see a preferred
+      lifetime of 1 s or 0, valid at most 2 h.
+    - NetworkManager 1.58 follows the retirement like the kernel
+      client, 0.1 s behind.
+    - Not tested: systemd may drop a path-unit event while the hook
+      runs (about 0.1 s). The hook should read the file again before
+      it exits. Also open: a lease shorter than the retirement window,
+      and two prefixes delegated at once (the hook reads one).
+  *(planned; suite-verified on a fixture: `gateway-router`,
+  `GATEWAY_ROUTER_OK`)*
 
 - **G23 The CLAT** (decided 2026-11-21; PR2, §10.1). A machine without
   IPv4 that must reach IPv4 literals runs a CLAT:
@@ -637,7 +723,35 @@ any code (AGENTS.md rule 3).
   - Rejected for the host path: one shared /96 for all gateways. It
     needs a route that follows gateway health, which is the fabric,
     and G4 keeps the host path off the fabric.
-  *(planned; probe-verified, PR2 and PR7)*
+  - **The follower has hysteresis (`gateway-nat64`, 2026-11-21).** It
+    checks only its current gateway's nameserver for `ipv4only.arpa`.
+    It moves after 8 failed checks in a row (1 s timeout each), to
+    another nameserver that answers, and never moves back while the
+    current gateway is healthy. It keeps its choice across a restart.
+    At 30 % packet loss on the current gateway: no move in 40 s (the
+    longest run of failed checks was 5). After a crash: an answer
+    through the other gateway in 13 to 15 s, one move.
+  - **Each gateway checks its own IPv4 upstream** and serves
+    `ipv4only.arpa` only while it answers: it pings a target through
+    its own translator; 3 failures withdraw the records, 1 success
+    restores them. Records gone after 6 s, the CLAT moved after 11 s.
+    The follower's own ping into the /96 is gone.
+  - **Open: that moves the CLAT only.** The sick gateway's DNS64 keeps
+    answering, so systemd-resolved stays on it and names resolve into
+    a dead /96. A machine with a CLAT is saved by accident: the
+    program falls back to the A record and the CLAT. A machine without
+    a CLAT is not. To close it, the same check must stop the gateway's
+    DNS64, so the nameserver failover of G4 happens. The real health
+    target is still not chosen.
+  - On a /64 that is advertised, not routed, the machine answers for
+    the CLAT address by proxy NDP (`netif-v6only`).
+  - **Known limit:** an ICMP echo over 1232 bytes of payload through
+    the CLAT gets no answer. The gateway fragments the reply at
+    `lowest-ipv6-mtu` 1280 and Jool SIIT drops fragmented ICMP
+    (RFC 7915). TCP and UDP, fragments included, pass. Untested
+    proposal: set `lowest-ipv6-mtu` to the real IPv6 path MTU.
+  *(planned; suite-verified on fixtures: `gateway-nat64`,
+  `GATEWAY_NAT64_OK`; `netif-v6only`)*
 
 ## 3. Invariants (target)
 
@@ -668,24 +782,40 @@ any code (AGENTS.md rule 3).
 
 - Each service registers its suites under `clanTests.<suite>`
   (AGENTS.md rules 8, 9, 12).
-- Planned suites: `netif-router` (ISP, router, clients in two zones:
-  DHCPv4, prefix delegation, advertisements, NAT44, zone isolation,
-  blocklist, a prefix change and a reboot), `router-ipv6-mostly`,
-  `nat-gateway` (two gateways, an IPv6-only client, a gateway failure),
-  `router-dual-wan`, `router-service-prefix` (ISP, router, a cluster
-  with a Service: reached from the ISP side on its public address, a
-  closed port and an unused address refused, a prefix change),
+- **Suites that exist (round G3).** They pin the mechanisms on
+  fixtures: modules in `lib/gateway/tests/vm/` that stand in for the
+  services. When a service exists, its suite imports the service in
+  place of the fixture and keeps the assertions.
+
+  | Suite | Pins | Marker |
+  |---|---|---|
+  | `gateway-wan` | netif N43 (MAC override), N44 (VLAN 0) | `GATEWAY_WAN_OK` |
+  | `netif-v6only` | netif N45; G4 and G23 from a host's side; path MTU through both translators | `NETIF_V6ONLY_OK` |
+  | `gateway-nat64` | G2, G3, G4, G6, G23: two gateways, a client with a CLAT, an outsider; failover, hysteresis, the health check | `GATEWAY_NAT64_OK` |
+  | `gateway-router` | G8, G10, G11, G14, G15, G20, G22; netif N16: zones, advertisements, the prefix hook, the service prefix | `GATEWAY_ROUTER_OK` |
+  | `gateway-dual-wan` | G16; netif N21: two DHCPv4 WANs, failover without a route change | `GATEWAY_DUAL_WAN_OK` |
+  | `k3s-v6only`, `rke2-v6only` | SPEC.md D67: the `join` contract on IPv6-only NICs | `<DISTRO>_V6ONLY_OK` |
+  | `<distro>-clat-<transport>` (4) | G5 as decided, D67, on both transports | `<DISTRO>_CLAT_<TRANSPORT>_OK` |
+  | `k3s-clat-<transport>-mapped` (2) | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative | `K3S_CLAT_<TRANSPORT>_MAPPED_OK` |
+
+- A suite asserts a bound with margin (about three times the measured
+  sample), never the sample. It prints the measured value.
+- Shared helpers: `tests/suite-lib.nix` (`observe`, `print_versions`,
+  `seconds_until`, `holds_for`, `state_dump_on_failure`) and
+  `tests/ifstate-noop.nix`.
+- Still planned, with the services: `router-ipv6-mostly`,
+  `router-service-prefix` with a cluster behind the router, and
   `routed-fabric-transit` (a border and two fake transit providers:
   aggregates only, no private AS number, no route passed between them).
 - Every `clan.modules` entry needs a nix-unit test (`coverage.nix`).
 
 ## 6. Probes
 
-Each runs before the code it gates. A finding goes into this file first.
-Probes live in `lib/gateway/tests/probes/` and register as `probe-<name>`
-suites, so `vm-test probe-<name> --remote --quiet` runs one. A probe
-prints `FINDING` lines and asserts little. It is deleted when a real
-suite asserts what it showed (as `specs/netif.md` N40).
+Each ran before the code it gates. A finding goes into this file first.
+All ten are answered, and each became a suite in round G3 (§5); the
+`probe-*` suites are gone. A new question starts as a probe again: a
+throwaway suite that prints `FINDING` lines, and it ends as assertions
+in a real suite (as `specs/netif.md` N40).
 
 | Probe | Question | Gates |
 |---|---|---|
@@ -696,7 +826,7 @@ suite asserts what it showed (as `specs/netif.md` N40).
 | PR5 | MAC override and a priority-tagged WAN (VLAN 0). **Answered, §10.4** | netif N43, N44 |
 | PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? **Answered, §10.3** | G20, G16 |
 | PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? **Answered, §10.9** | G23 |
-| PR9 | One router, two WANs: failover without changing a route, IPv6 prefix translation on the backup. **Answered for static WANs, §10.10** | G16, netif N21 |
+| PR9 | One router, two WANs: failover without changing a route, IPv6 prefix translation on the backup. **Answered, also for DHCPv4 WANs, §10.10** | G16, netif N21 |
 | PR10 | Two nodes with IPv6-only NICs on both transports (`routed-fabric` with native routing, `wireguard-mesh` with the tunnel): does the fabric come up, does the pod network work, does pod IPv4 leave through each node's CLAT? **Answered, §10.11** | G5, G23, SPEC.md D67 |
 | PR8 | The prefix hook end to end: netif's trigger, corerad restarted with the old prefix deprecated, the rule replaced, a reboot in between. **Answered, §10.7** | G22 |
 
@@ -752,7 +882,7 @@ Versions: kernel 6.18.59, Jool 4.1.15, nftables 1.1.7, CoreDNS 1.14.7,
 corerad 1.4.0, radvd 2.21, kea 3.2.1, IfState 2.5.1, netif's dhcpcd
 10.5. Each probe passed as a sandboxed build on the builder.
 
-### 10.1 `probe-nat64` (PR2; G2, G4, G6, G23)
+### 10.1 `gateway-nat64` (PR2; G2, G4, G6, G23)
 
 Topology: an IPv6-only client and an undeclared outsider on one network;
 two gateways, each with its own /96 and DNS64; an IPv4-only server
@@ -796,7 +926,7 @@ with a forward policy of drop.
   timed out until `jool_siit global update pool6 <gw2's /96>`; then it
   answered through `gw2`.
 
-### 10.2 `probe-router`, advertisements (PR3; G8, G10, G11, G14, G15, G22)
+### 10.2 `gateway-router`, advertisements (PR3; G8, G10, G11, G14, G15, G22)
 
 Topology: an ISP (kea DHCPv4 and DHCPv6 with a delegated /60, radvd), a
 router whose links netif renders, a client in zone `home`, a node in
@@ -837,7 +967,7 @@ zone `servers`. The router runs nftables, kea, corerad and CoreDNS.
   IfState apply, which removes routes added by hand. Routes with
   `proto bgp`, as FRR installs them, stay.
 
-### 10.3 `probe-router`, service prefix (PR6; G20)
+### 10.3 `gateway-router`, service prefix (PR6; G20)
 
 The node holds `fd00:10:5::80/128`; the router has a `proto bgp` route
 to it and an unreachable route for `fd00:10:5::/64`. A script reads the
@@ -857,7 +987,7 @@ rule.
   the script had run. Until then the old address still answered,
   because the probe's ISP routed both blocks.
 
-### 10.4 `probe-wan` (PR5; netif N43, N44)
+### 10.4 `gateway-wan` (PR5; netif N43, N44)
 
 Topology: an ISP with one plain port and one port that speaks only
 frames tagged with VLAN 0; a router whose links netif renders.
@@ -874,15 +1004,30 @@ frames tagged with VLAN 0; a router whose links netif renders.
 - **VLAN 0.** IfState's schema accepts `vlan_id: 0`. netif named the
   child `<parent>.0`. It got a DHCPv4 lease from the tagged-only port,
   and every frame on the wire carried "vlan 0, p 0".
-- **Without the child** nothing passed in either direction: the router
-  sent untagged frames, which the ISP's port ignored, and the kernel
-  did not answer the ISP's tagged ARP on the plain link.
+- **Without the child** nothing is answered in either direction. The
+  router sends untagged frames, which the ISP's port ignores. Linux
+  does accept the ISP's VLAN 0 frames on the plain link and answers
+  its ARP request, but untagged, so the answer is dropped. (Corrected
+  2026-11-21: the probe said the kernel did not answer. It pinged an
+  address the router no longer had.)
 - **The child's MAC** is one IfState generates, not the parent's. On a
   real WAN the child needs `mac` too.
 - Not shown in a VM: the 802.1p priority bits (they were 0), and what
   an optical module does with the tag.
 
-### 10.5 `probe-k3s-v6only`, `probe-rke2-v6only` (PR4; SPEC.md D67)
+**As a suite (2026-11-21):** `gateway-wan`, `GATEWAY_WAN_OK`, green
+twice in a row (85 s, 99 s). It asserts the lines above, and:
+- both DHCP servers and the ISP's neighbour table saw only the
+  presented MAC, never the permanent one. kea DHCPv6 logs no hardware
+  address; the proof is the link-local source of the request;
+- IfState's link change came about 340 ms before dhcpcd's first line,
+  and the unit is ordered after `ifstate.service`;
+- an apply proposes nothing and changes nothing, after first boot and
+  after a reboot; MAC and both leases stay;
+- one DUID for both dhcpcd instances, the same after a reboot. Which
+  MAC it embeds depends on which instance writes the file first.
+
+### 10.5 `k3s-v6only`, `rke2-v6only` (PR4; SPEC.md D67)
 
 The `k3s-join` and `rke2-join` suites, unchanged, with two differences: each node's only
 NIC address is IPv6 (`2001:db8:1::1/64`, `::2`), and the WireGuard
@@ -896,7 +1041,11 @@ Both distributions passed (k3s in 178 s, rke2 in 288 s).
 Not covered by this probe: pulling images (they are preloaded), pod
 IPv4 egress (PR1), and `routed-fabric` as the transport.
 
-### 10.6 `probe-v6only-host` (netif N45; U13)
+As suites since round G3: `k3s-v6only`, `rke2-v6only`
+(`<DISTRO>_V6ONLY_OK`). One more phase asserts that no NIC has an IPv4
+address and that the WireGuard endpoints are IPv6.
+
+### 10.6 `netif-v6only` (netif N45; U13)
 
 Topology: a provider node that routes a /64 to a machine and is its
 gateway at `fe80::1` (no advertisement, no DHCP), a second machine that
@@ -924,7 +1073,44 @@ and NAT64 in front of an IPv4-only server. netif renders both machines.
 What is left for N45 is a suite, not code: `netif-v6only` asserts the
 lines above, and adds a guard rollback over IPv6.
 
-### 10.7 `probe-router`, the prefix hook (PR8; G22, netif N16)
+**As a suite (2026-11-21):** `netif-v6only`, `NETIF_V6ONLY_OK`, green
+twice in a row (195 s, 204 s). Both machines now run the CLAT of G23,
+so "an IPv4 literal without a CLAT fails at once" is no longer
+asserted. After boot, after an IfState apply and after a reboot, on
+both machines:
+- no IPv4 on the NIC, exactly one IPv6 default route, IPv6 nameservers
+  only, no failed unit, an apply proposes and changes nothing;
+- a name through DNS64 and NAT64, a literal through the CLAT, ping,
+  2 MB each way in under 0.1 s;
+- the guard over IPv6: with the gateway silent it failed after 31.4 s
+  with "no answer from fe80::1 on eth1".
+
+**Path MTU through both translators** (Jool 4.1.15, kernel 6.18):
+- An ICMP "fragmentation needed" from a 1400 byte IPv4 hop behind the
+  NAT64 reached the machine through both translators (route MTU 1400;
+  1420 on the IPv6 path by name). A "packet too big" from a 1400 byte
+  IPv6 hop reached the IPv4 server (1380). 2 MB passed each way after.
+- UDP echoes of 1200, 1400, 1452 and 4000 bytes passed on both paths.
+- **Gap: an ICMP echo over 1232 bytes to an IPv4 literal gets no
+  answer**, with every link at 1500. Both Jool instances cut IPv6 at
+  `lowest-ipv6-mtu` 1280; the NAT64 fragments the reply and the CLAT
+  drops fragmented ICMP (its counter rose). TCP and UDP are fine.
+- A 2000 byte UDP datagram mostly failed and once passed. Not
+  understood, not pinned.
+
+**Found on the way:**
+- **systemd-resolved's fallback servers.** After every reboot of the
+  SLAAC machine the first DNS query took 5 s and resolved logged
+  "Switching to fallback DNS server 1.1.1.1". With a CLAT the machine
+  has an IPv4 default route, so the IPv4 fallback servers are
+  reachable through the NAT64. Root cause of the first timeout not
+  found. An IPv6-only machine should set `FallbackDNS=` empty (open,
+  G4).
+- **Proxy NDP.** On a /64 that is advertised, not routed, nobody
+  routes the CLAT's second address to the machine. The fixture answers
+  for it by proxy NDP. G23 only described the routed cloud /64.
+
+### 10.7 `gateway-router`, the prefix hook (PR8; G22, netif N16)
 
 The same topology as §10.2, with the hook instead of manual steps:
 netif's exit script writes `/run/netif/pd/eth1`, a systemd path unit
@@ -948,6 +1134,26 @@ file), replaces the service prefix rule and keeps its state in
 - **The trap.** `systemctl try-restart corerad` from inside the hook
   blocked: corerad is ordered after the hook. corerad stayed stopped
   and the next boot hung for 300 s. `--no-block` fixed it.
+
+**As a suite (2026-11-21):** `gateway-router`, `GATEWAY_ROUTER_OK`,
+green twice in a row (207 s, 224 s). It asserts §10.2, §10.3 and this
+section, with a NetworkManager laptop beside the kernel client.
+- A prefix change reached the clients in 3.6 to 6.9 s over five
+  samples (bound 20 s). Boot to `multi-user.target` took 13 to 17 s on
+  three boots (bound 90 s), with no failed unit and no queued job.
+- **The service rewrite moved to a table of its own**
+  (`inet router_svc`), replaced in one transaction. NixOS
+  `nftables.service` deletes and recreates its own tables on a
+  restart, so a rule the hook adds to the router's table would be
+  lost. Rule for the design: one nftables table per owner, never
+  `flush ruleset`. With a third, foreign table present, a restart of
+  `nftables.service` and a run of the hook each left all three tables
+  byte-equal. netif adds no table.
+- An IfState apply proposed and changed nothing; the ruleset was
+  byte-equal after it and the hook did not run.
+- Zones: each allowed flow works and each refused flow is a silent
+  drop, both families, with the drop counters asserted.
+- The findings on G22 are listed there.
 
 ### 10.8 `probe-k3s-clat` (PR1; G5)
 
@@ -973,7 +1179,7 @@ host routing), a NAT64 gateway built as G2, an IPv4-only server.
 - The gateway saw one conntrack entry per flow, from Jool's private
   address to its public one.
 
-### 10.9 `probe-nat64`, the CLAT follower (PR7; G23)
+### 10.9 `gateway-nat64`, the CLAT follower (PR7; G23)
 
 Each gateway's CoreDNS serves `ipv4only.arpa`. A unit on the client
 asks each nameserver for it every 2 s, takes the /96 of the first
@@ -990,7 +1196,36 @@ CLAT's `pool6` when the /96 differs.
   unit must be idempotent, or an IfState apply fails it and everything
   bound to it.
 
-### 10.10 `probe-dual-wan` (PR9; G16, netif N21)
+**As a suite (2026-11-21):** `gateway-nat64`, `GATEWAY_NAT64_OK`, green
+twice in a row (272 s, 273 s). It asserts §10.1 and this section. Both
+gateways are the shared fixture (Jool in a namespace); the
+host-namespace case is a second instance added at run time, asserted
+(an undeclared source fetched a page past a forward policy of drop,
+with every forward counter at 0), then removed.
+- Nameserver failover after a crash took 5.6, 10.2 and 5.6 s in three
+  runs (bound 30 s). The 5.6 s of §10.1 was one sample.
+- An open flow through the dead gateway stalled for the 20 s watched:
+  no reset, the socket stayed established (G6).
+- Every private IPv4 range embedded in the /96 was refused and
+  counted, on both gateways (G5).
+- An IfState apply proposed and changed nothing on a gateway and on
+  the client. A gateway reboot brought translation back.
+- A 2 MB fetch by an IPv4-only name worked with one gateway down (the
+  GitHub case of §12.2).
+- Traffic shapes: pings of 1400 and 3000 bytes and a 3000 byte UDP
+  echo through the NAT64; path MTU discovery behind a 1400 byte hop
+  (the client learned 1420 by name and 1400 through the CLAT); a TCP
+  flow idle for 48 s. Jool's established timeout is 2 h, conntrack's
+  5 days.
+- nftables on a gateway: `inet nixos-fw` and `ip nixos-nat`, both
+  owned by `nftables.service`. Jool owns no table. A foreign table
+  was byte-equal across a firewall restart, and the whole ruleset
+  across a restart of the Jool unit; an open flow survived both.
+  `hooks` is an nft keyword and cannot name a table.
+- Hysteresis, the gateway's own health check and the ICMP limit are
+  in G23.
+
+### 10.10 `gateway-dual-wan` (PR9; G16, netif N21)
 
 Topology: a client, a router with two static WANs, two ISPs, and one
 server behind both. netif renders every link; each WAN has
@@ -1017,11 +1252,44 @@ server behind both. netif renders every link; each WAN has
 - A ULA source was rewritten on either WAN.
 - An IfState apply during the failover changed nothing: the fwmark
   rules were listed as unchanged and traffic stayed on the backup.
-- netif's guard stayed green with a WAN down.
+- netif's guard stayed green with a WAN down, **while the dead WAN's
+  gateway still answered its neighbours.** With the ISP's box dead the
+  guard fails (G16, open).
 - **Still wrong:** from the router, a ping to the backup's gateway
   failed while the primary was active. It was steered to the primary.
 
-### 10.11 `probe-<distro>-clat-<transport>` (PR10; G5, G23, SPEC.md D67)
+**As a suite (2026-11-21).** The probe became `gateway-dual-wan`: it
+asserts the above and adds DHCPv4 WANs (kea on each ISP, 30 s leases).
+Green twice in a row (291 s, 294 s). Measured, each asserted with a
+bound of about three times the sample:
+
+| Event | Measured |
+|---|---|
+| Dead upstream, or dead ISP box, link up | backup after 6.2 s |
+| Primary returns | primary after 2.8 to 3.9 s |
+| Cable pulled | IPv4 after 1.1 s (dhcpcd empties the WAN's table), IPv6 after 5.9 s |
+| Cable back | primary after 9.3 s |
+| Dead ISP box returns (new lease) | primary after 21 to 23 s |
+| Reboot with the primary dead | on the backup 8 to 10 s after the health check starts |
+
+- Rules and routes of the main table and both WAN tables were
+  byte-equal before and after failover, failback, flapping and the
+  reboot cycle. A lease renewal on either WAN changed nothing.
+- An IfState apply in normal state, in failed-over state and after the
+  reboot cycle changed nothing, and left the `proto dhcp` defaults in
+  the WAN tables alone.
+- Two flows from a client to the router (one per family) kept their
+  conntrack id through failover and failback. The flow through the
+  dead WAN got a reset on its next send.
+- While failed over, from the backup's ISP: the LAN's real prefix, its
+  IPv4 subnet and the translated prefix were all refused; the drops
+  were counted.
+- Six findings changed G16; they are listed there.
+- **Not covered:** DHCPv6 and prefix delegation on the WANs, a dead
+  backup, both WANs dead, a flow between two LANs, an IfState apply
+  after the primary's lease expired.
+
+### 10.11 `<distro>-clat-<transport>` (PR10; G5, G23, SPEC.md D67)
 
 One probe body (`kube-clat.nix`) with the same test script on two
 topologies: `fabric` is the `data-plane` suite's (routed-fabric, FRR,
@@ -1089,8 +1357,47 @@ probe passed side by side, none needed a rerun alone.
   the packet at the routing step. A real gateway has a default route.
   The fixture has one now, and the rule is a firewall rule, never a
   missing route.
-- **Not covered:** a node failure; a gateway failure under pod load;
-  ClusterMesh on IPv6-only NICs.
+- **Not covered by the probe:** a node failure; a gateway failure
+  under pod load; ClusterMesh on IPv6-only NICs.
+
+**As suites (round G3, 2026-11-21).** The probe names in the table
+above are gone. Each suite is green twice in a row:
+
+| Suite | Seconds | Asserts |
+|---|---|---|
+| `k3s-clat-fabric` | 400, 401 | the decided design (G5), native routing |
+| `k3s-clat-mesh` | 423, 459 | the decided design, tunnel |
+| `rke2-clat-fabric` | 495, 594 | the decided design, native routing |
+| `rke2-clat-mesh` | 425, 520 | the decided design, tunnel |
+| `k3s-clat-fabric-mapped` | 193, 233 | as shipped it fails; the pool mapping works |
+| `k3s-clat-mesh-mapped` | 231, 243 | the same, tunnel |
+| `k3s-v6only` | 98, 153 | the `join` contract on IPv6-only NICs (§10.5) |
+| `rke2-v6only` | 236, 269 | the same |
+
+- **Design suites:** `clat0` is in `devices` and in the agent's
+  masquerade list, and Cilium's program is attached to it. A pod's
+  SYN on the CLAT link has source `192.0.0.1`; the gateway sees the
+  node's CLAT address. 2 MB each way with the byte count asserted,
+  ping, cluster DNS, pod to pod in both families, before and after
+  every phase.
+- **Mapped suites:** `clat0` is not a Cilium device. As shipped the
+  request fails and the SYN carries the pod's own address; after the
+  mapping, the exact mapped address reaches the gateway. These suites
+  pin why G5 is needed: a Cilium change shows here first.
+- **An IfState apply** proposes and changes nothing; the link, the
+  program and pod egress stay.
+- **A node reboot:** the CLAT, the node, Cilium on `clat0`, pod IPv4
+  egress and (fabric) the BGP sessions come back.
+- **The CLAT link deleted and made again under a running Cilium:**
+  Cilium attached to the new link by itself in 3.6 to 12.5 s.
+- A ClusterIP Service and pod-to-node traffic never see `192.0.0.1`.
+  In tunnel mode a node sees the source node's address for a pod:
+  Cilium's normal tunnel masquerade, the same without a CLAT.
+- A powered-off k3s or rke2 node takes 92 s to stop in every run (a
+  stop timeout of the cluster unit; not looked into).
+- **Not covered:** a pod request in the seconds before Cilium attaches
+  to a new CLAT link; a node or gateway failure under pod load;
+  ClusterMesh on IPv6-only NICs; UDP and path MTU from a pod.
 
 ## 11. Rough implementation design (draft, 2026-11-20)
 
@@ -1188,62 +1495,76 @@ Settings per machine (zone names are netif zone labels):
 3. The delegated prefix as a runtime file (N16). **Done**; the path in
    netif's facts is left.
 4. `prefixDelegation.reserve` (N16).
-5. `netif-v6only` (N45): the probe `probe-v6only-host` is its draft.
+5. `netif-v6only` (N45). **Done** (§10.6).
 
 ### 11.5 Suite topologies
 
 | Suite | Nodes | Draft |
 |---|---|---|
-| `netif-router` | isp, router, client (home), node (servers) | `probe-router` |
-| `router-service-prefix` | the same, plus a prefix change | `probe-router` |
-| `nat-gateway` | client, outsider, gw1, gw2, server4 | `probe-nat64` |
-| `netif-v6only` | static, slaac, provider, server4 | `probe-v6only-host` |
-| `k3s-v6only`, `rke2-v6only` | the join suites on IPv6-only NICs | `probe-<distro>-v6only` |
+| `netif-router` | isp, router, client (home), node (servers) | `gateway-router` |
+| `router-service-prefix` | the same, plus a prefix change | `gateway-router` |
+| `nat-gateway` | client, outsider, gw1, gw2, server4 | `gateway-nat64` |
+| `netif-v6only` | static, slaac, provider, server4 | done: `netif-v6only` |
+| `k3s-v6only`, `rke2-v6only` | the join suites on IPv6-only NICs | done: `<distro>-v6only` |
 
 ## 12. Retrospective (2026-11-21): what is not proven, and what would harden it
 
 Written after the probe rounds. Each item says what is weak and what
 closes it. Nothing here is a decision; the owner picks what becomes one.
 
-### 12.1 How strong the probe evidence is
+### 12.1 How strong the evidence is
 
-- **Every probe ran once, alone, on an idle builder.** The timings in
-  §10 (5 s, 5.6 s, 6.2 s, 4.4 s) are single samples. A suite asserts a
-  bound with margin, never the sample.
-- **A probe asserts little.** A green probe means its script ran to the
-  end; the finding was read from `FINDING` lines by hand. A finding is
-  only safe from regression once a suite asserts it. Until then, a
-  nixpkgs bump can undo it silently.
-- **All clients were Linux with dhcpcd or the kernel's own SLAAC.** The
-  prefix retirement of G22, PREF64 and option 108 behave per operating
-  system (RFC 9096 leaves room). NetworkManager, Android, iOS, Windows
-  and consoles are unproven. NetworkManager can be put in a suite
-  (`modes-desktop` has it); the others need the owner's devices.
-- **All traffic was TCP of 2 MB, ping and DNS.** Not tested: large UDP,
-  fragments, an ICMP "packet too big" crossing a translator (path MTU
-  discovery through NAT64 and the CLAT), `traceroute`, long-lived idle
-  flows against the conntrack timeout.
+- **Round G3 turned every probe into a suite.** The findings of §10
+  are assertions now; a nixpkgs bump that undoes one fails a suite.
+  Each new suite passed at least twice in a row, alone, on the
+  builder. None has run under load beside others yet: the first full
+  run decides which waits are too tight.
+- **Timings are small samples** (two to five). A suite asserts a bound
+  of about three times the sample.
+- **The suites run on fixtures, not on service code.** They prove the
+  mechanism, not an implementation. The fixtures are the first draft
+  of `lib/gateway/` (§11).
+- **Clients:** Linux with dhcpcd, the kernel's SLAAC, and
+  NetworkManager 1.58 (it follows a prefix retirement like the
+  kernel). Android, iOS, Windows and consoles are unproven and need
+  the owner's devices.
+- **Traffic shapes.** Path MTU discovery through the NAT64 and the
+  CLAT is proven for TCP and UDP, fragments included (`netif-v6only`,
+  `gateway-nat64`). Known limit: ICMP echoes over 1232 bytes through a
+  CLAT (G23). Untested: `traceroute`, idle flows near Jool's 2 h and
+  conntrack's 5 day timeouts.
 - **Four claims are still from memory:** Windows honours DHCP option
   108, the Nintendo Switch has no IPv6, Headscale is unsupported behind
   Cloudflare, the X710 rejects unqualified SFP+ modules. A VM cannot
   prove them. They need a source or the hardware.
+- **What the netif suites do not prove** (found while fixing their
+  waits): N16's prefix file is written atomically, only on change,
+  and survives a dhcpcd restart (only its existence is asserted in
+  `netif-dhcp`; `gateway-router` asserts "no hook run on an unchanged
+  prefix"); whether a changed nameserver arrives by renew or rebind
+  (N9); the sandbox of the dhcpcd unit (N31); guard targets other than
+  TCP (N36); a silent IPv6 gateway in `netif-guard` (N25;
+  `netif-v6only` covers it).
 
 ### 12.2 Design risks
 
 | Risk | Why it matters | What closes it |
 |---|---|---|
-| Jool is an out-of-tree kernel module | A kernel bump can break the build of every gateway and every CLAT at once. tayga was rejected, so there is no second translator | An evaluation check that `linuxPackages.jool` is not marked broken for the kernel the fleet runs; the NAT64 suite runs on every `org-pkgs` bump; name tayga as the documented emergency fallback for the CLAT only |
-| GitHub has no IPv6 (checked 2026-11-21: `github.com`, `api.github.com`, `codeload.github.com` and `ghcr.io` publish no AAAA record; `cache.nixos.org`, `registry.k8s.io`, `quay.io`, Docker Hub, `git.clan.lol` do) | An IPv6-only machine cannot fetch a flake input from GitHub or an image from `ghcr.io` without a NAT64 gateway. The gateways become a dependency of every deploy and of the gateways' own repair | The two gateways are never updated together; a gateway keeps its own public IPv4 and so never needs NAT64 itself (already G3); a suite phase that fetches from an IPv4-only name through DNS64 with one gateway down |
-| The CLAT follower has no hysteresis | It polls every 2 s and moves on the first different answer. Two gateways that both answer, one with packet loss, make it flap, and each move stalls open flows (G6) | Move only after N failed checks of the current gateway; prefer the current one while it is healthy; a suite phase with a lossy gateway |
-| The health checks test the gateway, not what is behind it | A gateway whose IPv4 upstream is dead still answers `ipv4only.arpa` and a ping inside its /96 only if the target is beyond the gateway. The probes pinged a test server. The real target is not chosen | Decide the target: the gateway withdraws `ipv4only.arpa` when its own IPv4 check fails, so the client needs no internet target |
+| Jool is an out-of-tree kernel module | A kernel bump can break the build of every gateway and every CLAT at once. tayga was rejected, so there is no second translator | An evaluation check that `linuxPackages.jool` is not marked broken for the kernel the fleet runs; the NAT64 suite runs on every `org-pkgs` bump; name tayga as the documented emergency fallback for the CLAT only **Round G3: `checks.jool-available` fails the static check when Jool is broken for the default or the latest kernel; `gateway-nat64` proves it loads and translates.** |
+| GitHub has no IPv6 (checked 2026-11-21: `github.com`, `api.github.com`, `codeload.github.com` and `ghcr.io` publish no AAAA record; `cache.nixos.org`, `registry.k8s.io`, `quay.io`, Docker Hub, `git.clan.lol` do) | An IPv6-only machine cannot fetch a flake input from GitHub or an image from `ghcr.io` without a NAT64 gateway. The gateways become a dependency of every deploy and of the gateways' own repair | The two gateways are never updated together; a gateway keeps its own public IPv4 and so never needs NAT64 itself (already G3); a suite phase that fetches from an IPv4-only name through DNS64 with one gateway down **Round G3: the fetch by an IPv4-only name with one gateway down is asserted (`gateway-nat64`). The update rule stays a rule.** |
+| The CLAT follower has no hysteresis | It polls every 2 s and moves on the first different answer. Two gateways that both answer, one with packet loss, make it flap, and each move stalls open flows (G6) | Move only after N failed checks of the current gateway; prefer the current one while it is healthy; a suite phase with a lossy gateway **Closed in round G3 (G23, `gateway-nat64`).** |
+| The health checks test the gateway, not what is behind it | A gateway whose IPv4 upstream is dead still answers `ipv4only.arpa` and a ping inside its /96 only if the target is beyond the gateway. The probes pinged a test server. The real target is not chosen | Decide the target: the gateway withdraws `ipv4only.arpa` when its own IPv4 check fails, so the client needs no internet target **Half closed in round G3: the gateway withdraws `ipv4only.arpa` and CLATs move; its DNS64 keeps answering (G23, open).** |
 | One public IPv4 per gateway is about 64,000 flows per protocol | `pool4` is one address, ports 1100–65535. A cluster pulling images through it can exhaust it; conntrack on the gateway has its own limit | Export Jool's and conntrack's counters as metrics; an alert before exhaustion; `pool4` takes a list of addresses in the settings |
 | DNS64 breaks a client that validates DNSSEC itself | A synthesised AAAA record has no signature | Document it; such a machine uses the CLAT and plain DNS. Not a blocker for the fleet (systemd-resolved does not validate by default) |
-| `conntrack -F` on a WAN failover drops every flow on the router | LAN to LAN and router-local flows are cut too | Delete only entries whose reply direction used the dead WAN (`conntrack -D` by mark or by address) |
-| Dual WAN on the IPv6 backup is stateful prefix translation | Inbound to the backup prefix needs a matching rewrite; class 3 services do not survive (already G16) | Stated in G16; the suite asserts the inbound direction fails closed, not open |
-| The prefix hook was tested with one /60 and one change | Unproven: a /56 or a bare /64 (no room for zones), two prefixes at once, an ISP that changes the prefix across a router reboot without the old lease on disk, a lease shorter than the retirement window | Phases in `netif-router`; an assertion at evaluation time that the zones fit the smallest expected delegation |
-| nftables has several writers and no ownership rule | The NixOS firewall, the router's table, Cilium (through iptables-nft) and the dual-WAN steering all add tables. netif has a registry for links; nothing equals it for tables | A rule in the spec: one table per owner, named after the instance, never `flush ruleset`; a suite assertion that a restart of one owner leaves the others' tables byte-equal |
+| `conntrack -F` on a WAN failover drops every flow on the router | LAN to LAN and router-local flows are cut too | Delete only entries whose reply direction used the dead WAN (`conntrack -D` by mark or by address) **Closed in round G3 (G16, `gateway-dual-wan`); a flow between two LANs is not yet in the suite.** |
+| Dual WAN on the IPv6 backup is stateful prefix translation | Inbound to the backup prefix needs a matching rewrite; class 3 services do not survive (already G16) | Stated in G16; the suite asserts the inbound direction fails closed, not open **Closed in round G3: asserted, and the suite found the WAN-to-WAN transit (G16).** |
+| The prefix hook was tested with one /60 and one change | Unproven: a /56 or a bare /64 (no room for zones), two prefixes at once, an ISP that changes the prefix across a router reboot without the old lease on disk, a lease shorter than the retirement window | Phases in `netif-router`; an assertion at evaluation time that the zones fit the smallest expected delegation **Round G3: /56, /60, /64 and two changes are asserted; state loss across a reboot is a new open gap (G22). Open: a short lease, two prefixes at once.** |
+| nftables has several writers and no ownership rule | The NixOS firewall, the router's table, Cilium (through iptables-nft) and the dual-WAN steering all add tables. netif has a registry for links; nothing equals it for tables | A rule in the spec: one table per owner, named after the instance, never `flush ruleset`; a suite assertion that a restart of one owner leaves the others' tables byte-equal **Round G3: the rule is "one table per owner, never `flush ruleset`"; asserted on the router and on a gateway. Open: the same assertion on a cluster node with Cilium.** |
 | Deploying an IPv6-only fleet needs IPv6 at the deploying machine | `targetHost` is the underlay address (AGENTS.md rule 11). The home router that provides that IPv6 is deployed by the same clan | Keep an IPv4 path to at least the gateways and the Headscale machine (they have public IPv4); document the bootstrap order: gateways, Headscale, router, the rest |
-| A hot path depends on unit ordering | The hook that blocked on `try-restart corerad` hung the next boot for 300 s (§10.7); a Jool unit that was not idempotent broke on an IfState apply (§10.9) | A suite phase in every gateway suite: `systemctl restart ifstate.service`, then a reboot, then the full assertions again |
+| CoreDNS replicas share one node (found 2026-11-21, both distros, both modes) | The anti-affinity is soft (`lib/kube-cluster/bundle.nix`) and the bundle applies before the second node is Ready. Both replicas start on the first node and stay. When that node died, cluster DNS was gone (`k3s-data-plane-tunnel`, an early run) | A hard spread when the cluster has two or more members (`topologySpreadConstraints` with `minDomains`); until then the tunnel suite moves one replica by hand before the node dies, and asserts DNS after. The native suite does not check DNS after a death |
+| NodePorts bypass the node firewall | On every link in Cilium's `devices`, Cilium serves NodePorts in eBPF before nftables. A machine outside the cluster reached a NodePort on a node's underlay address (`data-plane-tunnel` asserts it). The underlay link is in `devices` in both modes; the G5 decision adds the CLAT link | Decide: keep the underlay out of `devices` where no floating or BGP address must arrive on it, or enable Cilium's host firewall. A SPEC.md decision, before a cluster faces the internet |
+| A BGP pool on a tunnel transport was refused with the wrong reason | The message said `bgp.enable = false`, which the user never set | **Fixed 2026-11-21:** the message names the transport (`lib/kube-cluster/assertions.nix`) |
+| A hot path depends on unit ordering | The hook that blocked on `try-restart corerad` hung the next boot for 300 s (§10.7); a Jool unit that was not idempotent broke on an IfState apply (§10.9) | A suite phase in every gateway suite: `systemctl restart ifstate.service`, then a reboot, then the full assertions again **Round G3: every gateway suite and the CLAT suites reapply IfState and reboot, then assert again.** |
 
 ### 12.3 The two Cilium modes: what each suite covers
 
@@ -1255,13 +1576,13 @@ the tunnel mode kept equal where the mode allows it.
 | One server | covered inside `data-plane` | `single` |
 | A second node joins | covered inside `data-plane` | `join` |
 | Three servers, one dies | `ha-fabric` (added 2026-11-21; the dead server is a spine) | `ha` |
-| LoadBalancer pools, Node IPAM, firewall, a node dies | `data-plane` | **no suite** (BGP delivery cannot apply; pool allocation, Node IPAM and the firewall can) |
-| netif renders the underlay | `data-plane-netif`, `routed-fabric-netif` | **no suite** |
+| LoadBalancer pools, Node IPAM, firewall, a node dies | `data-plane` | `data-plane-tunnel` (added 2026-11-21): the same workload and pools, without BGP delivery |
+| netif renders the underlay | `data-plane-netif`, `routed-fabric-netif` | `join-netif` (added 2026-11-21) |
 | ClusterMesh | `clustermesh` | `clustermesh-tunnel` |
 | ClusterMesh, external and selective | `clustermesh-external-native`, `clustermesh-selective` | `clustermesh-external`, `clustermesh-selective-tunnel` |
-| A cluster inside a mode | **no suite** (`modes` has a fabric, no cluster) | `k3s-modes` |
-| IPv6-only NICs, two nodes | PR10 (probe) | PR4, PR10 (probes) |
-| Pod IPv4 egress through a CLAT | PR10 | PR1, PR10 |
+| A cluster inside a mode | `k3s-modes-fabric` (added 2026-11-21; the spine is a second, always-on machine) | `k3s-modes` |
+| IPv6-only NICs, two nodes | `<distro>-clat-fabric` | `<distro>-v6only`, `<distro>-clat-mesh` |
+| Pod IPv4 egress through a CLAT | `<distro>-clat-fabric` | `<distro>-clat-mesh` |
 
 Closing the gaps without doubling the suite count: a suite body takes
 `transport` as an argument, as `kube-clat.nix` does, and the same test
@@ -1270,44 +1591,103 @@ as bodies already do on `distro`. Proposed order:
 
 1. `ha` on the fabric: **done.** `k3s-ha-fabric` and `rke2-ha-fabric`
    reuse the `ha` test script unchanged and passed on the first run.
-2. The mode-neutral phases of `data-plane` on the mesh.
-3. `data-plane-netif` on the mesh.
-4. A cluster inside a mode on the fabric.
+2. The mode-neutral phases of `data-plane` on the mesh: **done.**
+   `k3s-data-plane-tunnel` and `rke2-data-plane-tunnel`
+   (`K3S_DATA_PLANE_TUNNEL_OK`, `RKE2_DATA_PLANE_TUNNEL_OK`), green
+   twice in a row each. A body of its own: the native body reads
+   fabric facts and a router in most phases. Both bodies share
+   `data-plane-fixtures.nix`; the four native suites stayed faithful
+   (`suite-compare`).
+   - Covered on the tunnel: multi-pool pod IPAM and pod to pod across
+     nodes in both families; ClusterIP from pods in both families;
+     LB-IPAM allocation from `external-class` and `floating` pools;
+     Node IPAM with the ETP-Local restriction and its withdrawal; the
+     firewall from the underlay and from the mesh; a node dies.
+   - Native only, absent by design: `shared-bgp`, `node-bgp`, the
+     fabric pool and its ClusterMesh address, FRR pod routes. A tunnel
+     cluster delivers a LoadBalancer address by Node IPAM (mesh
+     addresses), by a floating address on the underlay, or by the
+     provider. Never by BGP.
+   - Parity holds for pools: no setting was silently ignored.
+   - A node crash: `Ready=Unknown` after 40 to 46 s, endpoints not
+     ready 0.2 s later, Node IPAM withdrawal 0.1 s after that.
+   - Three findings went into §12.2 (CoreDNS placement, NodePorts
+     and the node firewall, the BGP pool message).
+3. netif under the tunnel: **done.** `k3s-join-netif`,
+   `rke2-join-netif` (`<DISTRO>_JOIN_NETIF_OK`), green twice each. The
+   `join` body takes `underlay = "netif"`; `join` stayed faithful.
+   - On a netif-rendered, untrusted link the mesh takes its MTU from
+     the link's `pathMtu` (1500 − 96 = 1404, netif N17).
+   - Pods on two nodes reach each other in both families through
+     VXLAN over `wg-mesh`.
+   - `netif-preview` and a real reapply change nothing: `wg-mesh`, the
+     `cilium_*` and `lxc*` links keep their ifindex, the `cni-`
+     namespaces stay, the WireGuard session is not reset (netif N6).
+   - A rebooted agent comes back with its pod network.
+   - No `wireguard-mesh-netif`: without a cluster the mesh has no
+     state beyond what these suites assert.
+4. A cluster inside a mode on the fabric: **done.** `k3s-modes-fabric`
+   (`K3S_MODES_FABRIC_OK`), green twice. It shares
+   `services/k3s/tests/vm/modes-body.nix` with `k3s-modes`, which
+   stayed faithful.
+   - The leaf is in the fabric only in its `kubernetes` mode. The
+     spine is a second machine: a spine is in every mode (netif N4).
+     On the mesh one machine is enough; this asymmetry is by design.
+   - In the mode the spine learns the leaf's pod routes over BGP and
+     reaches a pod in both families. In the default mode the leaf has
+     no FRR, no tunnel and no fabric address, and the spine has no
+     session and no pod route.
+
+No parity defect was found in service code on either transport.
+Found on the way: `clan.networkFacts.clusters` is declared
+(`lib/kube-cluster/network-facts.nix`) and nothing writes it for k3s;
+a suite that wants the pod CIDRs must use literals.
 
 ### 12.4 Suite stability
 
-- **Fixed sleeps.** 9 suite files (4 of netif, 5 cluster bodies) and 6
-  probes call `sleep` in their test script. Each is a
-  guess about the builder's speed. A suite waits for the condition
-  (`wait_until_succeeds`) or, to prove something does *not* happen,
-  watches for a stated time and says so in the subtest name.
-- **No versions in the output.** A suite that prints the kernel, Jool,
-  Cilium, FRR, IfState and dhcpcd versions in its first subtest ties a
-  regression to the bump that caused it.
+- **Fixed sleeps: fixed in `netif-dhcp` and `netif-guard`** (round G3;
+  each green three times in a row). Seven sleeps: six became waits
+  for the real condition, one is a polling interval. Three of the new
+  waits are stricter than the sleep was: a renewal must be seen, the
+  nameserver must stay for 6 s after ten flaps, and the guard's second
+  run is identified by its invocation id. The new suites have no
+  guessed sleep. Left: `clustermesh*` (a 1 s pause in a retry loop)
+  and `external` (a retry loop in a unit).
+- **Versions in the output: done for the new and the two fixed
+  suites** (`print_versions`). The older suites do not print them.
+  dhcpcd is not on `PATH` (netif runs `dhcpcd_latest`); a suite reads
+  it from the unit.
+- **Failure dumps: one shared helper**, `state_dump_on_failure` in
+  `tests/suite-lib.nix`. The new suites use it; the cluster suites
+  keep their own.
 - **A fresh full run before every merge that touches netif or the
-  shared base.** The netif change of this round ran one suite, not 37.
+  shared base.**
 - **Flakiness is unmeasured.** `PASS(!)` is recorded per run and then
   forgotten. A log of which suites needed the rerun, kept across runs,
-  shows which waits to fix first.
-- **Probes copy fixture code.** The CLAT node appears in two probes and
-  the gateway in a third file. They move to `lib/gateway/` as modules
-  in S4, and the suites import the modules, so a suite tests the code
-  a machine runs.
-- **Failure dumps.** The cluster suites dump state on failure; the
-  probes and netif suites mostly do not. One shared helper in `tests/`.
+  shows which waits to fix first. Not done.
+- **Fixtures are test code.** The CLAT node, the gateway and the
+  router's hook live in `lib/gateway/tests/vm/`. They move to
+  `lib/gateway/` as modules with the services (S2, S4), and the suites
+  import the modules, so a suite tests the code a machine runs.
+- **A unit that has not run reads as a success.** `systemctl show -p
+  Result` prints `success` before the unit's first run. Right after a
+  reboot, a wait on `Result=success` passes at once with the link
+  still down. After a reboot, wait for what the unit renders.
+- **`hooks` is an nft keyword** and cannot name a table in a suite.
 
 ### 12.5 The agent's working environment
 
-Found while doing the work; each costs time or correctness on every
-session.
-
-- **Number ranges live in three files** (`AGENTS.md`, this file's
-  header, `decisions/index.md`). Each new decision edits all three. Keep the range in this file only.
-- **This file's sections were out of order** (§11 sat before §10.6)
-  until this round. A check that heading numbers ascend is cheap.
-- **Findings are read out of a 10,000-line build log.** If `vm-test`
-  copied lines that start with `FINDING` into `summary.txt`, a probe's
-  result would be one short file. That is an org-pkgs change.
-- **`AGENTS.md` carries a growing list of verified upstream facts** on
-  every turn of every session. Most are needed in one service. They
-  belong in a reference page that `AGENTS.md` points to.
+- **Number ranges lived in three files.** Done: `AGENTS.md` no longer
+  repeats them; each spec file states its own.
+- **Section order.** Done: `checks.spec-headings` fails when the
+  section numbers of `SPEC.md` or `specs/*.md` do not ascend.
+- **The verified upstream facts left `AGENTS.md`.** Done: they are
+  `documentation/docs/reference/upstream-facts.md`, and `AGENTS.md`
+  points to it.
+- **Findings are read out of a 10,000-line build log.** Open: if
+  `vm-test` copied lines that start with `FINDING` or `VERSION` into
+  `summary.txt`, a result would be one short file. That is an org-pkgs
+  change.
+- **Several agents on one builder.** Round G3 ran eight agents on one
+  worktree with one lock around every `vm-test` call. It worked; each
+  suite waited long for its turn. The runner has no queue of its own.

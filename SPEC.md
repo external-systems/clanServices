@@ -4,14 +4,37 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 50 (2026-11-21): probes became suites; both Cilium modes have
+the same suites** (`specs/gateway.md` round G3, §5, §12.3). Points that
+touch this file:
+- D67 is suite-verified: `<distro>-v6only` and
+  `<distro>-clat-<transport>` (k3s and rke2; `routed-fabric` with
+  native routing and `wireguard-mesh` with the tunnel). Pod IPv4
+  leaves through the node's CLAT, whose link is in Cilium's `devices`
+  (`specs/gateway.md` G5, decided). The kube services do not render
+  that yet: the suites set `cilium.helmValues.devices`.
+- New suites for mode parity: `<distro>-data-plane-tunnel`,
+  `<distro>-join-netif`, `k3s-modes-fabric`. No parity defect was found
+  in service code.
+- Three findings, open, each needs a decision here before code
+  (`specs/gateway.md` §12.2):
+  - CoreDNS replicas share one node after bootstrap (soft
+    anti-affinity; the bundle applies before the second node is
+    Ready). When that node dies, cluster DNS is gone.
+  - Cilium serves NodePorts in eBPF before nftables on every link in
+    `devices`; the underlay link is one. A machine outside the cluster
+    reaches a NodePort on a node's underlay address.
+  - `clan.networkFacts.clusters` is declared and nothing writes it.
+- The assertion that refuses a BGP pool on a tunnel transport now
+  names the transport.
+
 Round 49 (2026-11-21): **both transports proven on IPv6-only NICs; the
 HA contract on the routed fabric** (`specs/gateway.md` round G2, §10.11,
 §12.3). Points that touch this file:
 - D67 is probe-verified on both transports: `routed-fabric` with
   native routing and `wireguard-mesh` with the tunnel, k3s and rke2,
-  two nodes whose NICs have no IPv4 (`probe-<distro>-clat-<transport>`).
-  No code changed. D67 stays *planned* until a suite replaces the
-  probes.
+  two nodes whose NICs have no IPv4 (probes then; suites since round
+  50). No code changed.
 - New suites `k3s-ha-fabric` and `rke2-ha-fabric`
   (`K3S_HA_FABRIC_OK`, `RKE2_HA_FABRIC_OK`): the `ha` contract and its
   test script, on the routed fabric. alpha and beta are spines, gamma

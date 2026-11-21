@@ -39,6 +39,16 @@ in rec {
       imports = [./tests/vm/join.nix];
       inherit clan;
     };
+    # The join suite on an underlay that netif renders (specs/netif.md N14).
+    rke2-join-netif = {
+      imports = [./tests/vm/join-netif.nix];
+      clan =
+        clan
+        // {
+          modules = clan.modules // {inherit (self.clan.modules) netif;};
+          exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
+        };
+    };
     rke2-ha = {
       imports = [./tests/vm/ha.nix];
       inherit clan;
@@ -49,6 +59,10 @@ in rec {
     };
     rke2-data-plane = {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
+      inherit clan;
+    };
+    rke2-data-plane-tunnel = {
+      imports = [(import ./tests/vm/data-plane-tunnel.nix {inherit inputs;})];
       inherit clan;
     };
     rke2-data-plane-netif = {

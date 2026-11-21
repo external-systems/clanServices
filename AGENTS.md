@@ -19,11 +19,12 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   their former ghost failures no longer block eval gates. No archives.
   Auto-discovered via `flake-module.nix`; no central registration list.
 - `lib/gateway/` — the future private implementation of `router` and
-  `nat-gateway` (`specs/gateway.md` G1). Today it holds only probes:
-  `tests/probes/*.nix`, registered as `probe-*` suites in its
-  `flake-module.nix` (nine today). A probe prints `FINDING` lines and
-  asserts little; its result goes into `specs/gateway.md` §10, and it is
-  deleted when a real suite asserts what it showed.
+  `nat-gateway` (`specs/gateway.md` G1). No service code yet. It holds
+  VM suites on fixtures (`tests/vm/*.nix`, registered in its
+  `flake-module.nix`) that pin the proven mechanisms: Jool NAT64 and
+  CLAT, the router's building blocks, dual WAN, IPv6-only hosts and
+  clusters. A new design question starts as a probe (a throwaway suite
+  that prints `FINDING` lines) and ends as assertions in a real suite.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
@@ -34,17 +35,21 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   - `coverage.nix`: every `clan.modules` entry needs a nix-unit test;
   - `docs.nix`: the site nav and deck settings;
   - `overlays.nix`: re-exports the org-pkgs overlays.
+  - `spec-checks.nix`: `checks.spec-headings` (section numbers of
+    `SPEC.md` and `specs/*.md` ascend) and `checks.jool-available`.
 - `tests/` — fixtures shared by VM suites: `ifstate-vm.nix` (the
   IfState node), `ifstate-noop.nix` (the "a reapply changes nothing"
   helper), `headscale-vm.nix` (an offline Headscale), `wifi-ap.nix`
-  (simulated access points).
-  Each service registers its suites (39 in all, plus the `probe-*`
-  suites of `lib/gateway`) in its `flake-module.nix`
+  (simulated access points), `suite-lib.nix` (test-script helpers:
+  `observe`, `print_versions`, `seconds_until`, `holds_for`,
+  `state_dump_on_failure`; use them in new suites).
+  Each service, and `lib/gateway`, registers its suites in its
+  `flake-module.nix` (`vm-test --list` counts them)
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
-  (`single`, `join`, `ha`, `ha-fabric`, `data-plane`, `clustermesh`, `clustermesh-tunnel`,
-  `external`, `selective`); `services/{k3s,rke2}/tests/vm/` hold thin
+  (`single`, `join`, `ha`, `ha-fabric`, `data-plane`, `data-plane-tunnel`,
+  `clustermesh`, `clustermesh-tunnel`, `external`, `selective`); `services/{k3s,rke2}/tests/vm/` hold thin
   wrappers, and the body branches on `distro` explicitly.
 - `devenv.yaml`/`devenv.nix` — the org dev shell (`fmt`, `check`,
   `sync-locks`, `docs-build`, `docs`, `slides`, `vm-test`). `flake.lock`
@@ -54,14 +59,15 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `ci / flake-check`) and the branch ruleset. Never add steps or jobs here;
   CI changes are pkgs PRs.
 - `specs/netif.md` — the host-networking contract and status authority
-  (decisions N1–N45, use cases U1–U18, the responsibility boundary
+  (decisions N…, use cases U…, the responsibility boundary
   in §1.1): netif, the shared IfState base, modes, the
   ownership registry. It supersedes SPEC.md D50/D53/D61 where they
   conflict; its human pages are `documentation/docs/netif/`. Edit them
   together.
 - `specs/gateway.md` — the contract and status authority for the planned
   `router` and `nat-gateway` services and `lib/gateway/` (decisions
-  G1–G23, probes PR1–PR10, slices S1–S9). Nothing is implemented yet.
+  G…, probes PR…, slices S…). No service is implemented yet; the
+  mechanisms are pinned by suites on fixtures (its §5).
   Its human pages are `documentation/docs/gateway/`. Edit them together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
@@ -166,60 +172,10 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
     4 GiB and 2 vCPUs and planned topologies are larger. Raising them needs
     the owner's yes.
 
-## Verified upstream facts the spec depends on
+## Verified upstream facts
 
-- IfState 2.5.1 deletes every named network namespace it does not
-  know, including the CNI's `cni-<uuid>` pod namespaces; the `cilium`
-  registry owner claims `^cni-`. An address declared with a `scope`
-  that the kernel does not keep (any IPv6 address) is deleted and
-  re-added on every apply. `ifstatecli check` pads its columns, so a
-  long object name leaves one space before its operation
-  (`k3s-data-plane-netif`, 2026-11-17).
-- IfState 2.5.1: `ifstatecli apply` fully reconciles declared objects;
-  `ifstatecli check` is the dry run. Runtime `!include` keeps secrets out
-  of the store. `KillMode=process` preserves hook daemons; global
-  forwarding uses `sysctl_conf`. Package metadata is authoritative even
-  though upstream 2.5.1 prints `ifstatecli 2.5.0`.
-- Cilium 1.20: native routing delegates non-local pod traffic to the
-  kernel FIB; off-L2 nodes therefore need FRR-distributed pod-pool routes.
-  Multi-pool uses `CiliumPodIPPool` advertisements. ClusterMesh requires
-  the same datapath, non-overlapping pod CIDRs, node connectivity, and
-  native-routing CIDRs covering all meshed pods. Cilium has no BFD.
-  LB IPAM allocates; delivery is separate. Node IPAM advertises node IPs
-  for classless LoadBalancer Services; its ETP-Local EndpointSlice caveat
-  affects only Cilium's own Gateway/Ingress (dummy Endpoints), which stay
-  disabled (D1/D41). The chart ships no `crds/` dir.
-- FRR 10.7: one integrated `services.frr.config`; Zebra installs routes;
-  eBGP ECMP needs `maximum-paths` and often multipath-relax; Cilium's
-  loopback next hop needs reserved-range/martian handling and rewrite;
-  FRR-FRR paths can use BFD. WireGuard ECMP requires one peer per
-  interface and multiple interfaces, never overlapping peers on one
-  interface. FRR 10.7.1 reload starts newly enabled daemons without
-  restarting bgpd (probe-verified 2026-10-24).
-- GitOps handoff (D40): Flux prune garbage-collects only the
-  Kustomization's own `.status.inventory`; bootstrap with
-  `kubectl apply --server-side` avoids CSA→SSA field-ownership friction;
-  `cilium install` (CLI) auto-detects hidden values and skews cert
-  generation — rejected as the bootstrap mechanism.
-- dhcpcd 10.3.2: a DHCPv6 address socket is closed before it leaves the
-  event loop (`ipv6_freeaddr`), so after a carrier change DHCPv4 or
-  DHCPv6 does not recover (`eloop_event_add: No such file or directory`;
-  upstream issue 596, fixed in 10.5.0). org-pkgs `overlays.ifstate`
-  has upstream 10.5.2 as `pkgs.dhcpcd_latest`, which netif's dhcpcd
-  units run; `pkgs.dhcpcd` stays 10.3.2 with the two fix commits,
-  because 10.5 does not start under the stock NixOS `dhcpcd.service`
-  (nixpkgs PR 562813). dhcpcd sets `addr_gen_mode` to 1 on
-  every link it runs IPv6 on, `noipv6rs` or not; `ipv4only` avoids it.
-  A broken networking package is fixed in pkgs, never here: the
-  upstream release first, a patch second (`specs/netif.md` N30).
-- dhcpcd does not remove an address it found already on the link when
-  it exits; netif's unit flushes dynamic IPv4 addresses after every
-  stop (`specs/netif.md` N31). A unit file's `WantedBy=<device>` did
-  not start a service in the VM; udev `SYSTEMD_WANTS` does.
-- IfState 2.5.1 ignores routes of `proto dhcp` (16) and `proto ra` (9)
-  and dynamic addresses by default. `ifstatecli check` prints `ok`,
-  `= <value>` or `orphan` for unchanged objects and exits 0 either
-  way; tests use `tests/ifstate-noop.nix`.
-- A test node that sends RAs must forward IPv6, or Linux hosts drop it
-  as default router seconds after first use (`specs/netif.md` §7).
-- `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).
+Upstream behaviour the specs depend on, each verified by a probe or a
+suite (IfState, Cilium, FRR, dhcpcd, Jool, the GitOps handoff):
+`documentation/docs/reference/upstream-facts.md`. Read the section of a
+component before changing code that touches it; add a fact there when a
+suite or probe proves one.

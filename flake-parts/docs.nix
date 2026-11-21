@@ -91,6 +91,7 @@ _: {
             {Glossary = "reference/glossary.md";}
             {Testing = "reference/testing.md";}
             {"Upstream references" = "reference/upstream.md";}
+            {"Verified upstream facts" = "reference/upstream-facts.md";}
           ];
         }
       ];

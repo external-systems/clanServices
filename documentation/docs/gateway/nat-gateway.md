@@ -67,22 +67,22 @@ leave an IPv6-only node:
 - **A, the fallback, unused:** carry it over the fabric to a gateway
   that does ordinary NAT.
 
-Probes decided on 2026-11-20 and 2026-11-21. B works on both
-transports (the routed fabric with native routing and the WireGuard mesh
-tunnel) and on k3s and rke2, with IPv6-only network cards. Two ways to
-do it both pass:
+B works on both transports (the routed fabric with native routing and
+the WireGuard mesh tunnel) and on k3s and rke2, with IPv6-only network
+cards. Test suites keep it proven.
 
-| | Map the pod pool | Let Cilium hide the pods |
-|---|---|---|
-| How | the CLAT maps the cluster's pod pool one to one into a prefix of the node | the CLAT link is added to Cilium's devices; Cilium hides pods behind the CLAT's address |
-| Needs a prefix routed to each node | yes | no |
-| The gateway sees which pod | yes | no |
-| Tested | k3s and rke2 | k3s |
+**How, decided 2026-11-21:** the CLAT's link is added to Cilium's
+devices. Cilium then hides pods behind the CLAT's address, as it does
+for all other traffic that leaves the cluster. A node needs one
+address and no extra prefix.
 
-The proposal is the second: less to set up. You decide.
+The alternative stays documented: the CLAT maps the cluster's pod pool
+one to one into a prefix of the node. The gateway then sees which pod
+sent a packet, at the cost of a routed prefix per node.
 
 Out of the box neither happens: a pod's packet reaches the CLAT with
-the pod's own address and gets no answer.
+the pod's own address and gets no answer. A suite checks that too, so
+a Cilium update that changes it is noticed.
 
 ## Redundancy
 
@@ -91,7 +91,12 @@ the pod's own address and gets no answer.
   the gateway that knows the connection. Nothing is synchronized.
 - A client lists both gateways as DNS servers. When one dies it stops
   answering DNS, and the client gets addresses that lead to the other.
-  Measured: 5.6 seconds.
+  Measured: 6 to 10 seconds.
+- A machine's CLAT follows one gateway. A small check moves it to the
+  other one after 8 failed checks in a row: 13 to 15 seconds after a
+  crash, and not at all on a gateway that only loses some packets.
+- A gateway checks its own IPv4 upstream. **Open:** when that fails,
+  CLATs move away, but name lookups stay on the sick gateway.
 - **Connections through a dead gateway hang.** Nothing tells the client
   that the gateway is gone, so a program notices through its own
   timeout. New connections go through the other gateway. This is

@@ -1,4 +1,4 @@
-# A NAT64 gateway for probes, built as specs/gateway.md G2 says: Jool in
+# A NAT64 gateway for VM suites, built as specs/gateway.md G2 says: Jool in
 # a namespace of its own that IfState declares, the host's forward chain
 # as the allowlist, and a masquerade to the public IPv4 address.
 #
@@ -12,6 +12,12 @@
   outside,
   routes ? [],
   corefile ? null,
+  # Health target (specs/gateway.md §12.2): an address inside `pool`
+  # (the /96 plus an IPv4 address upstream). The gateway pings it through
+  # its own translator and serves `ipv4only.arpa` only while it answers,
+  # so a client's CLAT follower needs no internet target of its own. The
+  # Corefile reads the records with `hosts /run/nat64-health/ipv4only.hosts`.
+  healthTarget ? null,
 }: {
   pkgs,
   config,
@@ -132,6 +138,45 @@
   };
   systemd.services = {
     coredns = lib.mkIf (corefile != null) {after = ["ifstate.service"];};
+    # Three failed pings in a row withdraw the records; one answer
+    # restores them. CoreDNS rereads the file (`reload` of `hosts`).
+    nat64-health = lib.mkIf (healthTarget != null) {
+      wantedBy = ["multi-user.target"];
+      after = ["jool-netns.service"];
+      path = [
+        pkgs.iputils
+        pkgs.coreutils
+      ];
+      serviceConfig = {
+        Restart = "always";
+        RuntimeDirectory = "nat64-health";
+      };
+      script = ''
+        file=/run/nat64-health/ipv4only.hosts
+        fails=0
+        state=unknown
+        while :; do
+          if ping -c1 -W1 ${healthTarget} >/dev/null 2>&1; then
+            fails=0
+            if [ "$state" != up ]; then
+              printf '192.0.0.170 ipv4only.arpa\n192.0.0.171 ipv4only.arpa\n' >"$file.new"
+              mv "$file.new" "$file"
+              state=up
+              echo "nat64-health: ${healthTarget} answers, ipv4only.arpa served"
+            fi
+          else
+            fails=$((fails + 1))
+            if [ "$fails" -ge 3 ] && [ "$state" != down ]; then
+              : >"$file.new"
+              mv "$file.new" "$file"
+              state=down
+              echo "nat64-health: ${healthTarget} is silent, ipv4only.arpa withdrawn"
+            fi
+          fi
+          sleep 1
+        done
+      '';
+    };
     # Idempotent: an IfState apply restarts it (Requires), and the
     # instance is still there.
     jool-netns = {

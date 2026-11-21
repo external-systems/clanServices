@@ -40,6 +40,16 @@ in rec {
       imports = [./tests/vm/join.nix];
       inherit clan;
     };
+    # The join suite on an underlay that netif renders (specs/netif.md N14).
+    k3s-join-netif = {
+      imports = [./tests/vm/join-netif.nix];
+      clan =
+        clan
+        // {
+          modules = clan.modules // {inherit (self.clan.modules) netif;};
+          exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
+        };
+    };
     k3s-ha = {
       imports = [./tests/vm/ha.nix];
       inherit clan;
@@ -50,6 +60,10 @@ in rec {
     };
     k3s-data-plane = {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
+      inherit clan;
+    };
+    k3s-data-plane-tunnel = {
+      imports = [(import ./tests/vm/data-plane-tunnel.nix {inherit inputs;})];
       inherit clan;
     };
     k3s-data-plane-netif = {
@@ -64,6 +78,16 @@ in rec {
     # A single-node cluster that exists in one mode of its machine (N4, U2).
     k3s-modes = {
       imports = [./tests/vm/modes.nix];
+      clan =
+        clan
+        // {
+          modules = clan.modules // {inherit (self.clan.modules) netif modes;};
+          exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
+        };
+    };
+    # The same contract with the cluster on the routed fabric (native routing).
+    k3s-modes-fabric = {
+      imports = [./tests/vm/modes-fabric.nix];
       clan =
         clan
         // {

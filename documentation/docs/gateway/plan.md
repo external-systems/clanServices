@@ -1,8 +1,24 @@
 # Plan and probes
 
 No service is built yet. The design was decided on 2026-11-20 and is
-written down first. A first round of probes ran the same day; their
-results are below and in `specs/gateway.md` §10.
+written down first. Probes answered the open questions; their results
+are below and in `specs/gateway.md` §10.
+
+Since 2026-11-21 every probe is a real test suite that checks its
+result on every run:
+
+| Suite | What it keeps proven |
+|---|---|
+| `gateway-wan` | MAC override and VLAN 0 on the WAN port |
+| `netif-v6only` | a machine with no IPv4: names, IPv4 literals, path MTU, reboot |
+| `gateway-nat64` | two NAT gateways, failover, the CLAT's health check |
+| `gateway-router` | zones, DNS, advertisements, a prefix change, public Service addresses |
+| `gateway-dual-wan` | two WANs with DHCP, failover and back |
+| `k3s-v6only`, `rke2-v6only` | a cluster on IPv6-only machines |
+| `<distro>-clat-<transport>` | pod IPv4 through the node's CLAT, both Cilium modes |
+
+They run on small stand-in modules. When a service is built, its suite
+uses the service instead and keeps the checks.
 
 ## Probes first
 
@@ -41,8 +57,8 @@ Found on the way:
 |---|---|---|
 | PR7 | A small health check moves a machine's CLAT to a live gateway by itself | the client role runs it |
 | PR8 | The router handles a prefix change in 5 seconds, also when it happened while the router was off | netif publishes the prefix as a file |
-| PR10 | The routed fabric and the mesh both run on IPv6-only network cards, k3s and rke2. Pod IPv4 leaves through each node's CLAT in both modes. Adding the CLAT link to Cilium's devices works with no address mapping | a simpler way for pod IPv4 is proposed |
-| PR9 | One router with two WANs fails over in 6 seconds and back in 4, for IPv4 and IPv6 | failover changes no route, only one firewall rule |
+| PR10 | The routed fabric and the mesh both run on IPv6-only network cards, k3s and rke2. Pod IPv4 leaves through each node's CLAT in both modes. Adding the CLAT link to Cilium's devices works with no address mapping | that simpler way is the design (decided 2026-11-21) |
+| PR9 | One router with two WANs fails over in 6 seconds and back in 3 to 4, for IPv4 and IPv6, also with DHCP on the WANs | failover changes no route, only one firewall rule |
 
 ## Build order
 
