@@ -237,25 +237,39 @@ in
           observe("node routes after Cilium", alpha, "ip -4 route; ip -br link | cut -c1-60")
           observe("netfilter rules Cilium added", alpha, "iptables-save 2>/dev/null | grep -c CILIUM; nft list ruleset | grep -c -i cilium")
 
-      with subtest("a pod reaches an IPv4 address"):
-          alpha.execute("tcpdump -i clat0 -n -c 8 'tcp port 80 or icmp' > /tmp/clat0.txt 2>&1 &")
-          status, out = pod("pod to an IPv4 literal", "wget -T 10 -qO- http://198.51.100.80/")
-          observe("what the CLAT link carried", alpha, "sleep 1; pkill tcpdump; sleep 1; cat /tmp/clat0.txt")
-          observe("CLAT statistics", alpha, "ip netns exec clat jool_siit -i clat stats display")
+      def capture(seconds=25):
+          alpha.execute(f"timeout {seconds} tcpdump -i clat0 -n -l -c 6 'tcp port 80 or icmp' > /tmp/clat0.txt 2>&1 &")
+          alpha.execute("sleep 1")
+
+      def attempt(label):
+          capture()
+          status, out = pod(f"pod to an IPv4 literal, {label}", "wget -T 8 -qO- http://198.51.100.80/")
+          observe(f"{label}: what the CLAT link carried", alpha, "sleep 2; cat /tmp/clat0.txt | grep -v '^tcpdump\\|^listening'")
+          observe(f"{label}: CLAT statistics", alpha, "ip netns exec clat jool_siit -i clat stats display")
           works = status == 0 and "198.51.100.1" in out
-          print(f"FINDING pod IPv4 egress through the node CLAT with Cilium's own masquerade: {'works' if works else 'FAILS'}")
+          print(f"FINDING pod IPv4 egress, {label}: {'works' if works else 'FAILS'}")
+          return works
+
+      with subtest("a pod reaches an IPv4 address"):
+          pods = json.loads(alpha.succeed(f"{K} kubectl get pods -A -o json"))
+          pod_ips = [ip["ip"] for item in pods["items"] if not item["spec"].get("hostNetwork") for ip in item["status"].get("podIPs", []) if ":" not in ip["ip"]]
+          v4 = str(ipaddress.ip_network(pod_ips[0] + "/24", strict=False))
+          print(f"FINDING pod addresses {pod_ips}; the node's pod /24 is taken to be {v4}")
+          works = attempt("as Cilium ships it (its eBPF masquerade knows only its own devices)")
           if not works:
-              cilium("Cilium drops", "timeout 3 cilium-dbg monitor --type drop")
-              pods = json.loads(alpha.succeed(f"{K} kubectl get ciliumnode alpha -o json"))["spec"]["ipam"]["podCIDRs"]
-              v4 = [c for c in pods if ":" not in c][0]
-              print(f"FINDING the node's pod CIDRs are {pods}")
-              net = ipaddress.ip_network(v4)
-              if net.prefixlen == 24:
-                  alpha.succeed(f"ip netns exec clat jool_siit -i clat eamt add ${podMap} {v4}")
-                  status, out = pod("pod to an IPv4 literal, with the pod CIDR mapped statelessly", "wget -T 10 -qO- http://198.51.100.80/")
-                  observe("CLAT statistics after the mapping", alpha, "ip netns exec clat jool_siit -i clat stats display")
-                  works = status == 0 and "198.51.100.1" in out
-                  print(f"FINDING pod IPv4 egress with a stateless pod CIDR mapping: {'works' if works else 'FAILS'}")
+              # a masquerade in the host's netfilter, if pod traffic passes it
+              alpha.succeed("nft add table ip probe; nft 'add chain ip probe post { type nat hook postrouting priority srcnat; }'; nft add rule ip probe post oifname clat0 counter masquerade")
+              works = attempt("with an nftables masquerade on the CLAT link")
+              observe("the masquerade counter", alpha, "nft list table ip probe | grep counter")
+              alpha.succeed("nft delete table ip probe")
+          if not works:
+              # no state on the node: the pod /24 mapped one to one
+              alpha.succeed(f"ip netns exec clat jool_siit -i clat eamt add ${podMap} {v4}")
+              alpha.succeed(f"ip route replace {v4} dev cilium_host table 100 2>/dev/null || true")
+              observe("return route for the pod /24 in the CLAT namespace", alpha, "ip netns exec clat ip -4 route")
+              works = attempt("with the pod /24 mapped statelessly")
+          if not works:
+              cilium("Cilium drops while a pod tries", "sh -c 'timeout 12 cilium-dbg monitor --type drop & sleep 1; wait' ")
           pod("pod: 2 MB down", "sh -c 'wget -T 20 -qO- http://198.51.100.80/big | wc -c'")
           pod("pod: 2 MB up", "sh -c 'dd if=/dev/zero bs=1024 count=2000 2>/dev/null > /tmp/up; wget -T 20 -qO- --post-file=/tmp/up http://198.51.100.80/'")
           pod("pod: ping", "ping -c2 -W2 198.51.100.80")

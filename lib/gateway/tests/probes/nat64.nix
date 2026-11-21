@@ -299,6 +299,7 @@ in {
           pkgs.kmod
           pkgs.jool-cli
           pkgs.procps
+          pkgs.gnugrep
         ];
         serviceConfig = {
           Type = "oneshot";
@@ -307,8 +308,12 @@ in {
         script = ''
           modprobe jool_siit
           ip netns exec clat sysctl -w net.ipv4.conf.all.forwarding=1 net.ipv6.conf.all.forwarding=1
-          ip netns exec clat jool_siit instance add clat --netfilter --pool6 ${pool1}
-          ip netns exec clat jool_siit -i clat eamt add ${clatAddr} 192.0.0.1
+          # idempotent: an IfState apply restarts this unit, and the
+          # instance is still there
+          if ! ip netns exec clat jool_siit instance display | grep clat >/dev/null; then
+            ip netns exec clat jool_siit instance add clat --netfilter --pool6 ${pool1}
+            ip netns exec clat jool_siit -i clat eamt add ${clatAddr} 192.0.0.1
+          fi
           # an IPv4 packet grows by 20 bytes when it becomes IPv6
           ip route replace default via 192.0.0.2 dev clat0 mtu 1480
         '';
@@ -469,6 +474,7 @@ in {
           pkgs.kmod
           pkgs.jool-cli
           pkgs.procps
+          pkgs.gnugrep
         ];
         serviceConfig = {
           Type = "oneshot";
@@ -477,6 +483,7 @@ in {
         script = ''
           modprobe jool
           ip netns exec nat64 sysctl -w net.ipv4.conf.all.forwarding=1 net.ipv6.conf.all.forwarding=1
+          ip netns exec nat64 jool instance display | grep default >/dev/null && exit 0
           ip netns exec nat64 jool instance add default --netfilter --pool6 ${pool2}
           # Jool refuses a pool4 range that overlaps the namespace's
           # ephemeral ports. Nothing opens a socket in this namespace, so

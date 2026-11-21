@@ -233,7 +233,9 @@ in {
             subprocess.run(["nft", "-f", "-"], input=rules.encode(), check=True)
         replace(STATE, json.dumps(state))
         if changed:
-            subprocess.run(["systemctl", "try-restart", "corerad.service"], check=True)
+            # --no-block: corerad is ordered after this unit, so waiting
+            # for its restart from inside this unit never returns
+            subprocess.run(["systemctl", "--no-block", "try-restart", "corerad.service"], check=True)
         print(f"router-prefix: current {state['current']}, retired {sorted(state['retired'])}, corerad {'restarted' if changed else 'unchanged'}")
       '';
     in {

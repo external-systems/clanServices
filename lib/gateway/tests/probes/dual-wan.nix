@@ -225,6 +225,23 @@ in {
         firewall.enable = false;
         # one rule per WAN and family; which mark a packet carries is
         # the only thing that changes on failover
+        # The router's own sockets need a route when they connect, before
+        # any packet reaches the output hook that sets the mark: the
+        # primary's default stays in main (first run: without it the
+        # router's own traffic failed at once, and replies failed the
+        # reverse-path check).
+        ifstate.settings.routing.routes = [
+          {
+            to = "0.0.0.0/0";
+            via = "192.0.2.1";
+            preference = 100;
+          }
+          {
+            to = "::/0";
+            via = "2001:db8:a::1";
+            preference = 100;
+          }
+        ];
         ifstate.settings.routing.rules = lib.concatMap (w:
           map (family: {
             inherit family;
@@ -253,16 +270,18 @@ in {
               }
               chain prerouting {
                 type filter hook prerouting priority mangle;
-                iifname "eth3" fib daddr type != local jump steer
+                iifname "eth3" fib daddr type != local counter jump steer
               }
               chain output {
                 type route hook output priority mangle;
-                meta mark 0x0 fib daddr type != local jump steer
+                meta mark 0x0 fib daddr type != local counter jump steer
               }
               chain postrouting {
                 type nat hook postrouting priority srcnat;
-                oifname { "eth1", "eth2" } meta nfproto ipv4 masquerade
-                oifname "eth2" snat ip6 prefix to ip6 saddr map { 2001:db8:1000::/60 : 2001:db8:2000::/60 }
+                oifname { "eth1", "eth2" } meta nfproto ipv4 counter masquerade
+                oifname "eth2" counter snat ip6 prefix to ip6 saddr map { 2001:db8:1000::/60 : 2001:db8:2000::/60 }
+                # the router's own IPv6 traffic, bound to the primary's address
+                oifname "eth2" ip6 saddr 2001:db8:a::2 counter masquerade
               }
             '';
           };
@@ -442,6 +461,9 @@ in {
     with subtest("both WANs up: traffic leaves through the primary"):
         observe("router rules and tables", router, "ip rule; ip -6 rule; ip route show table 301; ip route show table 302; ip -6 route show table 301; ip -6 route show table 302; echo main:; ip route; ip -6 route | grep -v fe80")
         observe("ifstatecli check", router, "ifstatecli check | grep -v ' ok$\\|^$\\|= \\|orphan\\|\\.\\.\\.$\\|^ [a-z0-9.]*$'")
+        observe("client routes", client, "ip -br addr; ip route; ip -6 route | grep -v fe80; ping -c1 -W1 192.168.10.1 | tail -2; ping -c1 -W1 2001:db8:1000:1::1 | tail -2")
+        observe("one try each, verbose", client, "curl -sS --max-time 3 http://203.0.113.80/; curl -sS --max-time 3 'http://[2001:db8:f::80]/'")
+        observe("router counters and sysctls", router, "nft list table inet router | grep counter; sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.eth1.rp_filter net.ipv4.conf.all.forwarding net.ipv6.conf.all.forwarding net.ipv6.conf.eth3.forwarding; ip route get 203.0.113.80 from 192.168.10.10 iif eth3 mark 1; ip -6 route get 2001:db8:f::80 from 2001:db8:1000:1::10 iif eth3 mark 1")
         both("primary", "192.0.2.2", "2001:db8:1000:1::10", time.time())
         observe("the router's own traffic", router, V4 + "; " + V6)
         observe("health pings through each WAN", router, "ping -c1 -W1 -m 1 203.0.113.80 | head -2; ping -c1 -W1 -m 2 203.0.113.80 | head -2; ping -c1 -W1 -m 2 2001:db8:f::80 | head -2")
