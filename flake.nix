@@ -58,6 +58,7 @@
         # flake-module.nix entry points instead of import-tree.
         ./services/flake-module.nix
         ./lib/kube-cluster/flake-module.nix
+        ./lib/gateway/flake-module.nix
       ];
     };
 }

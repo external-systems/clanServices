@@ -44,6 +44,10 @@ in rec {
       imports = [./tests/vm/ha.nix];
       inherit clan;
     };
+    k3s-ha-fabric = {
+      imports = [./tests/vm/ha-fabric.nix];
+      inherit clan;
+    };
     k3s-data-plane = {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
       inherit clan;

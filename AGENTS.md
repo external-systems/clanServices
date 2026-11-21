@@ -18,6 +18,12 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   BIRD-specific VM fixtures were deleted in the round-17 cleanup;
   their former ghost failures no longer block eval gates. No archives.
   Auto-discovered via `flake-module.nix`; no central registration list.
+- `lib/gateway/` — the future private implementation of `router` and
+  `nat-gateway` (`specs/gateway.md` G1). Today it holds only probes:
+  `tests/probes/*.nix`, registered as `probe-*` suites in its
+  `flake-module.nix` (nine today). A probe prints `FINDING` lines and
+  asserts little; its result goes into `specs/gateway.md` §10, and it is
+  deleted when a real suite asserts what it showed.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
@@ -32,11 +38,12 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   IfState node), `ifstate-noop.nix` (the "a reapply changes nothing"
   helper), `headscale-vm.nix` (an offline Headscale), `wifi-ap.nix`
   (simulated access points).
-  Each service registers its suites (39 in all) in its `flake-module.nix`
+  Each service registers its suites (39 in all, plus the `probe-*`
+  suites of `lib/gateway`) in its `flake-module.nix`
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
-  (`single`, `join`, `ha`, `data-plane`, `clustermesh`, `clustermesh-tunnel`,
+  (`single`, `join`, `ha`, `ha-fabric`, `data-plane`, `clustermesh`, `clustermesh-tunnel`,
   `external`, `selective`); `services/{k3s,rke2}/tests/vm/` hold thin
   wrappers, and the body branches on `distro` explicitly.
 - `devenv.yaml`/`devenv.nix` — the org dev shell (`fmt`, `check`,

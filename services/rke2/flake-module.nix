@@ -43,6 +43,10 @@ in rec {
       imports = [./tests/vm/ha.nix];
       inherit clan;
     };
+    rke2-ha-fabric = {
+      imports = [./tests/vm/ha-fabric.nix];
+      inherit clan;
+    };
     rke2-data-plane = {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
       inherit clan;

@@ -374,12 +374,19 @@
       type = types.nullOr (types.strMatching "([0-9a-f]{2}:){5}[0-9a-f]{2}");
       default = null;
       description = ''
-        MAC address of a bridge, bond or VLAN link (lower-case,
-        colon-separated). Without it a bridge with exactly one physical
-        member declared by 'match.mac' takes that member's MAC, so a
-        provider that filters by MAC keeps accepting the host's
-        traffic; any other bridge keeps IfState's generated MAC
-        (specs/netif.md N23). A physical NIC's MAC is not set here.
+        MAC address the link presents (lower-case, colon-separated).
+
+        On a physical link it replaces the NIC's own MAC on the wire,
+        for a WAN port that stands in for an ISP's gateway
+        (specs/netif.md N43). 'match.mac' still names the NIC's
+        permanent MAC; the two differ. A VLAN above the link does not
+        inherit it: set 'mac' there too.
+
+        On a bridge, bond or VLAN it is that link's MAC. Without it a
+        bridge with exactly one physical member declared by 'match.mac'
+        takes that member's MAC, so a provider that filters by MAC keeps
+        accepting the host's traffic; any other bridge keeps IfState's
+        generated MAC (specs/netif.md N23).
       '';
       example = "52:54:00:12:02:01";
     };
@@ -744,8 +751,8 @@
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'bridge.guestPorts' but is not a bridge; set 'kind = \"bridge\"' or remove it (N23)";
           }
           {
-            assertion = link.mac == null || r.kind != "physical";
-            message = "netif/${instanceName}: physical link '${logical}' of machine '${machineName}' sets 'mac'; netif does not change a NIC's MAC. Use 'match.mac' to find the NIC by its MAC, or set 'mac' on the bridge, bond or VLAN above it (N23)";
+            assertion = link.mac == null || r.kind != "physical" || memberOf == null;
+            message = "netif/${instanceName}: physical link '${logical}' of machine '${machineName}' sets 'mac' but is a member of '${toString memberOf}'; a member takes the MAC of the bond or bridge above it, so set 'mac' there (N23, N43)";
           }
           {
             assertion = memberOf == null || !hasAddressing link;
@@ -1078,7 +1085,9 @@ in {
               state = "up";
             }
             // lib.optionalAttrs (r.mtu != null) {inherit (r) mtu;}
-            // lib.optionalAttrs (r.mac != null && r.kind != "physical") {address = r.mac;}
+            # N43: also on a physical link. 'match.mac' still finds the NIC
+            # by its permanent MAC.
+            // lib.optionalAttrs (r.mac != null) {address = r.mac;}
             // lib.optionalAttrs (r.memberOf != null) {
               master = resolved.${r.memberOf}.interface;
             }
