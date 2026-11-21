@@ -6,13 +6,27 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G21`, so they never collide
+pages together.** Decisions are numbered `G1`–`G23`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
 `specs/netif.md` §2 (U3, U13–U18).
 
 Round G0 (2026-11-20): **design round; docs only.** The owner decided the
 shape in a deciding session. Nothing in this file is implemented. Every
 decision is *(planned)* and several wait for a probe (§6).
+
+Round G1 (2026-11-20): **probe round.** Probes ran on euc-hel-0 from the
+branch `gateway-probes` (`lib/gateway/tests/probes/`, suites `probe-*`).
+Evidence is §10. No service code exists yet.
+- **PR2 answered:** Jool in the host namespace bypasses the forward
+  chain. G2 is amended: Jool runs in a namespace of its own.
+- **PR3 answered:** corerad works with a delegated prefix, a ULA, RDNSS,
+  DNSSL and PREF64. It does nothing when the prefix changes. G22 is new.
+- **PR6 answered:** the prefix rewrite works as G20 describes.
+- **New gaps:** a CLAT follows one gateway (G23); open flows stall on a
+  gateway failure, they do not reset (G6); the DNS64 listener needs the
+  allowlist too (G4).
+- G22 and G23 are *proposed*: the probes show they work, the owner has
+  not confirmed them.
 
 ## 0. Status vocabulary
 
@@ -81,16 +95,35 @@ any code (AGENTS.md rule 3).
 
 ### Translation
 
-- **G2 Jool is the only translator.**
-  - Stateful NAT64 on gateways; SIIT for the node CLAT (G5) and for
+- **G2 Jool is the only translator, in a namespace of its own.**
+  - Stateful NAT64 on gateways; SIIT for the CLAT (G5, G23) and for
     inbound IPv4 (G12).
   - Reason (owner): it runs in the kernel, so no per-packet context
     switch, and one tool covers both modes.
-  - A machine that runs Jool uses a kernel Jool builds against.
-  - Jool translates in a netfilter hook. Where the nftables firewall
-    sees translated packets is settled by probe PR2; a network namespace
-    of its own for Jool is the expected answer.
-  *(planned; PR2)*
+  - A machine that runs Jool uses a kernel Jool builds against. Jool
+    4.1.15 builds for the 6.18 kernel of the pinned nixpkgs and comes
+    from the public cache (§10.1).
+  - **Every Jool instance lives in a network namespace of its own**
+    (amended 2026-11-20 after PR2). In the host namespace Jool takes a
+    packet in PREROUTING (priority -75) and emits the translated one in
+    POSTROUTING: the input, forward and output chains never see it. A
+    firewall with a forward policy of drop relayed an undeclared source.
+  - In a namespace the host forwards to Jool over a veth pair. The
+    ordinary forward chain then filters both sides, conntrack sees the
+    flow, and the host masquerades Jool's private IPv4 address to the
+    public one.
+  - netif declares the namespace and the veth pair (IfState
+    `namespaces`): IfState deletes a namespace it does not know. An
+    IfState apply keeps the namespace and the Jool instance (§10.1).
+  - `lib/gateway` renders its own Jool units. The NixOS module
+    `networking.jool` only creates instances in the host namespace.
+    The unit must be idempotent: `instance add` fails when the instance
+    exists.
+  - Jool refuses a `pool4` port range that overlaps the namespace's
+    ephemeral ports. Nothing opens a socket in the Jool namespace, so
+    its ephemeral range is shrunk and Jool gets ports 1100–65535. In
+    the host namespace Jool would be left with 61001–65535.
+  *(probe-verified, PR2; the units are planned)*
 
 - **G3 Who translates what.**
 
@@ -107,13 +140,28 @@ any code (AGENTS.md rule 3).
   - Each gateway serves its own /96 out of its public IPv6 prefix, and
     its own DNS64 that synthesizes into that /96.
   - Clients reach both over plain IPv6. A source allowlist, built from
-    the `client` role, keeps a gateway from being an open relay.
+    the `client` role, keeps a gateway from being an open relay. It is
+    a rule of the forward chain (G2). It also covers the DNS64
+    listener, or the gateway is an open resolver. A client's CLAT
+    address (G23) is a second source to allow.
+  - CoreDNS binds the gateway's address. It cannot take the wildcard:
+    netif runs systemd-resolved on every machine (N9) and its stub
+    holds port 53. A bind right after boot races duplicate address
+    detection; `net.ipv6.ip_nonlocal_bind` avoids it.
   - A client lists every gateway as a nameserver. A dead gateway stops
-    answering DNS, so the next gateway's prefix is used.
+    answering DNS, so the next gateway's prefix is used. Measured with
+    systemd-resolved: 5.6 s to move, and resolved flushes its cache
+    when it changes server, so a cached name follows at once (§10.1).
+  - Caches the probe did not cover keep a dead gateway's prefix: an
+    application's own cache, and a cluster's CoreDNS. Each gateway
+    therefore caps the TTL of what it answers (`rewrite ttl`, shown to
+    work; the cap is a setting). Without a cap a synthesized answer
+    carried a TTL of 600 s.
   - The host path never depends on the fabric, so a broken fabric cannot
     stop a machine from fetching its own fix (the spirit of AGENTS.md
     rule 11).
-  *(planned)*
+  *(planned; the path, the allowlist and the failover are
+  probe-verified, PR2)*
 
 - **G5 Pod IPv4 egress in the cloud.**
   - **B, the target:** each node runs a CLAT (Jool SIIT). Pod IPv4
@@ -122,6 +170,10 @@ any code (AGENTS.md rule 3).
   - **A, the fallback:** carry pod IPv4 over the fabric to NAT44 on a
     gateway.
   - Probe PR1 decides. Amend this decision with the result before code.
+  - The host half is proven (PR2): a CLAT built as G23 carries IPv4
+    literals, ping and bulk traffic from an IPv6-only host. Under
+    Cilium the open question is whether pod traffic passes the hook
+    Jool uses at all.
   *(planned; PR1)*
 
 ### Redundancy
@@ -130,8 +182,12 @@ any code (AGENTS.md rule 3).
   - Each gateway translates to its own public IPv4, so replies return to
     the gateway that holds the state.
   - Two gateways is the default; one is allowed.
-  - Flows on a failed gateway reset; clients reconnect through another.
-    This is failover, not hitless high availability.
+  - Flows on a failed gateway **stall**; they do not reset (amended
+    after PR2). Nothing sends a reset for a dead gateway: 20 s after
+    the crash the client's TCP connection was still established and
+    silent. An application notices through its own timeout or TCP
+    keepalive. New connections go through another gateway. This is
+    failover, not hitless high availability.
   - The number of public IPv4 addresses equals the number of gateways.
   - Rejected: conntrackd state sync with a shared address (needs a
     movable public IP); MAP-T (heavy machinery).
@@ -257,7 +313,17 @@ any code (AGENTS.md rule 3).
 - **G15 corerad sends router advertisements.** Reason (owner): native
   Prometheus metrics, a modern implementation. The netif router probe
   used radvd, so probe PR3 re-proves prefix delegation, PREF64 and the
-  DNS options with corerad. *(planned; PR3)*
+  DNS options with corerad.
+  - Proven (PR3, §10.2): `prefix = "::/64"` advertises every /64 on the
+    link, the delegated one and the ULA, also when the delegated one
+    arrives after corerad started. RDNSS, DNSSL and PREF64 reach the
+    client. The metrics name each prefix.
+  - Name the DNS server address. With the wildcard `::` corerad exits
+    at start while the link's address is still tentative.
+  - Stopping corerad withdraws the default route from every client at
+    once (it sends a final advertisement with a zero lifetime).
+  - corerad does not react to a prefix change: G22.
+  *(probe-verified, PR3)*
 
 - **G16 Multi-WAN on one router.** Built after single WAN is proven.
   - IPv4: one default route per WAN with different metrics (netif N21,
@@ -362,7 +428,23 @@ any code (AGENTS.md rule 3).
       IPv4 address.
   - Rejected: a slice of a zone's /64 with an NDP proxy (for an ISP
     that delegates a single /64). Design only; not planned.
-  *(planned; PR6)*
+  - **Proven (PR6, §10.3)** with nftables' stateful prefix NAT
+    (`dnat ip6 prefix to ip6 daddr map { <public>/64 : <ULA>/64 }`):
+    the host part is kept, the node sees the client's address, a closed
+    port is dropped, an unused address answers "no route" at once, a
+    LAN zone reaches the service by its public address, and after a
+    prefix change one rule replacement moves the service.
+  - The rule is replaced as a whole. A named map in that statement is a
+    syntax error in nftables 1.1.7.
+  - Pinholes match the stable ULA address, after the rewrite. They
+    never name the public prefix.
+  - dhcpcd installs an unreachable route for the whole delegated
+    prefix, so an unassigned subnet is refused without any rule. The
+    stable /64 needs its own unreachable route.
+  - The rewrite is not RFC 6296 NPTv6: that one changes the host part
+    of a /64 to keep checksums. This one is stateful and keeps it.
+  - The rule is updated by G22's hook.
+  *(probe-verified, PR6; `servicePrefix` is planned)*
 
 - **G21 Owned address space** (owner, 2026-11-20; use case U18). The
   owner will hold an AS number and provider-independent IPv6 prefixes
@@ -401,6 +483,60 @@ any code (AGENTS.md rule 3).
   - **Never rendered:** registry objects (route objects, ROAs, reverse
     DNS delegation). They are the owner's tasks at the registry.
   *(planned; design only, after G16)*
+
+### Found by the probes
+
+- **G22 A prefix change is handled, not waited out** (proposed
+  2026-11-20; PR3, §10.2). When the ISP delegates another prefix, a
+  client keeps its old addresses as preferred for the advertised
+  lifetime (4 hours with corerad's defaults) and keeps using them as
+  source: IPv6 to the internet is dead until then. Neither daemon
+  repairs this by itself:
+  - corerad sent no advertisement for 45 s after the change and never
+    marked the old prefix;
+  - radvd 2.21 copies the lease's lifetimes into its advertisements, so
+    an old prefix dies with the lease, which is hours or days at a real
+    ISP.
+  The router therefore runs a prefix hook. On a change it:
+  - writes corerad's configuration with the old prefix listed as
+    `deprecated` (preferred lifetime 1 s, valid 2 h; zero is refused)
+    and restarts corerad, which advertises at once. In the probe the
+    client marked the old addresses deprecated and used the new prefix
+    within 5 s;
+  - replaces the service prefix rule (G20);
+  - keeps the last prefix on disk, so a prefix that changed across a
+    reboot is deprecated too.
+  corerad's configuration is thus a runtime file, not a store path.
+  Advertised lifetimes are also shortened (RFC 9096: preferred 45 min,
+  valid 90 min) for the case the hook misses.
+  - **netif's part (N16, to amend):** netif owns dhcpcd's exit script.
+    It publishes the delegated prefix as a runtime file per link and
+    starts a systemd target when it changes. Consumers bind to that;
+    nobody else hooks dhcpcd.
+  *(proposed; the deprecation and the rule update are probe-verified)*
+
+- **G23 The CLAT** (proposed 2026-11-20; PR2, §10.1). A machine without
+  IPv4 that must reach IPv4 literals runs a CLAT:
+  - a namespace and a veth pair declared by netif, with Jool SIIT in
+    the namespace (Jool does not translate packets the host itself
+    generates, so the host routes them into the namespace);
+  - `192.0.0.1` on the host side, an IPv4 default route into the
+    namespace with MTU 1480, IPv6 forwarding on the host;
+  - a second IPv6 address for the CLAT, routed to the machine. A cloud
+    machine takes it from its own /64;
+  - an explicit address mapping for the host and the gateway's /96 as
+    `pool6`.
+  - **A CLAT has one `pool6`, so it follows one gateway.** When that
+    gateway died, IPv4 literals failed until `pool6` was changed; one
+    `jool_siit global update pool6` repaired it without touching the
+    namespace. The client role therefore runs a small health check
+    that points the CLAT at a live gateway. Asking each nameserver for
+    `ipv4only.arpa` (RFC 7050) would test DNS64 and name the prefix in
+    one step; that is not probed yet.
+  - Rejected for the host path: one shared /96 for all gateways. It
+    needs a route that follows gateway health, which is the fabric,
+    and G4 keeps the host path off the fabric.
+  *(proposed; the CLAT and the switch are probe-verified)*
 
 ## 3. Invariants (target)
 
@@ -443,15 +579,21 @@ any code (AGENTS.md rule 3).
 ## 6. Probes
 
 Each runs before the code it gates. A finding goes into this file first.
+Probes live in `lib/gateway/tests/probes/` and register as `probe-<name>`
+suites, so `vm-test probe-<name> --remote --quiet` runs one. A probe
+prints `FINDING` lines and asserts little. It is deleted when a real
+suite asserts what it showed (as `specs/netif.md` N40).
 
 | Probe | Question | Gates |
 |---|---|---|
 | PR1 | Node CLAT with Jool SIIT under Cilium: does pod IPv4 egress work? | G5 |
-| PR2 | Jool beside the nftables firewall: where is traffic filtered? | G2 |
-| PR3 | corerad with a delegated prefix, PREF64 and DNS options | G15 |
+| PR2 | Jool beside the nftables firewall: where is traffic filtered? **Answered, §10.1** | G2 |
+| PR3 | corerad with a delegated prefix, PREF64 and DNS options. **Answered, §10.2** | G15, G22 |
 | PR4 | k3s and rke2 on an IPv6-only underlay | SPEC.md D67 |
 | PR5 | MAC override and a priority-tagged WAN (VLAN 0) | netif N43, N44 |
-| PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? | G20, G16 |
+| PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? **Answered, §10.3** | G20, G16 |
+| PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? | G23 |
+| PR8 | The prefix hook end to end: netif's trigger, corerad restarted with the old prefix deprecated, the rule replaced, a reboot in between | G22 |
 
 ## 7. Delivery plan
 
@@ -498,3 +640,114 @@ Each slice: spec, code, eval tests, VM suite, docs.
 - **ULA** — a private IPv6 prefix (`fd00::/8`).
 - **VRRP** — a protocol by which routers share one virtual gateway
   address.
+
+## 10. Probe evidence (2026-11-20, euc-hel-0)
+
+Versions: kernel 6.18.59, Jool 4.1.15, nftables 1.1.7, CoreDNS 1.14.7,
+corerad 1.4.0, radvd 2.21, kea 3.2.1, IfState 2.5.1, netif's dhcpcd
+10.5. Each probe passed as a sandboxed build on the builder.
+
+### 10.1 `probe-nat64` (PR2; G2, G4, G6, G23)
+
+Topology: an IPv6-only client and an undeclared outsider on one network;
+two gateways, each with its own /96 and DNS64; an IPv4-only server
+behind them. `gw1` runs Jool in the host namespace (the NixOS module),
+`gw2` in a namespace declared in IfState. Both run the NixOS firewall
+with a forward policy of drop.
+
+- **Hooks.** Counters at every hook, `gw1`: IPv6 towards the /96 is seen
+  only in PREROUTING at priority -300, not at 0; the translated IPv4 is
+  seen only in POSTROUTING. Input, forward and output count nothing in
+  either direction. `gw2`: every packet passes PREROUTING, the forward
+  chain and POSTROUTING, on the IPv6 side and on the IPv4 side.
+- **Open relay.** `gw1` without a rule before Jool's hook: the outsider
+  fetched a page through it, forward policy drop notwithstanding. With
+  a drop rule at priority -300 it timed out. `gw2`: the outsider timed
+  out with one ordinary forward rule.
+- **DNS64.** A firewall rule limits port 53 to the clients; the
+  outsider's query timed out.
+- **Jool's limits.** `pool4 add 10.64.0.2 1024-65535` failed: "Port
+  range 1024-65535 intersects with the namespace's ephemeral range
+  (32768-60999)". With the namespace's range set to 1024–1099, the
+  range 1100–65535 was accepted.
+- **IfState.** `ifstatecli check` on `gw2` and on the client listed
+  the namespaces and veth pairs as unchanged. After a restart of
+  `ifstate.service` the Jool instances were still there and traffic
+  passed. The probe's own unit failed on that restart ("already has a
+  Jool instance"): the real unit must be idempotent.
+- **CoreDNS.** The wildcard listener failed: "listen tcp :53: bind:
+  address already in use". Bound to the gateway's address it failed
+  some boots with "cannot assign requested address" until
+  `net.ipv6.ip_nonlocal_bind = 1`.
+- **TTL.** A record with TTL 3600 was synthesized with TTL 600;
+  `rewrite ttl suffix short.test. 5` gave 5.
+- **The gateway's own IPv4** traffic was unaffected on both.
+- **CLAT.** From the client: `curl http://198.51.100.80/` answered with
+  the gateway's IPv4 address, ping worked, 2 MB in 0.06 s.
+- **Failure of `gw1`.** A name not in the cache resolved through `gw2`
+  after 5.6 s. Cached names, with TTL 5 s and 3600 s, worked at once:
+  systemd-resolved had moved to `gw2` and flushed. The open TCP flow:
+  no new data in 20 s, socket state ESTAB, no reset. An IPv4 literal
+  timed out until `jool_siit global update pool6 <gw2's /96>`; then it
+  answered through `gw2`.
+
+### 10.2 `probe-router`, advertisements (PR3; G8, G10, G11, G14, G15, G22)
+
+Topology: an ISP (kea DHCPv4 and DHCPv6 with a delegated /60, radvd), a
+router whose links netif renders, a client in zone `home`, a node in
+zone `servers`. The router runs nftables, kea, corerad and CoreDNS.
+
+- **netif.** WAN lease, a /60, one /64 on each zone link, zone
+  interface names read from `clanServices.netif.zones`.
+- **dhcpcd's routes.** `unreachable <delegated>/60 dev lo proto dhcp
+  metric 1001`, and one route per assigned /64.
+- **corerad.** Started before the delegated prefix existed and
+  advertised it later. The client got an address in the delegated /64
+  and in the ULA /64, the default route, RDNSS (the router's ULA),
+  DNSSL and "NAT64 prefix 64:ff9b::/96" (`rdisc6`). With
+  `rdnss.servers = ["::"]` it exited twice at boot: "interface has no
+  usable IPv6 addresses".
+- **Source address choice.** To a public address the client used its
+  public address, to the router's ULA its ULA address.
+- **netif clients ignore RDNSS** (N39): the client's DNS came from
+  DHCPv4 only.
+- **Zones.** home to servers and back: timed out in both families. The
+  ISP to a client's public IPv6 address and to the router's port 53:
+  timed out. NAT44 answered with the router's WAN address.
+- **Blocklist size.** CoreDNS with 300 000 names in the `hosts` plugin:
+  about 140 MB of memory, ready within 1 s, a blocked name answered in
+  0 ms.
+- **Prefix change, corerad.** After the router had the new prefix, the
+  client had none of it for 45 s. After a solicitation it had both
+  prefixes, both preferred, and chose the old one as source: `curl` to
+  the ISP timed out. With the old prefix in corerad's file as
+  `deprecated` (preferred 1 s, valid 2 h) the client marked it
+  deprecated and `curl` worked through the new one. `preferred_lifetime
+  = "0s"` is refused: "preferred lifetime must be non-zero".
+- **Prefix change, radvd.** radvd advertised the delegated prefix with
+  the lease's remaining lifetimes (valid 234 s of a 240 s lease), not
+  with fixed ones. The old prefix was not marked either; the client
+  kept using it until its lifetime ran out.
+- **Probe trap.** A restart of netif's dhcpcd unit is followed by an
+  IfState apply, which removes routes added by hand. Routes with
+  `proto bgp`, as FRR installs them, stay.
+
+### 10.3 `probe-router`, service prefix (PR6; G20)
+
+The node holds `fd00:10:5::80/128`; the router has a `proto bgp` route
+to it and an unreachable route for `fd00:10:5::/64`. A script reads the
+delegated prefix from a zone link, takes subnet `f` and replaces one
+rule.
+
+| From the ISP side | Result |
+|---|---|
+| `<public>:f::80` port 80 | answered; the node saw the ISP's address |
+| 2 MB | 0.1 s |
+| `<public>:f::80` port 8080 (no pinhole) | timed out |
+| `<public>:f::81` (unused) | "Destination unreachable: No route" at once |
+| `<public>:7::1` (unassigned subnet) | "No route" from the router's WAN address |
+
+- The home zone reached the service by its public address.
+- After the prefix change the same checks passed on the new prefix once
+  the script had run. Until then the old address still answered,
+  because the probe's ISP routed both blocks.

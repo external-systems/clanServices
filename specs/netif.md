@@ -7,7 +7,7 @@ keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
 together.** Decisions are numbered `N1`–`N45` so they never collide with
-SPEC.md's `D1`–`D68` or `specs/gateway.md`'s `G1`–`G21`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
+SPEC.md's `D1`–`D68` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
