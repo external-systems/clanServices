@@ -28,8 +28,8 @@ Evidence is §10. No service code exists yet.
 - **PR5 answered:** a physical link presents another MAC while it is
   found by its permanent one; IfState renders a VLAN 0 child and DHCP
   runs over it (`specs/netif.md` N43, N44).
-- G22 and G23 are *proposed*: the probes show they work, the owner has
-  not confirmed them.
+- G22 and G23 were *proposed* in this round. The owner accepted them,
+  and the G16 mechanism, on 2026-11-21 (round G2).
 
 ## 0. Status vocabulary
 
@@ -357,7 +357,7 @@ any code (AGENTS.md rule 3).
   - Flows reset on failover. Class 3 services do not survive a backup
     WAN behind carrier NAT; classes 1 and 2 do.
   - A modem that presents Ethernet with DHCP is just a second WAN link.
-  - **Mechanism (proposed 2026-11-20; PR9, §10.10): failover changes
+  - **Mechanism (decided 2026-11-21; PR9, §10.10): failover changes
     no route.**
     - Each WAN has a routing table of its own with its default route
       (netif `routingPolicy.table`), and IfState declares one fwmark
@@ -541,8 +541,8 @@ any code (AGENTS.md rule 3).
 
 ### Found by the probes
 
-- **G22 A prefix change is handled, not waited out** (proposed
-  2026-11-20; PR3, §10.2). When the ISP delegates another prefix, a
+- **G22 A prefix change is handled, not waited out** (decided
+  2026-11-21; PR3, §10.2). When the ISP delegates another prefix, a
   client keeps its old addresses as preferred for the advertised
   lifetime (4 hours with corerad's defaults) and keeps using them as
   source: IPv6 to the internet is dead until then. Neither daemon
@@ -579,9 +579,9 @@ any code (AGENTS.md rule 3).
     the next boot.
   - A restart of corerad keeps the clients' default route (the NixOS
     unit restarts it with SIGHUP).
-  *(proposed; probe-verified, PR8)*
+  *(planned; probe-verified, PR8)*
 
-- **G23 The CLAT** (proposed 2026-11-20; PR2, §10.1). A machine without
+- **G23 The CLAT** (decided 2026-11-21; PR2, §10.1). A machine without
   IPv4 that must reach IPv4 literals runs a CLAT:
   - a namespace and a veth pair declared as in G2, with Jool SIIT in
     the namespace (Jool does not translate packets the host itself
@@ -604,7 +604,7 @@ any code (AGENTS.md rule 3).
   - Rejected for the host path: one shared /96 for all gateways. It
     needs a route that follows gateway health, which is the fabric,
     and G4 keeps the host path off the fabric.
-  *(proposed; probe-verified, PR2 and PR7)*
+  *(planned; probe-verified, PR2 and PR7)*
 
 ## 3. Invariants (target)
 
@@ -862,113 +862,6 @@ Both distributions passed (k3s in 178 s, rke2 in 288 s).
 Not covered by this probe: pulling images (they are preloaded), pod
 IPv4 egress (PR1), and `routed-fabric` as the transport.
 
-## 11. Rough implementation design (draft, 2026-11-20)
-
-A draft for the owner's review, shaped by the probes. Names may change;
-nothing here is decided until it moves into §2.
-
-### 11.1 `lib/gateway/`
-
-| File | Renders | Proven by |
-|---|---|---|
-| `translator.nix` | a namespace and veth pair in IfState, the registry claim, an idempotent Jool unit (`nat64` or `siit`) | §10.1 |
-| `nat64.nix` | the gateway side: `pool6`, `pool4` on the namespace's private address, the masquerade, the forward allowlist | §10.1 |
-| `clat.nix` | the client side: `192.0.0.1`, the IPv4 default route with MTU 1480, the address mapping, the health check | §10.1, PR7 |
-| `dns.nix` | a Corefile: bound addresses, `forward` over TLS, `dns64`, the TTL cap, the `hosts` blocklist, static records | §10.1, §10.2 |
-| `firewall.nix` | one nftables table: zones, NAT44, pinholes, the service prefix chain | §10.2, §10.3 |
-| `advertise.nix` | corerad's runtime configuration and the prefix hook (G22) | §10.2, PR8 |
-| `dhcp.nix` | kea DHCPv4 per zone | §10.2 |
-| `metrics.nix` | listeners on the fabric address, the scrape export | not probed |
-
-### 11.2 `services/router`, role `router`
-
-Settings per machine (zone names are netif zone labels):
-
-```nix
-{
-  zones.<zone> = {
-    internet = true;            # may reach the wan zones
-    allowTo = [];               # other zones it may open flows to
-    ipv4.subnet = "192.168.10.0/24";
-    ipv4.pool = null;           # null: the upper half of the subnet
-    subnet = 1;                 # subnet id of the delegated and the ULA prefix
-    mdnsWith = [];              # zones to reflect mDNS with
-  };
-  wanZones = ["wan"];
-  ula.enable = false;           # the /48 is a generated public clan var
-  ipv6Mostly.enable = false;    # option 108, PREF64, NAT64 on the router
-  dns = {
-    upstream = ["tls://1.1.1.1" "tls://2606:4700:4700::1111"];
-    blocklist.tier = "pro-plus-plus";   # null: no blocking
-    records = {};
-  };
-  portForwards = [];            # { zone; protocol; port; to; }
-  servicePrefix = {
-    subnet = null;              # e.g. 15: reserved through netif (N16)
-    mode = "translated";        # or "literal"
-    pool = null;                # translated: a /64 of the ULA prefix
-    expose = [];                # { host; protocol; ports; }
-  };
-  metrics.enable = false;
-}
-```
-
-- The service reads interface names from `clanServices.netif.zones`
-  and the delegating link from netif's facts. It asserts that every
-  zone it names exists on the machine.
-- A zone link's delegated /64 comes from netif (`prefixDelegation.assign`
-  with the zone's `subnet`); the router does not repeat it. Open: who
-  writes that `assign` entry, the user in netif or the router service
-  through an export. A user who must repeat the subnet id in two
-  places will get it wrong.
-- Exports: the zones and their static subnets, the DNS address per
-  zone, and the scrape targets.
-
-### 11.3 `services/nat-gateway`
-
-```nix
-# role gateway, per machine
-{
-  uplinkZone = "wan";           # where the public IPv4 lives
-  pool6 = "2001:db8:a1:0:64::/96";   # inside the machine's own prefix
-  dns.listen = "2001:db8:a1::53";
-  dns.maxTtl = 30;
-  metrics.enable = false;
-}
-# role client, per machine
-{
-  clat.enable = false;          # true on Kubernetes nodes (G5)
-  clat.address = null;          # an address of the machine's /64
-}
-```
-
-- A gateway exports `pool6` and its DNS address. A client exports its
-  source addresses (the NIC address and the CLAT address).
-- The gateway's allowlist and every client's nameserver list are built
-  from those exports. Client nameservers are set through netif's
-  `nameservers`, which the client role cannot write today. Open: a
-  netif option that takes nameservers from an export, or the client
-  role writing resolved's global DNS.
-- A machine may hold both roles (a gateway is its own client).
-
-### 11.4 What netif needs first (slice S1)
-
-1. `mac` on a physical link (N43).
-2. A VLAN link with id 0 in a suite, with `mac` (N44).
-3. The delegated prefix as a runtime file (N16).
-4. `prefixDelegation.reserve` (N16).
-5. `netif-v6only` (N45): the probe `probe-v6only-host` is its draft.
-
-### 11.5 Suite topologies
-
-| Suite | Nodes | Draft |
-|---|---|---|
-| `netif-router` | isp, router, client (home), node (servers) | `probe-router` |
-| `router-service-prefix` | the same, plus a prefix change | `probe-router` |
-| `nat-gateway` | client, outsider, gw1, gw2, server4 | `probe-nat64` |
-| `netif-v6only` | static, slaac, provider, server4 | `probe-v6only-host` |
-| `k3s-v6only`, `rke2-v6only` | the join suites on IPv6-only NICs | `probe-<distro>-v6only` |
-
 ### 10.6 `probe-v6only-host` (netif N45; U13)
 
 Topology: a provider node that routes a /64 to a machine and is its
@@ -1093,3 +986,221 @@ server behind both. netif renders every link; each WAN has
 - netif's guard stayed green with a WAN down.
 - **Still wrong:** from the router, a ping to the backup's gateway
   failed while the primary was active. It was steered to the primary.
+
+## 11. Rough implementation design (draft, 2026-11-20)
+
+A draft for the owner's review, shaped by the probes. Names may change;
+nothing here is decided until it moves into §2.
+
+### 11.1 `lib/gateway/`
+
+| File | Renders | Proven by |
+|---|---|---|
+| `translator.nix` | a namespace and veth pair in IfState, the registry claim, an idempotent Jool unit (`nat64` or `siit`) | §10.1 |
+| `nat64.nix` | the gateway side: `pool6`, `pool4` on the namespace's private address, the masquerade, the forward allowlist | §10.1 |
+| `clat.nix` | the client side: `192.0.0.1`, the IPv4 default route with MTU 1480, the address mapping, the health check | §10.1, PR7 |
+| `dns.nix` | a Corefile: bound addresses, `forward` over TLS, `dns64`, the TTL cap, the `hosts` blocklist, static records | §10.1, §10.2 |
+| `firewall.nix` | one nftables table: zones, NAT44, pinholes, the service prefix chain | §10.2, §10.3 |
+| `advertise.nix` | corerad's runtime configuration and the prefix hook (G22) | §10.2, PR8 |
+| `dhcp.nix` | kea DHCPv4 per zone | §10.2 |
+| `metrics.nix` | listeners on the fabric address, the scrape export | not probed |
+
+### 11.2 `services/router`, role `router`
+
+Settings per machine (zone names are netif zone labels):
+
+```nix
+{
+  zones.<zone> = {
+    internet = true;            # may reach the wan zones
+    allowTo = [];               # other zones it may open flows to
+    ipv4.subnet = "192.168.10.0/24";
+    ipv4.pool = null;           # null: the upper half of the subnet
+    subnet = 1;                 # subnet id of the delegated and the ULA prefix
+    mdnsWith = [];              # zones to reflect mDNS with
+  };
+  wanZones = ["wan"];
+  ula.enable = false;           # the /48 is a generated public clan var
+  ipv6Mostly.enable = false;    # option 108, PREF64, NAT64 on the router
+  dns = {
+    upstream = ["tls://1.1.1.1" "tls://2606:4700:4700::1111"];
+    blocklist.tier = "pro-plus-plus";   # null: no blocking
+    records = {};
+  };
+  portForwards = [];            # { zone; protocol; port; to; }
+  servicePrefix = {
+    subnet = null;              # e.g. 15: reserved through netif (N16)
+    mode = "translated";        # or "literal"
+    pool = null;                # translated: a /64 of the ULA prefix
+    expose = [];                # { host; protocol; ports; }
+  };
+  metrics.enable = false;
+}
+```
+
+- The service reads interface names from `clanServices.netif.zones`
+  and the delegating link from netif's facts. It asserts that every
+  zone it names exists on the machine.
+- A zone link's delegated /64 comes from netif (`prefixDelegation.assign`
+  with the zone's `subnet`); the router does not repeat it. Open: who
+  writes that `assign` entry, the user in netif or the router service
+  through an export. A user who must repeat the subnet id in two
+  places will get it wrong.
+- Exports: the zones and their static subnets, the DNS address per
+  zone, and the scrape targets.
+
+### 11.3 `services/nat-gateway`
+
+```nix
+# role gateway, per machine
+{
+  uplinkZone = "wan";           # where the public IPv4 lives
+  pool6 = "2001:db8:a1:0:64::/96";   # inside the machine's own prefix
+  dns.listen = "2001:db8:a1::53";
+  dns.maxTtl = 30;
+  metrics.enable = false;
+}
+# role client, per machine
+{
+  clat.enable = false;          # true on Kubernetes nodes (G5)
+  clat.address = null;          # an address of the machine's /64
+}
+```
+
+- A gateway exports `pool6` and its DNS address. A client exports its
+  source addresses (the NIC address and the CLAT address).
+- The gateway's allowlist and every client's nameserver list are built
+  from those exports. Client nameservers are set through netif's
+  `nameservers`, which the client role cannot write today. Open: a
+  netif option that takes nameservers from an export, or the client
+  role writing resolved's global DNS.
+- A machine may hold both roles (a gateway is its own client).
+
+### 11.4 What netif needs first (slice S1)
+
+1. `mac` on a physical link (N43).
+2. A VLAN link with id 0 in a suite, with `mac` (N44).
+3. The delegated prefix as a runtime file (N16).
+4. `prefixDelegation.reserve` (N16).
+5. `netif-v6only` (N45): the probe `probe-v6only-host` is its draft.
+
+### 11.5 Suite topologies
+
+| Suite | Nodes | Draft |
+|---|---|---|
+| `netif-router` | isp, router, client (home), node (servers) | `probe-router` |
+| `router-service-prefix` | the same, plus a prefix change | `probe-router` |
+| `nat-gateway` | client, outsider, gw1, gw2, server4 | `probe-nat64` |
+| `netif-v6only` | static, slaac, provider, server4 | `probe-v6only-host` |
+| `k3s-v6only`, `rke2-v6only` | the join suites on IPv6-only NICs | `probe-<distro>-v6only` |
+
+## 12. Retrospective (2026-11-21): what is not proven, and what would harden it
+
+Written after the probe rounds. Each item says what is weak and what
+closes it. Nothing here is a decision; the owner picks what becomes one.
+
+### 12.1 How strong the probe evidence is
+
+- **Every probe ran once, alone, on an idle builder.** The timings in
+  §10 (5 s, 5.6 s, 6.2 s, 4.4 s) are single samples. A suite asserts a
+  bound with margin, never the sample.
+- **A probe asserts little.** A green probe means its script ran to the
+  end; the finding was read from `FINDING` lines by hand. A finding is
+  only safe from regression once a suite asserts it. Until then, a
+  nixpkgs bump can undo it silently.
+- **All clients were Linux with dhcpcd or the kernel's own SLAAC.** The
+  prefix retirement of G22, PREF64 and option 108 behave per operating
+  system (RFC 9096 leaves room). NetworkManager, Android, iOS, Windows
+  and consoles are unproven. NetworkManager can be put in a suite
+  (`modes-desktop` has it); the others need the owner's devices.
+- **All traffic was TCP of 2 MB, ping and DNS.** Not tested: large UDP,
+  fragments, an ICMP "packet too big" crossing a translator (path MTU
+  discovery through NAT64 and the CLAT), `traceroute`, long-lived idle
+  flows against the conntrack timeout.
+- **Four claims are still from memory:** Windows honours DHCP option
+  108, the Nintendo Switch has no IPv6, Headscale is unsupported behind
+  Cloudflare, the X710 rejects unqualified SFP+ modules. A VM cannot
+  prove them. They need a source or the hardware.
+
+### 12.2 Design risks
+
+| Risk | Why it matters | What closes it |
+|---|---|---|
+| Jool is an out-of-tree kernel module | A kernel bump can break the build of every gateway and every CLAT at once. tayga was rejected, so there is no second translator | An evaluation check that `linuxPackages.jool` is not marked broken for the kernel the fleet runs; the NAT64 suite runs on every `org-pkgs` bump; name tayga as the documented emergency fallback for the CLAT only |
+| GitHub has no IPv6 (checked 2026-11-21: `github.com`, `api.github.com`, `codeload.github.com` and `ghcr.io` publish no AAAA record; `cache.nixos.org`, `registry.k8s.io`, `quay.io`, Docker Hub, `git.clan.lol` do) | An IPv6-only machine cannot fetch a flake input from GitHub or an image from `ghcr.io` without a NAT64 gateway. The gateways become a dependency of every deploy and of the gateways' own repair | The two gateways are never updated together; a gateway keeps its own public IPv4 and so never needs NAT64 itself (already G3); a suite phase that fetches from an IPv4-only name through DNS64 with one gateway down |
+| The CLAT follower has no hysteresis | It polls every 2 s and moves on the first different answer. Two gateways that both answer, one with packet loss, make it flap, and each move stalls open flows (G6) | Move only after N failed checks of the current gateway; prefer the current one while it is healthy; a suite phase with a lossy gateway |
+| The health checks test the gateway, not what is behind it | A gateway whose IPv4 upstream is dead still answers `ipv4only.arpa` and a ping inside its /96 only if the target is beyond the gateway. The probes pinged a test server. The real target is not chosen | Decide the target: the gateway withdraws `ipv4only.arpa` when its own IPv4 check fails, so the client needs no internet target |
+| One public IPv4 per gateway is about 64,000 flows per protocol | `pool4` is one address, ports 1100–65535. A cluster pulling images through it can exhaust it; conntrack on the gateway has its own limit | Export Jool's and conntrack's counters as metrics; an alert before exhaustion; `pool4` takes a list of addresses in the settings |
+| DNS64 breaks a client that validates DNSSEC itself | A synthesised AAAA record has no signature | Document it; such a machine uses the CLAT and plain DNS. Not a blocker for the fleet (systemd-resolved does not validate by default) |
+| `conntrack -F` on a WAN failover drops every flow on the router | LAN to LAN and router-local flows are cut too | Delete only entries whose reply direction used the dead WAN (`conntrack -D` by mark or by address) |
+| Dual WAN on the IPv6 backup is stateful prefix translation | Inbound to the backup prefix needs a matching rewrite; class 3 services do not survive (already G16) | Stated in G16; the suite asserts the inbound direction fails closed, not open |
+| The prefix hook was tested with one /60 and one change | Unproven: a /56 or a bare /64 (no room for zones), two prefixes at once, an ISP that changes the prefix across a router reboot without the old lease on disk, a lease shorter than the retirement window | Phases in `netif-router`; an assertion at evaluation time that the zones fit the smallest expected delegation |
+| nftables has several writers and no ownership rule | The NixOS firewall, the router's table, Cilium (through iptables-nft) and the dual-WAN steering all add tables. netif has a registry for links; nothing equals it for tables | A rule in the spec: one table per owner, named after the instance, never `flush ruleset`; a suite assertion that a restart of one owner leaves the others' tables byte-equal |
+| Deploying an IPv6-only fleet needs IPv6 at the deploying machine | `targetHost` is the underlay address (AGENTS.md rule 11). The home router that provides that IPv6 is deployed by the same clan | Keep an IPv4 path to at least the gateways and the Headscale machine (they have public IPv4); document the bootstrap order: gateways, Headscale, router, the rest |
+| A hot path depends on unit ordering | The hook that blocked on `try-restart corerad` hung the next boot for 300 s (§10.7); a Jool unit that was not idempotent broke on an IfState apply (§10.9) | A suite phase in every gateway suite: `systemctl restart ifstate.service`, then a reboot, then the full assertions again |
+
+### 12.3 The two Cilium modes: what each suite covers
+
+The owner uses the routed fabric (FRR, native routing) most, and wants
+the tunnel mode kept equal where the mode allows it.
+
+| Contract | Native routing on `routed-fabric` | VXLAN tunnel on `wireguard-mesh` |
+|---|---|---|
+| One server | covered inside `data-plane` | `single` |
+| A second node joins | covered inside `data-plane` | `join` |
+| Three servers, one dies | **no suite** | `ha` |
+| LoadBalancer pools, Node IPAM, firewall, a node dies | `data-plane` | **no suite** (BGP delivery cannot apply; pool allocation, Node IPAM and the firewall can) |
+| netif renders the underlay | `data-plane-netif`, `routed-fabric-netif` | **no suite** |
+| ClusterMesh | `clustermesh` | `clustermesh-tunnel` |
+| ClusterMesh, external and selective | `clustermesh-external-native`, `clustermesh-selective` | `clustermesh-external`, `clustermesh-selective-tunnel` |
+| A cluster inside a mode | **no suite** (`modes` has a fabric, no cluster) | `k3s-modes` |
+| IPv6-only NICs, two nodes | PR10 | PR4, PR10 |
+| Pod IPv4 egress through a CLAT | PR10 | PR1, PR10 |
+
+Closing the gaps without doubling the suite count: a suite body takes
+`transport` as an argument, as `kube-clat.nix` does, and the same test
+script runs on both. Phases that only one mode has branch explicitly,
+as bodies already do on `distro`. Proposed order:
+
+1. `ha` on the fabric: the control plane losing a server is the
+   failure the owner's clusters will see most.
+2. The mode-neutral phases of `data-plane` on the mesh.
+3. `data-plane-netif` on the mesh.
+
+### 12.4 Suite stability
+
+- **Fixed sleeps.** 9 suite files and 6 probes call `sleep`. Each is a
+  guess about the builder's speed. A suite waits for the condition
+  (`wait_until_succeeds`) or, to prove something does *not* happen,
+  watches for a stated time and says so in the subtest name.
+- **No versions in the output.** A suite that prints the kernel, Jool,
+  Cilium, FRR, IfState and dhcpcd versions in its first subtest ties a
+  regression to the bump that caused it.
+- **A fresh full run before every merge that touches netif or the
+  shared base.** The netif change of this round ran one suite, not 37.
+- **Flakiness is unmeasured.** `PASS(!)` is recorded per run and then
+  forgotten. A log of which suites needed the rerun, kept across runs,
+  shows which waits to fix first.
+- **Probes copy fixture code.** The CLAT node appears in two probes and
+  the gateway in a third file. They move to `lib/gateway/` as modules
+  in S4, and the suites import the modules, so a suite tests the code
+  a machine runs.
+- **Failure dumps.** The cluster suites dump state on failure; the
+  probes and netif suites mostly do not. One shared helper in `tests/`.
+
+### 12.5 The agent's working environment
+
+Found while doing the work; each costs time or correctness on every
+session.
+
+- **Number ranges live in three files** (`AGENTS.md`, this file's
+  header, `decisions/index.md`). Each new decision edits all three, and
+  one was missed twice. Keep the range in this file only.
+- **This file's sections were out of order** (§11 sat before §10.6)
+  until this round. A check that heading numbers ascend is cheap.
+- **Findings are read out of a 10,000-line build log.** If `vm-test`
+  copied lines that start with `FINDING` into `summary.txt`, a probe's
+  result would be one short file. That is an org-pkgs change.
+- **`AGENTS.md` carries a growing list of verified upstream facts** on
+  every turn of every session. Most are needed in one service. They
+  belong in a reference page that `AGENTS.md` points to.
