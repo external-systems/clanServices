@@ -115,9 +115,12 @@ any code (AGENTS.md rule 3).
     ordinary forward chain then filters both sides, conntrack sees the
     flow, and the host masquerades Jool's private IPv4 address to the
     public one.
-  - netif declares the namespace and the veth pair (IfState
-    `namespaces`): IfState deletes a namespace it does not know. An
-    IfState apply keeps the namespace and the Jool instance (§10.1).
+  - The namespace and the veth pair are declared in IfState
+    (`namespaces`), because IfState deletes a namespace it does not
+    know. `lib/gateway` renders them into the shared IfState base, as
+    `wireguard-mesh` renders its tunnel, and claims them in the
+    ownership registry. An IfState apply keeps the namespace and the
+    Jool instance (§10.1).
   - `lib/gateway` renders its own Jool units. The NixOS module
     `networking.jool` only creates instances in the host namespace.
     The unit must be idempotent: `instance add` fails when the instance
@@ -520,7 +523,7 @@ any code (AGENTS.md rule 3).
 
 - **G23 The CLAT** (proposed 2026-11-20; PR2, §10.1). A machine without
   IPv4 that must reach IPv4 literals runs a CLAT:
-  - a namespace and a veth pair declared by netif, with Jool SIIT in
+  - a namespace and a veth pair declared as in G2, with Jool SIIT in
     the namespace (Jool does not translate packets the host itself
     generates, so the host routes them into the namespace);
   - `192.0.0.1` on the host side, an IPv4 default route into the
@@ -543,7 +546,9 @@ any code (AGENTS.md rule 3).
 
 ## 3. Invariants (target)
 
-1. Neither service declares a link, an address or a route: netif does.
+1. Neither service declares a physical link, a VLAN, an address on one
+   or a default route: netif does. A service declares only its own
+   translator namespace and the veth pair into it (G2, G23).
 2. A router with default settings accepts no inbound connection from a
    `wan` zone.
 3. No flow passes between two zones unless `allowTo` names the pair.
@@ -791,3 +796,110 @@ address was on a NIC at any point.
 
 Not covered by this probe: pulling images (they are preloaded), pod
 IPv4 egress (PR1), `routed-fabric` as the transport, and rke2.
+
+## 11. Rough implementation design (draft, 2026-11-20)
+
+A draft for the owner's review, shaped by the probes. Names may change;
+nothing here is decided until it moves into §2.
+
+### 11.1 `lib/gateway/`
+
+| File | Renders | Proven by |
+|---|---|---|
+| `translator.nix` | a namespace and veth pair in IfState, the registry claim, an idempotent Jool unit (`nat64` or `siit`) | §10.1 |
+| `nat64.nix` | the gateway side: `pool6`, `pool4` on the namespace's private address, the masquerade, the forward allowlist | §10.1 |
+| `clat.nix` | the client side: `192.0.0.1`, the IPv4 default route with MTU 1480, the address mapping, the health check | §10.1, PR7 |
+| `dns.nix` | a Corefile: bound addresses, `forward` over TLS, `dns64`, the TTL cap, the `hosts` blocklist, static records | §10.1, §10.2 |
+| `firewall.nix` | one nftables table: zones, NAT44, pinholes, the service prefix chain | §10.2, §10.3 |
+| `advertise.nix` | corerad's runtime configuration and the prefix hook (G22) | §10.2, PR8 |
+| `dhcp.nix` | kea DHCPv4 per zone | §10.2 |
+| `metrics.nix` | listeners on the fabric address, the scrape export | not probed |
+
+### 11.2 `services/router`, role `router`
+
+Settings per machine (zone names are netif zone labels):
+
+```nix
+{
+  zones.<zone> = {
+    internet = true;            # may reach the wan zones
+    allowTo = [];               # other zones it may open flows to
+    ipv4.subnet = "192.168.10.0/24";
+    ipv4.pool = null;           # null: the upper half of the subnet
+    subnet = 1;                 # subnet id of the delegated and the ULA prefix
+    mdnsWith = [];              # zones to reflect mDNS with
+  };
+  wanZones = ["wan"];
+  ula.enable = false;           # the /48 is a generated public clan var
+  ipv6Mostly.enable = false;    # option 108, PREF64, NAT64 on the router
+  dns = {
+    upstream = ["tls://1.1.1.1" "tls://2606:4700:4700::1111"];
+    blocklist.tier = "pro-plus-plus";   # null: no blocking
+    records = {};
+  };
+  portForwards = [];            # { zone; protocol; port; to; }
+  servicePrefix = {
+    subnet = null;              # e.g. 15: reserved through netif (N16)
+    mode = "translated";        # or "literal"
+    pool = null;                # translated: a /64 of the ULA prefix
+    expose = [];                # { host; protocol; ports; }
+  };
+  metrics.enable = false;
+}
+```
+
+- The service reads interface names from `clanServices.netif.zones`
+  and the delegating link from netif's facts. It asserts that every
+  zone it names exists on the machine.
+- A zone link's delegated /64 comes from netif (`prefixDelegation.assign`
+  with the zone's `subnet`); the router does not repeat it. Open: who
+  writes that `assign` entry, the user in netif or the router service
+  through an export. A user who must repeat the subnet id in two
+  places will get it wrong.
+- Exports: the zones and their static subnets, the DNS address per
+  zone, and the scrape targets.
+
+### 11.3 `services/nat-gateway`
+
+```nix
+# role gateway, per machine
+{
+  uplinkZone = "wan";           # where the public IPv4 lives
+  pool6 = "2001:db8:a1:0:64::/96";   # inside the machine's own prefix
+  dns.listen = "2001:db8:a1::53";
+  dns.maxTtl = 30;
+  metrics.enable = false;
+}
+# role client, per machine
+{
+  clat.enable = false;          # true on Kubernetes nodes (G5)
+  clat.address = null;          # an address of the machine's /64
+}
+```
+
+- A gateway exports `pool6` and its DNS address. A client exports its
+  source addresses (the NIC address and the CLAT address).
+- The gateway's allowlist and every client's nameserver list are built
+  from those exports. Client nameservers are set through netif's
+  `nameservers`, which the client role cannot write today. Open: a
+  netif option that takes nameservers from an export, or the client
+  role writing resolved's global DNS.
+- A machine may hold both roles (a gateway is its own client).
+
+### 11.4 What netif needs first (slice S1)
+
+1. `mac` on a physical link (N43).
+2. A VLAN link with id 0 in a suite, with `mac` (N44).
+3. The delegated prefix as a runtime file (N16).
+4. `prefixDelegation.reserve` (N16).
+5. `netif-v6only` (N45): the probe `probe-v6only-host` is its draft.
+
+### 11.5 Suite topologies
+
+| Suite | Nodes | Draft |
+|---|---|---|
+| `netif-router` | isp, router, client (home), node (servers) | `probe-router` |
+| `router-service-prefix` | the same, plus a prefix change | `probe-router` |
+| `nat-gateway` | client, outsider, gw1, gw2, server4 | `probe-nat64` |
+| `netif-v6only` | static, slaac, provider, server4 | `probe-v6only-host` |
+| `k3s-v6only`, `rke2-v6only` | the join suites on IPv6-only NICs | `probe-<distro>-v6only` |
