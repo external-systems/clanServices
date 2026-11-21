@@ -25,6 +25,9 @@ Evidence is §10. No service code exists yet.
 - **New gaps:** a CLAT follows one gateway (G23); open flows stall on a
   gateway failure, they do not reset (G6); the DNS64 listener needs the
   allowlist too (G4).
+- **PR5 answered:** a physical link presents another MAC while it is
+  found by its permanent one; IfState renders a VLAN 0 child and DHCP
+  runs over it (`specs/netif.md` N43, N44).
 - G22 and G23 are *proposed*: the probes show they work, the owner has
   not confirmed them.
 
@@ -590,7 +593,7 @@ suite asserts what it showed (as `specs/netif.md` N40).
 | PR2 | Jool beside the nftables firewall: where is traffic filtered? **Answered, §10.1** | G2 |
 | PR3 | corerad with a delegated prefix, PREF64 and DNS options. **Answered, §10.2** | G15, G22 |
 | PR4 | k3s and rke2 on an IPv6-only underlay | SPEC.md D67 |
-| PR5 | MAC override and a priority-tagged WAN (VLAN 0) | netif N43, N44 |
+| PR5 | MAC override and a priority-tagged WAN (VLAN 0). **Answered, §10.4** | netif N43, N44 |
 | PR6 | Prefix rewrite for a routed /64 whose public side is a runtime value: is the host part kept, does the client address survive, are unused addresses refused, what happens on a prefix change? **Answered, §10.3** | G20, G16 |
 | PR7 | The CLAT's health check: does `ipv4only.arpa` name a live gateway's prefix, and how fast does the CLAT move? | G23 |
 | PR8 | The prefix hook end to end: netif's trigger, corerad restarted with the old prefix deprecated, the rule replaced, a reboot in between | G22 |
@@ -751,3 +754,28 @@ rule.
 - After the prefix change the same checks passed on the new prefix once
   the script had run. Until then the old address still answered,
   because the probe's ISP routed both blocks.
+
+### 10.4 `probe-wan` (PR5; netif N43, N44)
+
+Topology: an ISP with one plain port and one port that speaks only
+frames tagged with VLAN 0; a router whose links netif renders.
+
+- **MAC override.** The WAN link is declared by `match.mac` (the NIC's
+  permanent MAC) and carries `extraSettings.link.address` (the MAC to
+  present). `ip -d link` showed the presented MAC and `permaddr` the
+  permanent one. IfState set it before dhcpcd started; kea logged the
+  lease for the presented MAC. It held after an IfState apply and after
+  a reboot, and the lease was the same address.
+- **DUID.** dhcpcd's DUID was built from the MAC of another link (the
+  VLAN child's generated MAC), not from the presented one. An ISP that
+  keys on the DUID needs netif's stable identity (N33), not the MAC.
+- **VLAN 0.** IfState's schema accepts `vlan_id: 0`. netif named the
+  child `<parent>.0`. It got a DHCPv4 lease from the tagged-only port,
+  and every frame on the wire carried "vlan 0, p 0".
+- **Without the child** nothing passed in either direction: the router
+  sent untagged frames, which the ISP's port ignored, and the kernel
+  did not answer the ISP's tagged ARP on the plain link.
+- **The child's MAC** is one IfState generates, not the parent's. On a
+  real WAN the child needs `mac` too.
+- Not shown in a VM: the 802.1p priority bits (they were 0), and what
+  an optical module does with the tag.

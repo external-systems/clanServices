@@ -2001,12 +2001,29 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
 - **N43 A MAC override on a physical link.** `links.<n>.mac` is applied
   only to non-physical links today. A WAN link that replaces an ISP's
   gateway must present that gateway's MAC, while `match.mac` still finds
-  the NIC by its permanent MAC (N15). *(planned; `specs/gateway.md` S1,
-  probe PR5)*
+  the NIC by its permanent MAC (N15).
+  - Probe PR5 showed it with `extraSettings.link.address`
+    (`specs/gateway.md` §10.4): IfState sets the MAC before dhcpcd
+    starts, the DHCP server sees it, and it holds across an apply and a
+    reboot. The change is to apply `mac` to physical links too and to
+    drop the assertion that forbids it.
+  - dhcpcd's DUID does not follow the override: it came from another
+    link's MAC. N33 owns the DHCP identity.
+  *(probe-verified, PR5; the option change is planned,
+  `specs/gateway.md` S1)*
 
 - **N44 A priority-tagged WAN (VLAN 0).** Some ISPs send and expect
-  frames tagged with VLAN 0. Probe PR5 decides whether the optical
-  module handles it or netif must render it. *(planned; PR5)*
+  frames tagged with VLAN 0. netif renders it: a VLAN link with
+  `vlan.id = 0` on the WAN port (amended 2026-11-20 after PR5).
+  - IfState accepts id 0, the child is named `<parent>.0`, DHCP runs
+    over it and the frames carry the tag. Without the child no frame
+    passed in either direction (`specs/gateway.md` §10.4).
+  - The child gets a generated MAC, so it needs `mac` as well (N43).
+  - Open: the 802.1p priority bits (IfState's egress map is not
+    probed), and whether an optical module strips or adds the tag
+    itself. The second is hardware (`specs/gateway.md` §8).
+  *(probe-verified, PR5, for the tag and DHCP; a suite is planned,
+  `specs/gateway.md` S1)*
 
 - **N45 An IPv6-only link is first-class.** A machine with no IPv4
   address on any NIC (U13): a static or learned IPv6 address, an on-link
