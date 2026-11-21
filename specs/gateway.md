@@ -1169,7 +1169,8 @@ as bodies already do on `distro`. Proposed order:
 
 ### 12.4 Suite stability
 
-- **Fixed sleeps.** 9 suite files and 6 probes call `sleep`. Each is a
+- **Fixed sleeps.** 9 suite files (4 of netif, 5 cluster bodies) and 6
+  probes call `sleep` in their test script. Each is a
   guess about the builder's speed. A suite waits for the condition
   (`wait_until_succeeds`) or, to prove something does *not* happen,
   watches for a stated time and says so in the subtest name.
@@ -1194,8 +1195,7 @@ Found while doing the work; each costs time or correctness on every
 session.
 
 - **Number ranges live in three files** (`AGENTS.md`, this file's
-  header, `decisions/index.md`). Each new decision edits all three, and
-  one was missed twice. Keep the range in this file only.
+  header, `decisions/index.md`). Each new decision edits all three. Keep the range in this file only.
 - **This file's sections were out of order** (§11 sat before §10.6)
   until this round. A check that heading numbers ascend is cheap.
 - **Findings are read out of a 10,000-line build log.** If `vm-test`
