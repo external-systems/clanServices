@@ -251,8 +251,10 @@ in
           return works
 
       with subtest("a pod reaches an IPv4 address"):
-          pods = json.loads(alpha.succeed(f"{K} kubectl get pods -A -o json"))
-          pod_ips = [ip["ip"] for item in pods["items"] if not item["spec"].get("hostNetwork") for ip in item["status"].get("podIPs", []) if ":" not in ip["ip"]]
+          alpha.succeed(f"{K} kubectl run anchor --restart=Never --image=busybox:1.36.1 --image-pull-policy=Never -- sleep 3600")
+          alpha.wait_until_succeeds(f"{K} kubectl wait --for=condition=Ready pod/anchor --timeout=60s", timeout=180)
+          anchor = json.loads(alpha.succeed(f"{K} kubectl get pod anchor -o json"))
+          pod_ips = [ip["ip"] for ip in anchor["status"]["podIPs"] if ":" not in ip["ip"]]
           v4 = str(ipaddress.ip_network(pod_ips[0] + "/24", strict=False))
           print(f"FINDING pod addresses {pod_ips}; the node's pod /24 is taken to be {v4}")
           works = attempt("as Cilium ships it (its eBPF masquerade knows only its own devices)")

@@ -270,16 +270,22 @@ in {
               }
               chain prerouting {
                 type filter hook prerouting priority mangle;
-                iifname "eth3" fib daddr type != local counter jump steer
+                # Only what main would send to a WAN is steered. Marking
+                # everything sent the router's own answers to LAN hosts
+                # (neighbour advertisements too) out of the WAN, because
+                # a WAN's table has no LAN route.
+                iifname "eth3" fib daddr type unicast fib daddr oifname { "eth1", "eth2" } counter jump steer
               }
               chain output {
                 type route hook output priority mangle;
-                meta mark 0x0 fib daddr type != local counter jump steer
+                ip6 daddr fe80::/10 return
+                meta mark 0x0 fib daddr type unicast oifname { "eth1", "eth2" } counter jump steer
               }
               chain postrouting {
                 type nat hook postrouting priority srcnat;
                 oifname { "eth1", "eth2" } meta nfproto ipv4 counter masquerade
-                oifname "eth2" counter snat ip6 prefix to ip6 saddr map { 2001:db8:1000::/60 : 2001:db8:2000::/60 }
+                oifname "eth2" counter snat ip6 prefix to ip6 saddr map { 2001:db8:1000::/60 : 2001:db8:2000::/60, fd00:10:1::/64 : 2001:db8:2000:1::/64 }
+                oifname "eth1" counter snat ip6 prefix to ip6 saddr map { fd00:10:1::/64 : 2001:db8:1000:1::/64 }
                 # the router's own IPv6 traffic, bound to the primary's address
                 oifname "eth2" ip6 saddr 2001:db8:a::2 counter masquerade
               }
@@ -466,6 +472,8 @@ in {
         observe("router counters and sysctls", router, "nft list table inet router | grep counter; sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.eth1.rp_filter net.ipv4.conf.all.forwarding net.ipv6.conf.all.forwarding net.ipv6.conf.eth3.forwarding; ip route get 203.0.113.80 from 192.168.10.10 iif eth3 mark 1; ip -6 route get 2001:db8:f::80 from 2001:db8:1000:1::10 iif eth3 mark 1")
         both("primary", "192.0.2.2", "2001:db8:1000:1::10", time.time())
         observe("the router's own traffic", router, V4 + "; " + V6)
+        observe("ULA source on the primary", client, "curl -s --max-time 2 --interface fd00:10:1::10 'http://[2001:db8:f::80]/'")
+        observe("the router's WAN neighbours stay on their own link", router, "ping -c1 -W1 198.51.100.1 | tail -2; ping -c1 -W1 2001:db8:b::1 | tail -2")
         observe("health pings through each WAN", router, "ping -c1 -W1 -m 1 203.0.113.80 | head -2; ping -c1 -W1 -m 2 203.0.113.80 | head -2; ping -c1 -W1 -m 2 2001:db8:f::80 | head -2")
 
     with subtest("the primary's upstream dies, its link stays up"):

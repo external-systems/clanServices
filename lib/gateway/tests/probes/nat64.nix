@@ -341,7 +341,8 @@ in {
             for ns in 2001:db8:c::1 2001:db8:c::2; do
               answer=$(dig +short +time=1 +tries=1 AAAA ipv4only.arpa @"$ns" | grep -i 'c000:aa$' | head -1) || true
               [ -n "$answer" ] || continue
-              prefix="$(echo "$answer" | sed 's/c000:aa$//')/96"
+              # 2001:db8:a2:0:64:0:c000:aa -> 2001:db8:a2:0:64:0::/96
+              prefix="$(echo "$answer" | sed 's/c000:aa$/:/')/96"
               # the server's address inside that prefix must answer
               ping -c1 -W1 "$(echo "$answer" | sed 's/c000:aa$/c633:6450/')" >/dev/null 2>&1 || continue
               if [ "$prefix" != "$current" ]; then
