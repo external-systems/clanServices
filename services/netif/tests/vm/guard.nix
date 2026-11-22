@@ -154,9 +154,13 @@ in {
         return host.execute(f"systemctl reset-failed ifstate.service; {system}/bin/switch-to-configuration test 2>&1")
 
     def journal(pattern):
-        # journald writes behind the unit: sync, or a line the guard just
-        # printed is missing under load
-        host.succeed(f"journalctl --sync; journalctl -b -u netif-guard.service --no-pager | grep '{pattern}' >/dev/null")
+        # journald writes behind the unit: sync, and wait. Under load a
+        # line the guard just printed was still missing after the sync
+        # (full run of 2026-11-22: "rolled back").
+        host.wait_until_succeeds(
+            f"journalctl --sync; journalctl -b -u netif-guard.service --no-pager | grep '{pattern}' >/dev/null",
+            timeout=30,
+        )
 
     try:
         start_all()

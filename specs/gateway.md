@@ -1990,9 +1990,30 @@ for a floating address.
   detection) would not show there.
 - **Timing bounds in the cluster suites** are looser than "three
   times the sample" (120 to 300 s against 0.1 to 46 s measured).
-- **Flakiness:** still one full run per round.
+- **Flakiness:** still one full run per round (§13.4).
 - **A pod client that prefers IPv6 by name** through DNS64: busybox
   takes the IPv4 answer and the CLAT. The DNS64 path from a pod is
   proven by the synthesized address only.
 - **An image pull** on an IPv6-only node: images are preloaded. The
   node's own 2 MB fetch by an IPv4-only name is asserted instead.
+
+### 13.4 The full run after the fixes (2026-11-22, euc-hel-0)
+
+`vm-test --all --remote --rebuild --quiet`: 57 of 57 passed, every
+suite booted fresh. 56 as `PASS`, one as `PASS(!)`.
+
+- **`netif-guard` failed beside others and passed alone.** It read
+  the guard's "rolled back" line from the journal right after a sync,
+  and under load the line was not there yet. The check now waits for
+  the line (30 s). Green twice in a row after the change. This is the
+  first entry of the record §12.4 asks for: `netif-guard`, the
+  journal read, 2026-11-22.
+- The suites that grew in this round, wall time in the full run:
+  `k3s-clat-mesh` 721 s, `rke2-clat-mesh` 801 s, `gateway-dual-wan`
+  462 s, `gateway-nat64` 427 s, `k3s-data-plane-tunnel` 440 s,
+  `rke2-data-plane-tunnel` 553 s.
+- Each suite changed in this round also passed twice in a row alone
+  before the full run (`gateway-nat64`, `gateway-router`,
+  `gateway-dual-wan`, `netif-dhcp`, `k3s-clat-mesh`,
+  `k3s-clat-fabric`) or once (`rke2-clat-*`, the `-mapped` suites,
+  `<distro>-ha`, `k3s-ha-fabric`, the data-plane suites).
