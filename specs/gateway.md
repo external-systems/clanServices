@@ -1517,8 +1517,9 @@ closes it. Nothing here is a decision; the owner picks what becomes one.
 - **Round G3 turned every probe into a suite.** The findings of §10
   are assertions now; a nixpkgs bump that undoes one fails a suite.
   Each new suite passed at least twice in a row, alone, on the
-  builder. None has run under load beside others yet: the first full
-  run decides which waits are too tight.
+  builder. The first full run beside others (2026-11-21, all 57
+  suites, `vm-test --all --remote --rebuild`) passed 57 of 57, none
+  as `PASS(!)`. One run is one sample, not a flakiness measure (§12.4).
 - **Timings are small samples** (two to five). A suite asserts a bound
   of about three times the sample.
 - **The suites run on fixtures, not on service code.** They prove the
@@ -1662,6 +1663,8 @@ a suite that wants the pod CIDRs must use literals.
   keep their own.
 - **A fresh full run before every merge that touches netif or the
   shared base.**
+  Last one: 2026-11-21, 57 of 57 `PASS`, no rerun needed, 24 vCPUs
+  in use throughout.
 - **Flakiness is unmeasured.** `PASS(!)` is recorded per run and then
   forgotten. A log of which suites needed the rerun, kept across runs,
   shows which waits to fix first. Not done.
