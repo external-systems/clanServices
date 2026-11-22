@@ -66,7 +66,7 @@ read every new suite against this file. §13 holds the result.
   the wrong WAN; NodePorts were open past the node firewall.
 - G4, G6, G16, G20, G22, G23 and netif N16 are amended where they
   stand. SPEC.md gains D69 and D70.
-- Nine points need the owner (§13.2). The first: stop probing and
+- Ten points need the owner (§13.2). The first: stop probing and
   build the services.
 
 
@@ -253,6 +253,30 @@ any code (AGENTS.md rule 3).
     after the CLAT, and on the mesh k3s started first. Cilium attaches
     to a `clat0` that appears, or is deleted and made again, after it
     started. An IfState apply does not recreate the link.
+  - **The underlay NIC joins `devices` too** (round G4, proposed; the
+    design suites do it). On an IPv6-only node, in both modes, pod
+    IPv6 that leaves the cluster is masqueraded only on a `devices`
+    link. Without the NIC there, the pod's `fd10:` address leaves the
+    node and nothing answers; cluster CoreDNS cannot reach the node's
+    nameserver, so no external name resolves in any pod. With DNS64
+    most pod egress is IPv6, so this is the main path, not a corner.
+    - `wireguard-mesh` does not export the NIC as a datapath link, so
+      the kube service must add it on such a node (planned; with the
+      CLAT link).
+    - SPEC.md D69 makes this safe: a NodePort does not answer on the
+      NIC address from outside (asserted).
+  - **An IPv6-only node's only nameserver is the DNS64, over IPv6**
+    (asserted). Cluster CoreDNS forwards to it.
+  - **Measured (round G4): the late attach.** After `clat0` is made
+    again, Cilium attaches after about 7 s (native) or 15 to 17 s
+    (tunnel). Until then pod IPv4 leaves with the pod's address, is
+    translated to `<pool6>::<pod IPv4>` and gets no reply. Pod IPv4
+    egress is down 9 s, or 17 to 18 s. Not fixed. An IfState apply
+    does not recreate the link, so this is a boot and repair window.
+  - **On `routed-fabric`, before BGP converges,** a node's IPv4 packet
+    to another node address follows the default route into the CLAT.
+    The gateway refuses it (1 to 7 packets per boot). Open: an
+    unreachable route for the node-address range closes it.
   - **Open: Cilium attaches late.** The agent lists `clat0` as a
     masquerade device, and is Ready, up to about 12 s before its
     program is on the link (measured 0.1 to 12.5 s; the mesh is the
@@ -1848,7 +1872,15 @@ is asserted by the suite named.
 | `ha` proved less than its name | A clean shutdown, a pod pinned to a node, the API asked on one survivor, no return | A crash; the scheduler places the pod; the API on both survivors; cluster DNS; the dead server returns and serves | `<distro>-ha`, `<distro>-ha-fabric` |
 | Two suites patch another suite's script by string replace | A renamed string would drop a phase and stay green | The evaluation fails when a pattern is missing | `<distro>-v6only`, `<distro>-ha-fabric` |
 
-@@CLATFIXED@@
+**Found by the cluster suites in this round, pinned, not fixed** (each
+needs a decision, G5):
+
+| Found | Why it would hurt | State |
+|---|---|---|
+| On an IPv6-only node, pod IPv6 egress fails unless the underlay NIC is in Cilium's `devices` | The server saw the pod's own `fd10:` address. Cluster CoreDNS could not reach the node's nameserver either: no external name resolved in any pod. The earlier CLAT suites passed because they tested only an IPv4 literal and `cluster.local` | The design suites add the NIC; the `-mapped` suites run without it and assert the failure. No service renders it yet |
+| The CLAT suites kept an IPv4 nameserver on IPv6-only nodes | It broke G5's own rule and hid the DNS path | Nodes use the DNS64 over IPv6 only; a pod fetches by a synthesized address |
+| Pod IPv4 leaves with the pod's address while Cilium is not yet on `clat0` (G5, was "not tested") | After the link is made again, pod IPv4 egress is down 9 s (native) or 17 to 18 s (tunnel) | Asserted as it is: the packets leak, none after the attach |
+| On the routed fabric, node-to-node IPv4 enters the CLAT before BGP converges | 1 to 7 packets per boot to another node's API address reach the gateway, which refuses them | Asserted: only node addresses, at most 10 |
 
 Also corrected in the text: §12.2 said the underlay link "is in
 `devices` in both modes". It is not: the services list only the
@@ -1928,6 +1960,12 @@ for a floating address.
    recovery path; say so in the docs, and keep the guard (netif N25)
    mandatory on such machines.
 
+10. **The underlay NIC in Cilium's `devices` on an IPv6-only node**
+    (G5). The suites show it is required for pod IPv6 egress and for
+    external names in pods. It should become a rule the kube service
+    renders, together with the CLAT link. It changes D58's "devices
+    derive from the transport" for such nodes: a SPEC.md decision.
+
 ### 13.3 Still unproven after this round
 
 - **Service code.** Unchanged from §12.1: every gateway mechanism is
@@ -1953,4 +1991,8 @@ for a floating address.
 - **Timing bounds in the cluster suites** are looser than "three
   times the sample" (120 to 300 s against 0.1 to 46 s measured).
 - **Flakiness:** still one full run per round.
-@@CLATOPEN@@
+- **A pod client that prefers IPv6 by name** through DNS64: busybox
+  takes the IPv4 answer and the CLAT. The DNS64 path from a pod is
+  proven by the synthesized address only.
+- **An image pull** on an IPv6-only node: images are preloaded. The
+  node's own 2 MB fetch by an IPv4-only name is asserted instead.

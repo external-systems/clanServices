@@ -20,6 +20,11 @@ round G4, §13). Points that touch this file:
   `<distro>-ha` and `<distro>-ha-fabric` run it.
 - D67's status line now says what is proven and what a service must
   still render (the CLAT and its `devices` entry).
+- **Found, needs a decision here:** on an IPv6-only node the underlay
+  NIC must be in Cilium's `devices` in both modes, or pod IPv6 egress
+  and external names in pods fail (`specs/gateway.md` G5, §13.2
+  point 10). D58 derives `devices` from the transport only. The
+  `<distro>-clat-<transport>` suites add the NIC by hand.
 - Open for the owner: `specs/gateway.md` §13.2.
 
 Round 50 (2026-11-21): **probes became suites; both Cilium modes have

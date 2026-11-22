@@ -60,6 +60,19 @@ and tried to break it. The contract version is `specs/gateway.md` §13.
 9. **An IPv6-only machine with broken IPv6 has no way in** but the
    provider's console. Keep netif's guard on such machines.
 
+10. **On an IPv6-only node, Cilium must also be attached to the
+    machine's network card.** Without it, pods cannot reach IPv6
+    addresses outside the cluster and cannot resolve outside names.
+    The tests set this by hand. It should become a rule the cluster
+    service applies by itself.
+
+## Found, tested, not fixed yet
+
+- After a node's CLAT link is made again, pod IPv4 to the outside is
+  down for 9 seconds (routed fabric) or 17 to 18 seconds (mesh).
+- On the routed fabric, a few packets between nodes take the wrong
+  path at boot, before routing is up. The gateway refuses them.
+
 ## Still not proven
 
 - Any of this on service code, real hardware or a real ISP.

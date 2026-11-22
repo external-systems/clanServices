@@ -3,7 +3,9 @@
 # IPv6, on both transports.
 #
 #   alpha, beta (Cilium; NIC IPv6 only; a CLAT each) ── vlan 1 ── gw (Jool
-#   NAT64 in a namespace) ── vlan 2 ── server4 (IPv4 only)
+#   NAT64 in a namespace, DNS64) ── vlan 2 ── server4 (IPv4 only)
+#   server6 (IPv6 only, on vlan 1): the IPv6 internet, and the machine
+#   outside the cluster
 #
 # `transport = "fabric"`: the <distro>-data-plane topology (routed-fabric,
 # FRR, per-pair WireGuard, Cilium native routing). `transport = "mesh"`:
@@ -22,12 +24,28 @@
 #     needed, and a Cilium bump that changes it must show here. Mapping
 #     the cluster IPv4 pod pool into a /112 routed to the node then
 #     works without state on the node;
+#   - the underlay NIC is one of Cilium's `devices` too: a pod's IPv6
+#     leaves with the node's NIC address. Without it (the `-mapped`
+#     suites: the transport's own devices) pod IPv6 egress fails, the
+#     pod's own address reaches the wire, and cluster DNS cannot reach
+#     the node's resolver;
+#   - the nodes have one nameserver, the gateway's DNS64, over IPv6 (G5).
+#     A node fetches an IPv4-only name through DNS64 and NAT64, 2 MB: the
+#     path of an image pull. A pod resolves that name through cluster
+#     DNS and fetches it by name, by the synthesized address and by the
+#     IPv4 literal;
+#   - a NodePort answers on the node addresses, never on the NIC address;
 #   - a pod on each node: a page, 2 MB down and up, ping, cluster DNS;
 #     the pod network between the nodes in both families; a ClusterIP
 #     Service in both families; pod to node without the CLAT masquerade;
 #   - the gateway refuses a /96 destination that embeds a private IPv4
 #     address (G5);
-#   - an IfState apply and a node reboot leave all of it intact.
+#   - one pod request to a private IPv4 address moves the gateway's
+#     counter by exactly one, and nothing else ever moved it;
+#   - an IfState apply leaves all of it intact; the CLAT link made again
+#     under pod load on each node (how long pod egress is down, and what
+#     leaves before Cilium attaches); a reboot of each node, the server
+#     too.
 {
   inputs,
   distro,
@@ -50,17 +68,27 @@
     if fabric
     then import ../../../kube-cluster/tests/vm/data-plane.nix {inherit inputs distro;} {inherit lib nodes;}
     else import ../../../kube-cluster/tests/vm/join.nix {inherit lib inputs distro;};
-  # the devices the transport gives Cilium, plus the CLAT link
-  withClat = settings: {
-    cilium.helmValues.devices = "${settings.cilium.helmValues.devices or "wg-mesh"} clat0";
+  nic = "eth1";
+  # The underlay NIC is a Cilium device in the decided design. The
+  # `-mapped` suites run on the transport's own devices, without it.
+  nicDevice = !mapped;
+  # The devices the transport gives Cilium (the fabric topology adds the
+  # NIC itself), with or without the NIC, plus the CLAT link.
+  withDevices = settings: {
+    cilium.helmValues.devices = lib.concatStringsSep " " (
+      lib.remove nic (lib.splitString " " (settings.cilium.helmValues.devices or "wg-mesh"))
+      ++ lib.optional nicDevice nic
+      ++ lib.optional (!mapped) "clat0"
+    );
   };
   body =
-    if mapped
+    # the mesh topology as shipped: nothing to change
+    if mapped && !fabric
     then plain
     else
       lib.recursiveUpdate plain {
         clan.inventory.instances.${distro}.roles = lib.genAttrs ["server" "agent"] (role: {
-          settings = withClat plain.clan.inventory.instances.${distro}.roles.${role}.settings;
+          settings = withDevices plain.clan.inventory.instances.${distro}.roles.${role}.settings;
         });
       };
   suiteName = "${distro}-clat-${transport}" + lib.optionalString mapped "-mapped";
@@ -78,6 +106,9 @@
     then "k3s"
     else "rke2-agent";
   pool = "2001:db8:64:0:64::/96";
+  # the gateway's inside address: the NAT64 next hop and the DNS64
+  dns64 = "2001:db8:1::64";
+  server6Addr = "2001:db8:1::66";
   members = {
     alpha = 1;
     beta = 2;
@@ -120,7 +151,11 @@
       pkgs.jq
       pkgs.kubectl
       pkgs.cilium-cli
+      pkgs.bpftools
     ];
+    # G5: an IPv6-only machine has IPv6 nameservers only. The fixture's
+    # IPv4 nameserver goes; the gateway's DNS64 is the only one.
+    networking.nameservers = lib.mkForce [dns64];
     services.${distro}.images = [busyboxImage];
     # a listener on the node itself: it answers with the source address
     # it saw, so the test can tell whether pod to node was masqueraded
@@ -230,6 +265,7 @@ in
       machines = {
         gw = {};
         server4 = {};
+        server6 = {};
       };
       instances =
         {
@@ -249,7 +285,21 @@ in
         gw = import ./nat64-gateway.nix {
           inherit base pool;
           allow = "{ 2001:db8:1::/64, 2001:db8:a0::/44 }";
-          inside = ["2001:db8:1::64/64"];
+          inside = ["${dns64}/64"];
+          # web.test has an A record only, six.test an AAAA record only
+          corefile = ''
+            . {
+              bind ${dns64}
+              hosts {
+                198.51.100.80 web.test
+                ${server6Addr} six.test
+              }
+              dns64 {
+                prefix ${pool}
+              }
+              errors
+            }
+          '';
           outside = ["198.51.100.1/24"];
           # an IPv4 default route, as a real gateway has: without one the
           # kernel drops a private destination before the firewall sees it
@@ -283,6 +333,30 @@ in
             serviceConfig.ExecStart = "${lib.getExe pkgs.python3} ${echo pkgs [80]}";
           };
         };
+
+        # An IPv6-only server on the nodes' underlay: what a pod's IPv6
+        # reaches without the gateway. Also the machine outside the
+        # cluster that tries the NodePort.
+        server6 = {pkgs, ...}: {
+          imports = [base];
+          virtualisation = {
+            cores = 1;
+            memorySize = 1024;
+            vlans = [1];
+          };
+          environment.systemPackages = [
+            pkgs.curl
+            pkgs.tcpdump
+          ];
+          networking = {
+            firewall.enable = false;
+            ifstate.settings.interfaces.eth1 = phys ["${server6Addr}/64"];
+          };
+          systemd.services.echo = {
+            wantedBy = ["multi-user.target"];
+            serviceConfig.ExecStart = "${lib.getExe pkgs.python3} ${echo pkgs [80]}";
+          };
+        };
       };
 
     testScript = ''
@@ -296,10 +370,30 @@ in
       K = "KUBECONFIG=${kubeconfig}"
       FABRIC = ${python fabric}
       MAPPED = ${python mapped}
+      # the underlay NIC is one of Cilium's devices
+      NIC_DEVICE = ${python nicDevice}
       NODES = {"alpha": alpha, "beta": beta}
+      UNITS = {"alpha": "${serverUnit}", "beta": "${agentUnit}"}
+      NIC6 = {"alpha": "${underlay 1}", "beta": "${underlay 2}"}
+      DNS64 = "${dns64}"
+      SERVER6 = "${server6Addr}"
+      # an A record only, an AAAA record only (the gateway's DNS64)
+      NAME4 = "web.test"
+      NAME6 = "six.test"
+      NODEPORT = 30080
+      # Seconds, about three times the largest sample of 2026-11-22 (the
+      # FINDING lines print each run's): Cilium attached to a new clat0
+      # after at most 16.4 s; pod IPv4 egress was down for at most 18.2 s
+      # when the link was made again; with Cilium attached, the first pod
+      # page took at most 1.0 s.
+      ATTACH_LIMIT = 50
+      SETTLE_LIMIT = 20
+      DOWN_LIMIT = 60
       CLAT6 = {"alpha": "${clatAddr 1}", "beta": "${clatAddr 2}"}
       MAPS = {"alpha": "${podMap 1}", "beta": "${podMap 2}"}
       SERVER4 = "198.51.100.80"
+      # the IPv4 server as the DNS64 synthesizes it
+      SYNTH = ipaddress.ip_network("${pool}")[int(ipaddress.ip_address(SERVER4))]
       PUBLIC4 = "198.51.100.1"
       CLAT4 = "192.0.0.1"
       IFSTATE_OK = "systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null"
@@ -351,6 +445,25 @@ in
           return next(ip for ip in ips[node] if ":" not in ip)
 
 
+      def pod_v6(node):
+          return next(ip for ip in ips[node] if ":" in ip)
+
+
+      def addresses_in(text):
+          """Every word of `text` that is an IP address."""
+          found = set()
+          for token in text.split():
+              try:
+                  found.add(address(token))
+              except ValueError:
+                  pass
+          return found
+
+
+      def uptime(machine):
+          return float(machine.succeed("cut -d' ' -f1 /proc/uptime"))
+
+
       def pod_network(when):
           for source, target in [("alpha", "beta"), ("beta", "alpha")]:
               for target_address in ips[target]:
@@ -383,8 +496,9 @@ in
           if not MAPPED:
               # the agent lists a device before its loader has attached the
               # programs (seen 2026-11-21: Ready agent, empty `tc:` section)
-              waited = seconds_until(alpha, f"{show} | grep cil_to_netdev", limit=120)
+              waited = seconds_until(alpha, f"{show} | grep cil_to_netdev", limit=ATTACH_LIMIT)
               print(f"FINDING {node}: {when}: Cilium attached to clat0 after {waited} s")
+              assert waited is not None, f"{node}: {when}: Cilium did not attach to clat0 in {ATTACH_LIMIT} s"
           programs = alpha.succeed(show)
           print(f"FINDING {node}: {when}: BPF programs on clat0:\n{programs.rstrip()}")
           if MAPPED:
@@ -400,13 +514,46 @@ in
           out = machine.wait_until_succeeds(f"curl -s --max-time 5 http://{SERVER4}/", timeout=120)
           assert address(out) == address(PUBLIC4), f"{machine.name}: {when}: the IPv4 server saw {out!r}"
           assert "inet " not in machine.succeed("ip -4 -br addr show dev eth1"), f"{machine.name}: {when}: the NIC has an IPv4 address"
+          # the CLAT unit's route, with the MTU the translation needs
+          routes = machine.succeed("ip -4 route show default").strip().splitlines()
+          assert len(routes) == 1 and routes[0].startswith("default via 192.0.0.2 dev clat0 ") and routes[0].rstrip().endswith(" mtu 1480"), f"{machine.name}: {when}: IPv4 default route: {routes}"
 
 
-      def capture_start(machine, link, tag):
+      def assert_nameservers(node, when):
+          """G5: the node's only nameserver is the gateway's DNS64, over IPv6."""
+          machine = NODES[node]
+          upstream = [line.split()[1] for line in machine.succeed("cat /run/systemd/resolve/resolv.conf").splitlines() if line.startswith("nameserver")]
+          assert upstream == [DNS64], f"{node}: {when}: the resolver's upstream nameservers: {upstream}"
+          # what a program on the node reads: the local stub of systemd-resolved
+          stub = [line.split()[1] for line in machine.succeed("cat /etc/resolv.conf").splitlines() if line.startswith("nameserver")]
+          assert all(address(entry).is_loopback for entry in stub), f"{node}: {when}: /etc/resolv.conf: {stub}"
+          listed = []
+          for line in machine.succeed("resolvectl dns").splitlines():
+              listed += [found for token in line.partition(":")[2].split() for found in addresses_in(token.split("%")[0].split("#")[0])]
+          print(f"FINDING {node}: {when}: nameservers: upstream {upstream}, /etc/resolv.conf {stub}, resolvectl {[str(entry) for entry in listed]}")
+          assert listed and set(listed) == {address(DNS64)}, f"{node}: {when}: resolvectl lists {listed}"
+
+
+      def host_names(node, when):
+          """The node resolves an IPv4-only name at the DNS64 and fetches it
+          over IPv6 through the NAT64, 2 MB: the path an image pull takes."""
+          machine = NODES[node]
+          capture_start(gw, "eth1", "inside")
+          seen = machine.wait_until_succeeds(f"curl -6 -s --max-time 10 http://{NAME4}/", timeout=60)
+          assert address(seen) == address(PUBLIC4), f"{node}: {when}: the IPv4 server saw {seen!r}"
+          at_gateway = capture_stop(gw, "inside", NIC6[node])
+          assert at_gateway["IP6"] == {address(NIC6[node])}, f"{node}: {when}: sources at the gateway: {at_gateway['IP6']}, expected {NIC6[node]}"
+          remote, size = machine.succeed(f"curl -6 -s --max-time 30 -o /dev/null -w '%{{remote_ip}} %{{size_download}}' http://{NAME4}/big").split()
+          assert address(remote) == SYNTH and size == "2000000", f"{node}: {when}: 2 MB by name: {size} bytes from {remote}"
+          default = machine.succeed(f"curl -s --max-time 10 -o /dev/null -w '%{{remote_ip}}' http://{NAME4}/").strip()
+          print(f"FINDING {node}: {when}: with no family forced, the node fetched {NAME4} from {default}")
+
+
+      def capture_start(machine, link, tag, expression="tcp dst port 80", options=""):
           machine.succeed(
               f"systemctl stop capture-{tag}.service 2>/dev/null || true; rm -f /tmp/{tag}.txt /tmp/{tag}.err; "
               f"systemd-run --quiet --collect --unit=capture-{tag} -p StandardOutput=file:/tmp/{tag}.txt -p StandardError=file:/tmp/{tag}.err "
-              f"tcpdump -i {link} -n -l tcp dst port 80"
+              f"tcpdump -i {link} -n -l {options} {expression}"
           )
           machine.wait_until_succeeds(f"grep listening /tmp/{tag}.err >/dev/null", timeout=30)
 
@@ -451,6 +598,67 @@ in
               gw.succeed("systemctl stop capture-inside.service")
 
 
+      def egress_settles(node, when):
+          """Bounded: the seconds until the first page from the pod on `node`."""
+          waited = seconds_until(alpha, f"{K} timeout 10 kubectl exec anchor-{node} -- wget -T 3 -qO- http://{SERVER4}/", limit=SETTLE_LIMIT)
+          print(f"FINDING {node}: {when}: first pod IPv4 page after {waited} s")
+          assert waited is not None, f"{node}: {when}: no pod IPv4 page in {SETTLE_LIMIT} s"
+
+
+      def v6_egress(node, when):
+          """One page from the pod on `node` at the IPv6 server, by address."""
+          capture_start(server6, "eth1", "six")
+          status, out = pod_exec(node, f"wget -T 5 -qO- http://[{SERVER6}]/", timeout=20)
+          worked = status == 0 and out != ""
+          print(f"FINDING {node}: pod IPv6 egress, {when}: {'works' if worked else 'FAILS'}: {out}")
+          if NIC_DEVICE:
+              assert worked, f"{node}: {when}: pod IPv6 egress fails: {out}"
+              assert address(out.splitlines()[-1]) == address(NIC6[node]), f"{node}: {when}: the IPv6 server saw {out!r}, expected {NIC6[node]}"
+              on_wire = capture_stop(server6, "six", NIC6[node])
+              assert on_wire["IP6"] == {address(NIC6[node])}, f"{node}: {when}: sources at the IPv6 server: {on_wire['IP6']}"
+          else:
+              # FINDING: eBPF masquerade covers only Cilium's devices. The
+              # NIC is not one, so the pod's own address is on the wire and
+              # no reply can return.
+              assert not worked, f"{node}: {when}: pod IPv6 egress works without the NIC in Cilium's devices: {out}"
+              on_wire = capture_stop(server6, "six", pod_v6(node))
+              assert on_wire["IP6"] == {address(pod_v6(node))}, f"{node}: {when}: sources at the IPv6 server: {on_wire['IP6']}"
+
+
+      def pod_names(node, when):
+          """External names from the pod on `node`: cluster DNS forwards to
+          the node's resolver, the gateway's DNS64."""
+          status, answer = pod_exec(node, f"nslookup -type=aaaa {NAME4}", timeout=60)
+          found = addresses_in(answer)
+          print(f"FINDING {node}: {when}: the pod asked cluster DNS for the AAAA of {NAME4}: rc={status}\n{answer}")
+          if not NIC_DEVICE:
+              # FINDING: cluster DNS is a pod. Its queries to the node's
+              # IPv6 nameserver leave with a pod address and get no answer.
+              assert SYNTH not in found, f"{node}: {when}: cluster DNS reached the DNS64 without the NIC in Cilium's devices:\n{answer}"
+              status, out = pod_exec(node, f"wget -T 5 -qO- http://{NAME4}/", timeout=60)
+              assert status != 0, f"{node}: {when}: the pod fetched {NAME4} without the NIC in Cilium's devices: {out}"
+              return
+          assert status == 0 and SYNTH in found, f"{node}: {when}: no synthesized AAAA for {NAME4}:\n{answer}"
+          # by the synthesized address: pod IPv6, masqueraded to the NIC
+          # address, straight to the NAT64 (no CLAT)
+          capture_start(gw, "eth1", "inside")
+          out = pod_succeed(node, f"wget -T 8 -qO- http://[{SYNTH}]/")
+          assert address(out.splitlines()[-1]) == address(PUBLIC4), f"{node}: {when}: the IPv4 server saw {out!r}"
+          at_gateway = capture_stop(gw, "inside", NIC6[node])
+          assert at_gateway["IP6"] == {address(NIC6[node])}, f"{node}: {when}: sources at the gateway: {at_gateway['IP6']}, expected {NIC6[node]}"
+          # by name: the pod's resolver picks the family
+          capture_start(gw, "eth1", "inside")
+          out = pod_succeed(node, f"wget -T 8 -qO- http://{NAME4}/")
+          assert address(out.splitlines()[-1]) == address(PUBLIC4), f"{node}: {when}: the IPv4 server saw {out!r}"
+          at_gateway = capture_stop(gw, "inside", "")
+          paths = {str(address(NIC6[node])): "IPv6 and the DNS64 address", str(address(expected_sources(node)[1])): "IPv4 and the CLAT"}
+          taken = sorted(paths.get(str(source), f"unexpected source {source}") for source in at_gateway["IP6"])
+          print(f"FINDING {node}: {when}: the pod fetched {NAME4} by name over: {taken}")
+          assert taken and all(not path.startswith("unexpected") for path in taken), f"{node}: {when}: {taken}"
+          out = pod_succeed(node, f"wget -T 8 -qO- http://{NAME6}/")
+          assert address(out.splitlines()[-1]) == address(NIC6[node]), f"{node}: {when}: the IPv6 server saw {out!r} for {NAME6}"
+
+
       def expected_sources(node):
           """The sources a working pod request has, per variant."""
           if MAPPED:
@@ -479,6 +687,145 @@ in
           return {key: value - before.get(key, 0) for key, value in after.items() if value != before.get(key, 0)}
 
 
+      def private_refused():
+          """Packets the gateway's firewall refused: a private IPv4 destination."""
+          rule = gw.succeed("nft list ruleset | grep nat64-private")
+          match = re.search(r"counter packets (\d+)", rule)
+          assert match is not None, rule
+          return int(match.group(1))
+
+
+      def agent_runs(node):
+          """A shell test: the Cilium agent on `node` answers. It looks the
+          pod up itself, so it can wait for an API server that is down."""
+          find = f"{K} kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName={node} -o name"
+          return f"{K} timeout 30 kubectl -n kube-system exec $({find}) -c cilium-agent -- cilium-dbg status --brief"
+
+
+      def remake(node):
+          """Delete the CLAT link of `node` and let IfState make it again,
+          while the pod on `node` requests an IPv4 page five times a second."""
+          machine = NODES[node]
+          pod4 = address(pod_v4(node))
+          pod_exec(node, "rm -f /tmp/stop")
+          loop = (
+              f"while [ ! -e /tmp/stop ]; do read t rest < /proc/uptime; "
+              f"if wget -T 1 -qO- http://{SERVER4}/ >/dev/null 2>&1; then echo \"$t ok\"; else echo \"$t fail\"; fi; usleep 200000; done"
+          )
+          recovered = "tail -n 3 /tmp/loop.txt | grep -c ' ok$' | grep -x 3 >/dev/null"
+          capture_start(machine, "any", "remake", expression=f"tcp dst port 80 and dst host {SERVER4}", options="-tt")
+          capture_start(gw, "eth1", "remake-gw")
+          alpha.succeed(
+              "systemctl stop pod-loop.service 2>/dev/null || true; rm -f /tmp/loop.txt; "
+              f"systemd-run --quiet --collect --unit=pod-loop -E {K} -p StandardOutput=file:/tmp/loop.txt kubectl exec anchor-{node} -- sh -c '{loop}'"
+          )
+          alpha.wait_until_succeeds(recovered, timeout=30)
+          epoch, up = machine.succeed("echo $(date +%s.%N) $(cut -d' ' -f1 /proc/uptime)").split()
+          offset = float(epoch) - float(up)
+          index = machine.succeed("cat /sys/class/net/clat0/ifindex").strip()
+
+          deleted = uptime(machine)
+          machine.succeed("ip link delete clat0; systemctl reset-failed ifstate.service; systemctl restart ifstate.service")
+          made = uptime(machine)
+          assert machine.succeed("cat /sys/class/net/clat0/ifindex").strip() != index, f"{node}: clat0 is the old link"
+          waited = seconds_until(machine, "bpftool net show dev clat0 | grep cil_to_netdev", limit=ATTACH_LIMIT, interval=0.2)
+          attached = uptime(machine)
+          assert waited is not None, f"{node}: Cilium did not attach to the new clat0 in {ATTACH_LIMIT} s"
+          alpha.wait_until_succeeds(recovered, timeout=DOWN_LIMIT)
+          pod_exec(node, "touch /tmp/stop")
+          alpha.succeed("systemctl stop pod-loop.service 2>/dev/null || true")
+          machine.succeed("systemctl stop capture-remake.service")
+          at_gateway = capture_stop(gw, "remake-gw", CLAT6[node])["IP6"]
+
+          requests = [(float(line.split()[0]), line.split()[1]) for line in alpha.succeed("cat /tmp/loop.txt").splitlines() if len(line.split()) == 2]
+          fails = [at for at, state in requests if state == "fail"]
+          assert not [at for at in fails if at < deleted - 2], f"{node}: pod requests failed before the link was deleted: {requests}"
+          assert fails, f"{node}: no pod request failed while the CLAT link was gone"
+          back = min(at for at, state in requests if state == "ok" and at > max(fails))
+          early = [at for at, state in requests if state == "ok" and made < at < attached - 1]
+          print(
+              f"FINDING {node}: CLAT link made again under pod load: the link was away for {made - deleted:.1f} s; "
+              f"Cilium attached {attached - made:.1f} s after the link was back; "
+              f"pod IPv4 egress was down for {back - deleted:.1f} s ({len(fails)} failed requests), "
+              f"and worked {back - attached:.1f} s after Cilium attached; "
+              f"{len(early)} requests succeeded on the new link before Cilium attached"
+          )
+          assert back - deleted <= DOWN_LIMIT, f"{node}: pod IPv4 egress was down for {back - deleted:.1f} s"
+
+          # what left on the CLAT link, by source
+          sent: dict[str, list[float]] = {}
+          capture = machine.succeed("cat /tmp/remake.txt")
+          for line in capture.splitlines():
+              match = re.search(r"^(\d+\.\d+) clat0\s+Out\s+IP (\S+)\.\d+ > \S+\.80: Flags \[S\]", line)
+              if match is not None:
+                  sent.setdefault(match.group(2), []).append(float(match.group(1)) - offset)
+          for source, times in sent.items():
+              after_link = [at - made for at in times if at >= made]
+              print(
+                  f"FINDING {node}: SYNs on clat0 from {source}: {len(times)}, {len(after_link)} of them on the new link"
+                  + (f", {after_link[0]:.1f} s to {after_link[-1]:.1f} s after it was back (Cilium attached at {attached - made:.1f} s)" if after_link else "")
+              )
+          leaked = sent.get(str(pod4), [])
+          print(f"FINDING {node}: pre-attach window: {len(leaked)} SYNs left on clat0 with the pod's own address {pod4}; sources at the gateway: {sorted(str(source) for source in at_gateway)}")
+          assert CLAT4 in sent and set(sent) <= {CLAT4, str(pod4)}, f"{node}: sources on clat0: {sorted(sent)}\n{capture}"
+          # FINDING (G5 "Cilium attaches late"): until Cilium attaches to the
+          # new link, pod packets leave on it with the pod's own address.
+          # The CLAT embeds that address in the NAT64 prefix, which is not
+          # a source the gateway forwards. A Cilium that closes the window
+          # must show here.
+          assert leaked, f"{node}: no SYN left clat0 with the pod's address before Cilium attached:\n{capture}"
+          assert not early, f"{node}: pod requests succeeded before Cilium attached: {early}"
+          assert all(at < attached + 1 for at in leaked), f"{node}: a SYN left with the pod's address after Cilium attached: {[at - made for at in leaked]}, attached at {attached - made:.1f}"
+          # the translated pod address is not a source the gateway forwards
+          embedded = ipaddress.ip_network("${pool}")[int(pod4)]
+          assert at_gateway <= {address(CLAT6[node]), embedded}, f"{node}: sources at the gateway: {at_gateway}"
+
+          machine.wait_for_unit("clat.service", timeout=60)
+          host_v4(machine, "after the CLAT link was made again")
+          assert_cilium_on_clat(node, "after the CLAT link was made again")
+          egress(node, True, CLAT4, CLAT6[node], "after the CLAT link was made again")
+          v6_egress(node, "after the CLAT link was made again")
+          pod_network("after the CLAT link was made again")
+
+
+      def reboot(node):
+          machine = NODES[node]
+          unit = UNITS[node]
+          kubectl(f"delete pod anchor-{node} --force --grace-period=0")
+          machine.shutdown()
+          machine.start()
+          machine.wait_for_unit("multi-user.target", timeout=900)
+          machine.wait_until_succeeds(IFSTATE_OK, timeout=120)
+          machine.wait_for_unit("clat.service", timeout=120)
+          host_v4(machine, "after the reboot")
+          assert_nameservers(node, "after the reboot")
+          host_names(node, "after the reboot")
+          machine.wait_for_unit(f"{unit}.service", timeout=600)
+          # an exec only works once the rebooted kubelet runs the agent again
+          alpha.wait_until_succeeds(agent_runs(node), timeout=600)
+          alpha.wait_until_succeeds(f"{K} kubectl wait --for=condition=Ready node/alpha node/beta --timeout=60s", timeout=300)
+          alpha.wait_until_succeeds(f"{K} kubectl get serviceaccount default", timeout=120)
+          observe(
+              f"{node}: unit order after the reboot (monotonic microseconds)",
+              machine,
+              f"for unit in ifstate clat {unit}; do echo $unit $(systemctl show -p ActiveEnterTimestampMonotonic --value $unit.service); done; "
+              f"journalctl -b --no-pager -u {unit}.service | grep -m1 -i 'cilium\\|Running kubelet' || true",
+          )
+          observe(f"{node}: the agent's own words about its devices", alpha, f"{K} kubectl -n kube-system logs {agent_pod(node)} -c cilium-agent | grep -i 'clat0' | head -n 8")
+          if FABRIC:
+              for peer in NODES.values():
+                  peer.wait_until_succeeds(BGP_ALL_UP, timeout=300)
+          assert_cilium_on_clat(node, "after the reboot")
+          anchor(node)
+          egress_settles(node, "after the reboot")
+          egress(node, True, CLAT4, CLAT6[node], "after the reboot")
+          traffic(node)
+          v6_egress(node, "after the reboot")
+          pod_names(node, "after the reboot")
+          host_v4(machine, "after the reboot, with Cilium up")
+          pod_network("after the reboot")
+
+
       with state_dump_on_failure(
           list(machines),
           extra=[
@@ -490,6 +837,11 @@ in
           ],
       ):
           start_all()
+
+          # every translated packet to a private IPv4 destination, from the
+          # first one on: who sent what the gateway refuses
+          gw.wait_for_unit("jool-netns.service", timeout=300)
+          capture_start(gw, "j0", "private", expression="ip and not dst host 10.64.0.2 and '(dst net 10.0.0.0/8 or dst net 100.64.0.0/10 or dst net 169.254.0.0/16 or dst net 172.16.0.0/12 or dst net 192.168.0.0/16)'", options="-Q in")
 
           with subtest("versions"):
               for machine in [gw, server4]:
@@ -503,7 +855,10 @@ in
 
           with subtest("the gateway and the IPv4 server are up"):
               gw.wait_for_unit("jool-netns.service", timeout=60)
-              server4.wait_until_succeeds("ss -tln | grep ':80 ' >/dev/null", timeout=60)
+              gw.wait_for_unit("coredns.service", timeout=60)
+              print_versions(gw, ["coredns"])
+              for server in [server4, server6]:
+                  server.wait_until_succeeds("ss -tln | grep ':80 ' >/dev/null", timeout=60)
 
           with subtest("each node has no IPv4 on its NIC and reaches IPv4 through its own CLAT (G23)"):
               for name, machine in NODES.items():
@@ -513,6 +868,13 @@ in
                   mappings = machine.succeed("ip netns exec clat jool_siit -i clat eamt display --csv --no-headers").strip().splitlines()
                   assert len(mappings) == 1 and CLAT4 in mappings[0], f"{name}: the CLAT has more than its host mapping: {mappings}"
               print("CLAT_HOST_OK")
+
+          with subtest("each node has one nameserver, the gateway's DNS64 over IPv6, and fetches an IPv4-only name through NAT64, 2 MB (G5; the path of an image pull)"):
+              for name in NODES:
+                  assert_nameservers(name, "before the cluster")
+                  observe(f"{name}: resolvectl status", NODES[name], "resolvectl status | head -n 12")
+                  host_names(name, "before the cluster")
+              print("CLAT_HOST_NAMES_OK")
 
           with subtest("the transport comes up over IPv6 endpoints (D67)"):
               for name, machine in NODES.items():
@@ -544,6 +906,7 @@ in
               assert config["routing-mode"] == ("native" if FABRIC else "tunnel"), config["routing-mode"]
               assert config["enable-bpf-masquerade"] == "true" and config["enable-ipv4-masquerade"] == "true", config
               assert ("clat0" in config["devices"].split()) != MAPPED, config["devices"]
+              assert ("${nic}" in config["devices"].split()) == NIC_DEVICE, config["devices"]
               for name in NODES:
                   routing = [line.strip() for line in agent(name, "cilium-dbg status --verbose").splitlines() if line.strip().startswith("Routing:")]
                   print(f"FINDING {name}: {routing}")
@@ -554,6 +917,8 @@ in
               for machine in NODES.values():
                   host_v4(machine, "with Cilium up")
                   observe(f"{machine.name}: IPv4 routes", machine, "ip -4 route")
+              for name in NODES:
+                  host_names(name, "with Cilium up")
               print("CLAT_HOST_WITH_CILIUM_OK")
 
           with subtest("a pod on each node; the pod network between the nodes, both families"):
@@ -581,12 +946,31 @@ in
           with subtest("pods reach an IPv4 address: a page with its source, 2 MB down and up, ping, cluster DNS (G5)"):
               for name in NODES:
                   v4, v6 = expected_sources(name)
+                  egress_settles(name, "first request")
                   egress(name, True, v4, v6, "first request")
                   traffic(name)
                   observe(f"{name}: CLAT statistics", NODES[name], "ip netns exec clat jool_siit -i clat stats display | head -n 12")
               pod_network("after pod IPv4 egress")
               observe("gateway conntrack", gw, f"conntrack -L 2>/dev/null | grep {SERVER4} | head -6")
               print("CLAT_POD_EGRESS_OK")
+
+          with subtest(
+              "pod IPv6 egress: the IPv6 server sees the node's NIC address"
+              if NIC_DEVICE
+              else "without the NIC in Cilium's devices, pod IPv6 egress fails: the pod's own address is on the wire"
+          ):
+              for name in NODES:
+                  v6_egress(name, "first request")
+              print("CLAT_POD_V6_EGRESS_OK")
+
+          with subtest(
+              "pods resolve external names through cluster DNS and the DNS64, and fetch an IPv4-only name by name and by its synthesized address"
+              if NIC_DEVICE
+              else "without the NIC in Cilium's devices, cluster DNS cannot reach the node's IPv6 nameserver"
+          ):
+              for name in NODES:
+                  pod_names(name, "first request")
+              print("CLAT_POD_NAMES_OK")
 
           with subtest("a ClusterIP Service works from pods in both families, with the pod's own source"):
               who = "mkdir -p /www/cgi-bin; echo '#!/bin/sh' > /www/cgi-bin/who; echo 'echo; echo $REMOTE_ADDR' >> /www/cgi-bin/who; chmod +x /www/cgi-bin/who; exec httpd -f -p 8080 -h /www"
@@ -626,10 +1010,44 @@ in
                       assert address(seen) == address(own), f"the Service at {cluster_ip} saw the pod on {name} ({own}) as {seen}"
               print("CLAT_CLUSTERIP_OK")
 
+          node_ips: dict[str, list[str]] = {}
+          for name in NODES:
+              node_ips[name] = kubectl(f"get node {name} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'").split()
+          print(f"FINDING node addresses: {node_ips}")
+
+          with subtest("a NodePort answers on the node addresses from the other node, and not on a NIC address from outside the cluster (D69)"):
+              limited = config.get("nodeport-addresses", "")
+              print(f"FINDING Cilium nodeport-addresses: {limited!r}")
+              listed = {ipaddress.ip_network(entry).network_address for entry in limited.split(",") if entry}
+              assert listed == {address(ip) for found in node_ips.values() for ip in found}, f"nodeport-addresses {limited!r} are not the node addresses {node_ips}"
+              service = {
+                  "apiVersion": "v1",
+                  "kind": "Service",
+                  "metadata": {"name": "web-nodeport"},
+                  "spec": {"type": "NodePort", "ipFamilyPolicy": "RequireDualStack", "selector": {"app": "web"}, "ports": [{"port": 8080, "nodePort": NODEPORT}]},
+              }
+              alpha.succeed(f"{K} kubectl apply -f - <<'EOF'\n{json.dumps(service)}\nEOF")
+              for source, target in [("alpha", "beta"), ("beta", "alpha")]:
+                  assert sorted(address(ip).version for ip in node_ips[target]) == [4, 6], node_ips
+                  for ip in node_ips[target]:
+                      host = f"[{ip}]" if ":" in ip else ip
+                      seen = NODES[source].wait_until_succeeds(f"curl -s --max-time 5 http://{host}:{NODEPORT}/cgi-bin/who", timeout=60).strip()
+                      print(f"FINDING the NodePort on {target} at {ip}, asked from {source}: the pod saw {seen}")
+                      assert addresses_in(seen), f"the NodePort on {target} at {ip} answered {seen!r}"
+              for name, machine in NODES.items():
+                  # the outside machine does reach the node on its NIC address
+                  machine.wait_until_succeeds("ss -tln | grep ':8099 ' >/dev/null", timeout=60)
+                  seen = server6.succeed(f"curl -s --max-time 5 http://[{NIC6[name]}]:8099/")
+                  assert address(seen) == address(SERVER6), f"{name}: the node's own listener saw the outside machine as {seen!r}"
+                  status, out = server6.execute(f"curl -sS --max-time 4 http://[{NIC6[name]}]:{NODEPORT}/cgi-bin/who 2>&1")
+                  print(f"FINDING the NodePort on {name} at its NIC address {NIC6[name]}, asked from outside: rc={status} {out.strip()}")
+                  assert status != 0, f"{name}: the NodePort answers on the NIC address {NIC6[name]} from outside the cluster: {out}"
+              print("CLAT_NODEPORT_OK")
+
           with subtest("pod to node on the node's IPv4 address is not masqueraded to the CLAT address"):
               node_v4: dict[str, str] = {}
               for name in NODES:
-                  found = kubectl(f"get node {name} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'").split()
+                  found = node_ips[name]
                   node_v4[name] = next(ip for ip in found if ":" not in ip)
                   NODES[name].wait_until_succeeds("ss -tln | grep ':8099 ' >/dev/null", timeout=60)
               for source in NODES:
@@ -639,24 +1057,44 @@ in
                       assert address(seen) != address(CLAT4), f"pod on {source} to node {target} was masqueraded to the CLAT address"
               print("CLAT_POD_TO_NODE_OK")
 
-          with subtest("the gateway refuses a destination that embeds a private IPv4 address (G5)"):
+          with subtest("the gateway refuses a destination that embeds a private IPv4 address: one pod request, one refused packet; nothing else ever was refused (G5)"):
               clat_stats = "ip netns exec clat jool_siit -i clat"
               gw_stats = "ip netns exec nat64 jool -i default"
               observe("gateway: its IPv4 addresses", gw, "ip -4 -br addr; ip netns exec nat64 ip -4 route")
-              for private in ["172.20.0.1", "192.168.1.254"]:
-                  observe(f"alpha: route to {private}", alpha, f"ip route get {private}")
-                  observe(f"gateway NAT64 namespace: route to {private}", gw, f"ip netns exec nat64 ip route get {private}")
-                  before = (jool_stats(alpha, clat_stats), jool_stats(gw, gw_stats))
-                  rule = gw.succeed("nft list ruleset | grep nat64-private")
-                  status, out = pod_exec("alpha", f"wget -T 4 -qO- http://{private}/", timeout=10)
-                  print(f"FINDING pod to the private IPv4 address {private}: rc={status} {out}")
-                  assert status != 0, f"{private} was reachable through the NAT64 prefix"
-                  crossed = moved(before[1], jool_stats(gw, gw_stats))
-                  print(f"FINDING {private}: CLAT counters that moved: {moved(before[0], jool_stats(alpha, clat_stats))}")
-                  print(f"FINDING {private}: gateway NAT64 counters that moved: {crossed}")
-                  # Jool itself translates the packet; the firewall behind it refuses
-                  assert crossed.get("JSTAT_SUCCESS", 0) > 0, f"the translator did not translate the packet to {private}: {crossed}"
-                  assert gw.succeed("nft list ruleset | grep nat64-private") != rule, f"the gateway firewall did not count {private}"
+              # the nodes have no IPv4 nameserver now: no stray packet to a
+              # private address reached the gateway since it booted
+              refused = private_refused()
+              strays = gw.succeed("cat /tmp/private.txt").strip().splitlines()
+              print(f"FINDING the gateway refused {refused} packets to private IPv4 addresses before any test request:\n" + "\n".join(strays))
+              assert len(strays) == refused, f"the capture has {len(strays)} packets, the counter {refused}"
+              # FINDING (2026-11-22): on the routed fabric a node address is
+              # a BGP route. Until the fabric has converged, a node's packet
+              # to another node's IPv4 address (the agent's to the API server
+              # at 192.168.77.1:6443) takes the IPv4 default route into the
+              # CLAT and reaches the gateway, which refuses it. Seen: 1 and 2
+              # packets. The mesh has a static route per peer: none.
+              targets = {match.group(1) for line in strays if (match := re.search(r" > (\S+)\.\d+: ", line)) is not None}
+              node_v4s = {ip for found in node_ips.values() for ip in found if ":" not in ip}
+              if FABRIC:
+                  assert targets <= node_v4s and refused <= 10, f"stray packets to private IPv4 addresses that are not node addresses, or too many: {strays}"
+              else:
+                  assert refused == 0, f"the gateway refused {refused} packets to private IPv4 addresses before any test request"
+              for name, machine in NODES.items():
+                  for private in ["172.20.0.1", "192.168.1.254"]:
+                      observe(f"{name}: route to {private}", machine, f"ip route get {private}")
+                      observe(f"gateway NAT64 namespace: route to {private}", gw, f"ip netns exec nat64 ip route get {private}")
+                      before = (jool_stats(machine, clat_stats), jool_stats(gw, gw_stats))
+                      status, out = pod_exec(name, f"wget -T 4 -qO- http://{private}/", timeout=10)
+                      print(f"FINDING pod on {name} to the private IPv4 address {private}: rc={status} {out}")
+                      assert status != 0, f"{private} was reachable through the NAT64 prefix"
+                      crossed = moved(before[1], jool_stats(gw, gw_stats))
+                      print(f"FINDING {name}: {private}: CLAT counters that moved: {moved(before[0], jool_stats(machine, clat_stats))}")
+                      print(f"FINDING {name}: {private}: gateway NAT64 counters that moved: {crossed}")
+                      # Jool itself translates the packet; the firewall behind it refuses
+                      assert crossed.get("JSTAT_SUCCESS", 0) > 0, f"the translator did not translate the packet to {private}: {crossed}"
+                      now = private_refused()
+                      assert now - refused == 1, f"{name}: one pod request to {private} moved the gateway's counter by {now - refused}"
+                      refused = now
               print("CLAT_PRIVATE_REFUSED_OK")
 
           with subtest("an IfState apply on each node changes nothing and leaves pod IPv4 egress and the pod network intact"):
@@ -667,52 +1105,27 @@ in
                   v4, v6 = expected_sources(name)
                   egress(name, True, v4, v6, "after an IfState apply")
                   assert_cilium_on_clat(name, "after an IfState apply")
+                  assert_nameservers(name, "after an IfState apply")
+                  host_names(name, "after an IfState apply")
+                  v6_egress(name, "after an IfState apply")
+                  pod_names(name, "after an IfState apply")
               pod_network("after an IfState apply")
               print("CLAT_IFSTATE_APPLY_OK")
 
           if not MAPPED:
-              with subtest("the CLAT link is made again under a running Cilium: Cilium attaches to the new link"):
-                  # nothing orders the cluster unit after the CLAT, so Cilium
-                  # must take a `clat0` that appears after it started
-                  index = beta.succeed("cat /sys/class/net/clat0/ifindex").strip()
-                  beta.succeed("ip link delete clat0; systemctl reset-failed ifstate.service; systemctl restart ifstate.service")
-                  beta.wait_for_unit("clat.service", timeout=60)
-                  assert beta.succeed("cat /sys/class/net/clat0/ifindex").strip() != index, "clat0 is the old link"
-                  host_v4(beta, "after the CLAT link was made again")
-                  assert_cilium_on_clat("beta", "after the CLAT link was made again")
-                  egress("beta", True, CLAT4, CLAT6["beta"], "after the CLAT link was made again")
-                  pod_network("after the CLAT link was made again")
-                  print("CLAT_LINK_REMADE_OK")
+              # nothing orders the cluster unit after the CLAT, so Cilium
+              # must take a `clat0` that appears after it started
+              for name in NODES:
+                  with subtest(f"the CLAT link of {name} is made again under a running Cilium and pod load: Cilium attaches to the new link, pod IPv4 egress returns"):
+                      remake(name)
+              print("CLAT_LINK_REMADE_OK")
 
-              with subtest("beta reboots: its CLAT, the node, Cilium on clat0 and pod IPv4 egress come back"):
-                  kubectl("delete pod anchor-beta web --force --grace-period=0")
-                  beta.shutdown()
-                  beta.start()
-                  beta.wait_for_unit("multi-user.target", timeout=900)
-                  beta.wait_until_succeeds(IFSTATE_OK, timeout=120)
-                  beta.wait_for_unit("clat.service", timeout=120)
-                  host_v4(beta, "after the reboot")
-                  beta.wait_for_unit("${agentUnit}.service", timeout=600)
-                  # an exec only works once the rebooted kubelet runs the agent again
-                  alpha.wait_until_succeeds(f"{K} timeout 30 kubectl -n kube-system exec {agent_pod('beta')} -c cilium-agent -- cilium-dbg status --brief", timeout=600)
-                  alpha.wait_until_succeeds(f"{K} kubectl wait --for=condition=Ready node/beta --timeout=60s", timeout=300)
-                  observe(
-                      "beta: unit order after the reboot (monotonic microseconds)",
-                      beta,
-                      "for unit in ifstate clat ${agentUnit}; do echo $unit $(systemctl show -p ActiveEnterTimestampMonotonic --value $unit.service); done; "
-                      "journalctl -b --no-pager -u ${agentUnit}.service | grep -m1 -i 'cilium\\|Running kubelet' || true",
-                  )
-                  observe("beta: the agent's own words about its devices", alpha, f"{K} kubectl -n kube-system logs {agent_pod('beta')} -c cilium-agent | grep -i 'clat0' | head -n 8")
-                  if FABRIC:
-                      for machine in NODES.values():
-                          machine.wait_until_succeeds(BGP_ALL_UP, timeout=300)
-                  assert_cilium_on_clat("beta", "after the reboot")
-                  anchor("beta")
-                  egress("beta", True, CLAT4, CLAT6["beta"], "after the reboot")
-                  traffic("beta")
-                  host_v4(beta, "after the reboot, with Cilium up")
-                  pod_network("after the reboot")
-                  print("CLAT_REBOOT_OK")
+              kubectl("delete pod web --force --grace-period=0")
+              # beta is the agent, alpha the cluster's only server
+              for name in ["beta", "alpha"]:
+                  with subtest(f"{name} reboots: its CLAT, its nameserver, the node, Cilium on clat0 and pod egress in both families come back"):
+                      reboot(name)
+              print("CLAT_REBOOT_OK")
 
       print("${lib.toUpper (lib.replaceStrings ["-"] ["_"] suiteName)}_OK")
     '';
