@@ -1470,6 +1470,56 @@ in {
     expected = true;
   };
 
+  # D69: NodePorts answer on the members' node addresses only, as host
+  # prefixes, never on another address of a `devices` link.
+  test_nodePortAddresses = let
+    entries = lib.splitString "," fakeCiliumConfigData."nodeport-addresses";
+  in {
+    expr = {
+      hostPrefixes = lib.all (entry: lib.hasSuffix "/32" entry || lib.hasSuffix "/128" entry) entries;
+      alpha = lib.elem "192.168.77.1/32" entries && lib.elem "fd77::1/128" entries;
+      perMember = builtins.length entries / 2 >= 2;
+    };
+    expected = {
+      hostPrefixes = true;
+      alpha = true;
+      perMember = true;
+    };
+  };
+
+  # D70: with two or more members the CoreDNS replicas never share a node.
+  test_coreDNSSpread = {
+    expr = (fakeFindObj "Deployment" "coredns").spec.template.spec.topologySpreadConstraints;
+    expected = [
+      {
+        labelSelector.matchLabels."k8s-app" = "kube-dns";
+        maxSkew = 1;
+        minDomains = 2;
+        topologyKey = "kubernetes.io/hostname";
+        whenUnsatisfiable = "DoNotSchedule";
+      }
+    ];
+  };
+
+  # The cluster's ranges reach the overlap checks (lib/ownership.nix).
+  test_clusterRangesFact = let
+    clusters = builtins.attrValues alphaFake.clan.networkFacts.clusters;
+  in {
+    expr =
+      map (cluster: {
+        inherit (cluster) distro ciliumId podCIDRv4 serviceCIDRv4;
+      })
+      clusters;
+    expected = [
+      {
+        distro = "rke2";
+        ciliumId = 1;
+        podCIDRv4 = "10.1.0.0/16";
+        serviceCIDRv4 = "10.2.0.0/16";
+      }
+    ];
+  };
+
   test_fakeTransportContradictingOverridesRejected = {
     expr = !(builtins.tryEval (builtins.deepSeq fakeContradictionEvaled.config true)).success;
     expected = true;

@@ -23,8 +23,9 @@
   onlineLinks = lib.filterAttrs (_: l: l.requiredForOnline && (l.dhcp4 || l.dhcp6)) links;
 
   runtimeDir = "/run/netif-dns";
-  # One file per delegating link: its delegated prefixes, one per line
-  # (N16). Consumers watch it; it changes only when a prefix does.
+  # One file per delegating link: the delegated prefixes that the ISP
+  # prefers, one per line, sorted (N16). Consumers watch it; it changes
+  # only when that set does, and is absent while there is none.
   pdDir = "/run/netif/pd";
   path = lib.makeBinPath [
     pkgs.coreutils
@@ -95,21 +96,27 @@
       EXPIRE6|RELEASE6|STOP6|NOCARRIER|STOPPED)
         rm -f "$d/$interface.dhcp6.dns" "$d/$interface.dhcp6.domain" ;;
     esac
-    # The delegated prefix as a runtime file (N16). Written only when it
-    # changes, by a rename, so a path unit fires once per change. A stop
-    # or a restart of dhcpcd leaves it: that is not a prefix change.
+    # The delegated prefixes as a runtime file (N16): the prefixes of the
+    # last reply that the ISP still prefers, one per line, sorted. A
+    # prefix with a preferred lifetime of 0 is on its way out (an ISP
+    # that renumbers sends the old prefix that way beside the new one)
+    # and is not listed. Written only when the content changes, by a
+    # rename, so a path unit fires once per change. Removed when a reply
+    # leaves no such prefix and when the lease expires. A stop or a
+    # restart of dhcpcd leaves it: that is not a prefix change.
     # shellcheck disable=SC2154
     case "$reason" in
       BOUND6|RENEW6|REBIND6|REBOOT6)
         tmp="${pdDir}/.$interface.tmp"
-        : > "$tmp"
-        for name in $(env | sed -n 's/^\(new_dhcp6_ia_pd[0-9]*_prefix[0-9]*\)=.*/\1/p' | sort); do
-          eval "prefix=\$$name; length=\$''${name}_length; valid=\$''${name}_vltime"
-          if [ -n "$prefix" ] && [ -n "$length" ] && [ "$valid" != 0 ]; then
-            echo "$prefix/$length" >> "$tmp"
+        for name in $(env | sed -n 's/^\(new_dhcp6_ia_pd[0-9]*_prefix[0-9]*\)=.*/\1/p'); do
+          eval "prefix=\$$name; length=\$''${name}_length; preferred=\$''${name}_pltime; valid=\$''${name}_vltime"
+          if [ -n "$prefix" ] && [ -n "$length" ] && [ "$preferred" != 0 ] && [ "$valid" != 0 ]; then
+            echo "$prefix/$length"
           fi
-        done
-        if [ -s "$tmp" ] && [ "$(cat "$tmp")" != "$(cat "${pdDir}/$interface" 2>/dev/null)" ]; then
+        done | LC_ALL=C sort -u > "$tmp"
+        if [ ! -s "$tmp" ]; then
+          rm -f "$tmp" "${pdDir}/$interface"
+        elif [ "$(cat "$tmp")" != "$(cat "${pdDir}/$interface" 2>/dev/null)" ]; then
           mv "$tmp" "${pdDir}/$interface"
         else
           rm -f "$tmp"

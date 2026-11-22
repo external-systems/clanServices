@@ -66,7 +66,14 @@ in
           };
       };
 
-    testScript =
+    # Fail the evaluation when the `ha` script no longer has a string
+    # replaced here: a miss would leave a mesh check in a fabric suite,
+    # or drop the marker, without a red run.
+    testScript = assert lib.all (pattern: lib.hasInfix pattern body.testScript) [
+      "ip -br addr show wg-mesh"
+      "dual-stack full mesh over wg-mesh"
+      "print(\"${lib.toUpper distro}_HA_OK\")"
+    ];
       builtins.replaceStrings
       [
         "ip -br addr show wg-mesh"

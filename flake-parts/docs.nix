@@ -42,6 +42,7 @@ _: {
             {"Exposing services" = "gateway/exposure.md";}
             {"Plan and probes" = "gateway/plan.md";}
             {Retrospective = "gateway/retrospective.md";}
+            {"Review (devil's advocate)" = "gateway/review.md";}
           ];
         }
         {Decisions = [{"Decision record" = "decisions/index.md";}];}

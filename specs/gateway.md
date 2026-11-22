@@ -58,7 +58,18 @@ Round G3 (2026-11-21): **the probes became suites; mode parity.**
   (§12.3): `data-plane-tunnel`, `join-netif`, `k3s-modes-fabric`.
 - §12 is updated: closed rows say so, new risks are added.
 
-## 0. Status vocabulary
+Round G4 (2026-11-21): **devil's advocate review.** Four reviewers
+read every new suite against this file. §13 holds the result.
+- Nineteen claims did not hold in the code. All are fixed on this
+  branch and asserted (§13.1). The worst: a gateway relayed ICMP for
+  any source; a dual-WAN router answered inbound connections through
+  the wrong WAN; NodePorts were open past the node firewall.
+- G4, G6, G16, G20, G22, G23 and netif N16 are amended where they
+  stand. SPEC.md gains D69 and D70.
+- Nine points need the owner (§13.2). The first: stop probing and
+  build the services.
+
+
 
 As in `specs/netif.md` §0: *(planned)*, *(probe-verified)*,
 *(implemented; suite and marker)*. A decision that waits for a probe
@@ -177,6 +188,13 @@ any code (AGENTS.md rule 3).
     a rule of the forward chain (G2). It also covers the DNS64
     listener, or the gateway is an open resolver. A client's CLAT
     address (G23) is a second source to allow.
+  - **The allowlist is a table of its own, ahead of the firewall**
+    (`inet nat64`, forward and input at priority -10; round G4, §13.1).
+    The NixOS firewall accepts every ICMPv6 type before a rule in
+    `extraForwardRules`: with the allowlist there, an undeclared
+    source pinged the IPv4 internet through the gateway. The table
+    drops by source for every protocol, covers port 53 for UDP and
+    TCP, and holds the refusal of private IPv4 destinations (G5).
   - CoreDNS binds the gateway's address. It cannot take the wildcard:
     netif runs systemd-resolved on every machine (N9) and its stub
     holds port 53. A bind right after boot races duplicate address
@@ -265,7 +283,9 @@ any code (AGENTS.md rule 3).
     after PR2). Nothing sends a reset for a dead gateway: 20 s after
     the crash the client's TCP connection was still established and
     silent. An application notices through its own timeout or TCP
-    keepalive. New connections go through another gateway. This is
+    keepalive. A gateway that reboots and returns has no
+    state: Jool drops the flow's packets without a reset, so the flow
+    still stalls (round G4). New connections go through another gateway. This is
     failover, not hitless high availability.
   - The number of public IPv4 addresses equals the number of gateways.
   - Rejected: conntrackd state sync with a shared address (needs a
@@ -461,24 +481,58 @@ any code (AGENTS.md rule 3).
     - Hysteresis of three checks is enough: a primary that flapped
       3 s down, 3 s up for 24 s moved nothing; 7 s down, 1 s up moved
       once.
+  - **Corrected by the review (round G4, 2026-11-21; §13.1):**
+    - **The ruleset is the only record of the active WAN.** The
+      steering lives in a table of its own (`inet wan_steer`) that the
+      health check owns and loads; `nftables.service` never touches
+      it. The check reads the active WAN from that table every round
+      and keeps only its counters. Before, the check held the state in
+      a variable and the rule sat in the firewall's table: a firewall
+      reload while failed over sent traffic into the dead primary, and
+      a restart of the check on the backup never moved back.
+    - **A flow leaves by the WAN it arrived on.** A new flow that
+      arrives on a WAN gets a conntrack mark for that WAN (`0x11`,
+      `0x12`); a steered flow gets `1` or `2`. The packet mark is
+      restored from conntrack (`ct mark & 0xf`) before steering, and
+      only a packet without a mark is steered. Before, a connection to
+      the backup's address (SSH, WireGuard, a port forward) was
+      answered through the primary and died. A failover deletes marks
+      `1` and `2` only, so inbound flows survive it.
+    - **The router's firewall is on in the suite**, with
+      `checkReversePath = "loose"`. A strict reverse-path check drops
+      steered traffic (asserted).
+    - **A WAN's own subnet is not steered**: a set of the WAN subnets
+      returns before the steering rule. The router and a LAN host
+      reach each WAN's gateway in both states. The set is static in
+      the suite; for a DHCP or delegated WAN it is a runtime value.
+    - **Start:** failures count from the primary's first lease, or
+      after 20 s. No move at boot. A boot with a dead primary reaches
+      the backup for IPv4 after 6 to 8 s and for IPv6 after about 25 s.
+    - **A failed `nft` call** skips the round and deletes no flow.
+    - **A dead health target moves nothing** when both WANs are fine.
+    - **Three checks of hysteresis do not hold against packet loss:**
+      30 % loss on the primary for 60 s gave no move in one run and
+      four in the next. Each move resets every steered flow. Open
+      (§13.2): several targets, and a longer hold before failback.
   - **Open, before code:**
-    - traffic from the router to a neighbour on a WAN's own subnet is
-      steered to the active WAN too, and fails for the other WAN (the
-      suite pins this). The clean fix is a rule "main table, ignore
-      default routes" before the mark rules; IfState 2.5.1 cannot
-      declare it (`suppress_prefixlength`). The alternative is an
-      nftables set of the WANs' subnets;
     - **netif N21 to amend** (proven with a fixture unit, `wan-routes`):
       netif renders a DHCP lease's gateway into the link's
       `routingPolicy.table`, and a second default in the main table
       for a backup link. Today `defaultRoute.ipv4 = false` means
       dhcpcd's `nogateway`, and a DHCP link's table gets no default;
     - **netif's guard and a dead WAN:** the guard requires a DHCP
-      default and a neighbour answer per gateway. After a boot with
-      the primary's ISP box dead, `netif-guard` failed. No rollback
-      happened only because the configuration was the last good one.
-      A deploy during a primary outage would be rolled back. With two
-      WANs the guard must accept one live WAN;
+      default and a neighbour answer per gateway. With the primary's
+      cable out, any IfState apply fails `netif-guard` after its 30 s
+      timeout ("no DHCP default route on eth1"). Traffic stays on the
+      backup. The guard stays failed after the cable returns, until
+      the next apply. A new configuration deployed during a primary
+      outage would be rolled back (asserted for the unchanged
+      configuration: "no earlier network configuration to roll back
+      to"). With two WANs the guard must accept one live WAN;
+    - an IPv6 default route learned from an advertisement expires as
+      the DHCPv4 one did; the suite's IPv6 is static and cannot show
+      it. A WAN address from DHCP cannot be named in a static `from`
+      rule. A per-ISP resolver is reached through the wrong WAN;
     - the backup's delegated prefix is a runtime value, as in G20: the
       rewrite rule is written by G22's hook. Not proven: the suite's
       WANs have static IPv6.
@@ -591,6 +645,16 @@ any code (AGENTS.md rule 3).
   - The rewrite is not RFC 6296 NPTv6: that one changes the host part
     of a /64 to keep checksums. This one is stateful and keeps it.
   - The rule is updated by G22's hook.
+  - **Limit (round G4): a backend cannot reach its own public
+    address.** A request from the node that holds the Service address
+    to `<public>:f::80` is rewritten to the node's own address and
+    never answered. Not tested: a second host in the same zone. The
+    fix is a source rewrite when a packet leaves by the link it came
+    in on.
+  - **Each zone has its own resolver address** (round G4): CoreDNS
+    binds one address per zone and the input chain accepts port 53
+    from a zone only to that zone's address. Before, zone `servers`
+    was advertised a resolver nobody served.
   *(probe-verified, PR6; `servicePrefix` is planned)*
 
 - **G21 Owned address space** (owner, 2026-11-20; use case U18). The
@@ -693,10 +757,49 @@ any code (AGENTS.md rule 3).
       lifetime of 1 s or 0, valid at most 2 h.
     - NetworkManager 1.58 follows the retirement like the kernel
       client, 0.1 s behind.
-    - Not tested: systemd may drop a path-unit event while the hook
-      runs (about 0.1 s). The hook should read the file again before
-      it exits. Also open: a lease shorter than the retirement window,
-      and two prefixes delegated at once (the hook reads one).
+    - Open: a lease shorter than the retirement window.
+  - **Corrected by the review (round G4, 2026-11-21; §13.1):**
+    - **A stale source is refused at once, not timed out.** The hook
+      keeps the set of delegated prefixes in nftables. IPv6 from a LAN
+      zone to a WAN with a source outside that set is rejected on
+      ingress of the LAN link (`netdev router_src`, `icmpv6
+      policy-fail`). A client that still prefers a retired prefix, or
+      uses its ULA, gets an error in 0.05 s and tries its next address.
+      Before, such packets left the WAN and died: a 5 s timeout per
+      connection, for up to 45 minutes in the state-lost case. The ISP
+      now never sees a retired or ULA source (asserted).
+    - The reject sits on ingress because a reject in the forward hook
+      is routed by its destination: the router has no route to a
+      retired prefix, so the error left through the WAN.
+    - **The state-lost case is bounded by that filter**: a fetch by
+      name took 0.07 s (5.09 s before). The stale prefix is still
+      preferred on the client until its lifetime ends; it just fails
+      fast.
+    - **The prefix file is a set** (netif N16): the current prefix
+      stays current while it is listed. A missing file retires the
+      current prefix and drops the service rule.
+    - **A renew in place is tested.** The ISP changes its pool and the
+      router renews at T1 by itself: clients were on the new prefix
+      3.4 s after the file changed. kea 3.2.1 sends the old prefix
+      with both lifetimes 0. An ISP that sends it with a valid
+      lifetime left is covered at the exit script only.
+    - **A lost path event is handled.** systemd drops an event that
+      fires while the hook runs (shown). The hook reads the file again
+      and loops until what it handled equals the content.
+    - **The hook converges after a failure.** State is synced to disk
+      before anything is applied; the tables carry a generation that
+      is compared with what is loaded; corerad's applied configuration
+      is recorded only after its restart was queued. A failed
+      `systemctl` or `nft` is repaired by the next run. An empty or
+      corrupt state file counts as no state.
+    - corerad and the hook need `StartLimitIntervalSec=0`: six
+      restarts in 10 s left corerad down for good.
+    - **Open: boot.** The file is absent until dhcpcd's first reply,
+      and absent also means "delegation lost". The hook retires the
+      stored prefix at boot and restores it a moment later: two
+      corerad restarts and a short deprecation on every boot. A boot
+      grace period, or a marker from netif for "no reply yet", closes
+      it.
   *(planned; suite-verified on a fixture: `gateway-router`,
   `GATEWAY_ROUTER_OK`)*
 
@@ -736,13 +839,28 @@ any code (AGENTS.md rule 3).
     its own translator; 3 failures withdraw the records, 1 success
     restores them. Records gone after 6 s, the CLAT moved after 11 s.
     The follower's own ping into the /96 is gone.
-  - **Open: that moves the CLAT only.** The sick gateway's DNS64 keeps
-    answering, so systemd-resolved stays on it and names resolve into
-    a dead /96. A machine with a CLAT is saved by accident: the
-    program falls back to the A record and the CLAT. A machine without
-    a CLAT is not. To close it, the same check must stop the gateway's
-    DNS64, so the nameserver failover of G4 happens. The real health
-    target is still not chosen.
+  - **A sick gateway stops its DNS** (closed in round G4, §13.1). The
+    health check stops CoreDNS while the IPv4 upstream is dead and
+    starts it again after. A closed port answers with an error at
+    once, so systemd-resolved moves on its first query. Measured: DNS
+    closed 5.6 to 6.1 s after the upstream died; an uncached IPv4-only
+    name answered through the other gateway 8 s after the cut; an IPv4
+    literal after 17 to 19 s (the CLAT's 8 rounds).
+    - CoreDNS is bound to the health check (`BindsTo`): CoreDNS 1.14.7
+      `hosts` keeps the records of a deleted file, so a dead check
+      would otherwise leave the gateway "healthy" for ever.
+    - Limit: a name cached through the sick gateway stays dead until
+      its TTL ends (G4's cap).
+    - **Open: the health target.** With one shared target that dies,
+      every gateway closes its DNS while translation still works: no
+      name resolves (asserted). The CLAT stays put and its flows live.
+      Targets must be several and differ per gateway (§13.2).
+  - **The follower keeps no state** (round G4). Jool's `pool6` is the
+    truth, read every round. It moves only to a nameserver that names
+    a valid /96; when none answers it stays. A CLAT instance that is
+    made again with its default prefix is corrected in about 12 s.
+    The prefix is parsed as an address (`64:ff9b::/96` and other
+    compressed shapes work), never by cutting strings.
   - On a /64 that is advertised, not routed, the machine answers for
     the CLAT address by proxy NDP (`netif-v6only`).
   - **Known limit:** an ICMP echo over 1232 bytes of payload through
@@ -1562,8 +1680,8 @@ closes it. Nothing here is a decision; the owner picks what becomes one.
 | The prefix hook was tested with one /60 and one change | Unproven: a /56 or a bare /64 (no room for zones), two prefixes at once, an ISP that changes the prefix across a router reboot without the old lease on disk, a lease shorter than the retirement window | Phases in `netif-router`; an assertion at evaluation time that the zones fit the smallest expected delegation **Round G3: /56, /60, /64 and two changes are asserted; state loss across a reboot is a new open gap (G22). Open: a short lease, two prefixes at once.** |
 | nftables has several writers and no ownership rule | The NixOS firewall, the router's table, Cilium (through iptables-nft) and the dual-WAN steering all add tables. netif has a registry for links; nothing equals it for tables | A rule in the spec: one table per owner, named after the instance, never `flush ruleset`; a suite assertion that a restart of one owner leaves the others' tables byte-equal **Round G3: the rule is "one table per owner, never `flush ruleset`"; asserted on the router and on a gateway. Open: the same assertion on a cluster node with Cilium.** |
 | Deploying an IPv6-only fleet needs IPv6 at the deploying machine | `targetHost` is the underlay address (AGENTS.md rule 11). The home router that provides that IPv6 is deployed by the same clan | Keep an IPv4 path to at least the gateways and the Headscale machine (they have public IPv4); document the bootstrap order: gateways, Headscale, router, the rest |
-| CoreDNS replicas share one node (found 2026-11-21, both distros, both modes) | The anti-affinity is soft (`lib/kube-cluster/bundle.nix`) and the bundle applies before the second node is Ready. Both replicas start on the first node and stay. When that node died, cluster DNS was gone (`k3s-data-plane-tunnel`, an early run) | A hard spread when the cluster has two or more members (`topologySpreadConstraints` with `minDomains`); until then the tunnel suite moves one replica by hand before the node dies, and asserts DNS after. The native suite does not check DNS after a death |
-| NodePorts bypass the node firewall | On every link in Cilium's `devices`, Cilium serves NodePorts in eBPF before nftables. A machine outside the cluster reached a NodePort on a node's underlay address (`data-plane-tunnel` asserts it). The underlay link is in `devices` in both modes; the G5 decision adds the CLAT link | Decide: keep the underlay out of `devices` where no floating or BGP address must arrive on it, or enable Cilium's host firewall. A SPEC.md decision, before a cluster faces the internet |
+| CoreDNS replicas share one node (found 2026-11-21, both distros, both modes) | The anti-affinity is soft (`lib/kube-cluster/bundle.nix`) and the bundle applies before the second node is Ready. Both replicas start on the first node and stay. When that node died, cluster DNS was gone (`k3s-data-plane-tunnel`, an early run) | A hard spread when the cluster has two or more members (`topologySpreadConstraints` with `minDomains`); until then the tunnel suite moves one replica by hand before the node dies, and asserts DNS after. The native suite does not check DNS after a death **Closed in round G4: SPEC.md D70.** |
+| NodePorts bypass the node firewall | On every link in Cilium's `devices`, Cilium serves NodePorts in eBPF before nftables. A machine outside the cluster reached a NodePort on a node's underlay address (`data-plane-tunnel` asserts it). The services list only the transport's links in `devices`; a suite or a site adds the underlay for a floating address, and the G5 decision adds the CLAT link | Decide: keep the underlay out of `devices` where no floating or BGP address must arrive on it, or enable Cilium's host firewall. A SPEC.md decision, before a cluster faces the internet **Closed in round G4: SPEC.md D69, NodePorts answer on the node addresses only.** |
 | A BGP pool on a tunnel transport was refused with the wrong reason | The message said `bgp.enable = false`, which the user never set | **Fixed 2026-11-21:** the message names the transport (`lib/kube-cluster/assertions.nix`) |
 | A hot path depends on unit ordering | The hook that blocked on `try-restart corerad` hung the next boot for 300 s (§10.7); a Jool unit that was not idempotent broke on an IfState apply (§10.9) | A suite phase in every gateway suite: `systemctl restart ifstate.service`, then a reboot, then the full assertions again **Round G3: every gateway suite and the CLAT suites reapply IfState and reboot, then assert again.** |
 
@@ -1694,3 +1812,145 @@ a suite that wants the pod CIDRs must use literals.
 - **Several agents on one builder.** Round G3 ran eight agents on one
   worktree with one lock around every `vm-test` call. It worked; each
   suite waited long for its turn. The runner has no queue of its own.
+
+## 13. Devil's advocate review (round G4, 2026-11-21)
+
+The owner asked for the strongest case against the work so far. Four
+reviewers read every new suite against the claims of §2 and §10, the
+test script, not the summary. This section is the result. §13.1 is
+what was wrong and is fixed on this branch. §13.2 is what the owner
+must decide. §13.3 is what is still unproven.
+
+### 13.1 Found and fixed in this round
+
+Each row was a claim of this file that the code did not hold. Each fix
+is asserted by the suite named.
+
+| Found | Why it would hurt | Fix | Proof |
+|---|---|---|---|
+| Any IPv6 source could ping the IPv4 internet through a gateway (G4) | The allowlist sat behind a firewall rule that accepts all ICMPv6. The gateway was an open ICMP relay on the owner's public IPv4 | The allowlist is its own table ahead of the firewall, for every protocol | `gateway-nat64`: counted drops for ping, TCP, UDP, DNS over UDP and TCP |
+| A sick gateway kept answering DNS (G23, was open) | Names resolved into a dead /96. A machine without a CLAT was stuck | The health check stops CoreDNS; CoreDNS is bound to the check | `gateway-nat64`: a name through the other gateway 8 s after the cut |
+| The CLAT follower trusted a state file and cut strings (G23) | A CLAT made again pointed at a dead gateway for good; `64:ff9b::/96` crashed the follower in a loop | No state: Jool's `pool6` is read every round; the prefix is parsed as an address | `gateway-nat64`: instance removed, corrected in 12 s; three prefix shapes |
+| The follower jumped on one answer when all gateways looked sick (G23) | One dead health target broke every CLAT flow | It moves only to a gateway that names a valid /96, and stays when none does | `gateway-nat64`: 0 moves in 20 s, the open flow lives |
+| The active WAN lived in a script variable (G16) | A firewall reload while failed over sent traffic into the dead WAN; a restart of the check never moved back | The steering is a table the health check owns; the ruleset is the only record | `gateway-dual-wan`: reload, restart, table deleted, `nft` failing once |
+| Replies left by the active WAN, not the WAN they arrived on (G16) | SSH, WireGuard or a port forward on the backup's address was dead while the primary was active | A conntrack mark per arrival WAN, restored before steering | `gateway-dual-wan`: inbound from each ISP in both states, both families |
+| The dual-WAN suite ran with the firewall off (G16) | A real router's strict reverse-path check drops steered traffic | Firewall on, `checkReversePath = "loose"` | `gateway-dual-wan` asserts strict fails |
+| The router and LAN hosts could not reach the inactive WAN's own subnet (G16, was open) | No access to the backup modem's web page | A set of WAN subnets is not steered | `gateway-dual-wan` |
+| Stale IPv6 sources left the WAN and timed out (G22) | After a missed retirement, 5 s per connection for up to 45 min | Sources outside the delegation are rejected on LAN ingress | `gateway-router`: an error in 0.05 s; the ISP sees none |
+| A dying prefix could be listed first in netif's prefix file (N16) | The hook would keep the old prefix and move nothing | Only prefixes with both lifetimes non-zero; the file is removed when none is left | `netif-dhcp`, `gateway-router` (a renew in place) |
+| The prefix file was never removed (N16 said it was) | A consumer could not see a lost delegation | Removed on expiry and on an empty reply | `netif-dhcp`: gone after 40 s, back 2 s after the ISP |
+| A path event during a hook run was lost (G22, was "not tested") | A prefix change at boot was never handled | The hook loops until it has handled the file's content | `gateway-router` |
+| The hook did not converge after a failed step (G22) | corerad kept an old configuration for good | State first, generation compared with what is loaded | `gateway-router`: `systemctl` and `nft` each failing once |
+| Zone `servers` was advertised a resolver nobody served (G11, G15) | No DNS for Kubernetes nodes behind the router | One resolver address per zone, port 53 accepted per zone | `gateway-router`: `dig` from each zone, the other zone refused |
+| NodePorts were open on every Cilium device (§12.2) | Every `LoadBalancer` Service opened a port to the outside, past the node firewall | SPEC.md D69: `nodeport-addresses` is the node addresses | `<distro>-data-plane-tunnel`; eval `test_nodePortAddresses` |
+| Both CoreDNS replicas on one node (§12.2) | One dead node took cluster DNS | SPEC.md D70: a hard spread with two or more members | `<distro>-data-plane-tunnel`, `<distro>-ha`, `<distro>-ha-fabric` |
+| `clan.networkFacts.clusters` was never written (§12.3) | The overlap checks against container and tailnet ranges never saw pod or Service ranges | k3s and rke2 write it | eval `test_clusterRangesFact` |
+| `ha` proved less than its name | A clean shutdown, a pod pinned to a node, the API asked on one survivor, no return | A crash; the scheduler places the pod; the API on both survivors; cluster DNS; the dead server returns and serves | `<distro>-ha`, `<distro>-ha-fabric` |
+| Two suites patch another suite's script by string replace | A renamed string would drop a phase and stay green | The evaluation fails when a pattern is missing | `<distro>-v6only`, `<distro>-ha-fabric` |
+
+@@CLATFIXED@@
+
+Also corrected in the text: §12.2 said the underlay link "is in
+`devices` in both modes". It is not: the services list only the
+transport's links. The underlay was there because two suites add it
+for a floating address.
+
+### 13.2 For the owner to decide (ranked by damage to a real deployment)
+
+1. **Stop probing; build the services next.** Every mechanism runs in
+   a fixture, and every fix of this round was made in a fixture. A
+   fixture is a shell script in a test file; the service will be
+   written again from it. Each further round of fixture hardening is
+   work done twice, and the largest remaining risk is the rewrite, not
+   a mechanism. Recommended order: `lib/gateway/translator.nix` and
+   `clat.nix` with the `nat-gateway` service first (S4, then S5: the
+   cluster suites already need a CLAT and a `devices` entry that no
+   service renders), then `router` single WAN (S2). Each suite then
+   imports the module in place of its fixture (§5).
+2. **Freeze the design-only decisions.** G9 (IPv6-mostly), G16's open
+   points, G17 (several routers), G19 (flow records) and G21 (owned
+   address space) are design without code. Each one widens what the
+   first two services must not break. They stay written down; nothing
+   is built for them until S2 and S4 are green on service code.
+3. **Is DNS64 worth its cost on clan machines?** A machine with a CLAT
+   needs no DNS64: every IPv4 destination, by name or literal, goes
+   through the CLAT. DNS64 adds a failure mode of its own:
+   - every name lookup of an IPv6-only machine depends on a gateway,
+     also for names that have IPv6 (both gateways down: no DNS at all);
+   - a synthesized address names one gateway's /96 and sits in caches
+     (the TTL cap of G4, a cluster's CoreDNS with `cache 30`);
+   - it breaks a client that validates DNSSEC (§12.2);
+   - it needed the fix "a sick gateway stops answering DNS" (§13.1).
+   The alternative: the CLAT is the path on every client; resolvers are
+   plain (the gateways, or any IPv6 resolver); DNS64 becomes an option
+   for a machine that cannot run Jool. Its cost: Jool on every client,
+   and double translation for every IPv4 flow. Both are already true
+   for every Kubernetes node (G5). **Recommendation: CLAT on every
+   client by default, DNS64 optional.** Not changed here: it is G4's
+   core and the owner's call.
+4. **The allowlist is a source address, not a credential** (G4). A
+   gateway is reached over the open IPv6 internet. Whoever can send a
+   packet with a client's source address (a network without source
+   validation) gets UDP relayed from the gateway's public IPv4 and DNS
+   answers reflected at the client. TCP is safe (the handshake fails).
+   The abuse is attributed to the owner's IPv4. Options: accept and
+   rate-limit per source (cheap, recommended); or carry client traffic
+   to the gateway in a WireGuard tunnel of its own (authenticated, but
+   a second path to keep alive; not the fabric, so G4's independence
+   holds).
+5. **A health check needs several targets** (G23, G16). Both checks
+   ping one address. One target down means: both gateways withdraw
+   together, or a healthy WAN looks dead. The rule to adopt: three or
+   more targets in different networks; unhealthy only when all fail.
+   The targets are settings; the defaults are the owner's choice.
+6. **A Service behind G20's rewrite answers from another address than
+   it calls out from.** Inbound, a client reaches `<public>:f::80`.
+   Outbound, the same pod leaves from its node's address (Cilium's
+   masquerade). A game server that registers with a master server is
+   listed under the node's address, where no pinhole is open. Closing
+   it needs an egress rule that sends that pod out through its Service
+   address (day-2: a Cilium egress policy, or `literal` mode with
+   owned space). State it as a limit of `translated` mode.
+7. **G16 dual WAN is not ready for a design freeze.** Beyond the open
+   points G16 lists: an IPv6 default route learned from an
+   advertisement expires like the DHCPv4 one did (the suite's IPv6 is
+   static, so it cannot show it); a WAN address from DHCP cannot be
+   named in a static `from` rule; a per-ISP resolver is reached
+   through the wrong WAN. G16 stays "built after single WAN".
+8. **One kernel module holds the fleet.** After D67 every cloud node
+   and every gateway needs Jool. `checks.jool-available` covers the
+   default and the latest kernel of the pin, not the kernel a machine
+   actually runs. The check should read the kernels of the machines
+   that enable a translator (an assertion in `lib/gateway`, when it
+   exists).
+9. **An IPv6-only machine with broken IPv6 has no way in.** There is
+   no IPv4 fallback by design (P2). The provider's console is the only
+   recovery path; say so in the docs, and keep the guard (netif N25)
+   mandatory on such machines.
+
+### 13.3 Still unproven after this round
+
+- **Service code.** Unchanged from §12.1: every gateway mechanism is
+  a fixture.
+- **Health targets** (G16, G23): one address each. See §13.2.
+- **Dual WAN under packet loss:** 0 to 4 moves in 60 s at 30 % loss.
+- **Dual WAN with learned IPv6** (advertisements, prefix delegation on
+  a WAN), a dead backup, both WANs dead.
+- **A prefix the ISP deprecates but keeps valid:** covered at netif's
+  exit script, not end to end (kea cannot send it).
+- **The boot blip of G22** and a backend reaching its own public
+  address (G20).
+- **Spoofed client sources** at a gateway (§13.2).
+- **A 2000 byte UDP datagram** through the CLAT mostly fails; not
+  understood (§10.6). "TCP and UDP, fragments included, pass" holds
+  for the sizes tested (1200, 1400, 1452, 3000, 4000).
+- **`ha`: the `clusterInit` server never dies.** The server that dies
+  is always the second one.
+- **N43 on the wire:** "the ISP saw only the presented MAC" is read
+  from the ISP's tables, not from a capture. Frames sent before
+  IfState sets the MAC (router solicitations, duplicate address
+  detection) would not show there.
+- **Timing bounds in the cluster suites** are looser than "three
+  times the sample" (120 to 300 s against 0.1 to 46 s measured).
+- **Flakiness:** still one full run per round.
+@@CLATOPEN@@

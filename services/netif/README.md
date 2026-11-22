@@ -81,7 +81,9 @@ Beside IfState, netif runs (`host.nix`):
   its own config (upstream dhcpcd 10.5, no RA handling, no stock hooks).
   `dhcp.prefixDelegation` asks for a prefix and assigns subnets of it to
   other links of the machine; the delegated prefix is written to
-  `/run/netif/pd/<interface>`, only when it changes;
+  `/run/netif/pd/<interface>`, only when it changes. The file lists
+  only prefixes the ISP still prefers, and is removed when the
+  delegation is lost;
 - `defaultRoute.{ipv4,ipv6}` per link (and as a segment default) say
   whether the link may carry the machine's default route; one link per
   family may, and a link with `ra = true` counts for IPv6. Every

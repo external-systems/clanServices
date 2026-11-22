@@ -4,8 +4,26 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
-**Round 50 (2026-11-21): probes became suites; both Cilium modes have
-the same suites** (`specs/gateway.md` round G3, §5, §12.3). Points that
+**Round 51 (2026-11-21): devil's advocate review** (`specs/gateway.md`
+round G4, §13). Points that touch this file:
+- **D69, new, implemented:** NodePorts answer on the node addresses
+  only (`nodeport-addresses`). Closes "NodePorts bypass the node
+  firewall" of round 50.
+- **D70, new, implemented:** the clan CoreDNS replicas never share a
+  node when the cluster has two or more members. Closes "CoreDNS
+  replicas share one node" of round 50.
+- `clan.networkFacts.clusters` is written by k3s and rke2 (eval
+  `test_clusterRangesFact`). Closes the third finding of round 50.
+- The `ha` body is stricter: the server crashes, the scheduler places
+  the pod, the API answers on both survivors, cluster DNS answers, and
+  the dead server returns as a Ready node that serves the API.
+  `<distro>-ha` and `<distro>-ha-fabric` run it.
+- D67's status line now says what is proven and what a service must
+  still render (the CLAT and its `devices` entry).
+- Open for the owner: `specs/gateway.md` §13.2.
+
+Round 50 (2026-11-21): **probes became suites; both Cilium modes have
+the same suites (`specs/gateway.md` round G3, §5, §12.3). Points that
 touch this file:
 - D67 is suite-verified: `<distro>-v6only` and
   `<distro>-clat-<transport>` (k3s and rke2; `routed-fabric` with
@@ -709,7 +727,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D68)
+## 4. Decision record (D1–D70)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1882,8 +1900,11 @@ unless noted) — revoked entries keep one-line reasons for history.
     Pages at `clanservices.external.systems`; `0.0.<commits>` releases).
     nixd settings are in `.vscode/`.
 
-- **D67 Clusters run on an IPv6-only underlay.** *(planned, 2026-11-20;
-  probe PR4 in `specs/gateway.md` §6, then a suite per distro)*
+- **D67 Clusters run on an IPv6-only underlay.** *(suite-verified, no
+  service code needed for the join; `<distro>-v6only`,
+  `<distro>-clat-<transport>`. The CLAT itself and its `devices` entry
+  are still set by the suites, not rendered by a service:
+  `specs/gateway.md` G5, planned)*
   - **Why.** A public IPv4 costs money in the cloud. Clan machines
     there have no IPv4 address on any NIC (`specs/netif.md` U13, N45).
   - **Clusters stay dual-stack inside** (§3.2): applications hard-code
@@ -1896,15 +1917,55 @@ unless noted) — revoked entries keep one-line reasons for history.
   - **IPv4 egress.** The host uses `nat-gateway` (NAT64 and DNS64). Pod
     IPv4 egress is `specs/gateway.md` G5: a CLAT on the node, or NAT44
     over the fabric as the fallback.
-  - Every suite today runs on a dual-stack underlay, so nothing here is
-    proven yet.
+  - Proven by suites on both transports and both distros (rounds 49
+    to 51): see the status line. What they do not cover is listed in
+    `specs/gateway.md` §13.
 
 - **D68 `router` and `nat-gateway` are governed by `specs/gateway.md`.**
   *(planned, 2026-11-20)* Two clanServices over the private
   `lib/gateway/`: the edge of a LAN, and IPv4 reach for machines that
   have none. They are host networking, outside the two cluster
   contracts (D39). That file is their contract and status authority
-  (decisions G1–G21), as `specs/netif.md` is for netif.
+  (decisions G1–G23), as `specs/netif.md` is for netif.
+
+- **D69 NodePorts answer on the node addresses only.** *(implemented,
+  2026-11-21; eval `test_nodePortAddresses`; suites
+  `<distro>-data-plane-tunnel`, `<DISTRO>_DATA_PLANE_TUNNEL_OK`)*
+  - **Why.** Cilium serves a NodePort in eBPF, before nftables, on the
+    first address of every link in `devices`. A link in `devices` that
+    faces the outside (the underlay for a floating address, the CLAT
+    link of `specs/gateway.md` G5) therefore opened every NodePort to
+    the outside, past the node firewall. Every `LoadBalancer` Service
+    allocates a NodePort, so this was the common case, not a corner.
+  - **How.** The profile renders `nodePort.addresses` (ConfigMap key
+    `nodeport-addresses`): each member's node addresses as host
+    prefixes (`/32`, `/128`). A NodePort answers there and on no other
+    address. A packet to another address of a `devices` link reaches
+    the host stack, where the node firewall decides.
+  - **Unchanged.** LoadBalancer addresses (LB-IPAM pools, floating
+    addresses, Node IPAM) are their own frontends, not NodePorts.
+    ClusterMesh `node-port` exposure publishes node addresses (D60),
+    which are in the list.
+  - `cilium.helmValues.nodePort.addresses` overrides the list. Cilium's
+    host firewall was the rejected alternative: it needs node policies
+    and can lock out SSH, WireGuard and BGP.
+
+- **D70 CoreDNS replicas never share a node.** *(implemented,
+  2026-11-21; eval `test_coreDNSSpread`; suites
+  `<distro>-data-plane-tunnel`, `<distro>-ha`, `<distro>-ha-fabric`)*
+  - **Why.** The anti-affinity was soft and the bundle applies before
+    the second node is Ready: both replicas started on the first node
+    and stayed. When that node died, cluster DNS was gone.
+  - **How.** A cluster with two or more members renders
+    `topologySpreadConstraints` on the clan CoreDNS Deployment: one
+    replica per node, `DoNotSchedule`, `minDomains: 2`. The second
+    replica stays Pending until a second node is Ready. A one-member
+    cluster keeps the soft rule and both replicas.
+  - While a node is down its replica is Pending, not moved: one replica
+    serves. That is the price of never sharing a node in a two-node
+    cluster.
+  - Not covered: `distroDefaults.enable = true` keeps the distro's own
+    CoreDNS and its placement.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 

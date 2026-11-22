@@ -28,7 +28,10 @@ in
       })
       underlay;
 
-    testScript =
+    # The phase is spliced in before the join suite's marker. Fail the
+    # evaluation when that marker is gone: a miss would drop the phase
+    # and leave the suite green.
+    testScript = assert lib.hasInfix "print(\"${lib.toUpper distro}_JOIN_OK\")" body.testScript;
       builtins.replaceStrings
       ["print(\"${lib.toUpper distro}_JOIN_OK\")"]
       [

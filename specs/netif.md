@@ -7,7 +7,7 @@ keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
 together.** Decisions are numbered `N1`–`N45` so they never collide with
-SPEC.md's `D1`–`D68` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
+SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
 
@@ -1241,12 +1241,23 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     `specs/gateway.md` G22).** Consumers must react when the
     ISP delegates another prefix, and only netif's exit script sees
     dhcpcd's events.
-    - The exit script writes `/run/netif/pd/<interface>`: one delegated
-      prefix per line (`2001:db8:1000::/60`), for the link that asked.
-    - It writes the file only when the content changes, and atomically
+    - The exit script writes `/run/netif/pd/<interface>`: the
+      delegated prefixes of the last DHCPv6 reply whose preferred and
+      valid lifetimes are both non-zero, one per line
+      (`2001:db8:1000::/60`), sorted. A prefix the ISP has deprecated
+      (preferred lifetime 0) is no longer listed (amended 2026-11-21:
+      it was "valid lifetime non-zero", which listed a dying prefix
+      first).
+    - It writes the file only when that set changes, and atomically
       (a rename), so a systemd path unit on it fires once per change.
-    - It removes the file when the delegation expires. A stop or a
-      restart of dhcpcd leaves it: a restart is not a prefix change.
+    - It removes the file when a reply leaves no such prefix and when
+      the delegation expires. A stop, a restart, a release or a lost
+      carrier leaves it: a restart is not a prefix change.
+    - The file is absent after boot until the first reply. A consumer
+      treats it as a set, treats absence as "no delegation", and reads
+      it again after acting: systemd drops a path event that fires
+      while the consumer's unit runs. Open: absence at boot and a lost
+      delegation look the same (`specs/gateway.md` G22).
     - netif starts nothing and keeps no history. A consumer watches the
       file with its own path unit and remembers the last prefix itself.
     - *(implemented; `netif-dhcp`, marker `NETIF_DHCP_PD_OK`; a

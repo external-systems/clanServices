@@ -95,8 +95,16 @@ a Cilium update that changes it is noticed.
 - A machine's CLAT follows one gateway. A small check moves it to the
   other one after 8 failed checks in a row: 13 to 15 seconds after a
   crash, and not at all on a gateway that only loses some packets.
-- A gateway checks its own IPv4 upstream. **Open:** when that fails,
-  CLATs move away, but name lookups stay on the sick gateway.
+- A gateway checks its own IPv4 upstream. When that fails it stops
+  answering DNS, so name lookups move to the other gateway too
+  (8 seconds after the upstream died), and CLATs follow.
+- The CLAT's check keeps no notes of its own. It reads the translator's
+  setting each round, and stays where it is when no gateway answers.
+- Only declared clients get through, for every kind of traffic. The
+  review of 2026-11-21 found that anyone could ping the IPv4 internet
+  through a gateway; that is closed.
+- **Open:** each check tests one address. If that address is down, a
+  healthy gateway looks sick. A check needs several targets.
 - **Connections through a dead gateway hang.** Nothing tells the client
   that the gateway is gone, so a program notices through its own
   timeout. New connections go through the other gateway. This is

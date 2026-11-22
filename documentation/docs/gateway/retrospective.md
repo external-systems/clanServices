@@ -4,6 +4,11 @@ First written on 2026-11-21 after the probe rounds, and updated the
 same day after the probes became real suites. The contract is
 `specs/gateway.md` §12. This page is the short version.
 
+!!! note "Reviewed on 2026-11-21"
+    A hostile review followed this page. It closed points 3, 7 and 8
+    of "Still open" below and found more. Read
+    [the review](review.md) for the current state.
+
 ## What changed since the first version
 
 - **Every probe is now a suite that checks its result.** A change that
@@ -32,15 +37,16 @@ same day after the probes became real suites. The contract is
    fetches by an IPv4-only name with one gateway down.
 2. **Jool is a kernel module outside the kernel tree.** `check` now
    fails if the package set marks it broken.
-3. **A sick gateway keeps answering DNS** (above).
-4. **A prefix change with lost state** (above).
+3. A sick gateway keeps answering DNS. **Closed:** it stops its DNS.
+4. **A prefix change with lost state** (above). Now it fails fast:
+   a device gets an error at once and uses its next address.
 5. **netif's guard and a dead WAN** (above).
 6. **Large pings through a CLAT get no answer** (over 1232 bytes). TCP
    and UDP are fine.
-7. **Cluster DNS can sit on one node.** Both CoreDNS copies start on
-   the first node and stay. If it dies, cluster DNS is gone.
-8. **NodePorts skip the node's firewall** on every link Cilium is
-   attached to, in both modes.
+7. Cluster DNS can sit on one node. **Closed:** one copy per node
+   (D70).
+8. NodePorts skip the node's firewall. **Closed:** they answer only on
+   node addresses (D69).
 9. **One public IPv4 address carries about 64,000 connections** per
    protocol. Not measured yet.
 10. **Phones, Windows and consoles** are untested. NetworkManager is

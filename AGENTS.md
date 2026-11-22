@@ -71,7 +71,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   Its human pages are `documentation/docs/gateway/`. Edit them together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
-  record (D1–D68) and dated round summaries hold the history; read them
+  record (D1–D70) and dated round summaries hold the history; read them
   before changing a design decision. Bootstrap + data plane only: ingress,
   certificates, Flux, storage and the like are day-2 GitOps patterns, never
   clan-rendered (§3.3, D39–D45).
@@ -127,7 +127,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
    kubeconfigs, ClusterMesh material, gitops-hub identities) — never in
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
-7. Read SPEC.md's decision record (D1–D68) before implementing a
+7. Read SPEC.md's decision record (D1–D70) before implementing a
    Planned/Reserved row. Standing decisions: IfState 2.5.1 is the only
    static network renderer (no systemd-networkd, netdevs or scripted
    network units; D61); one owner each for Cilium and FRR objects; FRR +

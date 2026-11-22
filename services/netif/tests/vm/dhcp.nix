@@ -230,7 +230,18 @@ in {
       networking.firewall.enable = false;
       # The same server with other DNS servers: a renewal then brings a
       # changed lease.
-      specialisation.dns2.configuration.services.kea.dhcp4 = lib.mkForce (kea4 "192.0.2.54, 192.0.2.55");
+      specialisation = {
+        dns2.configuration.services.kea.dhcp4 = lib.mkForce (kea4 "192.0.2.54, 192.0.2.55");
+        # dns2 with DHCPv6 leases that run out inside the test: preferred
+        # 20 s, valid 40 s.
+        short6.configuration.services.kea = {
+          dhcp4 = lib.mkForce (kea4 "192.0.2.54, 192.0.2.55");
+          dhcp6.settings = {
+            preferred-lifetime = 20;
+            valid-lifetime = 40;
+          };
+        };
+      };
       services = {
         kea = {
           dhcp4 = kea4 "192.0.2.53";
@@ -407,7 +418,55 @@ in {
             # the delegated prefix as a runtime file, for consumers (N16)
             router.wait_until_succeeds("grep -x '2001:db8:10[0-9a-f][0-9a-f]::/60' /run/netif/pd/eth1", timeout=30)
             router.fail("test -e /run/netif/pd/eth2")
+            # what dhcpcd hands the exit script for the lease: the names
+            # of the prefix and lifetime variables (as `new_<name>`)
+            status, lease = observe("dhcpcd's variables for the DHCPv6 lease", router, "dhcpcd -6 -U -f /etc/netif/dhcpcd/eth1.conf eth1 | grep -E '^dhcp6_ia_(pd|na)'")
+            for name in ["dhcp6_ia_pd1_prefix1=", "dhcp6_ia_pd1_prefix1_length=", "dhcp6_ia_pd1_prefix1_pltime=", "dhcp6_ia_pd1_prefix1_vltime="]:
+                assert name in lease, f"dhcpcd does not export {name}: {lease}"
             print("NETIF_DHCP_PD_OK")
+
+        with subtest("the prefix file lists the prefixes that the ISP prefers, sorted; none left removes it (N16)"):
+            # The exit script alone, with the variables of a reply that kea
+            # does not send: a real ISP answers a renewal with the old
+            # prefix at a preferred lifetime of 0 beside the new one.
+            script = router.succeed("sed -n 's/^script //p' /etc/netif/dhcpcd/eth1.conf").strip()
+            assert script.startswith("/nix/store/"), script
+            pd = "/run/netif/pd/pdtest"
+
+            def reply(reason, *prefixes):
+                """Run the exit script as dhcpcd would for a reply with these
+                (prefix, length, preferred, valid) entries, in this order."""
+                env = [f"reason={reason}", "interface=pdtest"]
+                for index, (prefix, length, preferred, valid) in enumerate(prefixes, start=1):
+                    name = f"new_dhcp6_ia_pd1_prefix{index}"
+                    env += [f"{name}={prefix}", f"{name}_length={length}", f"{name}_pltime={preferred}", f"{name}_vltime={valid}"]
+                router.succeed(f"env -i {' '.join(env)} {script}")
+                return router.succeed(f"cat {pd} 2>/dev/null || echo absent").split()
+
+            old, new, other = ("2001:db8:a000::", 56, 0, 3600), ("2001:db8:b000::", 56, 1800, 3600), ("2001:db8:9000::", 60, 1800, 3600)
+            assert reply("BOUND6", (old[0], 56, 1800, 3600)) == ["2001:db8:a000::/56"]
+            # a renewal that renumbers: the old prefix is no longer the delegation
+            assert reply("RENEW6", old, new) == ["2001:db8:b000::/56"]
+            assert reply("REBIND6", new, old) == ["2001:db8:b000::/56"]
+            # two preferred prefixes: sorted, and the order of the reply does
+            # not rewrite the file
+            assert reply("RENEW6", new, other) == ["2001:db8:9000::/60", "2001:db8:b000::/56"]
+            inode = router.succeed(f"stat -c '%i %Y' {pd}")
+            assert reply("RENEW6", other, new) == ["2001:db8:9000::/60", "2001:db8:b000::/56"]
+            assert router.succeed(f"stat -c '%i %Y' {pd}") == inode, "an unchanged set rewrote the file"
+            # a stop, a restart or a carrier loss is not a prefix change
+            for reason in ["STOP6", "STOPPED", "NOCARRIER", "RELEASE6"]:
+                assert reply(reason) == ["2001:db8:9000::/60", "2001:db8:b000::/56"], reason
+            # no prefix that the ISP prefers is left: the file goes
+            assert reply("RENEW6", old) == ["absent"]
+            assert reply("RENEW6", new) == ["2001:db8:b000::/56"]
+            assert reply("RENEW6", (new[0], 56, 0, 0)) == ["absent"]
+            assert reply("BOUND6", new) == ["2001:db8:b000::/56"]
+            assert reply("RENEW6") == ["absent"]
+            assert reply("BOUND6", new) == ["2001:db8:b000::/56"]
+            assert reply("EXPIRE6") == ["absent"]
+            router.fail("ls -A /run/netif/pd | grep -v '^eth1$'")
+            print("NETIF_DHCP_PD_SET_OK")
 
         with subtest("a DHCPv4-only link: lease, DNS, IPv6 left to the kernel (N16)"):
             client4.wait_for_unit("multi-user.target", timeout=180)
@@ -552,6 +611,53 @@ in {
             wait_wan_back(new_dns)
             assert_ifstate_noop(router)
             print("NETIF_DHCP_RA_IFSTATE_OK")
+
+        with subtest("the delegation is lost: the prefix file goes when the lease expires and returns with the ISP (N16)"):
+            pd_file = "grep -x '2001:db8:10[0-9a-f][0-9a-f]::/60' /run/netif/pd/eth1 >/dev/null"
+            lan = "ip -6 -o addr show dev eth2 scope global | grep '2001:db8:10[0-9a-f][0-9a-f]:1::1/64' >/dev/null"
+            # a lease that runs out inside the test: preferred 20 s, valid 40 s
+            isp.succeed("/run/booted-system/specialisation/short6/bin/switch-to-configuration test >&2")
+            isp.wait_until_succeeds("ss -uln | grep ':547 ' >/dev/null", timeout=60)
+            router.succeed("systemctl restart netif-dhcpcd-eth1.service")
+            wait_wan_back(new_dns)
+            router.wait_until_succeeds(pd_file, timeout=60)
+            router.wait_until_succeeds(lan, timeout=60)
+            router.wait_until_succeeds("dhcpcd -6 -U -f /etc/netif/dhcpcd/eth1.conf eth1 | grep -x \"dhcp6_ia_pd1_prefix1_vltime='\\?40'\\?\" >/dev/null", timeout=60)
+            # a renewal of the short lease keeps the file as it is
+            stamp = router.succeed("stat -c '%i %Y' /run/netif/pd/eth1")
+            # (a renewal shows as a valid lifetime of the leased address that went up)
+            def lease_left():
+                infos = json.loads(router.succeed("ip -j -6 addr show dev eth1 scope global"))[0]["addr_info"]
+                return max(info["valid_life_time"] for info in infos if info.get("prefixlen") == 128)
+
+            left, renewed, deadline = lease_left(), False, time.time() + 60
+            while not renewed and time.time() < deadline:
+                # the polling interval of this loop; `deadline` bounds it
+                time.sleep(1)
+                now_left = lease_left()
+                renewed, left = now_left > left, now_left
+            assert renewed, "the short DHCPv6 lease was not renewed within 60 s"
+            assert router.succeed("stat -c '%i %Y' /run/netif/pd/eth1") == stamp, "a renewal with the same prefix rewrote the file"
+            # the ISP's DHCPv6 server goes away
+            isp.succeed("systemctl stop kea-dhcp6-server.service")
+            stopped = time.time()
+            router.succeed(pd_file)
+            took = seconds_until(router, "test ! -e /run/netif/pd/eth1", limit=90)
+            observe("dhcpcd while the ISP's DHCPv6 was away", router, "journalctl -b -u netif-dhcpcd-eth1 --no-pager | tail -n 15")
+            print(f"FINDING the prefix file was removed {took}s after the ISP's DHCPv6 server stopped (valid lifetime 40 s, bound 90 s)")
+            assert took is not None, "the prefix file outlived the delegation"
+            router.succeed("journalctl -b -u netif-dhcpcd-eth1 --no-pager | grep 'DHCPv6 lease expired' >/dev/null")
+            router.wait_until_fails(lan, timeout=30)
+            # DHCPv4 is not touched
+            router.succeed("ip -4 -o addr show dev eth1 scope global | grep 192.0.2.1 >/dev/null")
+            isp.succeed("systemctl start kea-dhcp6-server.service")
+            isp.wait_until_succeeds("ss -uln | grep ':547 ' >/dev/null", timeout=60)
+            back = seconds_until(router, pd_file, limit=120)
+            print(f"FINDING the prefix file was back {back}s after the ISP's DHCPv6 server returned (bound 120 s), {round(time.time() - stopped, 1)}s after it stopped")
+            assert back is not None, "the prefix file did not return with the delegation"
+            router.wait_until_succeeds(lan, timeout=60)
+            assert eloop_errors(router) == 0
+            print("NETIF_DHCP_PD_LOST_OK")
 
         print("builder loadavg at end:", open("/proc/loadavg").read().strip())
         print("NETIF_DHCP_OK")

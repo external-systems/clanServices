@@ -47,7 +47,9 @@ beside IfState:
   `dhcp.prefixDelegation` asks the ISP for a prefix and gives parts of
   it to other links. The prefix it got is written to
   `/run/netif/pd/<interface>`. The file changes only when the prefix
-  does, so a router can watch it.
+  does, so a router can watch it. It lists only prefixes the ISP still
+  prefers. It is removed when the ISP takes the prefix away, and it
+  does not exist after boot until the ISP has answered.
 - **`defaultRoute.ipv4` / `defaultRoute.ipv6`** say whether a link may
   carry the machine's default route. One link per machine and family
   may. A link that accepts router advertisements (`ra`, on by default)

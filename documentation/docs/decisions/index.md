@@ -1,4 +1,4 @@
-# Decision record (D1–D68)
+# Decision record (D1–D70)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history. D64 (allocations in
@@ -221,8 +221,32 @@ fabric address: node addresses stay the fabric loopbacks (D47) and the
 control-plane endpoint stays IPv4 on the fabric (D60). A probe comes
 first; every suite today runs on a dual-stack underlay.
 
-Probed on 2026-11-21 (round 49): both transports, k3s and rke2, run on
-machines whose network cards have no IPv4. No code changed.
+Proven by suites since 2026-11-21: both transports, k3s and rke2, run
+on machines whose network cards have no IPv4. No code changed for the
+join. The CLAT on each node is still set up by the tests, not by a
+service.
+
+### D69 — NodePorts answer on the node addresses only (2026-11-21)
+
+Cilium serves a NodePort before the node's firewall, on every network
+link it is attached to. A link that faces the outside therefore opened
+every NodePort to the outside. Every `LoadBalancer` Service has a
+NodePort, so this was the normal case.
+
+Now a NodePort answers only on the cluster's node addresses (the
+fabric or mesh addresses). LoadBalancer addresses are not affected.
+Found by the review of 2026-11-21; tested by
+`<distro>-data-plane-tunnel`.
+
+### D70 — CoreDNS copies never share a node (2026-11-21)
+
+Both CoreDNS copies used to start on the first node and stay there.
+When that node died, the cluster had no DNS.
+
+A cluster with two or more machines now places one copy per node. The
+second copy waits until a second node is ready. While a node is down,
+one copy serves. Tested by `<distro>-data-plane-tunnel`, `<distro>-ha`
+and `<distro>-ha-fabric`.
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 

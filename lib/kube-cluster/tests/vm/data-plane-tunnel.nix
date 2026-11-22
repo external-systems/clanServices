@@ -472,6 +472,7 @@ in {
                 ("tunnel-protocol", "vxlan"),
                 ("mtu", "1370"),
                 ("devices", "wg-mesh eth1"),
+                ("nodeport-addresses", "192.168.77.1/32,fd00:77::1/128,192.168.77.2/32,fd00:77::2/128"),
                 ("direct-routing-device", "wg-mesh"),
                 ("auto-direct-node-routes", "false"),
                 ("install-iptables-rules", "true"),
@@ -557,20 +558,10 @@ in {
                     from_pod(shell[name], "http://httpbin-cluster.default.svc.cluster.local/get") + " | grep '\"url\"' >/dev/null",
                     timeout=120,
                 )
-            # FINDING: CoreDNS's two replicas start before the second node is
-            # Ready, so the soft anti-affinity (lib/kube-cluster/bundle.nix)
-            # puts both on one node and nothing moves them later: if that
-            # node dies, the cluster has no DNS. (A rollout restart moves
-            # both to the other node, not one.) The suite deletes one, and
-            # its replacement goes to the other node; the death phase
-            # relies on that.
+            # D70: a hard spread (lib/kube-cluster/bundle.nix). The bundle
+            # applies before beta is Ready; the second replica waits for
+            # it. Nothing moves a replica by hand here.
             observe("CoreDNS placement after bootstrap", alpha, "kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide")
-            dns_nodes = alpha.succeed("kubectl -n kube-system get pods -l k8s-app=kube-dns -o jsonpath='{.items[*].spec.nodeName}'").split()
-            print(f"FINDING CoreDNS replicas after bootstrap are on {sorted(dns_nodes)}")
-            assert len(dns_nodes) == 2, dns_nodes
-            if len(set(dns_nodes)) == 1:
-                alpha.succeed("kubectl -n kube-system delete --wait=true $(kubectl -n kube-system get pods -l k8s-app=kube-dns -o name | head -n1)")
-                alpha.wait_until_succeeds("kubectl -n kube-system rollout status deployment/coredns --timeout=120s", timeout=180)
             alpha.wait_until_succeeds(
                 "kubectl -n kube-system get pods -l k8s-app=kube-dns -o json"
                 " | jq -e '[.items[] | select(.metadata.deletionTimestamp == null) | .spec.nodeName] | sort == [\"alpha\", \"beta\"]' >/dev/null",
@@ -674,16 +665,26 @@ in {
             # the WireGuard port is the only UDP port the service opens
             observe("input rules", beta, "nft list chain inet nixos-fw input-allow")
             observe("udp listeners", beta, "ss -uln")
-            # FINDING: a NodePort answers on the underlay address, from
-            # outside the cluster. eth1 is a Cilium device here (as in
-            # data-plane.nix), so Cilium serves the port in BPF before the
-            # NixOS firewall sees the packet: the firewall does not guard
-            # NodePorts on a link that is in `cilium.helmValues.devices`.
+            # D69: a NodePort answers on the node addresses (the mesh)
+            # and on no other address. eth1 is a Cilium device here, and
+            # Cilium serves a NodePort in BPF before the NixOS firewall
+            # sees the packet: `nodeport-addresses` is what keeps it off
+            # the underlay address.
             node_port = alpha.succeed("kubectl get service httpbin-pool -o jsonpath='{.spec.ports[0].nodePort}'").strip()
-            for address in [*UNDERLAY["beta"], *MESH["beta"]]:
-                alpha.succeed(HOST_HTTP + url(address, node_port))
+            for name in ["alpha", "beta"]:
+                for address in MESH[name]:
+                    alpha.succeed(HOST_HTTP + url(address, node_port))
+                    beta.succeed(HOST_HTTP + url(address, node_port))
+                for address in UNDERLAY[name]:
+                    client.fail(HOST_HTTP + url(address, node_port))
             for address in UNDERLAY["beta"]:
-                client.succeed(HOST_HTTP + url(address, node_port))
+                alpha.fail(HOST_HTTP + url(address, node_port))
+            # the pool address and the floating address are LoadBalancer
+            # frontends, not NodePorts: they still answer
+            for target in [vip4, vip6]:
+                alpha.succeed(HOST_HTTP + url(target))
+            for address in ["192.0.2.100", "fd20:db8:1::100"]:
+                client.succeed(HOST_HTTP + url(address, 82))
 
         with subtest("an IfState reapply changes nothing on a live tunnel node"):
             for m in [alpha, beta]:
