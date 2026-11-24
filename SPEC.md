@@ -4,6 +4,23 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 52 (2026-11-23): owner decisions; docs only.** The owner
+answered the open points of round 51 and decided on tunnel mode.
+- **Locked** (`specs/gateway.md` §14): build the services, no more
+  probes; freeze the design-only decisions; the CLAT is the default
+  path and DNS64 is optional; a rate limit per client at the gateway,
+  with a `trusted` tier for kube nodes; the kube services render
+  Cilium's `devices`.
+- **D71, new, planned:** `devices` rendered per node from netif facts,
+  never a VPN link. Amends D58.
+- **D72, new, planned:** native routing only. Cilium tunnel mode and
+  `wireguard-mesh` are removed; the last commit with them is tagged
+  `tunnel-mode-final`.
+- Directions for the unfixed findings (the `clat0` blip, health
+  targets, dual-WAN stability, the hairpin of G20):
+  `specs/gateway.md` §14.3.
+- Header range D1–D72. No code changed.
+
 **Round 51 (2026-11-21): devil's advocate review** (`specs/gateway.md`
 round G4, §13). Points that touch this file:
 - **D69, new, implemented:** NodePorts answer on the node addresses
@@ -732,7 +749,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D70)
+## 4. Decision record (D1–D72)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1971,6 +1988,54 @@ unless noted) — revoked entries keep one-line reasons for history.
     cluster.
   - Not covered: `distroDefaults.enable = true` keeps the distro's own
     CoreDNS and its placement.
+
+- **D71 The kube services render Cilium's `devices` from netif facts.**
+  *(owner, 2026-11-23; planned)* Amends D58, where `devices` derive
+  from the transport only. Full rules: `specs/gateway.md` §14.2.
+  - Per node: the transport link(s), the CLAT link where a CLAT runs
+    (G5), the underlay link(s) where the underlay has no IPv4.
+  - Names come from netif's zones (N10), so a mixed fleet works:
+    `eno1`, `enp0s1`, `wlp2s0` in one cluster.
+  - A VPN link (`tailscale0` and the like) is never in `devices`; an
+    eval assertion refuses it.
+  - Open, settled first by one suite: one cluster-wide list (the union
+    of exact names), a `CiliumNodeConfig` per node, or wildcards with
+    an exclusion.
+  - Hand-set `cilium.helmValues.devices` in suites goes away.
+
+- **D72 Native routing only; Cilium tunnel mode and `wireguard-mesh`
+  are removed.** *(owner, 2026-11-23; planned)* Revokes D58's tunnel
+  profile and "`wireguard-mesh` is a supported tunnel transport".
+  - **Why (owner):** native routing is always preferred; VXLAN adds
+    overhead and sits inside WireGuard anyway; FRR makes BGP, outside
+    services and the flat layer-3 fabric easy; tunnel mode cannot use
+    BGP pools, fabric pools, G20's service prefix or the router as a
+    fabric member; two modes double the suites, wall time and code for
+    every new feature (CLAT, D71).
+  - **Accepted cost:** FRR is on every node, with no second data plane
+    to fall back on. Answered by suites for FRR failure (bgpd crash,
+    bad reload), not by a second mode. Upstream users who want VXLAN
+    are not a goal (AGENTS.md rule 10).
+  - **What goes:** `services/wireguard-mesh`; Cilium `routingMode:
+    tunnel` and `tunnelProtocol`; the tunnel branches in
+    `lib/kube-cluster` (`cilium.nix`, `bundle.nix`, `assertions.nix`,
+    `fleet-checks.nix`, `mesh.nix`, `transport.nix`); `mode` and
+    `tunnelProtocol` in `node_transport` (one mode needs no field, no
+    shim); the suites `<distro>-data-plane-tunnel`,
+    `<distro>-clustermesh-tunnel`, `<distro>-clustermesh-selective-tunnel`,
+    `<distro>-clat-mesh`, `k3s-clat-mesh-mapped`, `wireguard-mesh`.
+  - **What moves onto `routed-fabric`:** the suites that use the mesh
+    only as their base: `<distro>-single`, `-join`, `-join-netif`, `-ha`,
+    `-clustermesh-external`, `k3s-modes`, and `routed-fabric` as base in
+    `selective` and `data-plane-fixtures`. They keep their contract and
+    their `*_OK` marker. Where a `-fabric`/`-native` twin already exists
+    (`ha-fabric`, `clustermesh-external-native`, `modes-fabric`), the
+    two merge into one suite under the plain name.
+  - **Nothing is lost:** before the removal, tag the last `main` commit
+    that has tunnel mode `tunnel-mode-final` and push the tag.
+  - **Order:** after PR 35 merges, the removal is the first PR of the
+    next session, before any service code, so the CLAT and D71 are
+    built once.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 

@@ -12,8 +12,8 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`, `netif`,
   `modes` (network modes per machine, `specs/netif.md` N24; mechanism in
-  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65); `wireguard-mesh` is a supported
-  tunnel transport, D58 — not pending retirement). The obsolete `fleet-routing`,
+  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65); `wireguard-mesh` and Cilium
+  tunnel mode are decided for removal, D72 — build nothing new on them). The obsolete `fleet-routing`,
   `lib/import-flake/`, `lib/inputs-module.nix`, BIRD helpers, and
   BIRD-specific VM fixtures were deleted in the round-17 cleanup;
   their former ghost failures no longer block eval gates. No archives.
@@ -71,7 +71,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   Its human pages are `documentation/docs/gateway/`. Edit them together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
-  record (D1–D70) and dated round summaries hold the history; read them
+  record (D1–D72) and dated round summaries hold the history; read them
   before changing a design decision. Bootstrap + data plane only: ingress,
   certificates, Flux, storage and the like are day-2 GitOps patterns, never
   clan-rendered (§3.3, D39–D45).
@@ -127,12 +127,12 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
    kubeconfigs, ClusterMesh material, gitops-hub identities) — never in
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
-7. Read SPEC.md's decision record (D1–D70) before implementing a
+7. Read SPEC.md's decision record (D1–D72) before implementing a
    Planned/Reserved row. Standing decisions: IfState 2.5.1 is the only
    static network renderer (no systemd-networkd, netdevs or scripted
    network units; D61); one owner each for Cilium and FRR objects; FRR +
-   per-pair WireGuard + native routing is the data plane, and
-   `wireguard-mesh` is a supported tunnel transport; Cilium is
+   per-pair WireGuard + native routing is the only data plane (D72:
+   tunnel mode and `wireguard-mesh` are being removed); Cilium is
    networking-only (D1) and multi-pool; Node IPAM is the classless-LB
    default (D41); `node-bgp` is owner-only, `shared-bgp` uses ECMP (D8);
    servicelb stays disabled (D42); the control domain is GitOps-neutral

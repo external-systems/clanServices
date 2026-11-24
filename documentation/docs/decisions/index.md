@@ -1,4 +1,4 @@
-# Decision record (D1–D70)
+# Decision record (D1–D72)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history. D64 (allocations in
@@ -247,6 +247,31 @@ A cluster with two or more machines now places one copy per node. The
 second copy waits until a second node is ready. While a node is down,
 one copy serves. Tested by `<distro>-data-plane-tunnel`, `<distro>-ha`
 and `<distro>-ha-fabric`.
+
+### D71 — Cilium's network cards come from netif (2026-11-23, planned)
+
+k3s and RKE2 will fill Cilium's `devices` list themselves, per node:
+the fabric link, the CLAT link where one runs, and the network card
+when the machine has no IPv4 on it. The names come from netif, so a
+mixed fleet works (`eno1`, `enp0s1`, `wlp2s0` in one cluster). A VPN
+link such as `tailscale0` is never on the list. How one list serves
+nodes with different names is settled by one test first.
+
+### D72 — Native routing only (2026-11-23, planned)
+
+Cilium's tunnel mode (VXLAN over `wireguard-mesh`) and the
+`wireguard-mesh` service will be removed. Native routing with FRR is
+the only data plane.
+
+- Why: native routing is always preferred; VXLAN adds overhead inside
+  WireGuard anyway; tunnel mode cannot use BGP pools, the fabric or
+  the router's public service addresses; two modes double the tests
+  for every new feature.
+- The cost accepted: FRR runs on every node with no second data
+  plane. Tests for FRR failure cover it instead.
+- Nothing is lost: the last commit with tunnel mode gets the git tag
+  `tunnel-mode-final`.
+- Tests that only used the mesh as a base move to the routed fabric.
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 

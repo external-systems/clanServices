@@ -81,3 +81,35 @@ and tried to break it. The contract version is `specs/gateway.md` §13.
 - A Service behind the router reaching its own public address.
 - A 2000 byte UDP packet through the CLAT (most fail; not understood).
 - How often tests fail under load: still one full run per round.
+
+## What the owner decided (2026-11-23)
+
+The contract version is `specs/gateway.md` §14.
+
+- **Build the services now.** No new probes. NAT gateway and CLAT
+  first, then the router with one WAN. Existing tests stay; tests of
+  stand-ins switch to the service code.
+- **Freeze the design-only parts:** IPv6-mostly, the open points of two
+  WANs, several routers, flow records, owned address space.
+- **The CLAT is the default path.** DNS64 is an option for a machine
+  that cannot run the CLAT.
+- **A rate limit per client at the gateway.** Kube nodes get a higher
+  tier. It trusts the machine, not the workloads on it: the gateway
+  sees one address per node.
+- **Cilium's network cards are filled in by k3s and RKE2** (D71), from
+  netif, never a VPN link.
+- **Native routing only** (D72): tunnel mode and `wireguard-mesh` go.
+
+How the open findings will be closed:
+
+- **The CLAT blip:** accepted; fixed if the CLAT can avoid making its
+  link again.
+- **A healthy gateway never looks sick:** three or more health targets
+  in different networks; sick only when all fail, several rounds in a
+  row.
+- **Two WANs: stable over fast.** Move only when every target fails;
+  move back only after minutes of health. At 30 % loss the test
+  expects zero moves.
+- **A backend reaching its own public address:** the router also
+  rewrites the source of such a packet from inside the LAN, so the
+  answer comes back through the router.

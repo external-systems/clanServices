@@ -69,6 +69,14 @@ read every new suite against this file. §13 holds the result.
 - Ten points need the owner (§13.2). The first: stop probing and
   build the services.
 
+Round G5 (2026-11-23): **owner decisions; docs only.** §14 locks the
+answers to §13.2: build the services (nat-gateway and the CLAT first,
+then the router with one WAN), freeze the design-only decisions, the
+CLAT as default path with DNS64 optional, a per-client rate limit with
+a `trusted` tier, rendered Cilium `devices` (SPEC.md D71), and native
+routing only (SPEC.md D72). §14.3 sets the direction for each unfixed
+finding.
+
 
 
 As in `specs/netif.md` §0: *(planned)*, *(probe-verified)*,
@@ -2017,3 +2025,127 @@ suite booted fresh. 56 as `PASS`, one as `PASS(!)`.
   `gateway-dual-wan`, `netif-dhcp`, `k3s-clat-mesh`,
   `k3s-clat-fabric`) or once (`rke2-clat-*`, the `-mapped` suites,
   `<distro>-ha`, `k3s-ha-fabric`, the data-plane suites).
+
+## 14. Owner decisions (round G5, 2026-11-23)
+
+The owner answered §13.2 in a deciding session. Docs only; code starts
+in the next session. Each point is **locked**: change it only with the
+owner.
+
+### 14.1 Locked
+
+1. **Stop probing; build the services** (§13.2 point 1).
+   - Order: `lib/gateway/translator.nix` and `clat.nix` with
+     `services/nat-gateway` (S4, then S5); then `services/router` with
+     one WAN (S2).
+   - No new probes, unless one is the only way to test a service.
+   - Keep the existing suites. A suite that tests a fixture switches to
+     the service module in place of its fixture (§5). A suite that only
+     a frozen decision needs (2.) stays as it is and is not extended.
+2. **Freeze the design-only decisions** (point 2): G9, G16's open
+   points, G17, G19, G21. Written down; nothing is built for them
+   until S2 and S4 are green on service code.
+3. **The CLAT is the default path; DNS64 is optional** (point 3).
+   - Every `nat-gateway` client runs a CLAT (G23) and uses plain
+     resolvers.
+   - DNS64 is a per-client option, off by default, for a machine that
+     cannot run Jool. A gateway serves DNS64 only when a client asks
+     for it.
+   - G4's DNS64 listener, its TTL cap and its health coupling apply
+     only then.
+4. **Rate-limit per client source at the gateway** (point 4).
+   - Every allowlisted source gets a packet and new-flow limit in the
+     gateway's `inet nat64` table (nftables `meter`, keyed by source
+     /128 or /64).
+   - **Two tiers:** `default` and `trusted`. A client's tier is a
+     setting; a client that is also a member of a kube cluster
+     (`clan._networkFacts.clusters`) defaults to `trusted`.
+   - **Limit of the tier, stated:** the gateway sees one source per
+     node. Pod IPv4 leaves through the node's CLAT, and pod IPv6
+     through Cilium's masquerade, so a node's workloads share its
+     tier. `trusted` trusts the machine, not its workloads. Limits per
+     workload belong inside the cluster (Cilium bandwidth manager,
+     egress policy), day-2.
+   - The tier is still a source address, not a credential (G4): a
+     spoofer of a trusted source gets the higher limit. Accepted.
+   - The numbers are settings; the defaults are chosen in the next
+     session and written here.
+5. **The kube services render Cilium's `devices`** (point 10; SPEC.md
+   D71). See 14.2.
+
+### 14.2 The rules for Cilium `devices` (SPEC.md D71)
+
+- **Rendered, never hand-set.** k3s and rke2 render `devices` from
+  facts. A suite that sets `cilium.helmValues.devices` today switches
+  to the rendered value.
+- **What goes in, per node:**
+  - the transport link(s) (D58, unchanged);
+  - the CLAT link, on a node that runs a CLAT (G5);
+  - the underlay link(s), on a node whose underlay has no IPv4
+    (§13.2 point 10; proven required in `<distro>-clat-*`).
+- **Names come from netif**, not from a guess. netif knows each
+  machine's underlay links by zone (N10), whatever the kernel calls
+  them: `eno1`, `enp0s1`, `wlp2s0`. The fleet is mixed: wired and
+  Wi-Fi, different names per machine, in one cluster.
+- **Never a VPN link.** A link of a VPN zone (`tailscale0`, any
+  Headscale or WireGuard client link that is not the transport) is
+  never in `devices`. An eval assertion refuses it.
+- **Open, to settle first in the next session (one suite):**
+  `devices` is one cluster-wide Helm value, and the names differ per
+  node. Candidates, in order:
+  1. the union of every member's exact names in the one list, if
+     Cilium skips a named link that does not exist on a node;
+  2. a `CiliumNodeConfig` per node with that node's exact names;
+  3. prefix wildcards (`en+`, `wl+`) with an exclusion of VPN links,
+     if Cilium supports exclusions (`!tailscale0`). Wildcards also
+     match links netif does not own; last choice.
+  The suite: two nodes with different underlay names (one wired-style,
+  one Wi-Fi-style), a `tailscale0` link present on both. It asserts
+  Cilium attached to the expected links on each node and not to
+  `tailscale0`.
+
+### 14.3 The unfixed findings: direction
+
+- **Pod IPv4 down for 9 to 18 s after `clat0` is remade** (§13.3).
+  Accepted as a blip. Fix it if cheap: the CLAT service must not
+  remove and re-add `clat0` on a restart or reapply; a suite measures
+  the gap.
+- **A healthy gateway must never look sick** (G23; §13.2 point 5).
+  Required:
+  - three or more health targets in different networks; unhealthy
+    only when every target fails, for several rounds in a row;
+  - a suite where one target is dead and the gateway stays healthy,
+    and one where the gateway's own translator fails and it withdraws.
+  - A sick gateway that looks healthy for a few rounds is the accepted
+    price.
+- **Dual WAN: stable over fast** (G16; §13.3). Frozen by 14.1 point 2,
+  but the criteria are locked now, so the design is built to them:
+  - move to the backup only when every target fails through the
+    primary, for several rounds;
+  - move back only after the primary has been healthy for a hold time
+    of minutes, not seconds;
+  - a suite with 30 % loss on the primary asserts **zero** moves in
+    the window; one with 100 % loss asserts exactly one move, within a
+    stated bound.
+  - Today's 0 to 4 moves in 60 s at 30 % loss does not meet this.
+- **A backend cannot reach its own public service address** (G20).
+  - Why: the router rewrites the destination `<public>:f::80` to the
+    Service's ULA address, on the node that sent it. The node answers
+    locally from the ULA address. The sender waits for an answer from
+    `<public>:f::80`, so it drops the reply. A second host in the same
+    zone fails the same way: the reply goes to it directly, past the
+    router.
+  - Fix, decided: hairpin source rewrite on the router. A packet from
+    a LAN zone to the service prefix also gets its source rewritten to
+    the router's zone address, so the reply comes back through the
+    router. Only for sources inside the router's zones; WAN clients
+    keep their address (G20's `externalTrafficPolicy: Local`).
+  - The router suite asserts it from the backend node and from a
+    second host in the same zone.
+
+### 14.4 Cilium tunnel mode
+
+Decided 2026-11-23: native routing only (SPEC.md D72). Tunnel mode
+and `wireguard-mesh` are removed in the next session, after the tag
+`tunnel-mode-final`. The `<distro>-clat-mesh*` suites go with them;
+`<distro>-clat-fabric` remains the CLAT proof.
