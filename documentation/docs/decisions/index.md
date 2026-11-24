@@ -280,7 +280,9 @@ FRR is the only data plane.
   `<distro>-clustermesh-nodeport`: ClusterMesh through a NodePort.
 - New: `k3s-frr-failure` kills bgpd on a spine and checks that sessions,
   routes and pod traffic come back, then checks that FRR refuses a bad
-  configuration and keeps running the old one.
+  configuration and keeps running the old one. Finding: the deploy
+  still reports success, so a broken FRR config is only visible in the
+  journal. A build-time check is an open follow-up.
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 

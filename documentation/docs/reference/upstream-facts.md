@@ -32,6 +32,16 @@ read the section of a component before changing code that touches it.
   interface and multiple interfaces, never overlapping peers on one
   interface. FRR 10.7.1 reload starts newly enabled daemons without
   restarting bgpd (probe-verified 2026-10-24).
+- FRR 10.7.1 on NixOS: when `frr.conf` has a line vtysh rejects,
+  `frrinit.sh reload` (the unit's `ExecReload`) logs
+  "vtysh failed to process new configuration" and still exits 0. systemd
+  logs "Reloaded FRRouting" and `switch-to-configuration` exits 0. FRR
+  keeps the running config, bgpd and every session. A broken FRR config
+  deploys green; only the journal shows it. nixpkgs has no build-time
+  check (`k3s-frr-failure`, `FRR_BAD_RELOAD_OK`).
+- FRR 10.7.1: watchfrr restarts a bgpd killed by SIGKILL; every
+  session comes back without action (`k3s-frr-failure`,
+  `FRR_BGPD_CRASH_OK`).
 - GitOps handoff (D40): Flux prune garbage-collects only the
   Kustomization's own `.status.inventory`; bootstrap with
   `kubectl apply --server-side` avoids CSA→SSA field-ownership friction;

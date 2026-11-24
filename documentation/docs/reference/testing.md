@@ -145,7 +145,8 @@ Then run the changed suites (`vm-test --all --remote --rebuild`).
   it, every BGP session (fabric and Cilium) comes back, the leaf's
   routes to the spine's pod /24 and /64 return, and pod pings recover
   in both families (`FRR_BGPD_CRASH_OK`). Then a configuration with a
-  line FRR rejects: the switch fails, FRR stays active with the same
+  line FRR rejects: the reload refuses it but the switch exits 0 (the
+  refusal is only in the journal), FRR stays active with the same
   bgpd and the old running config, and sessions and pods stay fine;
   switching back leaves `frr-reload` nothing to change
   (`FRR_BAD_RELOAD_OK`).

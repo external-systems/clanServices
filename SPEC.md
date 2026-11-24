@@ -37,10 +37,15 @@ commit with them is tag `tunnel-mode-final`.
     and Cilium) is Established again; the leaf's BGP routes to the
     spine's pod /24 and /64 come back; pod pings recover in both
     families (`FRR_BGPD_CRASH_OK`);
-  - a switch to a configuration with a line FRR rejects fails; FRR
-    stays active, the bgpd PID is unchanged, the running config has no
-    bad line, sessions and pods are fine; switching back leaves
-    `frr-reload` nothing to change (`FRR_BAD_RELOAD_OK`).
+  - a switch to a configuration with a line FRR rejects: the reload
+    refuses it, but the switch still exits 0 (an upstream fact: the
+    refusal shows only in the journal). FRR stays active, the bgpd PID
+    is unchanged, the running config has no bad line, sessions and pods
+    are fine; switching back leaves `frr-reload` nothing to change
+    (`FRR_BAD_RELOAD_OK`).
+  - **Open (finding):** a broken FRR config deploys green. A build-time
+    check of the rendered `frr.conf` (for example `vtysh --dryrun`) is a
+    follow-up for the owner to decide; it is not in this round.
 - **Ported:** `<distro>-clustermesh-tunnel` →
   `<distro>-clustermesh-nodeport` (`<DISTRO>_CLUSTERMESH_NODEPORT_OK`,
   body `lib/kube-cluster/tests/vm/clustermesh-nodeport.nix`). It sets
@@ -2820,8 +2825,10 @@ Current registered VM suites:
 - **FRR failure** (`k3s-frr-failure`, D72's accepted cost): on the
   `k3s-join` cluster, bgpd SIGKILL on the spine is restarted by
   watchfrr and sessions, pod routes and pod traffic recover; a
-  configuration FRR rejects fails the switch and leaves FRR, its
-  running config and the sessions as they were.
+  configuration FRR rejects is refused at reload and leaves FRR, its
+  running config and the sessions as they were. The switch still exits
+  0: a broken FRR config deploys green (upstream fact; a build-time
+  check is open).
 - **netif**: multi-NIC physical/VLAN/bond/bridge links, multi-instance
   ownership, static/DHCP/RA addressing, on-link/policy routes, exports,
   and conflict negatives. Live static reconfiguration is applied, checked,

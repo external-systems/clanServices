@@ -10,7 +10,8 @@
 #   - a deploy carries a broken FRR config (a specialisation whose
 #     frr.conf has a line FRR rejects). The reload refuses it; FRR keeps
 #     the running config, bgpd and every session; pods still reach each
-#     other. Switching back reloads cleanly.
+#     other. Switching back reloads cleanly. The switch itself exits 0:
+#     the refusal shows only in the journal (an upstream fact, D72).
 {
   lib,
   inputs,
@@ -102,15 +103,24 @@
             observe("alpha: frr after the crash", alpha, "journalctl -u frr --no-pager -l | grep -i -E 'bgpd|restart' | tail -n 20")
             print("FRR_BGPD_CRASH_OK")
 
-        with subtest("a broken FRR config is refused at reload; the running FRR, its sessions and the pods stay"):
+        with subtest("a broken FRR config is refused at reload (the switch still exits 0); the running FRR, its sessions and the pods stay"):
             pid = alpha.succeed(BGPD_PID).strip()
             running = alpha.succeed("vtysh -c 'show running-config'")
             assert "${badLine}" not in running
             bad = "/run/current-system/specialisation/bad-frr"
             alpha.succeed(f"grep -F '${badLine}' {bad}/etc/frr/frr.conf >/dev/null")
+            since = alpha.succeed("date +%s").strip()
+            # Upstream fact: frrinit.sh reload exits 0 when vtysh refuses
+            # the file, so systemd logs "Reloaded" and the switch succeeds.
+            # The refusal shows only in the journal. If the switch starts
+            # failing, upstream changed: update SPEC.md D72 and this phase.
             code, out = alpha.execute(f"{bad}/bin/switch-to-configuration test 2>&1")
             print(f"FINDING switch to the broken FRR config: rc={code}\n{out}")
-            assert code != 0, "the switch to a broken FRR config reported success"
+            assert code == 0, f"the switch to a broken FRR config failed (rc={code}): upstream changed"
+            alpha.succeed(
+                f"journalctl -u frr --no-pager --since @{since} | grep -F 'vtysh failed to process new configuration' >/dev/null"
+            )
+            alpha.succeed(f"journalctl -u frr --no-pager --since @{since} | grep -F '${badLine}' >/dev/null")
             alpha.succeed("grep -F '${badLine}' /etc/frr/frr.conf >/dev/null")
             alpha.succeed("systemctl is-active frr.service")
             assert alpha.succeed(BGPD_PID).strip() == pid, "bgpd restarted on a refused reload"
