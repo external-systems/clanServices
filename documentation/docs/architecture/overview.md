@@ -19,8 +19,8 @@ All static networking renders through IfState 2.5.1 and reconciles live;
 there is no systemd-networkd, netdev, or scripted network renderer.
 `routed-fabric` provides the native overlay: dual-stack, encrypted flat L3
 with `leaf`/`spine` topology, one WireGuard interface per adjacency, and
-FRR/BFD/Zebra on every fabric machine. `wireguard-mesh` is the supported
-tunnel/VXLAN profile over the same generic `node_transport` export.
+FRR/BFD/Zebra on every fabric machine. It is the only transport: Cilium
+tunnel mode and `wireguard-mesh` were removed (D72).
 
 **Distro runtime.** `rke2` and `k3s` are thin services: they own bootstrap,
 TLS directory, and join semantics. Everything shared — interfaces,
@@ -34,8 +34,7 @@ replaces it.
 **Cilium, networking-only (D1).** Cilium is the CNI, kube-proxy replacement,
 multi-pool pod IPAM, Node IPAM for classless LoadBalancer
 Services, LB-IPAM pools, BGP v2 speaker, and ClusterMesh control plane.
-Native routing is the routed-fabric profile default; the wireguard-mesh
-tunnel/VXLAN profile is equally supported — both publish the generic
+Routing is always native (D72); routed-fabric publishes the generic
 `node_transport` export that distro services consume. Its
 Gateway and Ingress controllers are permanently disabled. See
 [Networking](networking.md).

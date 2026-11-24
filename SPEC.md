@@ -4,6 +4,83 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 53 (2026-11-23): native routing only (D72 implemented).**
+Cilium tunnel mode and `wireguard-mesh` are gone. The last `main`
+commit with them is tag `tunnel-mode-final`.
+- **What went:**
+  - `services/wireguard-mesh` and its docs page;
+  - Cilium `routingMode: tunnel` and `tunnelProtocol` (an override to
+    tunnel mode is an eval error);
+  - `datapath.mode` and `datapath.tunnelProtocol` in `node_transport`
+    and in the `kube_cluster` export, no shim (AGENTS.md rule 10);
+  - the tunnel branches in `lib/kube-cluster` and the
+    `networkFacts.mesh` facts;
+  - the suites `<distro>-data-plane-tunnel`,
+    `<distro>-clustermesh-selective-tunnel`, `<distro>-clat-mesh`,
+    `k3s-clat-mesh-mapped` and `wireguard-mesh`;
+    `<distro>-clustermesh-tunnel` was ported, see below.
+- **What moved onto `routed-fabric`:** `<distro>-single` (a lone
+  spine), `<distro>-join` and `-join-netif` (server spine, agent
+  leaf), `<distro>-v6only` (it reuses `join`). Each keeps its contract
+  and its `*_OK` marker.
+- **Merged twins, plain name kept:**
+  - `<distro>-ha-fabric` → `<distro>-ha` (`<DISTRO>_HA_OK`);
+  - `<distro>-clustermesh-external-native` →
+    `<distro>-clustermesh-external` (`<DISTRO>_CLUSTERMESH_EXTERNAL_OK`);
+  - `k3s-modes-fabric` → `k3s-modes` (`K3S_MODES_OK`).
+- **Renamed:** `<distro>-clat-fabric` → `<distro>-clat`
+  (`<DISTRO>_CLAT_OK`); `k3s-clat-fabric-mapped` → `k3s-clat-mapped`
+  (`K3S_CLAT_MAPPED_OK`).
+- **New:** `k3s-frr-failure` (`K3S_FRR_FAILURE_OK`), D72's accepted
+  cost. It runs the `k3s-join` cluster, then on the spine `alpha`:
+  - bgpd gets SIGKILL; watchfrr restarts it; every BGP session (fabric
+    and Cilium) is Established again; the leaf's BGP routes to the
+    spine's pod /24 and /64 come back; pod pings recover in both
+    families (`FRR_BGPD_CRASH_OK`);
+  - a switch to a configuration with a line FRR rejects: the reload
+    refuses it, but the switch still exits 0 (an upstream fact: the
+    refusal shows only in the journal). FRR stays active, the bgpd PID
+    is unchanged, the running config has no bad line, sessions and pods
+    are fine; switching back leaves `frr-reload` nothing to change
+    (`FRR_BAD_RELOAD_OK`).
+  - **Finding, closed by a build-time check (owner decision):** a
+    broken FRR config deploys green at runtime. Every `routed-fabric`
+    machine now parses its rendered `/etc/frr/frr.conf` with
+    `vtysh --dryrun` in `system.checks` (`lib/frr-check.nix`, option
+    `clanServices.frr.checkConfig`, default on), so a line FRR rejects
+    fails the system build before a switch. It checks syntax only:
+    unknown neighbor, route-map or prefix-list names still pass.
+    `checks.frr-conf` proves the renderer's output passes against the
+    pinned FRR and a rejected line fails; nix-unit pins the wiring
+    (`test_frrConfigCheckedAtBuild`). The suite's `bad-frr`
+    specialisation turns the check off to reach the runtime path.
+  - The suite also proves the crash is an outage (the leaf's
+    `connectionsDropped` rises) and that Cilium's `::1` session is
+    among the sessions checked.
+- **Ported:** `<distro>-clustermesh-tunnel` →
+  `<distro>-clustermesh-nodeport` (`<DISTRO>_CLUSTERMESH_NODEPORT_OK`,
+  body `lib/kube-cluster/tests/vm/clustermesh-nodeport.nix`). It sets
+  `mesh.exposure = "node-port"` explicitly (`auto` picks the internal
+  LB on the fabric) and keeps the whole contract: NodePort 32379, ETP
+  Local, two replicas one per voter, mTLS on every node's NodePort,
+  peering on both sides, a cross-cluster pod ping, a global Service.
+- D69 stays VM-proven on native routing by `<distro>-clat`
+  (`CLAT_NODEPORT_OK`) and by `<distro>-data-plane`, whose firewall
+  phase was ported from the tunnel suite: the underlay refuses the
+  kubelet, the API, etcd, the API LB port and the NodePort from the
+  other node and from outside; the same ports answer over the fabric.
+  Its Kubernetes phases were ported too: pod to pod across nodes in both
+  families with a 200 KB body (the pod MTU equals Cilium's and fits the
+  fabric link), a slice of the pod pool per node, ClusterIP from pods
+  with backends on both nodes and DNS by name, Node IPAM publishing
+  every node of a Service with a backend on each; and when beta is
+  gone: Node NotReady, EndpointSlice withdrawal, ClusterIP served only
+  by alpha, Node IPAM dropping beta, a new pod using the Service.
+- Cilium helm overrides of `ipv4NativeRoutingCIDR` or
+  `ipv6NativeRoutingCIDR` now fail eval (D49/D72): pod CIDR containment
+  is asserted against those constants.
+- 45 suites in all. No VM run is claimed in this entry.
+
 **Round 52 (2026-11-23): owner decisions; docs only.** The owner
 answered the open points of round 51 and decided on tunnel mode.
 - **Locked** (`specs/gateway.md` §14): build the services, no more
@@ -600,8 +677,8 @@ renderer remains. `routed-fabric` owns the flat-L3 fabric: a derived
 symmetric spine/leaf graph with one WireGuard interface per adjacency
 (leaf↔spine attachments, automatic spine↔spine pairs), per-node FRR/bfdd,
 and Zebra-installed routes (D51/D59). Cilium = CNI
-+ KPR + **datapath mode derived from `node_transport`** (native on
-routed-fabric, tunnel/VXLAN on wireguard-mesh, D58) + multi-pool pod
++ KPR + **native routing only** (D72; tunnel mode and `wireguard-mesh`
+were removed, last kept at tag `tunnel-mode-final`) + multi-pool pod
 IPAM + Node IPAM for classless
 LoadBalancer Services + LB-IPAM pools + BGP v2 + ClusterMesh — networking
 only (D1); kube-proxy is off and Cilium's required datapath rules use
@@ -669,18 +746,16 @@ buildable diagrams without becoming a clanServices dependency (D57).
 
 ### 3.2 Data-plane contract — "packets flow correctly"
 
-- Cilium only: one canonical upstream 1.20+ profile — KPR, **datapath
-  mode per `node_transport`** (native on routed-fabric, tunnel/VXLAN on
-  wireguard-mesh, D58), multi-pool pod IPAM with derived non-clashing
+- Cilium only: one canonical upstream 1.20+ profile — KPR, **native
+  routing only** (D72), multi-pool pod IPAM with derived non-clashing
   dual-stack CIDRs, BPF masquerade+tproxy, Maglev, pmtu, kube-proxy off,
   `install-iptables-rules=true` (nftables-only, D55). Native mode:
   `auto-direct-node-routes` is false and FRR/Zebra owns remote pod-pool
-  routes through the daemon-neutral `local-router` exchange (D58);
-  tunnel mode needs no route exchange. `ipam.mode: kubernetes` remains
-  an explicit override. Admin helm-values overrides pass post-merge
-  invariant validation and cannot contradict the transport-derived
-  mode, protocol, devices, `directRoutingDevice`, MTU, or exposure
-  (§6.4).
+  routes through the daemon-neutral `local-router` exchange (D58).
+  `ipam.mode: kubernetes` remains an explicit override. Admin
+  helm-values overrides pass post-merge invariant validation and cannot
+  set tunnel mode (D72) or contradict the transport-derived devices,
+  `directRoutingDevice`, MTU, or exposure (§6.4).
 - **Node IPAM on by default** (`nodeIPAM.enabled=true`,
   `defaultLBServiceIPAM=nodeipam`, D41): classless `type: LoadBalancer`
   Services get node IPs, ServiceLB-style; ETP-Local-aware candidate
@@ -696,12 +771,12 @@ buildable diagrams without becoming a clanServices dependency (D57).
   node-owned BGP pools and shared ECMP pools, plus floating pools via
   runtime controllers.
 - ClusterMesh automatic per mesh group (default = fabric instance,
-  D54), mixed-distro, datapath-uniform per group (§6.5, D60). Full
+  D54), mixed-distro, uniform per group (§6.5, D60). Full
   peering is the default; explicit symmetric selective peers are
   supported and peering bounds automatic cross-cluster route policy.
   Native groups need mesh-wide native-routing CIDRs covering every pod
   CIDR of every peered cluster and cross-cluster pod routes before
-  readiness; tunnel groups need node connectivity. The mesh DATA plane
+  readiness. The mesh DATA plane
   stays dual-stack; apiserver control-plane exposure is IPv4-only on the
   validated Cilium 1.20.3 profile (D60).
 - Routed spine/leaf host WireGuard fabric: exactly one point-to-point
@@ -729,8 +804,8 @@ buildable diagrams without becoming a clanServices dependency (D57).
 - **netif** (multi-link, multi-instance) for inventory-owned
   links/routes (D50/D53) and **routed-fabric** (`leaf`/`spine` topology
   roles plus orthogonal `access` and `border`, D56/D59) for the flat L3
-  fabric. **`wireguard-mesh` is a supported tunnel transport** (Cilium
-  tunnel/VXLAN + nodePort capability, D58), not a retirement candidate.
+  fabric. `routed-fabric` is the only transport (D72): `wireguard-mesh`
+  and Cilium tunnel mode were removed.
 - No Gateway, no Ingress, no proxy implementation in the contract. The
   data-plane proof uses native pod round trips, plain `type: LoadBalancer`
   Services, and firewall positive/negative assertions (§7).
@@ -1546,6 +1621,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   the direct device, while the broader `devices` set also retains every
   per-adjacency interface. Machine-local adjacency names must not be copied
   from the cluster-init node into the shared direct-device value.
+  - **Revoked in part by D72 (round 53):** the tunnel profile, the
+    `datapath.mode`/`datapath.tunnelProtocol` fields and the
+    `wireguard-mesh` profile are gone. Every transport is native
+    routing with `local-router`; the Cilium MTU is the minimum
+    interface MTU. The text above is kept as history.
 - **D59 Spine/leaf symmetric fabric graph; schema renames.** Fabric
   topology roles are `leaf` and `spine` (renamed from `member`/`hub` in
   rounds 15–16; the rename is breaking and ships without migration
@@ -1563,7 +1643,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   maximum. `routed_fabric` and `networkFacts` move to schemaVersion 2.
 - **D60 ClusterMesh placement and exposure.** ClusterMesh groups
   require identical datapath mode, tunnel protocol, and
-  maxConnectedClusters across members (D54 uniformity); full peering
+  maxConnectedClusters across members (D54 uniformity; since D72 only
+  maxConnectedClusters can differ, routing is always native); full peering
   remains the default and explicit selective peers stay symmetric and
   non-transitive. Native groups need cross-cluster pod routes and
   mesh-wide native-routing CIDRs (D49); tunnel groups need node
@@ -1877,7 +1958,7 @@ unless noted) — revoked entries keep one-line reasons for history.
     one in clan-core's `clanTest` and passes it to `vmTests.tests`, so
     suites stay under `legacyPackages.<system>.vmTests` (D62). k3s and RKE2
     suites that test one contract (`single`, `join`, `ha`, `data-plane`,
-    `clustermesh`, `clustermesh-tunnel`, `external`, `selective`) share one
+    `clustermesh`, `external`, `selective`) share one
     body in `lib/kube-cluster/tests/vm/<suite>.nix` behind thin per-service
     wrappers; every distro difference is an explicit `distro` branch. Test
     scripts group their steps in `with subtest(...)` phases, so a run
@@ -1952,8 +2033,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   (decisions G1–G23), as `specs/netif.md` is for netif.
 
 - **D69 NodePorts answer on the node addresses only.** *(implemented,
-  2026-11-21; eval `test_nodePortAddresses`; suites
-  `<distro>-data-plane-tunnel`, `<DISTRO>_DATA_PLANE_TUNNEL_OK`)*
+  2026-11-21; eval `test_nodePortAddresses`; suites `<distro>-clat`,
+  subtest "a NodePort answers on the node addresses from the other
+  node, and not on a NIC address from outside the cluster (D69)",
+  `CLAT_NODEPORT_OK`; the former `<distro>-data-plane-tunnel` proof
+  went with D72)*
   - **Why.** Cilium serves a NodePort in eBPF, before nftables, on the
     first address of every link in `devices`. A link in `devices` that
     faces the outside (the underlay for a floating address, the CLAT
@@ -1975,7 +2059,7 @@ unless noted) — revoked entries keep one-line reasons for history.
 
 - **D70 CoreDNS replicas never share a node.** *(implemented,
   2026-11-21; eval `test_coreDNSSpread`; suites
-  `<distro>-data-plane-tunnel`, `<distro>-ha`, `<distro>-ha-fabric`)*
+  `<distro>-ha`)*
   - **Why.** The anti-affinity was soft and the bundle applies before
     the second node is Ready: both replicas started on the first node
     and stayed. When that node died, cluster DNS was gone.
@@ -2005,7 +2089,7 @@ unless noted) — revoked entries keep one-line reasons for history.
   - Hand-set `cilium.helmValues.devices` in suites goes away.
 
 - **D72 Native routing only; Cilium tunnel mode and `wireguard-mesh`
-  are removed.** *(owner, 2026-11-23; planned)* Revokes D58's tunnel
+  are removed.** *(owner, 2026-11-23; implemented round 53)* Revokes D58's tunnel
   profile and "`wireguard-mesh` is a supported tunnel transport".
   - **Why (owner):** native routing is always preferred; VXLAN adds
     overhead and sits inside WireGuard anyway; FRR makes BGP, outside
@@ -2037,6 +2121,13 @@ unless noted) — revoked entries keep one-line reasons for history.
   - **Order:** after PR 35 merges, the removal is the first PR of the
     next session, before any service code, so the CLAT and D71 are
     built once.
+  - **Done (round 53):** the code above is gone. The suites moved or
+    merged as listed; `<distro>-clat-fabric` became `<distro>-clat`
+    and `k3s-clat-fabric-mapped` became `k3s-clat-mapped`. The FRR
+    failure suite is `k3s-frr-failure` (`K3S_FRR_FAILURE_OK`).
+    `<distro>-clustermesh-tunnel` was not dropped but ported to the
+    fabric as `<distro>-clustermesh-nodeport`. The tag
+    `tunnel-mode-final` is pushed.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -2047,7 +2138,7 @@ unless noted) — revoked entries keep one-line reasons for history.
 2. Dual-stack inside, always (nodes/pods/Services); public exposure
    varies per node/Service (v4-only, v6-only, both, neither).
 3. Cilium is the only CNI base: one upstream 1.20+ profile, KPR,
-   datapath mode per `node_transport` (native or tunnel/VXLAN), multi-pool;
+   native routing only (D72), multi-pool;
    networking-only (D1/D49/D58).
 4. L3 only: no L2-announce/VRRP/shared-L2. Tested fabric transport =
    derived spine/leaf with one host WireGuard interface per adjacency
@@ -2101,8 +2192,8 @@ unless noted) — revoked entries keep one-line reasons for history.
     silently change this topology.
 19. ClusterMesh peering is full within one fabric by default; selective
     peers are explicit, symmetric, and non-transitive; group members share
-    datapath mode, tunnel protocol, and maxConnectedClusters (native
-    groups also need mesh-wide native CIDRs, D49); peering bounds
+    maxConnectedClusters and need mesh-wide native CIDRs (D49, D72);
+    peering bounds
     automatic cross-cluster pod/Service route policy; separate
     routed-fabric instances are hard trust-domain separation (D54/D60).
 20. Host firewall is nftables-only; kube-proxy is off; Cilium
@@ -2110,13 +2201,13 @@ unless noted) — revoked entries keep one-line reasons for history.
     iptables-nft; VMs assert Cilium datapath rules and no legacy-iptables
     or kube-proxy rules (D55).
 21. WireGuard MTU derives per link from the underlay minus WireGuard
-    overhead with a 1280 floor; Cilium MTU = the minimum interface MTU in
-    native mode and minimum minus 50 under VXLAN; VMs assert path MTU
+    overhead with a 1280 floor; Cilium MTU = the minimum interface MTU
+    (no VXLAN since D72); VMs assert path MTU
     (D51/D58). *(Implemented for WireGuard, `specs/netif.md` N17, round
-    P3b-5: routed-fabric and wireguard-mesh prefer netif's `pathMtu`,
-    then the link `mtu`; wireguard-mesh derives its MTU as that minus
-    96, floor 1280, and keeps 1420 when netif publishes neither. Eval
-    tests `test_mtuFollowsNetif`, `test_netifPathMtuPreferred`.)*
+    P3b-5: routed-fabric prefers netif's `pathMtu`, then the link
+    `mtu`, minus 96, floor 1280. Eval test
+    `test_netifPathMtuPreferred`; `<distro>-join-netif` asserts the
+    adjacency MTU.)*
 22. `clan.networkFacts` is versioned (schemaVersion 2), non-secret,
     deep-evaluable, and
     identical in meaning to the functional configuration and exports;
@@ -2180,9 +2271,8 @@ border-owned prefixes.
 (D58): stable dual-stack node addresses,
 instance/endpoint identity,
 every datapath interface keyed by Linux interface name with its MTU,
-exactly one `directRoutingDevice`, `datapath.mode = native | tunnel`
-with sibling `datapath.tunnelProtocol` and `native.routeExchange`
-(`local-router` on native transports, null on tunnel), the
+exactly one `directRoutingDevice`, `native.routeExchange =
+local-router` (no datapath mode field: routing is always native, D72), the
 exposure capabilities `internalLoadBalancer` and `nodePort`, `port`, and
 nullable `endpoint`. No secrets in exports; every leaf has a
 default (clan CLI deep-eval). `clan.networkFacts` presents the same
@@ -2198,9 +2288,9 @@ machine, node-in-two-clusters, second routing stacks, native-routing
 CIDR containment, control-domain⇔fabric-instance consistency, netif
 cross-instance conflicts (unique link ownership, default-route, DNS),
 non-namespaced netif units, WG MTU below the derived floor, firewall
-posture violations, overrides contradicting the transport-derived
-mode/protocol/devices/MTU/exposure, ClusterMesh groups with mixed
-datapath mode/tunnel protocol/maxConnectedClusters, placement selectors
+posture violations, overrides that set tunnel mode or contradict the
+transport-derived devices/MTU/exposure, ClusterMesh groups with mixed
+maxConnectedClusters, placement selectors
 matching zero nodes, external exposure without a non-clan class+dnsName,
 and internal exposure VIPs outside the fabric pool (D51/D53/D55/D58/
 D60). Fleet checks read exports;
@@ -2225,14 +2315,12 @@ instance-namespaced (rule 5). All netif settings render through IfState
 `accept_ra = 2` on forwarding machines. A literal deploy target is rejected
 when it matches any declared fabric or tunnel address.
 
-`routed-fabric` is the native overlay transport (the supported tunnel
-transport is `wireguard-mesh`, D58). Its `leaf`/`spine` symmetric graph is
+`routed-fabric` is the only transport (D72; `wireguard-mesh` was
+removed). Its `leaf`/`spine` symmetric graph is
 implemented and VM-proven (D59). Every fabric machine gets stable dual-stack
 host addresses on a fabric loopback/dummy interface from its public
 `routed-fabric-<inst>-node4` and `-node6` vars (default pool `198.18.0.0/17`
-plus the shared ULA's `:0::/64`; explicit pins win). Wireguard-mesh likewise
-reads its `-node4` and `-node6` vars (default pool `198.18.128.0/17` plus its
-own shared ULA). For each fabric adjacency — every leaf↔spine attachment (every leaf
+plus the shared ULA's `:0::/64`; explicit pins win). For each fabric adjacency — every leaf↔spine attachment (every leaf
 attaches every spine by default; a leaf may declare an explicit spine subset
 via `settings.spines`) plus every unordered spine pair, adjacent automatically
 — it renders exactly one point-to-point WG interface with a deterministic
@@ -2350,29 +2438,27 @@ inventory.instances = {
 ```
 
 All actual static addresses/routes live in inventory settings, not
-supporting NixOS modules. Native-mode Cilium MTU = the minimum interface
-MTU (no VXLAN `-50`); VXLAN tunnel mode subtracts 50 (D58).
+supporting NixOS modules. Cilium MTU = the minimum interface MTU
+(D58; no tunnel mode since D72).
 
 ### 6.4 Cilium base
 Same canonical upstream Cilium 1.20+ chart/images both distros; RKE2
 bundled Cilium disabled. Always: KPR, multi-pool pod IPAM (default;
 derived non-clashing dual-stack CIDRs), BPF masquerade+tproxy, Maglev,
 pmtu, Node IPAM (D41), kube-proxy off, `install-iptables-rules=true`
-(D55). The datapath mode, tunnel protocol, devices,
-`directRoutingDevice`, and MTU derive from `node_transport` (D58) and
-admin overrides cannot contradict them: native mode on routed-fabric,
-tunnel/VXLAN on wireguard-mesh. Native mode sets `routing-mode: native`,
-no tunnel, `auto-direct-node-routes: false`; dual-stack
+(D55). Routing is always native (D72): `routing-mode: native`, no
+tunnel, `auto-direct-node-routes: false`; an override to tunnel mode is
+an eval error. Devices, `directRoutingDevice`, and MTU derive from
+`node_transport` (D58) and admin overrides cannot contradict them; dual-stack
 native-routing CIDRs cover all pod CIDRs in the mesh trust domain
 (default `10.0.0.0/8` + `fd10::/16` for derived space; explicit overrides
 must contain every explicit pod CIDR). Cilium device configuration covers
-every fabric WG interface (one per adjacency, D51/D59). On native
-transports Cilium advertises local `CiliumPodIPPool`
+every fabric WG interface (one per adjacency, D51/D59). Cilium
+advertises local `CiliumPodIPPool`
 allocations and authorized Service routes to local FRR over the
 `local-router` exchange; FRR/Zebra owns remote routes. Native ClusterMesh
 requires non-overlap, node InternalIP connectivity, and working
-cross-cluster pod routes; tunnel ClusterMesh requires node connectivity
-(D60).
+cross-cluster pod routes (D60).
 Local Cilium↔FRR peering is ONE `::1` session carrying both address
 families; advertisement selectors and the `CiliumPodIPPool` type are
 pinned; explicit `extended-nexthop` capability and v4-over-v6 /
@@ -2382,7 +2468,7 @@ fallback) is explicit enough for tests (D55). Per-cluster variation lands
 in `cilium-config` and CRs through kubenix merging over the committed
 base manifest (D26). Admin helm-values
 overrides remain limited to layer-2-expressible keys and are post-merge
-validated against the transport-derived mode/no-contradiction/IPAM/
+validated against the native-routing/no-contradiction/IPAM/
 dual-stack/device/CNI/artifact/ETP invariants. Multus follows D42.
 Lifecycle: bootstrap bundle
 apply → GitOps adoption (D40); publish-freshness gated in CI.
@@ -2405,8 +2491,8 @@ also bound the automatic cross-cluster pod/Service route policy rendered
 into fabric filters (a routed-only exception between non-peered
 clusters must be deliberate and eval-visible). Peering rendered from
 exports into `clustermesh.config.clusters` — no CLI. Group uniformity
-(D60): identical datapath mode, tunnel protocol, and
-maxConnectedClusters in every member. Placement: `voters` (default —
+(D60): identical maxConnectedClusters in every member (routing is
+always native, D72). Placement: `voters` (default —
 server nodes), `workers` (agent nodes), `all`, or `labels`
 (clan-declared/generated labels only; zero matches = eval error).
 Exposure (D60): `auto` (default) | internal-load-balancer | node-port |
@@ -2577,13 +2663,12 @@ floor; source-return kernel/Cilium/netif/source-return table collisions or
 rule priorities at/above 32766 and any netif/fabric priority collisions;
 netif cross-instance conflicts (link ownership, default-route, DNS, policy
 tables, effective rule priorities) and non-namespaced netif units;
-wireguard-mesh pairs without an endpoint on either side, overlapping
-`extraAllowedIPs`, and any same-host WireGuard listen-port clashes;
+any same-host WireGuard listen-port clashes;
 non-literal upstream peers; final literal overlay deploy targets;
 conflicting adjacency timer overrides;
 missing native CIDR containment;
-Geneve or non-derived tunnel protocols, or `auto-direct-node-routes` in
-the canonical profile;
+tunnel mode (any `routingMode` but native, any `tunnelProtocol`), or
+`auto-direct-node-routes` in the canonical profile;
 Cilium devices missing WG links; ETP Cluster on clan-rendered external
 Services; base-manifest drift; IFD smuggling; unsupported k8s minor
 without acknowledgment; application-secret vars; control-domain
@@ -2689,10 +2774,8 @@ than flattening them into one misleading edge set.
 modes and known addresses, gateways, routes, MTU, and attachments.
 `routed-fabric` publishes leaf/spine/access/border, stable loopbacks,
 per-adjacency WireGuard interfaces, transfer prefixes, public endpoints,
-MTU, ASNs, upstreams, and authorized public prefixes. `wireguard-mesh`
-publishes each instance's stable dual-stack member addresses under
-`mesh.<instance>`. The wireguard-mesh VM reads expected addresses and DNS
-results from those facts, never from the rendered IfState interface. Distro
+MTU, ASNs, upstreams, and authorized public prefixes. (The
+`mesh.<instance>` facts of `wireguard-mesh` went with it, D72.) Distro
 services
 publish cluster identity, distro, node membership, pod/Service CIDRs,
 pools, mesh peers, and control-domain relationships. Nothing in the
@@ -2728,7 +2811,7 @@ D26/D40). Standard internal HTTP test workload: **go-httpbin** (pinned,
 airgap-carried as a test-fixture artifact). Rules: hermetic/offline;
 committed-var or fixture-pinned eval-deterministic addresses; VM allocations
 are freshly generated, printed for diagnosis, and asserted through network
-facts in the routed-fabric and wireguard-mesh suites; dual-stack asserted in
+facts in the routed-fabric suites; dual-stack asserted in
 every boot test; round-trips + failure behavior (BGP withdrawal keeps VIP via
 healthy nodes); negative assertions; operational postconditions; fail fast.
 Minimal airgapped artifacts for hermetic VM tests is a hard requirement.
@@ -2754,20 +2837,30 @@ secrets with its fixed test recipient, and merges generated `vars/` and
 `secrets/` into a temporary directory used by `getPublicValue`. It replaces
 the suite's source `vars/` tree, so these VM suites need no committed
 allocation files, legacy public-key fixtures, or separate `update-vars` run.
-Routed-fabric and wireguard-mesh print the fresh allocations and prove them
-with `ROUTED_FABRIC_ALLOCATED_OK` and `WIREGUARD_MESH_ALLOCATED_OK`.
+Routed-fabric prints the fresh allocations and proves them with
+`ROUTED_FABRIC_ALLOCATED_OK`.
 
 Current registered VM suites:
-- **single/join/HA per distro** on `wireguard-mesh`: bootstrap, local
-  HAProxy, node readiness, Cilium health, Service/DNS, etcd quorum and
-  failure behavior (D58).
+- **single/join/HA per distro** on `routed-fabric` (D72; `single` is a
+  lone spine, `join` a spine and a leaf, `ha` two spines and a leaf):
+  bootstrap, local HAProxy, node readiness, Cilium health, Service/DNS,
+  etcd quorum and failure behavior; `ha` also proves the fabric routes
+  around a dead spine (D58).
+- **FRR failure** (`k3s-frr-failure`, D72's accepted cost): on the
+  `k3s-join` cluster, bgpd SIGKILL on the spine is restarted by
+  watchfrr and sessions, pod routes and pod traffic recover; a
+  configuration FRR rejects is refused at reload and leaves FRR, its
+  running config and the sessions as they were. The switch still exits
+  0 (upstream fact), so every `routed-fabric` machine checks its
+  rendered `frr.conf` with `vtysh --dryrun` at build time
+  (`lib/frr-check.nix`, `checks.frr-conf`): a rejected line fails the
+  build, not the deploy.
 - **netif**: multi-NIC physical/VLAN/bond/bridge links, multi-instance
   ownership, static/DHCP/RA addressing, on-link/policy routes, exports,
   and conflict negatives. Live static reconfiguration is applied, checked,
   and restored without reboot. The DHCP/RA suite proves a real lease,
   default routes, one persistent client across reapply, and clean
   `ifstatecli check` convergence (D61).
-- **wireguard-mesh**: real dual-stack handshakes and pairwise connectivity.
 - **routed-fabric transport/FRR**: two spines + leaves with derived
   adjacencies (D59), one IfState-owned WG interface per pair, real
   handshakes, no `(none)` AllowedIPs, FRR/BFD, RIB-vs-kernel FIB,
@@ -2794,46 +2887,40 @@ Current registered VM suites:
 - **selective ClusterMesh suite**: full-peering default, explicit
   selective peers (A↔B, B↔C) with A/C selective isolation on non-transit
   leaves; the dedicated spine's union-of-leaf-consumers carriage is the
-  deliberate routed-only exception. k3s and RKE2 are VM-proven on BOTH
-  native and tunnel profiles: selective edges synchronize only their
+  deliberate routed-only exception. k3s and RKE2 are VM-proven on the
+  native profile (the tunnel twins were removed by D72): selective edges synchronize only their
   intended global-Service backends, native A/C leaves install no routes for
   each other (dual-stack /24 + /64 allocation assertions), and the full-peering
   defaults remain green. Final selective evidence:
   `.baton-pass/vm-logs/ifstate-k3s-clustermesh-selective-final.log`,
-  `.baton-pass/vm-logs/ifstate-rke2-clustermesh-selective-final.log`,
-  `.baton-pass/vm-logs/ifstate-k3s-clustermesh-selective-tunnel-final.log`,
-  and
-  `.baton-pass/vm-logs/ifstate-rke2-clustermesh-selective-tunnel-final.log`;
+  and `.baton-pass/vm-logs/ifstate-rke2-clustermesh-selective-final.log`;
   full-default regression evidence:
   `.baton-pass/vm-logs/ifstate-k3s-clustermesh-final.log`,
-  `.baton-pass/vm-logs/ifstate-rke2-clustermesh-final.log`,
-  `.baton-pass/vm-logs/ifstate-k3s-clustermesh-tunnel-final.log`, and
-  `.baton-pass/vm-logs/ifstate-rke2-clustermesh-tunnel-final.log`;
-- **ClusterMesh suite per profile**: native
+  and `.baton-pass/vm-logs/ifstate-rke2-clustermesh-final.log`;
+- **ClusterMesh suites**: native
   internal-load-balancer exposure (D10-locked offset-79 IPv4 VIP +
   `lbipam.cilium.io/ips` projection +
   `io.cilium/bgp-control-plane` class + SANs covering published IPv4/DNS
   endpoints only + pool membership/
   collision checks; NO ClusterMesh IPv6 VIP and NO `RequireDualStack`
   advertisement — control-plane exposure is IPv4-only on the pinned
-  Cilium 1.20.3 profile) and tunnel NodePort exposure (replicas = selected
+  Cilium 1.20.3 profile). NodePort exposure (replicas = selected
   nodes, one pod per selected node, NodePort default 32379 with
   optional explicit override, selected nodes' stable IPv4 addresses
-  published); external class+DNS exposure wins on BOTH
-  profiles
+  published) is VM-proven by `<distro>-clustermesh-nodeport`
+  (`<DISTRO>_CLUSTERMESH_NODEPORT_OK`; ported from the removed
+  `-clustermesh-tunnel` by D72, with `mesh.exposure = "node-port"` set
+  explicitly because `auto` picks the internal LB on the fabric).
+  External class+DNS exposure
   (non-clan class + dnsName in peers/SANs, runtime A record); placement
   voters/workers/all/labels with zero-match negatives; group-uniformity
-  negatives (mixed datapath mode/tunnel protocol/maxConnectedClusters);
+  negatives (mixed maxConnectedClusters);
   cross-cluster pod routes + kube-api mirror Service reachability (D30)
-  in native groups. The k3s and RKE2 external-native and external-tunnel
-  suites are VM-proven with a dedicated transport-attached DNS VM, real
-  A-record resolution, authenticated external-LB health checks, and
-  bidirectional ClusterMesh status. Tunnel suites additionally assert VXLAN
-  and the transport-derived MTU. Final external evidence:
-  `.baton-pass/vm-logs/ifstate-k3s-clustermesh-external-native-final.log`,
-  `.baton-pass/vm-logs/ifstate-rke2-clustermesh-external-native-final.log`,
-  `.baton-pass/vm-logs/ifstate-k3s-clustermesh-external-final.log`, and
-  `.baton-pass/vm-logs/ifstate-rke2-clustermesh-external-final.log`;
+  in native groups. `<distro>-clustermesh-external`
+  (`<DISTRO>_CLUSTERMESH_EXTERNAL_OK`; the former `-native` twin, merged
+  by D72) uses a dedicated transport-attached DNS VM, real A-record
+  resolution, authenticated external-LB health checks, and
+  bidirectional ClusterMesh status;
 - eval seam suite: a third-party overlay implementing `node_transport`
   schemaVersion 2 is consumed by k3s/rke2 with NO provider service-name
   branching, and contradicting overrides eval-fail (D58);
@@ -2955,7 +3042,8 @@ tests together)
   for k3s/RKE2 on native and tunnel profiles. The obsolete
   BIRD/VXLAN/fleet-routing modules, helpers, fixtures,
   `lib/import-flake/`, and `lib/inputs-module.nix` are deleted outright.
-  `wireguard-mesh` is the supported tunnel transport (D58).
+  `wireguard-mesh` is the supported tunnel transport (D58; revoked by
+  D72, removed in round 53).
 - **5R4 done** — `clan.networkFacts` schemaVersion 2 parity, deep-eval,
   secret-free/dynamic-state invariants, and the consumer-wrapper diagram
   proof are covered by eval tests (D57/D59); nix-topology remains
@@ -2964,9 +3052,9 @@ tests together)
   schemaVersion 2 outside `lib/kube-cluster` with no provider-name
   branching (D58); `leaf`/`spine` with the symmetric derived graph (D59);
   full/selective ClusterMesh placement/exposure (D60); and the supported
-  `wireguard-mesh` tunnel/VXLAN profile. The native, tunnel, selective,
-  and external eval/VM suites are green. Breaking schema changes shipped
-  without migration shims.
+  `wireguard-mesh` tunnel/VXLAN profile (removed by D72, round 53). The
+  native, tunnel, selective, and external eval/VM suites were green.
+  Breaking schema changes shipped without migration shims.
 - **5R6 done — IfState-only networking (round 18, D61)** — replaced all
   systemd-networkd/netdev and scripted network rendering with IfState
   2.5.1; added the shared overlay/base, runtime-secret includes, DHCP/RA
@@ -2997,8 +3085,8 @@ rendering (distro-stock Multus via `distroDefaults` excepted); provider
 CCM deployments (the `cloudController = external` knob is bootstrap
 config and stays); hcloud-ip-floater deployment (floating-pool contract
 stays; the controller is day-2 and upstream-unmaintained — fork
-reference only). Also: alternative CNIs / tunnel protocols other than
-the supported vxlan profile / Geneve / BIRD / L2 announcements / VRRP /
+reference only). Also: alternative CNIs / Cilium tunnel mode of any
+protocol (VXLAN, Geneve; D72) / BIRD / L2 announcements / VRRP /
 Keepalived (spine HA is fabric ECMP, D51/D59); full-mesh fabric topology
 and per-remote-machine WireGuard links (deferred beyond MVP, D51/D59 —
 spine-only full peering is not a full fabric mesh); iBGP / route
@@ -3006,7 +3094,7 @@ reflectors / route servers (D51); shared gateway VIP / VRRP-style spine
 HA and transparent active-active default gateway for ordinary non-fabric
 LAN clients
 (outside MVP — needs client routing or an L2/VRRP-like mechanism, D51);
-other route-exchange or tunnel modes representable in the `node_transport`
+other route-exchange profiles representable in the `node_transport`
 schema (rejected until implemented and tested, D58); migration shims or
 a compatibility burden for the round-17 schema/role renames (no external
 consumers or deployments exist, D58/D59);
@@ -3100,25 +3188,25 @@ such as external-dns).
   material, HAProxy health-check material, gitops-hub identities); all
   application-plane secrets are GitOps-owned (D35).
 - **Integrated node transport** — the generic `node_transport`
-  schemaVersion 2 contract (D58) and its two supported profiles:
+  schemaVersion 2 contract (D58) and its one supported profile (D72):
   routed-fabric (per-adjacency routed L3 host WireGuard — leaf↔spine
   attachments plus automatic spine↔spine pairs, D51/D59 — carrying
   dual-stack node InternalIPs, API, native pod traffic, FRR/BGP, and
-  BFD) and wireguard-mesh (Cilium tunnel/VXLAN + nodePort). (Round-14
+  BFD). (`wireguard-mesh` with Cilium tunnel/VXLAN was removed. Round-14
   "per-pair full mesh" phrasing is historical.)
 - **node_transport (schema)** — the shared, neutral, open transport
   export schema declared outside `lib/kube-cluster` (D58): stable
   dual-stack node addresses, instance/endpoint identity, every datapath
   interface keyed by Linux name with its MTU, exactly one
-  `directRoutingDevice`, `datapath.mode = native | tunnel` plus tunnel
-  protocol, native `routeExchange = local-router` (never `local-frr`/
+  `directRoutingDevice`, `routeExchange = local-router` (routing is
+  always native, D72; never `local-frr`/
   `local-bgp`), and the independent exposure capabilities
   `internalLoadBalancer` and `nodePort`. k3s/rke2 consume only this
   schema and never branch on provider service names.
 - **Mesh group** — mutually trusted cluster instances forming one
   ClusterMesh; defaults from the fabric instance (no repeated value
   required). (Round-14 default `meta.domain` is historical.) Members
-  share datapath mode, tunnel protocol, and maxConnectedClusters (D60).
+  share maxConnectedClusters (D60; routing is always native, D72).
 - **ClusterMesh exposure** — how the clustermesh-apiserver is reached:
   `auto | internal-load-balancer | node-port | external-load-balancer`
   (D60). Internal pins ONE IPv4 literal VIP from the D10
@@ -3240,8 +3328,8 @@ such as external-dns).
   ETP-Local EndpointSlice caveat affects only Cilium's own
   Gateway/Ingress, D41), BGP v2, ClusterMesh (identical datapath per
   group, non-overlap,
-  node connectivity, mesh-wide native-routing CIDR for native groups —
-  tunnel groups need node connectivity only, D58/D60), and the Gateway gaps
+  node connectivity, mesh-wide native-routing CIDR, D58/D60; this repo
+  uses native routing only, D72), and the Gateway gaps
   behind D1. Configuration uses the rendered `cilium-config` ConfigMap
   (D26 layer-2 seam); official install = Helm, cosign-signed
   digest-pinnable OCI charts; the chart ships no `crds/` dir — the
@@ -3296,8 +3384,7 @@ such as external-dns).
   probed before renderer lock (D55).
 - WireGuard MTU: underlay MTU minus WireGuard overhead (80 bytes v4 /
   96 v6); 1280 floor; path-MTU asserted in VMs (D51). Cilium MTU = the
-  minimum interface MTU in native mode, minimum minus 50 under VXLAN
-  (D58).
+  minimum interface MTU (D58; native routing only, D72).
 - nix-topology: evaluated `nixosConfigurations` plus explicit networks,
   nodes, interfaces, connections, and service details produce SVGs;
   `topology.<system>.config.output` is a derivation and may be exposed as

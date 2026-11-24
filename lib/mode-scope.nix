@@ -1,5 +1,5 @@
 # Mode scoping for the services that render into a machine
-# (specs/netif.md N4): `routed-fabric`, `wireguard-mesh`, `k3s`, `rke2`.
+# (specs/netif.md N4): `routed-fabric`, `k3s`, `rke2`.
 # Each has a per-machine `modes` setting. In the other modes of the
 # machine the service renders nothing; what clan reads from the parent
 # configuration stays.

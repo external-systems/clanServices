@@ -16,7 +16,7 @@
 #   external-load-balancer → the explicit dnsName (DNS resolution is a
 #                            runtime prerequisite)
 #
-# Group uniformity (datapath mode, tunnel protocol, maxConnectedClusters) is
+# Group uniformity (maxConnectedClusters) is
 # NOT checked here — it needs every group member's export and lives in
 # fleet-checks.nix.
 {lib}: let

@@ -19,9 +19,9 @@
                 description = ''
                   Name of the clanService that exports the generic
                   node_transport interface (the transport source — e.g.
-                  routed-fabric or wireguard-mesh, or any third-party
-                  overlay implementing the neutral schemaVersion 2 seam,
-                  D58). The cluster consumes that instance's node_transport
+                  routed-fabric, or any third-party native router
+                  implementing the neutral schemaVersion 2 seam, D58,
+                  D72). The cluster consumes that instance's node_transport
                   export ONLY; it never branches on provider service names.
                 '';
               };
@@ -238,8 +238,8 @@
           Render the private fleet fabric (D10): a cluster-global
           shared-bgp pool "<instance>-fabric" carrying the internal
           ClusterMesh apiserver IPv4 VIP (offset 79, D60). null defaults on
-          for native local-router transports and off for tunnel/manual
-          transports. Explicitly enabling it requires local-router BGP.
+          for local-router transports and off for manual-address
+          clusters. Explicitly enabling it requires local-router BGP.
         '';
       };
       ipv4Block = lib.mkOption {

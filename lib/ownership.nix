@@ -80,12 +80,12 @@
     }
     {
       name = "wireguard";
-      option = "networking.wireguard.interfaces (scripted WireGuard; use wireguard-mesh or routed-fabric)";
+      option = "networking.wireguard.interfaces (scripted WireGuard; use routed-fabric)";
       enabled = (config.networking.wireguard.interfaces or {}) != {};
     }
     {
       name = "wg-quick";
-      option = "networking.wg-quick.interfaces (scripted WireGuard; use wireguard-mesh or routed-fabric)";
+      option = "networking.wg-quick.interfaces (scripted WireGuard; use routed-fabric)";
       enabled = (config.networking.wg-quick.interfaces or {}) != {};
     }
   ];

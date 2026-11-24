@@ -20,12 +20,12 @@ Secrets, storage, GitOps controllers) is never rendered here (SPEC.md §3.3).
 
 Both distro services consume the generic `node_transport` schemaVersion 2
 (SPEC.md D58) — stable dual-stack node addresses, per-interface MTU keyed
-by Linux name, one `directRoutingDevice`, `datapath.mode native|tunnel`
-(+ protocol), native `routeExchange = local-router`, and the
+by Linux name, one `directRoutingDevice`, `routeExchange =
+local-router` (routing is always native, D72), and the
 `internalLoadBalancer`/`nodePort` exposure capabilities — and never branch
 on provider service names. The schema is declared by the transport
-services, not by this library. The Cilium profile (mode, protocol,
-devices, MTU) derives from the transport; admin overrides cannot
+services, not by this library. The Cilium profile (devices, MTU)
+derives from the transport; admin overrides cannot set tunnel mode or
 contradict the derived values. Shared fabric/FRR/facts helpers
 (`fabric.nix`, `frr.nix`, `network-facts.nix`) are imported directly by
 `routed-fabric`; they are not part of the `default.nix` attrset below.
@@ -55,7 +55,7 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `interfaces.node` | Deferred module of shared per-machine options (incl. `topology.region`/`zone`, invariant 7). |
 | `interfaces.kube_cluster` | The custom export interface (§6.2, D45) published by both distro services. |
 | `hashCiliumId` / `resolveCiliumId` | Stable sha256-based hash of the instance name → 1–127 (pure Nix, no IFD); resolution of the nullable `cilium.id` pin. |
-| `render.mkCiliumValues` | The canonical Cilium profile tree (datapath mode derived from `node_transport` — native or tunnel/VXLAN; KPR, multi-pool IPAM, Node IPAM default, MTU math: native = minimum interface MTU, VXLAN = minimum minus 50, D58) with `cilium.helmValues` folded in. |
+| `render.mkCiliumValues` | The canonical Cilium profile tree (native routing only, D72; KPR, multi-pool IPAM, Node IPAM default, MTU = the minimum interface MTU, D58) with `cilium.helmValues` folded in. |
 | `render.resolveCidrs` | Resolved dual-stack CIDR structure from the resolved id + explicit overrides (combined strings, per-family components, clusterDNS). |
 | `render.mkBundle` | The kubenix bootstrap bundle (D26 layer 2 / D40): imports the artifact flake's committed Cilium manifest via the pure-Nix YAML-subset parser (`yaml.nix`, zero IFD), merges per-cluster variation into the typed resource tree (`cilium-config` ConfigMap data, KPR env, pod IP pool, LB pools, `coredns-custom`), validates post-merge invariants (`validateBundle`), and emits one multi-doc YAML + object list + config hash. |
 | `render.mkLBService` | External-facing Service helper: ETP Local + manifest labels; explicit pool draws default to `io.cilium/bgp-control-plane` so they bypass the classless Node-IPAM default (invariants 5/6). |

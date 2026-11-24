@@ -4,9 +4,10 @@
 # kubenix typed-tree patches (cilium-config ConfigMap data + KPR env) by
 # bundle.nix profilePatches; the chart is never re-run (D26: zero IFD).
 #
-# D58: the datapath mode, tunnel protocol, devices, directRoutingDevice and
-# MTU derive from the generic node_transport export (via transport.nix) and
-# admin overrides cannot contradict them — post-merge violations throw here.
+# D58: devices, directRoutingDevice and MTU derive from the generic
+# node_transport export (via transport.nix) and admin overrides cannot
+# contradict them — post-merge violations throw here. Routing is always
+# native (D72): an override to tunnel mode throws too.
 {
   lib,
   cidrs,
@@ -73,7 +74,7 @@
   };
 
   # Post-merge invariant (D58 / invariant 23): admin helm-values overrides
-  # cannot contradict the transport-derived mode, protocol, devices,
+  # cannot contradict native routing (D72) or the transport-derived devices,
   # directRoutingDevice or MTU, and cannot disable the ClusterMesh subsystem
   # or desync maxConnectedClusters from the mesh setting (D60 uniformity).
   contradictions = {
@@ -85,14 +86,16 @@
     droppedDevices = lib.filter (d: !(lib.elem d mergedDevices)) transportFacts.interfaces;
   in
     lib.concatStringsSep "; " (
-      lib.optional (merged.routingMode != transportFacts.mode)
-      "routingMode '${merged.routingMode}' contradicts the transport-derived mode '${transportFacts.mode}' (D58)"
-      ++ lib.optional ((merged.tunnelProtocol or null) != (transportFacts.tunnelProtocol or null))
-      "tunnelProtocol ${
-        builtins.toJSON (merged.tunnelProtocol or null)
-      } contradicts the transport-derived protocol ${
-        builtins.toJSON (transportFacts.tunnelProtocol or null)
-      } (D58)"
+      lib.optional (merged.routingMode != "native")
+      "routingMode '${merged.routingMode}' is not native; Cilium tunnel mode was removed (D72)"
+      ++ lib.optional (merged ? tunnelProtocol)
+      "tunnelProtocol ${builtins.toJSON merged.tunnelProtocol} is set; Cilium tunnel mode was removed (D72)"
+      # D49/D72: pod CIDR containment is asserted against these constants
+      # (assertions.nix); an override would masquerade peer-cluster pods.
+      ++ lib.optional (merged.ipv4NativeRoutingCIDR != "10.0.0.0/8")
+      "ipv4NativeRoutingCIDR '${merged.ipv4NativeRoutingCIDR}' contradicts the native-routing CIDR 10.0.0.0/8 (D49/D72)"
+      ++ lib.optional (merged.ipv6NativeRoutingCIDR != "fd10::/16")
+      "ipv6NativeRoutingCIDR '${merged.ipv6NativeRoutingCIDR}' contradicts the native-routing CIDR fd10::/16 (D49/D72)"
       ++ lib.optional (merged.MTU != transportFacts.mtu)
       "MTU ${toString merged.MTU} contradicts the transport-derived MTU ${toString transportFacts.mtu} (D58)"
       ++ lib.optional (merged.nodePort.directRoutingDevice != transportFacts.directRoutingDevice)
@@ -111,11 +114,10 @@ in {
   mkCiliumValues = {
     settings,
     # transport facts from transport.nix resolve (D58):
-    # { interfaces = [ <linux names> ]; mtu = <derived>; mode = native |
-    # tunnel; tunnelProtocol = null | vxlan; directRoutingDevice; } —
-    # devices covers EVERY exported datapath interface (one per adjacency
-    # on native fabrics) and the MTU is the derived profile MTU (native:
-    # minimum interface MTU; VXLAN: minimum minus 50).
+    # { interfaces = [ <linux names> ]; mtu = <derived>;
+    # directRoutingDevice; } — devices covers EVERY exported datapath
+    # interface (one per adjacency on the fabric) and the MTU is the
+    # minimum interface MTU.
     transportFacts,
     instanceName,
     k8sServiceHost,
@@ -140,24 +142,15 @@ in {
         };
         kubeProxyReplacement = true;
         inherit k8sServiceHost k8sServicePort;
-        # D49/D58: native routing on native transports, VXLAN tunnel on
-        # tunnel transports; auto-direct-node-routes stays false — remote
-        # pod routes ride the transport (FRR/Zebra on native, encapsulation
-        # on tunnel).
-        routingMode = transportFacts.mode;
-        inherit (transportFacts) tunnelProtocol;
+        # D49/D72: native routing only; auto-direct-node-routes stays
+        # false — remote pod routes ride the transport (FRR/Zebra).
+        routingMode = "native";
         autoDirectNodeRoutes = false;
         # Cilium 1.20 requires its datapath rules for KPR/BPF masquerade;
         # iptables-nft keeps them on the host's nftables backend (D55).
         extraConfig."install-iptables-rules" = true;
-        ipv4NativeRoutingCIDR =
-          if transportFacts.mode == "native"
-          then "10.0.0.0/8"
-          else "";
-        ipv6NativeRoutingCIDR =
-          if transportFacts.mode == "native"
-          then "fd10::/16"
-          else "";
+        ipv4NativeRoutingCIDR = "10.0.0.0/8";
+        ipv6NativeRoutingCIDR = "fd10::/16";
         devices = lib.concatStringsSep " " (lib.unique transportFacts.interfaces);
         nodePort.directRoutingDevice = transportFacts.directRoutingDevice;
         # D69: Cilium serves a NodePort in eBPF, before the node firewall,

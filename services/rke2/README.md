@@ -2,8 +2,7 @@
 
 A thin [RKE2](https://docs.rke2.io/) Kubernetes cluster service built on
 `lib/kube-cluster`. It deploys an airgap-ready RKE2 control plane with
-`cni: none` — Cilium (datapath mode derived from the `node_transport` —
-tunnel/VXLAN on wireguard-mesh, native routing on routed-fabric;
+`cni: none` — Cilium (native routing over the `node_transport`, D72;
 kube-proxy replacement, Node IPAM),
 pools, and a uniform clan-rendered CoreDNS for cluster.local (D46) come
 from the kubenix bootstrap bundle, applied once via server-side apply by a
@@ -48,8 +47,7 @@ networking invariants, and delivery plan, see [SPEC.md](../../SPEC.md).
 ## Node addressing
 
 Set `settings.network.fabric` to a transport instance — a
-`wireguard-mesh` (tunnel/VXLAN) or `routed-fabric` (native) instance —
-to consume its `node_transport` export, or set `network.fabric = null`
+`routed-fabric` instance — to consume its `node_transport` export, or set `network.fabric = null`
 and provide explicit
 `network.ipv4`/`network.ipv6` per machine. D58 changes the exported
 `node_transport` schema only, never this option. The service consumes only
@@ -146,9 +144,8 @@ tarballs (matching the bundle's manifest exactly). Override
 
 ## Tests
 
-Single/join/HA suites run on `wireguard-mesh`; the data-plane and native
-ClusterMesh suites run on `routed-fabric`. Additional tunnel, selective,
-and external-LB suites cover both profiles. All are registered as
+Every suite runs on `routed-fabric` with Cilium native routing (D72
+removed tunnel mode and `wireguard-mesh`). All are registered as
 `clanTests` and exposed under `legacyPackages.x86_64-linux.vmTests`. Their
 bodies are shared with k3s in `lib/kube-cluster/tests/vm/`; the files in
 `tests/vm/` pass `distro = "rke2"`. Run them on the remote builder (see

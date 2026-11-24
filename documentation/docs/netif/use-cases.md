@@ -12,7 +12,7 @@ hardware yet; that waits for the contract gate ([plan](plan.md)).
 | U4 | **Headless servers** (euc-hel-0) | a stable address, path MTU, untrusted links, the lockout guard | P3b, P8 |
 | U5 | **VM host with provider MACs** (Hetzner Robot) | a bridge that sends from the uplink's MAC, guest ports left to the hypervisor | P7 |
 | U6 | **Cloud VMs** (Hetzner Cloud, AWS, GCP, Azure) | DHCP on two NICs with one default route, path MTU, NICs found by device path, no cloud-init networking | P3b |
-| U7 | **Proxmox VMs** | static or DHCP underlay, MTU for tunnel mode | P3b |
+| U7 | **Proxmox VMs** | static or DHCP underlay, path MTU for the fabric | P3b |
 | U8 | **Bare-metal Kubernetes nodes at home** | as U4, on the LAN behind the router | P3b, P8 |
 | U9 | **Machines behind a gateway** | a static default gateway; the gateway's NAT is not netif's | P3b |
 | U10 | **One machine, several roles** | modes that differ in kind: a server in one, a gamescope box in another | P4 |
@@ -50,7 +50,6 @@ part. "Open" is what no test shows yet.
 | | fabric border, ECMP towards Kubernetes nodes | `routed-fabric`, `k3s-data-plane`, `rke2-data-plane` | the router as a Kubernetes node behind its own NAT, in one test |
 | **Cloud VMs** | DHCP (preferred) and static addresses, two NICs, NICs by slot | `netif-dhcp`, `netif-match`, `netif` | a run on a real cloud |
 | **Any cluster** | Cilium native routing with FRR | `k3s-data-plane-netif`, `rke2-data-plane-netif` | |
-| | Cilium tunnel mode without FRR | `k3s-clustermesh-tunnel`, `rke2-clustermesh-tunnel` and the single, join and HA tests | tunnel mode on a netif underlay (those tests use the bare fixture) |
 
 One point differs from how you wrote it on 2026-11-18: kamrui-h1's
 `developer` and `kubernetes` modes use IfState, not NetworkManager. The
@@ -63,7 +62,7 @@ Across all of them:
 
 - **Tailscale** is supported in every mode. NetBird and Cloudflare WARP
   are planned after the contract gate.
-- **WireGuard** is `routed-fabric` and `wireguard-mesh` only. netif has no
+- **WireGuard** is `routed-fabric` only (D72). netif has no
   hand-written WireGuard links.
 - **Docker and Podman** get one `containers` preset.
 

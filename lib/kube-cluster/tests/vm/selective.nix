@@ -2,22 +2,16 @@
   lib,
   inputs,
   distro,
-  profile ? "native",
 }: let
   clusterA = "${distro}-a";
   clusterB = "${distro}-b";
   clusterC = "${distro}-c";
   k3s = distro == "k3s";
-  native = profile == "native";
-  transportModule =
-    if native
-    then "routed-fabric"
-    else "wireguard-mesh";
   runtimeUnit =
     if k3s
     then "k3s.service"
     else "rke2-server.service";
-  marker = "${lib.toUpper distro}_CLUSTERMESH_SELECTIVE${lib.optionalString (!native) "_TUNNEL"}_OK";
+  marker = "${lib.toUpper distro}_CLUSTERMESH_SELECTIVE_OK";
   underlayIp = name: "192.168.1.${
     toString
     {
@@ -56,7 +50,7 @@
   }";
   clusterSettings = id: peers: {
     network.fabric = {
-      service = transportModule;
+      service = "routed-fabric";
       instance = "mesh";
     };
     cilium.id = id;
@@ -91,29 +85,18 @@
     services.${distro}.images = [(busyboxImage pkgs)];
   };
 in {
-  name = "${distro}-clustermesh-selective${lib.optionalString (!native) "-${profile}"}";
+  name = "${distro}-clustermesh-selective";
 
   clan = {
     directory = ./.;
     test.useContainers = false;
-    modules =
-      lib.optionalAttrs native {
-        routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-        };
-      }
-      // lib.optionalAttrs (!native) {
-        wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-        };
-      };
-    exportInterfaces =
-      {
-        node_transport = ../../../../lib/node-transport-interface.nix;
-      }
-      // lib.optionalAttrs native {
-        routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
-      };
+    modules.routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
+      ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
+    };
+    exportInterfaces = {
+      node_transport = ../../../../lib/node-transport-interface.nix;
+      routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
+    };
     inventory = {
       meta.domain = "test.clan";
       machines = {
@@ -124,33 +107,22 @@ in {
       };
       instances = {
         mesh = {
-          module.name = transportModule;
+          module.name = "routed-fabric";
           module.input = "self";
-          roles =
-            if native
-            then {
-              spine.machines.delta.settings = {
-                ipv4 = stableIp "delta";
-                ipv6 = stableIp6 "delta";
-                endpoint = underlayIp "delta";
-              };
-              leaf.machines = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
-                settings = {
-                  ipv4 = stableIp name;
-                  ipv6 = stableIp6 name;
-                  endpoint = underlayIp name;
-                };
-              });
-            }
-            else {
-              peer.machines = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
-                settings = {
-                  ipv4 = stableIp name;
-                  ipv6 = stableIp6 name;
-                  endpoint = underlayIp name;
-                };
-              });
+          roles = {
+            spine.machines.delta.settings = {
+              ipv4 = stableIp "delta";
+              ipv6 = stableIp6 "delta";
+              endpoint = underlayIp "delta";
             };
+            leaf.machines = lib.genAttrs ["alpha" "beta" "gamma"] (name: {
+              settings = {
+                ipv4 = stableIp name;
+                ipv6 = stableIp6 name;
+                endpoint = underlayIp name;
+              };
+            });
+          };
         };
         ${clusterA} = {
           module.name = distro;
@@ -183,15 +155,12 @@ in {
     };
   };
 
-  nodes =
-    {
-      alpha = commonNode "alpha";
-      beta = commonNode "beta";
-      gamma = commonNode "gamma";
-    }
-    // lib.optionalAttrs native {
-      delta = commonNode "delta";
-    };
+  nodes = {
+    alpha = commonNode "alpha";
+    beta = commonNode "beta";
+    gamma = commonNode "gamma";
+    delta = commonNode "delta";
+  };
 
   testScript = ''
     def fail_dump(m):
@@ -220,7 +189,7 @@ in {
         start_all()
         with subtest("underlay and runtime up"):
             machines = [alpha, beta, gamma]
-            for m in machines${lib.optionalString native " + [delta]"}:
+            for m in machines + [delta]:
                 m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
             for m in machines:
                 m.wait_for_unit("haproxy.service", timeout=240)
@@ -241,31 +210,21 @@ in {
                     "kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=clustermesh-apiserver --timeout=180s",
                     timeout=300,
                 )
-                if ${
-      if native
-      then "True"
-      else "False"
-    }:
-                    m.wait_until_succeeds("test $(kubectl get ciliumbgpclusterconfig --no-headers | wc -l) -eq 1", timeout=180)
-                    m.wait_until_succeeds("test $(kubectl get ciliumbgppeerconfig --no-headers | wc -l) -eq 1", timeout=180)
-                    m.wait_until_succeeds("test $(kubectl get ciliumbgpadvertisement --no-headers | wc -l) -eq 2", timeout=180)
-                    m.wait_until_succeeds("test $(cilium bgp peers | grep -c established) -eq 1", timeout=240)
+                m.wait_until_succeeds("test $(kubectl get ciliumbgpclusterconfig --no-headers | wc -l) -eq 1", timeout=180)
+                m.wait_until_succeeds("test $(kubectl get ciliumbgppeerconfig --no-headers | wc -l) -eq 1", timeout=180)
+                m.wait_until_succeeds("test $(kubectl get ciliumbgpadvertisement --no-headers | wc -l) -eq 2", timeout=180)
+                m.wait_until_succeeds("test $(cilium bgp peers | grep -c established) -eq 1", timeout=240)
 
         with subtest("exposed apiserver serves mTLS health"):
-            if ${
-      if native
-      then "True"
-      else "False"
-    }:
-                # Prove the exposed apiserver path independently of peering state.
-                for m in machines:
-                    m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
-                    m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.crt}' | base64 -d > /tmp/clustermesh-client.crt")
-                    m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.key}' | base64 -d > /tmp/clustermesh-client.key")
-                alpha.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
-                beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.1.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
-                beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.3.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
-                gamma.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
+            # Prove the exposed apiserver path independently of peering state.
+            for m in machines:
+                m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
+                m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.crt}' | base64 -d > /tmp/clustermesh-client.crt")
+                m.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.tls\\.key}' | base64 -d > /tmp/clustermesh-client.key")
+            alpha.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
+            beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.1.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
+            beta.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.3.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
+            gamma.wait_until_succeeds("curl -s --cacert /tmp/clustermesh-ca.crt --cert /tmp/clustermesh-client.crt --key /tmp/clustermesh-client.key --max-time 5 https://172.16.2.79:2379/health -o /dev/null -w '%{http_code}' | grep -x 200 >/dev/null", timeout=240)
 
         # Symmetric selective edges A<->B and B<->C only; peering is not transitive.
         with subtest("selective peering is not transitive"):
@@ -277,30 +236,19 @@ in {
             gamma.fail("cilium clustermesh status | grep '${clusterA}' >/dev/null")
 
         with subtest("datapath bounds remote clusters"):
-            if ${
-      if native
-      then "True"
-      else "False"
-    }:
-                # Native peering also bounds remote pod-route policy. Cilium
-                # advertises per-node /24 + /64 allocations, not the whole pool.
-                for m in machines:
-                    m.wait_until_succeeds("ip route show 10.3.0.0/24 | grep . >/dev/null", timeout=240)
-                    m.wait_until_succeeds("ip -6 route show fd10:3::/64 | grep . >/dev/null", timeout=240)
-                alpha.fail("ip route show 10.5.0.0/24 | grep . >/dev/null")
-                alpha.fail("ip -6 route show fd10:5::/64 | grep . >/dev/null")
-                gamma.fail("ip route show 10.1.0.0/24 | grep . >/dev/null")
-                gamma.fail("ip -6 route show fd10:1::/64 | grep . >/dev/null")
-                beta.wait_until_succeeds("ip route show 10.1.0.0/24 | grep . >/dev/null", timeout=240)
-                beta.wait_until_succeeds("ip route show 10.5.0.0/24 | grep . >/dev/null", timeout=240)
-                beta.wait_until_succeeds("ip -6 route show fd10:1::/64 | grep . >/dev/null", timeout=240)
-                beta.wait_until_succeeds("ip -6 route show fd10:5::/64 | grep . >/dev/null", timeout=240)
-            else:
-                # Tunnel mode has no remote pod-route policy; selective isolation is
-                # proved by ClusterMesh membership and global-Service backends below.
-                for m in machines:
-                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -x tunnel >/dev/null")
-                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.tunnel-protocol}' | grep -x vxlan >/dev/null")
+            # Native peering also bounds remote pod-route policy. Cilium
+            # advertises per-node /24 + /64 allocations, not the whole pool.
+            for m in machines:
+                m.wait_until_succeeds("ip route show 10.3.0.0/24 | grep . >/dev/null", timeout=240)
+                m.wait_until_succeeds("ip -6 route show fd10:3::/64 | grep . >/dev/null", timeout=240)
+            alpha.fail("ip route show 10.5.0.0/24 | grep . >/dev/null")
+            alpha.fail("ip -6 route show fd10:5::/64 | grep . >/dev/null")
+            gamma.fail("ip route show 10.1.0.0/24 | grep . >/dev/null")
+            gamma.fail("ip -6 route show fd10:1::/64 | grep . >/dev/null")
+            beta.wait_until_succeeds("ip route show 10.1.0.0/24 | grep . >/dev/null", timeout=240)
+            beta.wait_until_succeeds("ip route show 10.5.0.0/24 | grep . >/dev/null", timeout=240)
+            beta.wait_until_succeeds("ip -6 route show fd10:1::/64 | grep . >/dev/null", timeout=240)
+            beta.wait_until_succeeds("ip -6 route show fd10:5::/64 | grep . >/dev/null", timeout=240)
 
         # Global Services synchronize only across the selected edges.
         with subtest("global Services sync only on selected edges"):
@@ -337,7 +285,7 @@ in {
             assert seen_c == {"CLUSTER_B", "CLUSTER_C"}, f"C selective peers: {seen_c!r}"
         print("${marker}")
     except Exception:
-        for m in [alpha, beta, gamma]${lib.optionalString native " + [delta]"}:
+        for m in [alpha, beta, gamma] + [delta]:
             try:
                 fail_dump(m)
             except Exception:

@@ -77,6 +77,15 @@ a `trusted` tier, rendered Cilium `devices` (SPEC.md D71), and native
 routing only (SPEC.md D72). §14.3 sets the direction for each unfixed
 finding.
 
+Round G6 (2026-11-23): **native routing only, implemented** (SPEC.md
+D72, round 53). Cilium tunnel mode and `wireguard-mesh` are gone.
+- The CLAT suites run on the routed fabric only:
+  `<distro>-clat-fabric` is now `<distro>-clat`, and
+  `k3s-clat-fabric-mapped` is now `k3s-clat-mapped`.
+  `<distro>-clat-mesh` and `k3s-clat-mesh-mapped` are deleted.
+- `<distro>-v6only` reuses `join`, which now runs on the fabric.
+- §12.3 (the two modes) and the mesh rows of §10.11 are history.
+
 
 
 As in `specs/netif.md` §0: *(planned)*, *(probe-verified)*,
@@ -164,7 +173,7 @@ any code (AGENTS.md rule 3).
   - The namespace and the veth pair are declared in IfState
     (`namespaces`), because IfState deletes a namespace it does not
     know. `lib/gateway` renders them into the shared IfState base, as
-    `wireguard-mesh` renders its tunnel, and claims them in the
+    `routed-fabric` renders its links, and claims them in the
     ownership registry. An IfState apply keeps the namespace and the
     Jool instance (§10.1).
   - `lib/gateway` renders its own Jool units. The NixOS module
@@ -292,8 +301,9 @@ any code (AGENTS.md rule 3).
     slow one). A pod's IPv4 packet in that window was not tested; it
     most likely leaves with the pod's address and is lost. The window
     opens at boot and when the link is really recreated.
-  - **Proven on both transports** (native routing on `routed-fabric`,
-    the VXLAN tunnel on `wireguard-mesh`), two nodes, IPv6-only NICs:
+  - **Proven on native routing** (`routed-fabric`; the VXLAN tunnel
+    proof on `wireguard-mesh` was removed with it, SPEC.md D72), two
+    nodes, IPv6-only NICs:
     the decided design on k3s and rke2, the alternative on k3s (§10.11).
   - **Found on the way:** the cluster's CoreDNS forwarded to the node's
     IPv4 nameserver, and the gateway translated that private IPv4
@@ -946,8 +956,8 @@ any code (AGENTS.md rule 3).
   | `gateway-router` | G8, G10, G11, G14, G15, G20, G22; netif N16: zones, advertisements, the prefix hook, the service prefix | `GATEWAY_ROUTER_OK` |
   | `gateway-dual-wan` | G16; netif N21: two DHCPv4 WANs, failover without a route change | `GATEWAY_DUAL_WAN_OK` |
   | `k3s-v6only`, `rke2-v6only` | SPEC.md D67: the `join` contract on IPv6-only NICs | `<DISTRO>_V6ONLY_OK` |
-  | `<distro>-clat-<transport>` (4) | G5 as decided, D67, on both transports | `<DISTRO>_CLAT_<TRANSPORT>_OK` |
-  | `k3s-clat-<transport>-mapped` (2) | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative | `K3S_CLAT_<TRANSPORT>_MAPPED_OK` |
+  | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric | `<DISTRO>_CLAT_OK` |
+  | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative | `K3S_CLAT_MAPPED_OK` |
 
 - A suite asserts a bound with margin (about three times the measured
   sample), never the sample. It prints the measured value.
@@ -1442,6 +1452,10 @@ bound of about three times the sample:
 
 ### 10.11 `<distro>-clat-<transport>` (PR10; G5, G23, SPEC.md D67)
 
+*Since round G6 (SPEC.md D72) only the fabric topology exists, as
+`<distro>-clat` and `k3s-clat-mapped`. The mesh rows below are
+history.*
+
 One probe body (`kube-clat.nix`) with the same test script on two
 topologies: `fabric` is the `data-plane` suite's (routed-fabric, FRR,
 per-pair WireGuard, Cilium native routing), `mesh` is the `join`
@@ -1719,6 +1733,12 @@ closes it. Nothing here is a decision; the owner picks what becomes one.
 | A hot path depends on unit ordering | The hook that blocked on `try-restart corerad` hung the next boot for 300 s (§10.7); a Jool unit that was not idempotent broke on an IfState apply (§10.9) | A suite phase in every gateway suite: `systemctl restart ifstate.service`, then a reboot, then the full assertions again **Round G3: every gateway suite and the CLAT suites reapply IfState and reboot, then assert again.** |
 
 ### 12.3 The two Cilium modes: what each suite covers
+
+*Superseded by SPEC.md D72 (round G6): tunnel mode and
+`wireguard-mesh` are removed, and every suite runs on the routed
+fabric. The table is history. The twins merged under the plain name
+(`ha`, `clustermesh-external`, `k3s-modes`); the tunnel column's own
+suites were deleted.*
 
 The owner uses the routed fabric (FRR, native routing) most, and wants
 the tunnel mode kept equal where the mode allows it.
@@ -2159,7 +2179,8 @@ owner.
 
 ### 14.4 Cilium tunnel mode
 
-Decided 2026-11-23: native routing only (SPEC.md D72). Tunnel mode
-and `wireguard-mesh` are removed in the next session, after the tag
-`tunnel-mode-final`. The `<distro>-clat-mesh*` suites go with them;
-`<distro>-clat-fabric` remains the CLAT proof.
+Decided 2026-11-23: native routing only (SPEC.md D72).
+**Implemented (round G6):** tunnel mode and `wireguard-mesh` are
+removed; the last commit with them is tag `tunnel-mode-final`. The
+`<distro>-clat-mesh*` suites went with them; `<distro>-clat` (the
+former `-clat-fabric`) is the CLAT proof.

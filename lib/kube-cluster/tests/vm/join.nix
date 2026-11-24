@@ -1,6 +1,8 @@
-# <distro>-join: one server + one agent over the wireguard-mesh transport.
+# <distro>-join: one server + one agent on the routed fabric (routed-fabric,
+# FRR, per-pair WireGuard, Cilium native routing): the server is a spine,
+# the agent a leaf.
 # The agent joins through its LOCAL haproxy: the kubeapi FQDN resolves to
-# the agent's own mesh address (/etc/hosts), where its haproxy frontend
+# the agent's own node address (/etc/hosts), where its haproxy frontend
 # balances to the server:
 # - k3s: kubeapi frontend (7443 = 7442 + cilium.id 1) to the server's
 #   kube-apiserver (6443) with TLS /readyz healthchecks;
@@ -12,14 +14,14 @@
 # <distro>-join-netif (`underlay = "netif"`): the same cluster with the
 # nodes' underlay declared through the netif service instead of the bare
 # IfState fixture (specs/netif.md N14: netif proven under Cilium
-# Kubernetes, here on the VXLAN tunnel over wireguard-mesh). Everything
-# the join suite asserts must hold unchanged, on links netif does not
-# firewall-trust. Its extra phases pin: the mesh derives its MTU from the
-# netif link (N17); pods reach each other across nodes in both families;
-# `ifstatecli check` proposes nothing and a reapply changes nothing; the
-# ownership registry keeps Cilium's links and the CNI's namespaces, and
-# IfState keeps the mesh link, through an apply (N6); the agent comes
-# back after a reboot.
+# Kubernetes, here with native routing over the routed fabric).
+# Everything the join suite asserts must hold unchanged, on links netif
+# does not firewall-trust. Its extra phases pin: the fabric derives its
+# adjacency MTU from the netif link (N17); pods reach each other across
+# nodes in both families over the adjacency; `ifstatecli check` proposes
+# nothing and a reapply changes nothing; the ownership registry keeps
+# Cilium's links and the CNI's namespaces, and IfState keeps the fabric
+# links, through an apply (N6); the agent comes back after a reboot.
 {
   lib,
   inputs,
@@ -34,10 +36,18 @@
     alpha = "192.168.1.1/24";
     beta = "192.168.1.2/24";
   };
-  # The netif link's declared path MTU, and what the mesh derives from it
-  # (wireguard-mesh `mtu`: path MTU minus 96; 1420 without netif).
+  # The netif link's declared path MTU, and what the fabric derives from
+  # it (routed-fabric adjacency MTU: path MTU minus 96; 1420 without netif).
   pathMtu = 1500;
-  meshMtu = pathMtu - 96;
+  adjacencyMtu = pathMtu - 96;
+  # The fabric loopback that holds the node addresses.
+  loopback = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" "mesh")}";
+  endpointSources = [
+    {
+      service = "clan-core/internet";
+      instance = "underlay";
+    }
+  ];
   # Python for the netif variant only. Both are empty for the fixture
   # variant, whose test script must stay exactly as it was.
   indent = prefix: text: lib.concatMapStringsSep "\n" (line: lib.optionalString (line != "") (prefix + line)) (lib.splitString "\n" text);
@@ -51,6 +61,10 @@
       nodes = [alpha, beta]
       mesh4 = {"alpha": "192.168.77.1", "beta": "192.168.77.2"}
       mesh6 = {"alpha": "fd00:77::1", "beta": "fd00:77::2"}
+      # each node's one fabric adjacency (alpha is the spine, beta the leaf)
+      adjacency = {node.name: node.succeed("wg show interfaces").strip() for node in nodes}
+      for name, link in adjacency.items():
+          assert link and " " not in link, f"{name}: expected one fabric adjacency, got {link!r}"
 
       def pod_ips(node_name):
           """The probe pod's addresses on one node: (IPv4, IPv6)."""
@@ -70,12 +84,12 @@
               alpha.wait_until_succeeds(f"{KUBECTL} exec netif-{source} -- ping -6 -c 2 -W 2 {ipv6}", timeout=timeout)
 
       def foreign_objects(node):
-          """What IfState must leave alone: the mesh link it declares, and
+          """What IfState must leave alone: the fabric links it declares, and
           Cilium's links and the CNI's namespaces, which the registry owns."""
           links = {
               link["ifname"]: link["ifindex"]
               for link in json.loads(node.succeed("ip -j link show"))
-              if link["ifname"] == "wg-mesh" or link["ifname"].startswith(("cilium_", "lxc"))
+              if link["ifname"] in (adjacency[node.name], "${loopback}") or link["ifname"].startswith(("cilium_", "lxc"))
           }
           netns = sorted(
               line.split()[0] for line in node.succeed("ip netns list").splitlines() if line.startswith("cni-")
@@ -91,13 +105,13 @@
           node.succeed("systemctl start netif-drift.service")
           assert_ifstate_noop(node)
 
-      with state_dump_on_failure(nodes, extra=["wg show wg-mesh", "ifstatecli --config /etc/ifstate/ifstate.yaml check"]):
+      with state_dump_on_failure(nodes, extra=["wg show all", "vtysh -c 'show bgp summary'", "ifstatecli --config /etc/ifstate/ifstate.yaml check"]):
           with subtest("versions"):
               for node in nodes:
-                  print_versions(node, ["kernel", "ifstate", "wireguard", "nftables", "${distro}"])
+                  print_versions(node, ["kernel", "ifstate", "wireguard", "frr", "nftables", "${distro}"])
               observe("cilium version", alpha, "KUBECONFIG=${kubeconfig} cilium version")
 
-          with subtest("netif renders the underlay; the mesh derives its MTU from the netif link (N14, N17)"):
+          with subtest("netif renders the underlay; the fabric derives its adjacency MTU from the netif link (N14, N17)"):
               for node in nodes:
                   status = json.loads(node.succeed("netif-status --json"))
                   uplink = [l for l in status["links"] if l["interface"] == "eth1"]
@@ -105,15 +119,15 @@
                   address = ${builtins.toJSON nodeAddress}[node.name]
                   node.succeed(f"ip -4 -o addr show dev eth1 | grep -F '{address}' >/dev/null")
                   node.succeed("systemctl is-active netif-guard.service")
-                  mtu = int(node.succeed("cat /sys/class/net/wg-mesh/mtu"))
-                  assert mtu == ${toString meshMtu}, f"{node.name}: wg-mesh MTU {mtu}, expected ${toString pathMtu} - 96"
+                  mtu = int(node.succeed(f"cat /sys/class/net/{adjacency[node.name]}/mtu"))
+                  assert mtu == ${toString adjacencyMtu}, f"{node.name}: {adjacency[node.name]} MTU {mtu}, expected ${toString pathMtu} - 96"
               print("NETIF_UNDERLAY_OK")
 
-          with subtest("pods reach each other across nodes in both families, in a VXLAN tunnel over wg-mesh"):
+          with subtest("pods reach each other across nodes in both families, natively routed over the fabric adjacency"):
               mode = alpha.succeed(f"{KUBECTL} get configmap -n kube-system cilium-config -o jsonpath='{{.data.routing-mode}}'").strip()
-              assert mode == "tunnel", f"Cilium routing-mode is {mode!r}"
+              assert mode == "native", f"Cilium routing-mode is {mode!r}"
               for node in nodes:
-                  node.succeed("ip -d link show cilium_vxlan | grep -F vxlan >/dev/null")
+                  node.fail("ip link show cilium_vxlan")
                   alpha.succeed(
                       f"{KUBECTL} run netif-{node.name} --image=busybox:1.36.1 --restart=Always "
                       f"--overrides='{{\"spec\":{{\"nodeName\":\"{node.name}\"}}}}' -- sleep infinity"
@@ -121,29 +135,30 @@
               alpha.wait_until_succeeds(
                   f"{KUBECTL} wait --for=condition=Ready pod/netif-alpha pod/netif-beta --timeout=120s", timeout=300
               )
-              # the tunnel's outer packets leave on the mesh link, not on the underlay
-              before = {node.name: int(node.succeed("cat /sys/class/net/wg-mesh/statistics/tx_packets")) for node in nodes}
+              # pod packets leave on the fabric adjacency, not on the underlay
+              tx = "cat /sys/class/net/{}/statistics/tx_packets"
+              before = {node.name: int(node.succeed(tx.format(adjacency[node.name]))) for node in nodes}
               pods_reach_each_other(120)
               for node in nodes:
-                  sent = int(node.succeed("cat /sys/class/net/wg-mesh/statistics/tx_packets")) - before[node.name]
-                  assert sent >= 4, f"{node.name}: only {sent} packets left on wg-mesh during the pod pings"
+                  sent = int(node.succeed(tx.format(adjacency[node.name]))) - before[node.name]
+                  assert sent >= 4, f"{node.name}: only {sent} packets left on {adjacency[node.name]} during the pod pings"
               print("NETIF_POD_NETWORK_OK")
 
-          with subtest("under a live cluster a reapply changes nothing and keeps Cilium's and the mesh's objects (N6, N14)"):
+          with subtest("under a live cluster a reapply changes nothing and keeps Cilium's and the fabric's objects (N6, N14)"):
               for node in nodes:
                   links, netns = foreign_objects(node)
-                  for name in ["wg-mesh", "cilium_host", "cilium_net", "cilium_vxlan", "lxc_health"]:
+                  for name in [adjacency[node.name], "${loopback}", "cilium_host", "cilium_net", "lxc_health"]:
                       assert name in links, f"{node.name}: no {name} before the apply: {links}"
                   assert [name for name in links if name.startswith("lxc") and name != "lxc_health"], f"{node.name}: no pod link: {links}"
                   assert netns, f"{node.name}: no cni- namespace before the apply"
-                  handshakes = node.succeed("wg show wg-mesh latest-handshakes").split()
+                  handshakes = node.succeed(f"wg show {adjacency[node.name]} latest-handshakes").split()
                   netif_changes_nothing(node)
                   after_links, after_netns = foreign_objects(node)
                   # the same ifindex: no link was deleted and created again
                   assert after_links == links, f"{node.name}: the apply changed links: {links} -> {after_links}"
                   assert after_netns == netns, f"{node.name}: the apply changed namespaces: {netns} -> {after_netns}"
                   # the WireGuard session was not reset
-                  after_handshakes = node.succeed("wg show wg-mesh latest-handshakes").split()
+                  after_handshakes = node.succeed(f"wg show {adjacency[node.name]} latest-handshakes").split()
                   assert int(after_handshakes[1]) >= int(handshakes[1]) > 0, (node.name, handshakes, after_handshakes)
               # the cluster did not notice
               alpha.succeed(f"{KUBECTL} get nodes --no-headers | grep -c ' Ready ' | grep -x 2 >/dev/null")
@@ -151,16 +166,16 @@
               pods_reach_each_other(60)
               print("NETIF_UNDER_KUBERNETES_OK")
 
-          with subtest("the agent reboots: netif, the mesh and the pod network come back"):
+          with subtest("the agent reboots: netif, the fabric and the pod network come back"):
               boot_id = alpha.succeed(f"{KUBECTL} get node beta -o jsonpath='{{.status.nodeInfo.bootID}}'").strip()
               beta.shutdown()
               beta.start()
               # `Result` reads "success" before the unit ran: wait for what it renders
               beta.wait_until_succeeds("ip -4 -o addr show dev eth1 | grep -F '192.168.1.2/24' >/dev/null", timeout=300)
-              beta.wait_until_succeeds("ip link show wg-mesh >/dev/null && test \"$(systemctl show -p ActiveState --value ifstate.service)\" != activating", timeout=120)
+              beta.wait_until_succeeds(f"ip link show {adjacency['beta']} >/dev/null && test \"$(systemctl show -p ActiveState --value ifstate.service)\" != activating", timeout=120)
               beta.succeed("test $(systemctl show -p Result --value ifstate.service) = success")
-              beta.succeed("ip -br addr show wg-mesh | grep '192.168.77.2/32' >/dev/null")
-              beta.succeed("ip -br addr show wg-mesh | grep 'fd00:77::2/128' >/dev/null")
+              beta.succeed("ip -br addr show ${loopback} | grep '192.168.77.2/32' >/dev/null")
+              beta.succeed("ip -br addr show ${loopback} | grep 'fd00:77::2/128' >/dev/null")
               alpha.wait_until_succeeds("ping -c 2 -W 2 192.168.77.2", timeout=120)
               alpha.wait_until_succeeds("ping -6 -c 2 -W 2 fd00:77::2", timeout=120)
               beta.wait_for_unit("${agentUnit}.service", timeout=600)
@@ -206,10 +221,13 @@ in {
     directory = ./.;
     test.useContainers = false;
 
-    modules.wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
+    modules.routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
       ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
     };
-    exportInterfaces.node_transport = ../../../node-transport-interface.nix;
+    exportInterfaces = {
+      routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
+      node_transport = ../../../node-transport-interface.nix;
+    };
 
     inventory = {
       meta.domain = "test.clan";
@@ -229,24 +247,18 @@ in {
         };
 
         mesh = {
-          module.name = "wireguard-mesh";
+          module.name = "routed-fabric";
           module.input = "self";
-          roles.peer = {
-            settings.endpointSources = [
-              {
-                service = "clan-core/internet";
-                instance = "underlay";
-              }
-            ];
-            machines = {
-              alpha.settings = {
-                ipv4 = "192.168.77.1";
-                ipv6 = "fd00:77::1";
-              };
-              beta.settings = {
-                ipv4 = "192.168.77.2";
-                ipv6 = "fd00:77::2";
-              };
+          roles = {
+            spine.machines.alpha.settings = {
+              ipv4 = "192.168.77.1";
+              ipv6 = "fd00:77::1";
+              inherit endpointSources;
+            };
+            leaf.machines.beta.settings = {
+              ipv4 = "192.168.77.2";
+              ipv6 = "fd00:77::2";
+              inherit endpointSources;
             };
           };
         };
@@ -278,7 +290,7 @@ in {
           roles.server = {
             settings = {
               network.fabric = {
-                service = "wireguard-mesh";
+                service = "routed-fabric";
                 instance = "mesh";
               };
               # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
@@ -290,7 +302,7 @@ in {
           roles.agent = {
             settings = {
               network.fabric = {
-                service = "wireguard-mesh";
+                service = "routed-fabric";
                 instance = "mesh";
               };
               cilium.id = 1;
@@ -367,18 +379,18 @@ in {
                 m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
                 m.wait_for_unit("haproxy.service", timeout=240)
 
-        # --- Transport (§6.3): full mesh, dual-stack ----------------------
-        # Every node holds both mesh families on wg-mesh, and every remote
-        # node InternalIP is reachable over the mesh in both families.
-        with subtest("dual-stack full mesh over wg-mesh"):
+        # --- Transport (§6.3): the routed fabric, dual-stack -------------
+        # Every node holds both families on its fabric loopback, and every
+        # remote node InternalIP is reachable over the fabric in both families.
+        with subtest("dual-stack node addresses over the routed fabric"):
             mesh_addrs = {
                 "alpha": ("192.168.77.1", "fd00:77::1"),
                 "beta": ("192.168.77.2", "fd00:77::2"),
             }
             for m in [alpha, beta]:
                 ipv4, ipv6 = mesh_addrs[m.name]
-                m.succeed(f"ip -br addr show wg-mesh | grep '{ipv4}/32' >/dev/null")
-                m.succeed(f"ip -br addr show wg-mesh | grep '{ipv6}/128' >/dev/null")
+                m.succeed(f"ip -br addr show ${loopback} | grep '{ipv4}/32' >/dev/null")
+                m.succeed(f"ip -br addr show ${loopback} | grep '{ipv6}/128' >/dev/null")
             for source in [alpha, beta]:
                 for target in [alpha, beta]:
                     if source.name == target.name:
@@ -392,7 +404,7 @@ in {
             beta.wait_for_unit("${agentUnit}.service", timeout=600)
 
         # --- The agent joined through its OWN haproxy --------------------
-        # kubeapi FQDN -> own mesh address (/etc/hosts), join URL on the
+        # kubeapi FQDN -> own node address (/etc/hosts), join URL on the
         ${
       if k3s
       then "# LB kubeapi port 7443 (the kube-apiserver owns 6443 itself)."
@@ -420,8 +432,8 @@ in {
                 timeout=300,
             )
 
-        # --- Both nodes Ready with mesh InternalIPs (dual-stack) ---------
-        with subtest("both nodes Ready with dual-stack mesh InternalIPs"):
+        # --- Both nodes Ready with fabric InternalIPs (dual-stack) -------
+        with subtest("both nodes Ready with dual-stack fabric InternalIPs"):
             alpha.wait_until_succeeds(
                 "KUBECONFIG=${kubeconfig} kubectl wait --for=condition=Ready node/alpha node/beta --timeout=120s",
                 timeout=240,
@@ -431,7 +443,7 @@ in {
                     f"KUBECONFIG=${kubeconfig} kubectl get node {name} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'"
                 )
                 for ip in ips:
-                    assert ip in out, f"{name} InternalIP {out.strip()!r} is missing the mesh address {ip}"
+                    assert ip in out, f"{name} InternalIP {out.strip()!r} is missing the node address {ip}"
                 # Topology labels default to the instance name (invariant 7).
                 alpha.succeed(
                     f"KUBECONFIG=${kubeconfig} kubectl get node {name} --show-labels | grep 'topology.kubernetes.io/region=${distro}' >/dev/null"

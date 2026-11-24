@@ -1,12 +1,17 @@
-# <distro>-ha: three servers (managers) over the wireguard-mesh transport.
+# <distro>-ha: three servers (managers) on the routed fabric
+# (routed-fabric, FRR, per-pair WireGuard, Cilium native routing).
 # Proves the HA shape: every manager joins through its OWN haproxy
-# (kubeapi FQDN -> own mesh address; k3s: LB kubeapi port 7443 -> manager
+# (kubeapi FQDN -> own node address; k3s: LB kubeapi port 7443 -> manager
 # kube-apiserver backends, rke2: LB supervisor port 8443 -> manager
-# supervisor backends, over the mesh), etcd quorum with 3 members, Cilium
+# supervisor backends, over the fabric), etcd quorum with 3 members, Cilium
 # healthy everywhere — then an unclean loss of one manager (shutdown):
 # the survivors keep serving through their own haproxy (healthchecks mark
 # the dead manager DOWN), fresh etcd writes succeed with 2/3 quorum, and
 # new pods still schedule.
+#
+# alpha and beta are spines, gamma is a leaf attached to both. The
+# manager that dies (beta) is a spine, so the survivors also prove that
+# the fabric routes around a dead spine.
 # Shared by the k3s and rke2 suites; every distro difference is a `k3s`
 # branch below.
 {
@@ -28,6 +33,20 @@
       [(lib.head lines)]
       ++ map (l: lib.optionalString (l != "") (lib.concatStrings (lib.replicate n " ") + l)) (lib.tail lines)
     );
+  # The fabric loopback that holds the node addresses.
+  loopback = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" "mesh")}";
+  member = n: {
+    settings = {
+      ipv4 = "192.168.77.${toString n}";
+      ipv6 = "fd00:77::${toString n}";
+      endpointSources = [
+        {
+          service = "clan-core/internet";
+          instance = "underlay";
+        }
+      ];
+    };
+  };
 in {
   name = "${distro}-ha";
 
@@ -35,10 +54,13 @@ in {
     directory = ./.;
     test.useContainers = false;
 
-    modules.wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
+    modules.routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
       ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
     };
-    exportInterfaces.node_transport = ../../../node-transport-interface.nix;
+    exportInterfaces = {
+      routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
+      node_transport = ../../../node-transport-interface.nix;
+    };
 
     inventory = {
       meta.domain = "test.clan";
@@ -60,29 +82,14 @@ in {
         };
 
         mesh = {
-          module.name = "wireguard-mesh";
+          module.name = "routed-fabric";
           module.input = "self";
-          roles.peer = {
-            settings.endpointSources = [
-              {
-                service = "clan-core/internet";
-                instance = "underlay";
-              }
-            ];
-            machines = {
-              alpha.settings = {
-                ipv4 = "192.168.77.1";
-                ipv6 = "fd00:77::1";
-              };
-              beta.settings = {
-                ipv4 = "192.168.77.2";
-                ipv6 = "fd00:77::2";
-              };
-              gamma.settings = {
-                ipv4 = "192.168.77.3";
-                ipv6 = "fd00:77::3";
-              };
+          roles = {
+            spine.machines = {
+              alpha = member 1;
+              beta = member 2;
             };
+            leaf.machines.gamma = member 3;
           };
         };
 
@@ -93,7 +100,7 @@ in {
           roles.server = {
             settings = {
               network.fabric = {
-                service = "wireguard-mesh";
+                service = "routed-fabric";
                 instance = "mesh";
               };
               # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
@@ -199,20 +206,20 @@ in {
                 m.wait_for_unit("haproxy.service", timeout=240)
                 m.wait_for_unit("${serverUnit}.service", timeout=600)
 
-        # --- Transport (§6.3): full mesh, dual-stack ----------------------
-        # Every node holds both mesh families; remote node InternalIPs are
+        # --- Transport (§6.3): the routed fabric, dual-stack -------------
+        # Every node holds both families on its fabric loopback; remote node InternalIPs are
         ${indent 4 (
       if k3s
       then ''
-        # reachable over the mesh in both families (alpha↔beta, alpha↔gamma).''
+        # reachable over the fabric in both families (alpha↔beta, alpha↔gamma).''
       else ''
-        # reachable over the mesh in both families (alpha→beta/gamma and
+        # reachable over the fabric in both families (alpha→beta/gamma and
         # gamma→alpha/beta).''
     )}
-        with subtest("dual-stack full mesh over wg-mesh"):
+        with subtest("dual-stack node addresses over the routed fabric"):
             for m in machines:
-                m.succeed(f"ip -br addr show wg-mesh | grep '{mesh_ips[m.name]}/32' >/dev/null")
-                m.succeed(f"ip -br addr show wg-mesh | grep '{mesh_ips6[m.name]}/128' >/dev/null")
+                m.succeed(f"ip -br addr show ${loopback} | grep '{mesh_ips[m.name]}/32' >/dev/null")
+                m.succeed(f"ip -br addr show ${loopback} | grep '{mesh_ips6[m.name]}/128' >/dev/null")
             for target in ["beta", "gamma"]:
                 alpha.wait_until_succeeds(f"ping -c2 -W2 {mesh_ips[target]}", timeout=120)
                 alpha.wait_until_succeeds(f"ping -6 -c2 -W2 {mesh_ips6[target]}", timeout=120)
@@ -220,7 +227,7 @@ in {
                 gamma.wait_until_succeeds(f"ping -6 -c2 -W2 {mesh_ips6[target]}", timeout=120)
 
         # --- Non-init managers joined through THEIR OWN haproxy ----------
-        # kubeapi FQDN -> own mesh address (/etc/hosts), join URL on the LB
+        # kubeapi FQDN -> own node address (/etc/hosts), join URL on the LB
         ${
       if k3s
       then "# kubeapi port 7443."
@@ -251,7 +258,7 @@ in {
                     f"kubectl wait --for=condition=Ready node/{name} --timeout=120s", timeout=180
                 )
 
-            # Every node registered with its mesh address as the node IP (both
+            # Every node registered with its fabric address as the node IP (both
             # families), and topology labels default to the instance name
             # (invariant 7).
             for name in mesh_ips:
@@ -259,7 +266,7 @@ in {
                     f"kubectl get node {name} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'"
                 )
                 assert mesh_ips[name] in out and mesh_ips6[name] in out, (
-                    f"{name} InternalIPs {out.strip()!r} missing mesh addresses"
+                    f"{name} InternalIPs {out.strip()!r} missing node addresses"
                 )
                 alpha.succeed(
                     f"kubectl get node {name} --show-labels | grep 'topology.kubernetes.io/region=${distro}' >/dev/null"
@@ -269,7 +276,7 @@ in {
       if k3s
       then ''
         # --- All API backends UP on every node -----------------------------
-        # The TLS /readyz healthchecks over the mesh converge after the
+        # The TLS /readyz healthchecks over the fabric converge after the
         # nodes report Ready (a joining peer is L4-up before it can serve)
         # — poll until every API server line reports UP.
         with subtest("all haproxy backends UP on every node"):
@@ -287,7 +294,7 @@ in {
             )''
       else ''
         # --- All backends UP on every node --------------------------------
-        # The TLS /readyz healthchecks over the mesh converge after the
+        # The TLS /readyz healthchecks over the fabric converge after the
         # nodes report Ready (a joining peer is L4-up before it can serve)
         # — poll until every server line of both backends reports UP.
         with subtest("all haproxy backends UP on every node"):
@@ -319,7 +326,7 @@ in {
 
         # --- HA: unclean loss of beta ---------------------------------------
         # The survivors keep serving through their OWN haproxy + apiservers,
-        # the mesh routes around the dead node, and etcd holds 2/3 quorum.
+        # the fabric routes around the dead node, and etcd holds 2/3 quorum.
         with subtest("unclean loss of beta: survivors mark it DOWN and keep serving"):
             # crash(), not shutdown(): no unit on beta gets to say goodbye.
             beta.crash()

@@ -602,7 +602,7 @@ how does each get its addresses, routes, DNS and firewall trust.**
 | Wi-Fi association, its DHCP and roaming | iwd (N5) |
 | NAT, NAT64, port forwarding, firewall rules beyond trust | `services/router` and `services/nat-gateway`, built on netif's zones (N10, `specs/gateway.md`) |
 | DHCP server, router advertisements sent to others, DNS server | `services/router` (N10, `specs/gateway.md`) |
-| WireGuard tunnels, BGP, fabric addresses | `routed-fabric`, `wireguard-mesh` |
+| WireGuard tunnels, BGP, fabric addresses | `routed-fabric` |
 | Pod and Service networking, node addresses | `k3s`, `rke2`, Cilium (SPEC.md) |
 | VPN clients | Tailscale and other registry owners (N6, N29) |
 | Container and guest ports | Docker, Podman, the hypervisor (N22, N23) |
@@ -662,8 +662,10 @@ field gate, N14).
   DHCP underlays, often two NICs (public and private), path MTU below
   1500 on some. Kubernetes with Cilium native routing, FRR, ClusterMesh.
   - Covered by: N16, N17, N21, N26.
-- **U7 Proxmox VMs, tunnel mode.** Headless guests with Kubernetes and
-  Cilium in tunnel mode, ClusterMesh with clusters of the same kind.
+- **U7 Proxmox VMs.** Headless guests with Kubernetes and Cilium,
+  ClusterMesh with clusters of the same kind. Since SPEC.md D72 they
+  run native routing on `routed-fabric` like every cluster (tunnel
+  mode was removed).
   - Covered by: N15 or N26, N17.
 - **U8 Bare-metal Kubernetes nodes at home.** Headless, on the LAN behind
   U3, Cilium native routing with FRR, ClusterMesh.
@@ -730,16 +732,17 @@ per-machine proof table is `documentation/docs/netif/use-cases.md`):
 - U4 runs RKE2 with ClusterMesh, Tailscale and WireGuard, and hosts
   guests with provider MACs (U5) through KubeVirt and Multus.
 - U6 prefers DHCP.
-- Clans with Cilium in tunnel mode and no FRR are a supported shape
-  (U7, `wireguard-mesh`).
+- Clans with Cilium in tunnel mode and no FRR were a supported shape
+  (U7, `wireguard-mesh`). Revoked by SPEC.md D72: native routing with
+  FRR is the only shape.
 - **Open point:** the owner wrote that U2's `developer` mode uses
   NetworkManager. N2 and N4 stand: the fabric needs IfState, so
   `developer` and `kubernetes` are IfState modes. Changing that is a
   redesign and an owner decision.
 
 Across all of them: Tailscale is first class in every mode; NetBird and
-Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
-`wireguard-mesh` only (N6).
+Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
+(N6; `wireguard-mesh` was removed, SPEC.md D72).
 
 ## 3. Decisions
 
@@ -822,8 +825,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - What the setting gates: units, IfState objects, FRR, HAProxy,
     Kubernetes, firewall openings and sysctls. They render only into the
     named modes' configurations.
-  - Services that need IfState (`routed-fabric`, `wireguard-mesh`, `k3s`,
-    `rke2`) may only be active in IfState modes: eval error otherwise.
+  - Services that need IfState (`routed-fabric`, `k3s`, `rke2`) may only be active in IfState modes: eval error otherwise.
   - Eval rejects scoping a `spine`, a `border`, or an etcd voter of a
     multi-node cluster to fewer than all of a machine's modes: switching it
     off would remove transit or quorum from other machines. Leaves, agents
@@ -832,7 +834,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   trust and `.link` files are rendered only in its modes; its exports
   and facts stay; an unknown mode name is an eval error; the same NIC
   may belong to one instance per mode. Implemented for
-  `routed-fabric`, `wireguard-mesh`, `k3s` and `rke2`, round P4b:
+  `routed-fabric`, `k3s` and `rke2` (and the removed `wireguard-mesh`), round P4b:
   `lib/mode-scope.nix`; eval tests `routed-fabric.modes.*`,
   `k3s.test_singleNodeClusterRendersOnlyInItsModes`,
   `k3s.test_voterMustBeInEveryMode`; `netif-modes`
@@ -923,8 +925,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - a daemon enabled without an owner of the same name: `netbird`,
     `cloudflare-warp`, `zerotierone`, and scripted WireGuard
     (`networking.wireguard.interfaces`, `networking.wg-quick.interfaces`;
-    D61 makes IfState the only renderer, so use `wireguard-mesh` or
-    `routed-fabric`). Declaring `clanServices.networking.owners.<name>`
+    D61 makes IfState the only renderer, so use `routed-fabric`). Declaring `clanServices.networking.owners.<name>`
     by hand accepts the daemon; that is the owner's explicit choice and
     unsupported until a preset is VM-proven.
   *(implemented; VM-proven by `netif-registry` `NETIF_REGISTRY_OK`; the
@@ -1376,24 +1377,21 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     PPPoE 1492).
   - The `netif` export carries `pathMtu` per link and an instance
     `pathMtu`, the smallest of its links.
-  - **Consumers prefer it.** `routed-fabric` and `wireguard-mesh` pick an
-    underlay MTU in this order:
+  - **Consumers prefer it.** `routed-fabric` picks an underlay MTU in
+    this order:
     1. `pathMtu`;
     2. the link `mtu`;
-    3. their own settings.
-  - When the user sets no `mtu`, wireguard-mesh derives it as that
-    underlay MTU minus 96, with a floor of 1280. That closes SPEC.md
-    invariant 21.
+    3. its own settings.
+  - The adjacency MTU is that underlay MTU minus 96, with a floor of
+    1280. That closes SPEC.md invariant 21. (`wireguard-mesh` did the
+    same until SPEC.md D72 removed it.)
   - **Warning.** netif warns when a fabric member's DHCP link owns the main
     default route and declares neither `mtu` nor `pathMtu`. Transports
     would assume 1500 there, which is wrong on many clouds.
-  - **As built.** wireguard-mesh reads every netif export of its own
-    machine, so the smallest declared size of all its netif instances
-    wins. When netif publishes neither a path MTU nor a link MTU the
-    mesh keeps 1420.
   *(implemented, round P3b-5: eval tests `test_pathMtuExported`,
-  `test_pathMtuAboveMtuRejected`, wireguard-mesh `test_mtuFollowsNetif`,
-  routed-fabric `test_netifPathMtuPreferred`)*
+  `test_pathMtuAboveMtuRejected`, routed-fabric
+  `test_netifPathMtuPreferred`; `<distro>-join-netif` asserts the
+  adjacency MTU since round 53)*
 
 - **N18 Default routes from several owners.** D53 still allows at most one
   netif link per family to own the main-table default. Other owners
@@ -1449,7 +1447,6 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
   - Trust is explicit: set it on a segment (a private LAN) or a link.
   - Services open what they need on their own interfaces and ports:
     - `routed-fabric`: BGP and BFD on fabric WireGuard links (D63);
-    - `wireguard-mesh`: its UDP port;
     - `k3s` and `rke2`: their cluster ports.
     No service may rely on netif trusting a link. P3b runs every suite
     to find any that do and fixes them in the owning service.
@@ -1672,7 +1669,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
     `clanServices.networking.mode = { name; manager; }`.
   - Everything else hooks onto that option:
     - netif picks its renderer from `manager` (N2);
-    - `routed-fabric`, `wireguard-mesh`, `k3s` and `rke2` gate their
+    - `routed-fabric`, `k3s` and `rke2` gate their
       rendering on `name` (N4);
     - home's machine configuration adds KDE, Steam or nothing to a mode
       with `lib.mkIf (config.clanServices.networking.mode.name == …)`.
@@ -2156,8 +2153,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` and
 - Wi-Fi access-point mode on clan machines. The house's Wi-Fi comes from
   separate access points (U3).
 - NAT, port forwarding, DHCP and RA servers (N20).
-- Hand-written WireGuard links: WireGuard is `routed-fabric` and
-  `wireguard-mesh` only.
+- Hand-written WireGuard links: WireGuard is `routed-fabric` only
+  (SPEC.md D72).
 - IfState or any netif networking in the initrd. No machine unlocks its
   disk over the network.
 - Mobile broadband.

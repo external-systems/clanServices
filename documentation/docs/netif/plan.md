@@ -73,7 +73,7 @@ Slice 5, the same day:
 |---|---|
 | Cloud NICs matched by PCI slot (`match.path`) | `netif-match`: a virtio NIC in a fixed slot is renamed by udev before IfState runs, with systemd-networkd off |
 | cloud-init may not also configure the network | the build fails with a message that says what to do |
-| Path MTU (`pathMtu`) | you declare the real size of the path (GCP 1460, PPPoE 1492); routed-fabric and wireguard-mesh size their tunnels from it. Build-time tests cover each step |
+| Path MTU (`pathMtu`) | you declare the real size of the path (GCP 1460, PPPoE 1492); routed-fabric sizes its tunnels from it. Build-time tests cover each step |
 
 The tools slice, the same day, proven by `netif`:
 
@@ -194,7 +194,7 @@ mode, then an IfState mode, then back:
 | KDE in an IfState mode | the desktop starts with NetworkManager off; a network reapply changes nothing |
 
 Modes for everything else (second half of P4), the same day. The
-fabric, wireguard-mesh, k3s and RKE2 each take a `modes` setting per
+fabric, k3s and RKE2 (and then `wireguard-mesh`, removed since D72) each take a `modes` setting per
 machine, so kamrui-h1 can boot into a NetworkManager desktop and still
 be a fabric member or a cluster in another mode:
 

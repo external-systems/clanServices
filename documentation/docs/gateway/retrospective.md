@@ -68,6 +68,9 @@ same day after the probes became real suites. The contract is
 
 ## The two Cilium modes
 
+*Since D72 (round 53) only native routing remains; the mesh column is
+history.*
+
 | What is tested | Routed fabric, native routing | WireGuard mesh, tunnel |
 |---|---|---|
 | One server, a second node | yes | yes |

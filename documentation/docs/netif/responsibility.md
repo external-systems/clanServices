@@ -27,7 +27,7 @@ of decision N20 in the contract.
 | Joining Wi-Fi, and DHCP and roaming on Wi-Fi | iwd |
 | NAT, port forwarding, firewall rules beyond "trusted or not" | the `router` and `nat-gateway` services, built on netif's zones ([design](../gateway/index.md)) |
 | DHCP server, router advertisements for others, DNS server | the `router` service |
-| WireGuard tunnels, BGP, fabric addresses | `routed-fabric`, `wireguard-mesh` |
+| WireGuard tunnels, BGP, fabric addresses | `routed-fabric` |
 | Pod and Service networking, node addresses | `k3s`, `rke2`, Cilium |
 | VPN clients | Tailscale, and later NetBird and Cloudflare WARP |
 | Container and VM ports | Docker, Podman, the hypervisor |

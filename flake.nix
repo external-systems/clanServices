@@ -1,5 +1,5 @@
 {
-  description = "External Systems clan services: k3s, rke2, netif, routed-fabric, wireguard-mesh, remote-builder";
+  description = "External Systems clan services: k3s, rke2, netif, modes, routed-fabric, remote-builder";
 
   inputs = {
     # Shared-input and artifact authority: nixpkgs, flake-parts and

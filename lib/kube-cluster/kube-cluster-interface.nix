@@ -187,26 +187,13 @@ in {
     };
 
     # D58: the transport-derived datapath facts (from the generic
-    # node_transport export) — consumed by the fleet checks (group
-    # uniformity) and by fabric peers (route-policy bounds).
+    # node_transport export) — consumed by fabric peers (route-policy
+    # bounds). Routing is always native (D72).
     datapath = {
-      mode = lib.mkOption {
-        type = t.enum [
-          "native"
-          "tunnel"
-        ];
-        default = "native";
-        description = "The transport-derived Cilium datapath mode (routing-mode).";
-      };
-      tunnelProtocol = lib.mkOption {
-        type = t.nullOr (t.enum ["vxlan"]);
-        default = null;
-        description = "The tunnel protocol (tunnel mode only; vxlan is the only supported profile).";
-      };
       routeExchange = lib.mkOption {
         type = t.nullOr (t.enum ["local-router"]);
         default = null;
-        description = "The daemon-neutral route-exchange profile (native only: local-router; null on tunnels).";
+        description = "The daemon-neutral route-exchange profile (local-router; null for manual-address clusters).";
       };
       devices = lib.mkOption {
         type = t.listOf t.str;
@@ -221,7 +208,7 @@ in {
       mtu = lib.mkOption {
         type = t.nullOr t.ints.positive;
         default = null;
-        description = "The cluster's derived Cilium MTU (native: min interface MTU; VXLAN: min minus 50; null for manual-address clusters).";
+        description = "The cluster's derived Cilium MTU (the minimum interface MTU; null for manual-address clusters).";
       };
       internalLoadBalancer = lib.mkOption {
         type = t.bool;

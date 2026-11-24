@@ -1,8 +1,8 @@
-# The workload and pools that mean the same on both Cilium data planes:
-# shared by data-plane.nix (native routing on routed-fabric) and
-# data-plane-tunnel.nix (VXLAN tunnel on wireguard-mesh). BGP-delivered
-# Services and pools (shared-bgp, node-bgp) stay in data-plane.nix: a
-# tunnel transport has no BGP plane (SPEC.md D8, D58).
+# The data-plane suite's workload and pools that do not depend on BGP:
+# the go-httpbin image and Deployment, the floating and dataplane pools.
+# BGP-delivered Services and pools (shared-bgp, node-bgp) live in
+# data-plane.nix (SPEC.md D8). Native routing on routed-fabric only
+# (D72).
 {
   lib,
   inputs,

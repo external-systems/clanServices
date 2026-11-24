@@ -5,7 +5,7 @@ in {
     schemaVersion = lib.mkOption {
       type = t.ints.positive;
       default = 2;
-      description = "Node transport schema version; version 2 is the generic neutral transport seam (SPEC.md D58).";
+      description = "Node transport schema version; version 2 is the generic neutral transport seam (SPEC.md D58). Every transport is native routing (D72).";
     };
     ipv4 = lib.mkOption {
       type = t.nullOr t.str;
@@ -30,7 +30,7 @@ in {
     asn = lib.mkOption {
       type = t.nullOr t.ints.u32;
       default = null;
-      description = "Allocated host routing ASN for the local-router profile; null on tunnel transports.";
+      description = "Allocated host routing ASN for the local-router profile.";
     };
     endpoint = lib.mkOption {
       type = t.nullOr t.str;
@@ -62,27 +62,11 @@ in {
       default = "";
       description = "Exactly one direct-routing device, naming one of the exported interfaces; empty is the deep-eval default.";
     };
-    datapath = {
-      mode = lib.mkOption {
-        type = t.enum [
-          ""
-          "native"
-          "tunnel"
-        ];
-        default = "";
-        description = "Datapath mode: native routing or tunnel; empty is the deep-eval default.";
-      };
-      tunnelProtocol = lib.mkOption {
-        type = t.nullOr t.str;
-        default = null;
-        description = "Tunnel protocol for tunnel mode; the schema is open, while consumers reject protocols without a validated implementation.";
-      };
-    };
     native = {
       routeExchange = lib.mkOption {
         type = t.nullOr t.str;
         default = null;
-        description = "Daemon-neutral route-exchange profile on native transports; the schema is open, while consumers reject profiles without a validated implementation.";
+        description = "Daemon-neutral route-exchange profile; the schema is open, while consumers reject profiles without a validated implementation.";
       };
     };
     internalLoadBalancer = lib.mkOption {

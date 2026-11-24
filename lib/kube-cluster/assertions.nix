@@ -17,10 +17,6 @@ in {
     roleMembers,
     settings,
     transportFacts ? null,
-    # Whether the cluster's transport profile is native routing (D58) —
-    # only then must the pod CIDRs stay inside the native-routing CIDRs
-    # (D49); tunnel transports encapsulate and never consult them.
-    nativeRouting ? true,
     # [ { name, settings } ] — the fully merged per-machine settings of
     # every cluster member, name = "<role>/<machine>" (for the parity
     # check across all machines of all roles).
@@ -168,17 +164,17 @@ in {
     }
     {
       assertion =
-        !nativeRouting
-        || settings.network.podCIDRv4 == null
+        settings.network.podCIDRv4
+        == null
         || cidr.contains "10.0.0.0/8" settings.network.podCIDRv4;
-      message = "kube-cluster/${instanceName}: network.podCIDRv4 must be contained in ipv4NativeRoutingCIDR 10.0.0.0/8 (native transport, D49)";
+      message = "kube-cluster/${instanceName}: network.podCIDRv4 must be contained in ipv4NativeRoutingCIDR 10.0.0.0/8 (D49)";
     }
     {
       assertion =
-        !nativeRouting
-        || settings.network.podCIDRv6 == null
+        settings.network.podCIDRv6
+        == null
         || cidr.contains "fd10::/16" settings.network.podCIDRv6;
-      message = "kube-cluster/${instanceName}: network.podCIDRv6 must be contained in ipv6NativeRoutingCIDR fd10::/16 (native transport, D49)";
+      message = "kube-cluster/${instanceName}: network.podCIDRv6 must be contained in ipv6NativeRoutingCIDR fd10::/16 (D49)";
     }
     {
       assertion = !settings.bgp.enable || settings.network.fabric != null;
@@ -195,8 +191,8 @@ in {
       } (set cilium/pools/bgp/fabric/mesh/meshGroup/domain/distroDefaults/coredns/bootstrap/network.fabric uniformly on every machine of every role)";
     }
     {
-      # D58: the transport mode/protocol/capabilities are uniform across
-      # the cluster's members (one transport instance = one trust domain).
+      # D58: the transport route exchange and capabilities are uniform
+      # across the cluster's members (one transport instance = one trust domain).
       assertion =
         transportFacts
         == null
@@ -205,7 +201,7 @@ in {
             transport.uniformityKey transportFacts.${n}
             == transport.uniformityKey transportFacts.${builtins.head (builtins.attrNames transportFacts)}
         ) (lib.tail (builtins.attrNames transportFacts));
-      message = "kube-cluster/${instanceName}: node_transport profiles differ across members — one transport instance must present ONE uniform datapath mode/protocol/capability profile (D58)";
+      message = "kube-cluster/${instanceName}: node_transport profiles differ across members — one transport instance must present ONE uniform route-exchange/capability profile (D58)";
     }
   ];
 
@@ -332,7 +328,7 @@ in {
       # §6.12: BGP only for node-bgp/shared-bgp pools; those pools only
       # with BGP. The two knobs are locked together.
       assertion = settings.bgp.enable == (bgpPoolNames != []);
-      message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but node-bgp/shared-bgp pools = [${lib.concatStringsSep ", " bgpPoolNames}] (§6.12: BGP only for node-bgp/shared-bgp pools, and such pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false. On a tunnel transport such as wireguard-mesh the service turns BGP off itself: there is no route exchange, and node-bgp, shared-bgp and fabric pools cannot be used there; use Node IPAM, a floating pool or an external-class pool)";
+      message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but node-bgp/shared-bgp pools = [${lib.concatStringsSep ", " bgpPoolNames}] (§6.12: BGP only for node-bgp/shared-bgp pools, and such pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false.)";
     }
     {
       # D8: node-bgp pools need exactly one owner and it must be a member.
@@ -361,7 +357,7 @@ in {
   # Cilium→FRR `::1` session accidental iBGP instead of eBGP (D9). Only
   # enforced while BGP is active: with no node-bgp/shared-bgp pool no
   # CiliumBGPClusterConfig is rendered and no session exists. Vacuous for
-  # tunnel/manual transports: their members have no routeExchange and are
+  # manual-address clusters: their members have no routeExchange and are
   # filtered out of hostAsns upstream.
   mkBgpAsnAssertions = {
     instanceName,

@@ -12,11 +12,11 @@ it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
   `flakeModules.vmTests`). VM suites never enter `checks` or CI; `checks`
   stays a lightweight static gate.
 - **Where suites live.** Each service registers its suites in its
-  `flake-module.nix` (24 in all); `flake-parts/clan-tests.nix` wraps each in
+  `flake-module.nix` (45 in all); `flake-parts/clan-tests.nix` wraps each in
   clan-core's `clanTest` and hands it to `vmTests.tests`. k3s and RKE2
   suites that test one contract share a body in
   `lib/kube-cluster/tests/vm/<suite>.nix` (`single`, `join`, `ha`,
-  `data-plane`, `clustermesh`, `clustermesh-tunnel`, `external`,
+  `data-plane`, `clustermesh`, `clustermesh-nodeport`, `external`,
   `selective`); the files under `services/{k3s,rke2}/tests/vm/` are thin
   wrappers that pass `distro`, and every distro difference is an explicit
   branch in the shared body.
@@ -100,9 +100,9 @@ source suite's `vars/` tree and replaces it with generated vars. Test vars
 are therefore generated during evaluation, and `vm-test <suite>` is all a
 suite needs: there is no `update-vars` step. Do not run one and do not commit VM
 allocation files or obsolete public-key fixtures. Each run draws fresh values;
-routed-fabric and wireguard-mesh print their allocated addresses at startup
-and assert those exact values with `ROUTED_FABRIC_ALLOCATED_OK` and
-`WIREGUARD_MESH_ALLOCATED_OK` markers. Other suites retain explicit address
+routed-fabric prints its allocated addresses at startup and asserts
+those exact values with the `ROUTED_FABRIC_ALLOCATED_OK` marker. Other
+suites retain explicit address
 pins where they exercise override behavior.
 
 ## Proving a test refactor faithful
@@ -135,20 +135,34 @@ Then run the changed suites (`vm-test --all --remote --rebuild`).
 
 ## Current suites
 
-- Existing single/join/HA per distro run on **wireguard-mesh** and assert
-  the transport-derived tunnel/VXLAN profile, while the native data-plane
-  suites on routed-fabric remain native. Not every suite is native.
+- **Every suite is native** (D72, round 53): Cilium tunnel mode and
+  `wireguard-mesh` were removed, so every cluster suite runs on
+  `routed-fabric`. Single/join/HA per distro: `single` is a lone spine,
+  `join` a spine and a leaf (`join-netif` with a netif underlay), `ha`
+  two spines and a leaf, where the dead manager is a spine.
+- **FRR failure** (`k3s-frr-failure`, `K3S_FRR_FAILURE_OK`): on the
+  `k3s-join` cluster, the spine's bgpd gets SIGKILL; watchfrr restarts
+  it, every BGP session (fabric and Cilium) comes back, the leaf's
+  routes to the spine's pod /24 and /64 return, and pod pings recover
+  in both families (`FRR_BGPD_CRASH_OK`). Then a configuration with a
+  line FRR rejects: the reload refuses it but the switch exits 0 (the
+  refusal is only in the journal), FRR stays active with the same
+  bgpd and the old running config, and sessions and pods stay fine;
+  switching back leaves `frr-reload` nothing to change
+  (`FRR_BAD_RELOAD_OK`). A real deploy never gets there: the build-time
+  `vtysh --dryrun` check (`lib/frr-check.nix`, `checks.frr-conf`)
+  fails the build, so the suite's specialisation turns it off.
 - **IfState (D61):** live static reconfiguration with apply/check/restore,
   real DHCPv4 and SLAAC/default-route convergence, one persistent DHCP
   client across reapply, and clean `ifstatecli check` output.
 - **Generic transport (D58):** a third-party eval overlay proves k3s/rke2
   consume only the generic `node_transport` export and never branch on
-  service names; profile validation accepts the two validated profiles
-  (routed-fabric → native + local-router + internalLoadBalancer/nodePort;
-  wireguard-mesh → tunnel/VXLAN + nodePort) and rejects every other
-  route-exchange/tunnel combination; `cilium.helmValues` contradiction of
-  the derived mode/protocol/devices/directRoutingDevice/MTU/exposure is an
-  eval negative; MTU floor checks (native minimum, VXLAN minimum − 50).
+  service names; profile validation accepts the one validated profile
+  (routed-fabric → native + local-router + internalLoadBalancer/nodePort)
+  and rejects every other route exchange; `cilium.helmValues` that set
+  tunnel mode or contradict the derived devices/directRoutingDevice/MTU/
+  exposure are eval negatives; the Cilium MTU is the minimum interface
+  MTU.
 - **netif:** multi-instance and multi-link inventories, static and
   DHCP/RA addressing, on-link and policy routes, conflicting-ownership
   and duplicate-default-route eval negatives, MTU derivation, exports,
@@ -189,13 +203,13 @@ Then run the changed suites (`vm-test --all --remote --rebuild`).
   (leaf isolation); cross-cluster pod routes and mirror-Service
   reachability for peering pairs; separate routed-fabric trust domains
   stay isolated (negative); mesh-group uniformity negatives (mixed
-  datapath mode, tunnel protocol, or maxConnectedClusters). VM proof covers
-  k3s/RKE2 on native and tunnel profiles: selected edges' authenticated
+  maxConnectedClusters). VM proof covers
+  k3s/RKE2 on the native profile: selected edges' authenticated
   health and global-Service backends, A/B/C backend sets, and native
   dual-stack route isolation on non-transit leaves. A dedicated spine carries
   the union leaves consume; that is the eval-visible routed-only exception.
-  Full-peering native/tunnel defaults and all four external suites also pass
-  on the selective-aware resolver. Final logs are linked from SPEC.md §7.
+  The full-peering defaults and the external suites also pass on the
+  selective-aware resolver (the tunnel twins were removed by D72).
 - **ClusterMesh exposure and placement (D60):** native internal
   ClusterMesh (ONE pinned IPv4 VIP locked at host offset `0x79` in the
   `<instance>-fabric` private pool's IPv4 `/24`, explicit
@@ -204,22 +218,25 @@ Then run the changed suites (`vm-test --all --remote --rebuild`).
   `RequireDualStack` advertisement — the pinned Cilium 1.20.3
   clustermesh-apiserver etcd listens on an IPv4 wildcard with no
   dual-stack listener knob; cert SANs carry published IPv4/DNS endpoints
-  only); tunnel NodePort
-  ClusterMesh (exactly one apiserver per selected node — Deployment
+  only); NodePort
+  ClusterMesh, VM-proven by `<distro>-clustermesh-nodeport`
+  (`<DISTRO>_CLUSTERMESH_NODEPORT_OK`; it sets `mesh.exposure =
+  "node-port"` because `auto` picks the internal LB on the fabric)
+  (exactly one apiserver per selected node — Deployment
   replicas = selected count, required hostname anti-affinity +
   nodeSelector — with stable selected node IPv4 addresses + default
   NodePort `32379`, optional explicit override, collision-checked per
   machine,
   maxSurge=0/maxUnavailable=1);
-  external class + DNS name on BOTH profiles (explicit non-clan
+  external class + DNS name (explicit non-clan
   loadBalancerClass, DNS-only name, external DNS name in peers and cert
   SANs, runtime A record); placement selectors (voters/workers/all/labels)
   with clan-declared/generated labels only and zero-match eval negatives;
   LB replica rules (default min(3, eligible), positive ≤ eligible,
   required anti-affinity); auto choosing internal when capable else
   nodePort; unsupported/no-method eval negatives; ETP Local on every
-  method. Current VM proof covers k3s and RKE2 external class+DNS exposure
-  on both native and tunnel profiles; final logs are linked from SPEC.md §7.
+  method. VM proof: `<distro>-clustermesh-external`
+  (`<DISTRO>_CLUSTERMESH_EXTERNAL_OK`) for k3s and RKE2.
 - **Roles and switches:** exactly two topology roles — `leaf` and
   `spine` (D59, renamed from round 16's member/hub); plus the orthogonal
   per-machine `access` switch (`member` default,
@@ -248,12 +265,15 @@ Sealed-Secrets suites. Reserved: MCS-API and upstream-kubernetes suites.
 
 **VM-proven on the final IfState tree:** netif live apply/check/restore;
 DHCPv4/default-route and IPv6 SLAAC with one persistent client across live
-reapply; WireGuard handshakes; routed-fabric transport and spine HA on a
+reapply; routed-fabric transport and spine HA on a
 flat underlay (NAT sites, external transit, Internet source/return and
 route-filter negatives are planned, see
 [Data-plane hardening](../plans/data-plane-hardening.md));
-k3s/RKE2 single/join/HA and native data planes; and all twelve
-native/tunnel/selective/external ClusterMesh variants. The selective proofs
+k3s/RKE2 single/join/HA and native data planes; and the native,
+selective and external ClusterMesh variants. Since D72 the tunnel
+variants are gone; `<distro>-clustermesh-nodeport` carries the
+NodePort exposure on the fabric. The moved, merged and ported suites
+need a new run. The selective proofs
 include symmetric A↔B and B↔C edges, non-transitive A/C global-Service
 isolation, and dual-stack route isolation on non-transit leaves. SPEC.md §7
 records the final runs and remains the status authority. A VM-proven status

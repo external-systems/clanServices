@@ -1,4 +1,5 @@
-# <distro>-single: one clusterInit server over the wireguard-mesh transport.
+# <distro>-single: one clusterInit server on the routed fabric, a lone
+# spine (routed-fabric, FRR, Cilium native routing).
 # Shared by the k3s and rke2 suites; every distro difference is a `k3s`
 # branch below.
 {
@@ -12,6 +13,8 @@
     then "k3s"
     else "rke2-server";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
+  # The fabric loopback that holds the node addresses.
+  loopback = "rflo${builtins.substring 0 10 (builtins.hashString "sha256" "mesh")}";
   lbPorts =
     if k3s
     then ''"6443", "7443", "8404"''
@@ -41,10 +44,13 @@ in {
     directory = ./.;
     test.useContainers = false;
 
-    modules.wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
+    modules.routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
       ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
     };
-    exportInterfaces.node_transport = ../../../node-transport-interface.nix;
+    exportInterfaces = {
+      routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
+      node_transport = ../../../node-transport-interface.nix;
+    };
 
     inventory = {
       meta.domain = "test.clan";
@@ -58,19 +64,17 @@ in {
         };
 
         mesh = {
-          module.name = "wireguard-mesh";
+          module.name = "routed-fabric";
           module.input = "self";
-          roles.peer = {
-            settings.endpointSources = [
+          roles.spine.machines.alpha.settings = {
+            ipv4 = "192.168.77.1";
+            ipv6 = "fd00:77::1";
+            endpointSources = [
               {
                 service = "clan-core/internet";
                 instance = "underlay";
               }
             ];
-            machines.alpha.settings = {
-              ipv4 = "192.168.77.1";
-              ipv6 = "fd00:77::1";
-            };
           };
         };
 
@@ -81,7 +85,7 @@ in {
           roles.server = {
             settings = {
               network.fabric = {
-                service = "wireguard-mesh";
+                service = "routed-fabric";
                 instance = "mesh";
               };
 
@@ -181,10 +185,10 @@ in {
             alpha.wait_for_unit("${serverUnit}.service", timeout=600)
 
         # Transport (§6.3, dual-stack asserted in every boot test): the
-        # node holds both mesh families on the WireGuard interface.
-        with subtest("dual-stack mesh addresses on wg-mesh"):
-            alpha.succeed("ip -br addr show wg-mesh | grep '192.168.77.1/32' >/dev/null")
-            alpha.succeed("ip -br addr show wg-mesh | grep 'fd00:77::1/128' >/dev/null")
+        # node holds both families on its fabric loopback.
+        with subtest("dual-stack node addresses on the fabric loopback"):
+            alpha.succeed("ip -br addr show ${loopback} | grep '192.168.77.1/32' >/dev/null")
+            alpha.succeed("ip -br addr show ${loopback} | grep 'fd00:77::1/128' >/dev/null")
 
         # The bootstrap bundle was applied by the oneshot (D40): unit
         ${indent 4 (
@@ -222,10 +226,10 @@ in {
       if k3s
       then ''
         # The initial server seeded the pre-generated PKI before k3s started,
-        # and the per-node haproxy LB is bound on the mesh address.''
+        # and the per-node haproxy LB is bound on the node address.''
       else ''
         # The pre-generated PKI was synced in before rke2-server started,
-        # and the per-node haproxy LB is bound on the mesh address.
+        # and the per-node haproxy LB is bound on the node address.
         # (pki-sync is a oneshot — prove the RESULT, not the unit state.)''
     )}
         with subtest("PKI in place and the haproxy LB serving"):${extra 8 k3s ''
@@ -245,7 +249,7 @@ in {
                 "kubectl wait --for=condition=Ready node/alpha --timeout=120s", timeout=180
             )
 
-            # The node registers BOTH mesh families as InternalIPs, and the
+            # The node registers BOTH node address families as InternalIPs, and the
             # topology labels default to the instance name (invariant 7).
             out = alpha.succeed(
                 "kubectl get node alpha -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}'"

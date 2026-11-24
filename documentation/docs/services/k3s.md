@@ -49,8 +49,9 @@ Bootstrap, `leaf`/`spine` transport, generic `node_transport` profiles,
 full/selective ClusterMesh, placement/exposure, and read-only
 `clan.networkFacts` schemaVersion 2 are implemented. IfState supplies the
 live static host network. Current hermetic suites pass single/join/HA,
-native data-plane, and every native/tunnel/selective/external ClusterMesh
-profile. The canonical dual-shape remains kamrui-h1: a single-node k3s
+native data-plane, and the native, selective and external ClusterMesh
+suites. Every suite runs on `routed-fabric`: Cilium tunnel mode and
+`wireguard-mesh` were removed (D72, round 53). The canonical dual-shape remains kamrui-h1: a single-node k3s
 cluster holding the routed-fabric `spine` topology role with
 `access = "admin"` (D33, revised by D52, D56, and renamed D59).
 

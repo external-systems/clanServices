@@ -9,19 +9,20 @@ IfState 2.5.1 is the exclusive static networking renderer.
 
 | Service | Kind | Status |
 | --- | --- | --- |
-| [rke2](rke2.md) | cluster distro | bootstrap and native/tunnel data planes implemented and VM-proven |
-| [k3s](k3s.md) | cluster distro | bootstrap and native/tunnel data planes implemented and VM-proven |
+| [rke2](rke2.md) | cluster distro | bootstrap and the native data plane implemented and VM-proven |
+| [k3s](k3s.md) | cluster distro | bootstrap and the native data plane implemented and VM-proven |
 | [kubernetes](kubernetes.md) | cluster distro (upstream kubeadm) | fully spec'd, Reserved (D23) |
 | [netif](netif.md) | host links and static routes | implemented with IfState; live apply and DHCP/RA VM-proven |
 | [routed-fabric](routed-fabric.md) | flat-L3 WG/FRR fabric | `leaf`/`spine` + generic schema implemented; transport and HA VM-proven |
-| [wireguard-mesh](wireguard-mesh.md) | host transport | supported tunnel/VXLAN profile; handshake and dependent VM suites green |
 | [remote-builder](remote-builder.md) | fleet utility (nix builds over ssh-ng) | implemented; eval-tested, outside the cluster contracts (D65) |
 
 The obsolete `services/fleet-routing/` code (full-mesh target, BIRD-era
 checkpoint) and the legacy `lib/import-flake/` adapter were deleted in the
 round-17 cleanup, along with BIRD helpers and BIRD-specific VM fixtures.
-There are no archives or commented-out remnants. `wireguard-mesh` is **not**
-retiring: it is the validated tunnel/VXLAN profile.
+There are no archives or commented-out remnants. `wireguard-mesh` and
+Cilium tunnel mode were removed by D72 (round 53): native routing on
+`routed-fabric` is the only data plane. The last commit with them is
+tag `tunnel-mode-final`.
 
 ## How the cluster services share code
 
