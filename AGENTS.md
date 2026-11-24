@@ -12,7 +12,9 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`, `netif`,
   `modes` (network modes per machine, `specs/netif.md` N24; mechanism in
-  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65)).
+  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65),
+  `nat-gateway` and `router` (`specs/gateway.md`; mechanism in
+  `lib/gateway/`)).
   `routed-fabric` is the only transport: `wireguard-mesh` and Cilium
   tunnel mode were removed (SPEC.md D72; the last commit with them is
   tag `tunnel-mode-final`). The obsolete `fleet-routing`,
@@ -20,13 +22,18 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   BIRD-specific VM fixtures were deleted in the round-17 cleanup;
   their former ghost failures no longer block eval gates. No archives.
   Auto-discovered via `flake-module.nix`; no central registration list.
-- `lib/gateway/` — the future private implementation of `router` and
-  `nat-gateway` (`specs/gateway.md` G1). No service code yet. It holds
-  VM suites on fixtures (`tests/vm/*.nix`, registered in its
-  `flake-module.nix`) that pin the proven mechanisms: Jool NAT64 and
-  CLAT, the router's building blocks, dual WAN, IPv6-only hosts and
-  clusters. A new design question starts as a probe (a throwaway suite
-  that prints `FINDING` lines) and ends as assertions in a real suite.
+- `lib/gateway/` — the private implementation of `nat-gateway` and
+  `router` (`specs/gateway.md` G1): NixOS modules under
+  `clanServices.gateway.*` (`nat64.nix`, `clat.nix`, `router.nix`), their
+  Python helpers (health check, CLAT follower, prefix hook) and the
+  fixed names (`names.nix`). One translator, one CLAT and one router per
+  machine; the services assert it. It also holds the fixture suites
+  (`tests/vm/*.nix`, registered in its `flake-module.nix`): the DNS64
+  proof (`gateway-nat64`, frozen design), dual WAN (frozen), the WAN
+  link, IPv6-only hosts and clusters, and `<distro>-clat`, which runs on
+  the services (`k3s-clat-mapped` keeps its fixtures). A new design
+  question starts as a probe (a throwaway suite that prints `FINDING`
+  lines) and ends as assertions in a real suite.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).

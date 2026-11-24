@@ -1,8 +1,41 @@
 # Home and on-prem router
 
-Planned. The `router` service turns a NixOS machine with several network
-ports into the edge of a LAN. The ports, their names and the WAN lease
-are netif's ([Home router](../netif/router.md)).
+**Built (2026-11-24), first cut: one WAN.** The `router` service turns
+a NixOS machine with several network ports into the edge of a LAN. The
+ports, their names, their addresses and the WAN lease are netif's
+([Home router](../netif/router.md)); the router reads them and never
+repeats them.
+
+```nix
+inventory.instances.edge = {
+  module.name = "router";
+  module.input = "clanServices";
+  roles.router.machines.router.settings = {
+    zones = {
+      dev.allowTo = ["servers" "mgmt"];
+      servers = {};
+      home.allowTo = ["iot"];
+      iot = {};
+      guest = {};
+      mgmt.internet = false;
+    };
+    domain = "home.arpa";
+  };
+};
+```
+
+Each zone name is a netif zone label. From netif the router takes:
+
+- the zone's links;
+- its own address in the zone (the first IPv4 and IPv6 address of the
+  zone's link): the gateway, the DHCP router and the zone's resolver;
+- the zone's /64 of the delegated prefix (netif's
+  `prefixDelegation.assign`).
+
+DHCP hands out the upper half of the zone's IPv4 subnet. SSH to the
+router is open from every zone (`ssh = false` closes it for a zone).
+Proof: the suite `router`, the checks of the stand-in suite
+`gateway-router` run on the service.
 
 ## What runs on it
 
@@ -97,11 +130,14 @@ CoreDNS answers for the house and forwards to Cloudflare over TLS.
 
 - Your ISP cannot read the queries. It still sees which addresses you
   connect to.
-- **Ad blocking** uses HaGeZi's blocklists, which are free and open
-  source (GPL-3.0). The list is pinned in the `pkgs` repo and updated
-  with a lock bump. You choose a strictness tier; the default is
-  Pro++. A list of 300 000 names cost about 140 MB of memory in the
-  probe and answered at once.
+- **Ad blocking** takes a hosts file today (setting `dns.blocklist`).
+  The plan: HaGeZi's blocklists, which are free and open source
+  (GPL-3.0), pinned in the `pkgs` repo and updated with a lock bump,
+  with a strictness tier (default Pro++). That package does not exist
+  yet. A list of 300 000 names cost about 140 MB of memory in the probe
+  and answered at once.
+- Each zone has its own resolver address, and only that zone may ask
+  it. Nothing on the WAN side can.
 - A device that uses its own encrypted DNS skips the blocklist.
 - Device names come from mDNS and from static records. Machines you
   name are kept in Cloudflare.
@@ -110,17 +146,18 @@ CoreDNS answers for the house and forwards to Cloudflare over TLS.
 
 | Option | Default | What it does |
 |---|---|---|
-| Private IPv6 prefix (ULA) | off; **on for the home router** | A second, stable prefix beside the public one. Service addresses and firewall rules survive a change of the ISP's prefix |
-| IPv6-mostly | off | Devices that can cope drop IPv4 by themselves (DHCP option 108). The router adds NAT64 for them |
-| Service prefix | off | One /64 of the ISP's block for public Kubernetes Service addresses, see [Exposing services](exposure.md) |
-| Metrics | off | Prometheus endpoints, see [Exposing services](exposure.md) |
+| Private IPv6 prefix (ULA) | what netif declares | A second, stable prefix beside the public one: give each zone link a ULA address in netif. Service addresses and firewall rules survive a change of the ISP's prefix. A generated /48 is planned |
+| IPv6-mostly | off, **frozen** | Devices that can cope drop IPv4 by themselves (DHCP option 108). Not built; `pref64` only advertises a NAT64 prefix |
+| Service prefix | off | `servicePrefix`: one /64 of the ISP's block for public Kubernetes Service addresses, rewritten to a stable private /64; `expose` opens pinholes. A LAN host that calls a public Service address is answered through the router (hairpin). See [Exposing services](exposure.md) |
+| Metrics | localhost only | CoreDNS on `[::1]:9153`, corerad on `[::1]:9430`. On the fabric address: planned (G18) |
 
 IPv6-mostly brings no speed. It saves IPv4 leases, which matters on
 large sites, not at home.
 
 ## A second WAN
 
-Built after the single-WAN router is proven.
+Frozen: built after the single-WAN router is proven (decided
+2026-11-23).
 
 **One router, two WANs** (fiber plus a SIM or satellite modem):
 

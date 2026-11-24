@@ -40,6 +40,7 @@
   cidrLib = import ./cidr.nix {inherit lib;};
   bgp = import ./bgp.nix {inherit lib;};
   transport = import ./transport.nix {inherit lib;};
+  devices = import ./devices.nix {inherit lib;};
   mesh = import ./mesh.nix {inherit lib;};
   cilium = import ./cilium.nix {
     inherit
@@ -197,6 +198,8 @@ in {
   # The generic node_transport consumer (D58) and the ClusterMesh
   # placement/exposure resolution (D60).
   inherit transport mesh;
+  # SPEC.md D71: the CLAT and IPv6-only underlay links in Cilium devices.
+  inherit devices;
 
   interfaces = {
     cluster = clusterInterface;

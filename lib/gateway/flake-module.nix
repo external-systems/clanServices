@@ -8,6 +8,7 @@
 {
   inputs,
   lib,
+  self,
   ...
 }: let
   kube = distro: {
@@ -24,8 +25,30 @@
   # mapped = false: the decided design of specs/gateway.md G5 (the CLAT
   # link is a Cilium device). true: the documented alternative.
   clat = distro: mapped: {
-    imports = [(import ./tests/vm/kube-clat.nix {inherit inputs distro mapped;})];
-    clan = kube distro;
+    imports = [
+      (import ./tests/vm/kube-clat.nix {
+        inherit inputs distro mapped;
+        # the decided design runs on the services (§14.1 point 1); the
+        # documented alternative keeps its fixtures
+        service = !mapped;
+      })
+    ];
+    clan =
+      if mapped
+      then kube distro
+      else {
+        modules =
+          (kube distro).modules
+          // {
+            inherit (self.clan.modules) netif nat-gateway;
+          };
+        exportInterfaces =
+          (kube distro).exportInterfaces
+          // {
+            netif = ../../services/netif/netif-interface.nix;
+            nat_gateway = ../../services/nat-gateway/nat-gateway-interface.nix;
+          };
+      };
   };
   netif = lib.modules.importApply ../../services/netif/default.nix {
     ifstateOverlay = inputs.org-pkgs.overlays.ifstate;

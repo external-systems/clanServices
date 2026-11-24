@@ -1,8 +1,9 @@
 # Router and NAT gateway
 
-Two services are planned for this repo. Nothing on these pages is built
-yet: this is the design you decided on 2026-11-20. The contract is
-`specs/gateway.md` (decisions G1 to G21).
+Two services in this repo. The design was decided on 2026-11-20; a
+first cut of both services was built on 2026-11-24 (round G7). The
+contract is `specs/gateway.md` (decisions G1 to G24). What is built and
+proven is on [Plan and probes](plan.md).
 
 | Service | What it is | Who uses it |
 |---|---|---|
@@ -11,7 +12,7 @@ yet: this is the design you decided on 2026-11-20. The contract is
 
 Both sit on top of [netif](../netif/index.md). netif owns the links and
 labels each with a zone. These services read the labels and never
-declare a link themselves. They share one private library, so NAT, DNS
+declare a link themselves. They share one private library (`lib/gateway`), so NAT, DNS
 and the firewall are written once.
 
 They live here, not in the `modules` repo, so that a consumer needs one

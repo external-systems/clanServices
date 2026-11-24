@@ -4,6 +4,7 @@
   clanLib,
   exportInterfaces,
   inputs,
+  self,
   ...
 }: let
   rke2Module = module;
@@ -26,7 +27,13 @@
     clanLib.clan {
       self = {};
       directory = ./fixtures;
-      inherit exportInterfaces;
+      # D71 reads the members' netif and nat_gateway exports
+      exportInterfaces =
+        exportInterfaces
+        // {
+          netif = ../../netif/netif-interface.nix;
+          nat_gateway = ../../nat-gateway/nat-gateway-interface.nix;
+        };
       # Fleet-wide kube-cluster assertions (§6.2) as clan.checks — enforced
       # by clanLib.clan's checkConfig.
       imports = [kube.fleetChecksModule];
@@ -35,6 +42,7 @@
         rke2 = rke2Module;
         modes = ../../modes/default.nix;
         k3s = k3sModule;
+        inherit (self.clan.modules) netif nat-gateway;
       };
       machines = machineConfigs;
       inherit inventory;
@@ -450,6 +458,71 @@
   fakeApiserverDeploy = fakeFindObj "Deployment" "clustermesh-apiserver";
   fakeApiserverSvc = fakeFindObj "Service" "clustermesh-apiserver";
   fakeClustermeshSecret = fakeFindObj "Secret" "cilium-clustermesh";
+
+  # SPEC.md D71: alpha and beta are nat-gateway clients with IPv6-only
+  # underlays of different names; beta also has a tailnet link. gamma is
+  # the gateway (it is in another cluster).
+  d71Inventory = lib.recursiveUpdate fakeInventory {
+    instances = {
+      links = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines = {
+          alpha.settings.links.wan = {
+            interface = "eno1";
+            zone = "wan";
+            static.ipv6 = ["2001:db8:c::1/64"];
+            ra = false;
+          };
+          beta.settings.links = {
+            wan = {
+              interface = "wlp2s0";
+              zone = "wan";
+              ra = false;
+            };
+            tailnet = {
+              interface = "tailscale0";
+              zone = "vpn";
+              ra = false;
+            };
+          };
+          gamma.settings.links.wan = {
+            interface = "eth0";
+            zone = "wan";
+            static.ipv4 = ["198.51.100.1/24"];
+            static.ipv6 = ["2001:db8:c::3/64"];
+            ra = false;
+          };
+        };
+      };
+      nat64 = {
+        module.name = "nat-gateway";
+        module.input = "self";
+        roles = {
+          gateway.machines.gamma.settings = {
+            pool6 = "2001:db8:a1:0:64::/96";
+            address = "2001:db8:c::3";
+          };
+          client.machines = {
+            alpha.settings.clat.address = "2001:db8:c::c1a7";
+            beta.settings = {
+              clat.address = "2001:db8:c::c1a8";
+              sources = ["2001:db8:c::2"];
+            };
+          };
+        };
+      };
+    };
+  };
+  d71Evaled = mkEvaled d71Inventory;
+  d71Alpha = d71Evaled.config.nixosConfigurations.alpha.config;
+  d71Devices = let
+    objs = builtins.fromJSON d71Alpha.clan.kubeClusters.rke2-a.bundleJson;
+  in
+    (lib.findFirst (o: o.kind == "ConfigMap" && o.metadata.name == "cilium-config") null objs).data.devices;
+  d71Vpn = mkEvaled (lib.recursiveUpdate d71Inventory {
+    instances.rke2-a.roles.server.settings.cilium.helmValues.devices = "fk-alpha-1 fk-alpha-2 fk-beta-1 fk-beta-2 clat0 eno1 wlp2s0 tailscale0";
+  });
 
   fakeExportOf = instanceName:
     (clanLib.getExport {
@@ -1541,5 +1614,43 @@ in {
   test_voterMustBeInEveryMode = {
     expr = failedAssertion modesVoter "is an etcd voter of a cluster with other machines and must be active in every mode, but 'modes' leaves out maintenance";
     expected = true;
+  };
+  # SPEC.md D71: devices are rendered from facts. The CLAT link and the
+  # IPv6-only underlay links of every member join the transport's links;
+  # names come from netif, whatever each machine calls its link; a VPN
+  # link never joins.
+  test_d71RenderedDevices = {
+    expr = lib.splitString " " d71Devices;
+    expected = [
+      "fk-alpha-1"
+      "fk-alpha-2"
+      "fk-beta-1"
+      "fk-beta-2"
+      "clat0"
+      "eno1"
+      "wlp2s0"
+    ];
+  };
+  test_d71VpnLinkRefused = {
+    expr = failedAssertion d71Vpn.config.nixosConfigurations.alpha.config "'tailscale0' is a VPN link";
+    expected = true;
+  };
+  test_d71NoVpnByDefault = {
+    expr = lib.any (item: !item.assertion && lib.hasInfix "VPN link" item.message) d71Alpha.assertions;
+    expected = false;
+  };
+  # specs/gateway.md §14.1 point 4: a gateway trusts the members of a
+  # kube cluster by default.
+  test_clusterMembersTrusted = {
+    expr = d71Evaled.config.nixosConfigurations.gamma.config.clanServices.gateway.nat64.allow;
+    expected = {
+      default = [];
+      trusted = [
+        "2001:db8:c::c1a7"
+        "2001:db8:c::1"
+        "2001:db8:c::c1a8"
+        "2001:db8:c::2"
+      ];
+    };
   };
 }

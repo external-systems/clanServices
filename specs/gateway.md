@@ -6,7 +6,7 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G23`, so they never collide
+pages together.** Decisions are numbered `G1`–`G24`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
 `specs/netif.md` §2 (U3, U13–U18).
 
@@ -85,6 +85,29 @@ D72, round 53). Cilium tunnel mode and `wireguard-mesh` are gone.
   `<distro>-clat-mesh` and `k3s-clat-mesh-mapped` are deleted.
 - `<distro>-v6only` reuses `join`, which now runs on the fabric.
 - §12.3 (the two modes) and the mesh rows of §10.11 are history.
+
+Round G7 (2026-11-24): **the services, first cut** (§14.1 point 1).
+Code now exists; each mechanism below runs as service code in a suite.
+- `lib/gateway/` holds the modules (`nat64.nix`, `clat.nix`,
+  `router.nix`, options `clanServices.gateway.*`), their helpers
+  (`nat64-health.py`, `clat-follow.py`, `router-prefix.py`) and the
+  fixed names (`names.nix`).
+- `services/nat-gateway` (roles `gateway`, `client`; G1–G6, G23, G24)
+  and its suite `nat-gateway` (§5). No DNS64 (§14.1 point 3).
+- **G24, new, proposed (for the owner):** the health beacon. With DNS64
+  frozen nothing answered `ipv4only.arpa`, and G23's follower had no
+  signal. A gateway now serves that one name and nothing else.
+- §14.1 point 4 is built: the tiers and their default numbers.
+- SPEC.md D71 is built: k3s and rke2 render Cilium `devices` from the
+  netif and `nat_gateway` exports, and §14.2's open question is
+  answered: one cluster-wide union (candidate 1).
+- `<distro>-clat` runs on the services (netif, `nat-gateway`, the
+  rendered `devices`, a plain IPv6 resolver); `k3s-clat-mapped` keeps
+  its fixtures and is unchanged (`suite-compare`: same).
+- `services/router` (role `router`; G8, G11, G14, G15, G20, G22) with
+  one WAN, and its suite `router`, ported from `gateway-router`. It also
+  builds §14.3's hairpin rewrite of G20.
+- What each suite showed is in §5 and §15.
 
 
 
@@ -913,6 +936,30 @@ any code (AGENTS.md rule 3).
     proposal: set `lowest-ipv6-mtu` to the real IPv6 path MTU.
   *(planned; suite-verified on fixtures: `gateway-nat64`,
   `GATEWAY_NAT64_OK`; `netif-v6only`)*
+
+- **G24 The health beacon** (proposed round G7, 2026-11-24; for the
+  owner to confirm). G23's follower asks each gateway's DNS for
+  `ipv4only.arpa`. §14.1 point 3 froze DNS64, and with it the only
+  thing that answered. Without a signal a CLAT cannot follow a live
+  gateway: a design gap, not a choice.
+  - Each gateway runs a beacon: a CoreDNS bound to the gateway's
+    address that serves the zone `ipv4only.arpa` only, with the two
+    RFC 7050 addresses inside the gateway's own /96 (written by the
+    health check; no synthesis, no `dns64` plugin). Any other name gets
+    REFUSED; it forwards nothing, so it is no resolver.
+  - The health check owns it, as G23 says for the DNS64 listener: it
+    starts the beacon while the translator answers and stops it when
+    every target fails (§14.3); the beacon is bound to the check
+    (`BindsTo`).
+  - Only declared clients reach it (port 53, UDP and TCP, in the
+    gateway's own table, `beacon-undeclared`).
+  - Clients use plain resolvers for names; the beacon is asked only by
+    the follower.
+  - Rejected: the follower pinging a target through each gateway's /96
+    (the client would need internet targets of its own, G23 moved that
+    check to the gateway); a route that follows gateway health (the
+    fabric; G4 keeps the host path off it).
+  *(implemented: `nat-gateway`, `NAT_GATEWAY_OK`)*
 
 ## 3. Invariants (target)
 
@@ -2102,8 +2149,21 @@ owner.
      egress policy), day-2.
    - The tier is still a source address, not a credential (G4): a
      spoofer of a trusted source gets the higher limit. Accepted.
-   - The numbers are settings; the defaults are chosen in the next
-     session and written here.
+   - The numbers are settings. **Defaults (round G7):**
+
+     | Tier | New flows per source | Packets per source |
+     |---|---|---|
+     | `default` | 50/s, burst 200 | 20 000/s, burst 40 000 |
+     | `trusted` | 1 000/s, burst 4 000 | 200 000/s, burst 400 000 |
+
+     A source is one address (/128). The limits count only what a
+     client sends towards the translator; replies are not limited.
+     20 000 packets a second is about 240 Mbit/s of 1 500 byte packets.
+   - **Built (round G7):** one meter per tier and kind in `inet nat64`
+     (`nat64-flows-<tier>`, `nat64-packets-<tier>`). The gateway learns
+     the kube members from the `kube_cluster` exports. Asserted in
+     `nat-gateway`: a `default` client loses SYNs and datagrams above
+     its limit, a `trusted` one loses none.
 5. **The kube services render Cilium's `devices`** (point 10; SPEC.md
    D71). See 14.2.
 
@@ -2124,9 +2184,21 @@ owner.
 - **Never a VPN link.** A link of a VPN zone (`tailscale0`, any
   Headscale or WireGuard client link that is not the transport) is
   never in `devices`. An eval assertion refuses it.
-- **Open, to settle first in the next session (one suite):**
-  `devices` is one cluster-wide Helm value, and the names differ per
-  node. Candidates, in order:
+- **Answered (round G7): candidate 1, the union.** The transport's links
+  already differ per node and were already one union; Cilium attaches to
+  the names a node has. `<distro>-clat` runs the rendered list
+  (`<fabric link> <fabric loopback> clat0 eth1`) and asserts Cilium on
+  `clat0` and `eth1` of each node. Built in `lib/kube-cluster/devices.nix`:
+  - the CLAT link of a member that is a `nat-gateway` client (its
+    `nat_gateway` export);
+  - the links of that client's uplink zone that carry no IPv4 (its
+    `netif` export: no static IPv4, no DHCPv4);
+  - an eval assertion refuses a VPN link: a netif link in zone `vpn` or
+    `tailnet`, or a name starting `tailscale`, `wt`, `nb-`, `zt`, `tun`.
+  - Not yet proven: two nodes with different underlay names in one
+    cluster (eval tests only: `test_d71RenderedDevices`).
+- Was open: `devices` is one cluster-wide Helm value, and the names
+  differ per node. Candidates, in order:
   1. the union of every member's exact names in the one list, if
      Cilium skips a named link that does not exist on a node;
   2. a `CiliumNodeConfig` per node with that node's exact names;
