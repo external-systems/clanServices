@@ -166,6 +166,11 @@ in rec {
         "ipv4-native-routing-cidr" = profile.ipv4NativeRoutingCIDR;
         "ipv6-native-routing-cidr" = profile.ipv6NativeRoutingCIDR;
       }
+      # D69: NodePorts only on the node addresses. Unset (an empty list)
+      # keeps Cilium's default: the first address of every device.
+      // lib.optionalAttrs ((profile.nodePort.addresses or []) != []) {
+        "nodeport-addresses" = lib.concatStringsSep "," profile.nodePort.addresses;
+      }
       // lib.optionalAttrs (profile.routingMode == "tunnel") {
         "ipv4-native-routing-cidr" = "";
         "ipv6-native-routing-cidr" = "";
@@ -226,6 +231,10 @@ in rec {
     [
       "nodePort"
       "directRoutingDevice"
+    ]
+    [
+      "nodePort"
+      "addresses"
     ]
     ["MTU"]
     [
@@ -627,6 +636,8 @@ in rec {
     image,
     rewrites,
     manifestLabels,
+    # D70: the number of machines in the cluster (servers and agents).
+    memberCount ? 1,
   }: {
     "core"."v1".ServiceAccount."coredns" = {
       metadata = {
@@ -748,8 +759,18 @@ in rec {
               }
             ];
             nodeSelector."kubernetes.io/os" = "linux";
-            # Two replicas, spread across nodes when possible (soft: a
-            # single-node cluster still schedules both).
+            # D70: with two or more members the replicas never share a
+            # node. The bundle applies before the second node is Ready;
+            # `minDomains` keeps the second replica Pending until then,
+            # so one dead node cannot take cluster DNS with it.
+            topologySpreadConstraints = lib.optional (memberCount >= 2) {
+              maxSkew = 1;
+              minDomains = 2;
+              topologyKey = "kubernetes.io/hostname";
+              whenUnsatisfiable = "DoNotSchedule";
+              labelSelector.matchLabels."k8s-app" = "kube-dns";
+            };
+            # Soft: a single-node cluster still schedules both.
             affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution = [
               {
                 weight = 100;
@@ -882,6 +903,9 @@ in rec {
     # artifact flake's pkgs/coredns/versions.nix
     coreDNSImage,
     manifestLabels,
+    # D70: the number of machines in the cluster; CoreDNS spreads over
+    # two nodes when there are two.
+    memberCount ? 1,
     # null or { asns, members, sharedBgpPoolNames, nodeBgpPoolNames,
     # advertiseClusterIPs } — the D9 revised BGP v2 resource set.
     # Rendered iff node-bgp/shared-bgp pools exist (§6.12).
@@ -1011,7 +1035,7 @@ in rec {
           # distro's stock CoreDNS instead (mode-exclusive — never two
           # claimants of the clusterDNS IP).
           ++ lib.optional (!settings.distroDefaults.enable) (mkCoreDNSResources {
-            inherit clusterDNS manifestLabels;
+            inherit clusterDNS manifestLabels memberCount;
             image = coreDNSImage;
             inherit (settings.coredns) rewrites;
           })

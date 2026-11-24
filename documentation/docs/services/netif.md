@@ -45,7 +45,11 @@ beside IfState:
   restarts it after a crash and limits what it may touch. It runs
   upstream dhcpcd 10.5 with netif's own config.
   `dhcp.prefixDelegation` asks the ISP for a prefix and gives parts of
-  it to other links.
+  it to other links. The prefix it got is written to
+  `/run/netif/pd/<interface>`. The file changes only when the prefix
+  does, so a router can watch it. It lists only prefixes the ISP still
+  prefers. It is removed when the ISP takes the prefix away, and it
+  does not exist after boot until the ISP has answered.
 - **`defaultRoute.ipv4` / `defaultRoute.ipv6`** say whether a link may
   carry the machine's default route. One link per machine and family
   may. A link that accepts router advertisements (`ra`, on by default)
@@ -68,7 +72,10 @@ beside IfState:
   fails when something else changed the network.
 - **Bridges for guests.** A bridge's members can be NICs, VLANs or
   bonds. A bridge over one NIC found by `match.mac` takes that MAC;
-  `mac` sets one by hand. `bridge.guestPorts = true` tells netif that
+  `mac` sets one by hand. On a plain NIC `mac` changes the address the
+  port shows on the wire, for a WAN port that stands in for an ISP's
+  gateway; `match.mac` still finds the NIC by its real address.
+  `bridge.guestPorts = true` tells netif that
   other ports on the bridge belong to a hypervisor and must be left
   alone.
 - **The lockout guard** (`clanServices.netif.guard`) checks after

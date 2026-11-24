@@ -321,7 +321,8 @@ in {
         # The survivors keep serving through their OWN haproxy + apiservers,
         # the mesh routes around the dead node, and etcd holds 2/3 quorum.
         with subtest("unclean loss of beta: survivors mark it DOWN and keep serving"):
-            beta.shutdown()
+            # crash(), not shutdown(): no unit on beta gets to say goodbye.
+            beta.crash()
 
             # The survivors' haproxy healthchecks mark beta's backends DOWN.
             for m in [alpha, gamma]:
@@ -332,10 +333,11 @@ in {
 
             # The API keeps answering — through the local haproxy (the admin
             # kubeconfig's server URL is the kubeapi FQDN on the LB port).
-            alpha.wait_until_succeeds(
-                "kubectl --kubeconfig /etc/rancher/${distro}/admin-kubeconfig get --raw /readyz | grep ok >/dev/null",
-                timeout=300,
-            )
+            for m in [alpha, gamma]:
+                m.wait_until_succeeds(
+                    "kubectl --kubeconfig /etc/rancher/${distro}/admin-kubeconfig get --raw /readyz | grep ok >/dev/null",
+                    timeout=300,
+                )
 
             # Node list from the survivor: beta falls NotReady, 2/3 stay Ready.
             alpha.wait_until_succeeds(
@@ -354,13 +356,51 @@ in {
             out = alpha.succeed("kubectl get configmap ${distro}-ha-post-crash -o jsonpath={.data.probe}")
             assert out.strip() == "survived", f"post-crash etcd read back {out!r}"
 
-            # Pods still schedule on the survivors.
+            # Pods still schedule on the survivors: the scheduler picks
+            # the node, nothing names one.
             alpha.succeed(
-                "kubectl run ha-post-crash --image=busybox:1.36.1 --restart=Never --overrides='{\"spec\":{\"nodeName\":\"gamma\"}}' -- sleep infinity"
+                "kubectl run ha-post-crash --image=busybox:1.36.1 --restart=Never -- sleep infinity"
             )
             alpha.wait_until_succeeds(
                 "kubectl wait --for=condition=Ready pod/ha-post-crash --timeout=120s", timeout=180
             )
+            placed = alpha.succeed("kubectl get pod ha-post-crash -o jsonpath='{.spec.nodeName}'").strip()
+            assert placed in ("alpha", "gamma"), f"the pod was scheduled on {placed!r}"
+
+        with subtest("cluster DNS survives the loss (D70: the replicas never share a node)"):
+            print(alpha.succeed("kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide"))
+            alpha.wait_until_succeeds(
+                "kubectl exec ha-post-crash -- nslookup kubernetes.default.svc.cluster.local | grep 'Address' >/dev/null",
+                timeout=180,
+            )
+
+        with subtest("beta returns: three Ready nodes, the API on beta, both DNS replicas"):
+            beta.start()
+            alpha.wait_until_succeeds(
+                "test \"$(kubectl get nodes --no-headers | grep -c ' Ready ')\" -eq 3",
+                timeout=900,
+            )
+            beta.wait_until_succeeds(
+                "kubectl --kubeconfig /etc/rancher/${distro}/admin-kubeconfig get --raw /readyz | grep ok >/dev/null",
+                timeout=600,
+            )
+            for m in [alpha, gamma]:
+                m.wait_until_succeeds(
+                    "echo show stat | socat - UNIX-CONNECT:/run/haproxy/haproxy.sock | grep '^${distro}_api,beta-4,' | grep ',UP,' >/dev/null",
+                    timeout=600,
+                )
+            # a write after the return, read back on the node that was dead
+            alpha.succeed("kubectl create configmap ${distro}-ha-rejoined --from-literal=probe=back")
+            beta.wait_until_succeeds(
+                "kubectl get configmap ${distro}-ha-rejoined -o jsonpath={.data.probe} | grep -x back >/dev/null",
+                timeout=300,
+            )
+            alpha.wait_until_succeeds(
+                "kubectl -n kube-system get deployment coredns -o jsonpath='{.status.readyReplicas}' | grep -x 2 >/dev/null",
+                timeout=600,
+            )
+            for m in machines:
+                m.wait_until_succeeds("cilium status", timeout=300)
         print("${lib.toUpper distro}_HA_OK")
     except Exception:
         for m in machines:

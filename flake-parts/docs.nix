@@ -34,6 +34,17 @@ _: {
             {Glossary = "netif/glossary.md";}
           ];
         }
+        {
+          "Router and NAT gateway" = [
+            {Overview = "gateway/index.md";}
+            {"Home and on-prem router" = "gateway/router.md";}
+            {"Cloud NAT gateway" = "gateway/nat-gateway.md";}
+            {"Exposing services" = "gateway/exposure.md";}
+            {"Plan and probes" = "gateway/plan.md";}
+            {Retrospective = "gateway/retrospective.md";}
+            {"Review (devil's advocate)" = "gateway/review.md";}
+          ];
+        }
         {Decisions = [{"Decision record" = "decisions/index.md";}];}
         {
           Services = [
@@ -81,6 +92,7 @@ _: {
             {Glossary = "reference/glossary.md";}
             {Testing = "reference/testing.md";}
             {"Upstream references" = "reference/upstream.md";}
+            {"Verified upstream facts" = "reference/upstream-facts.md";}
           ];
         }
       ];

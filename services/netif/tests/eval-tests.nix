@@ -622,11 +622,15 @@
   bridgeInBridgeEdge = withEdgeLinks {
     outer.bridge.members = ["virbr0"];
   };
+  # N43: a WAN port that presents an ISP gateway's MAC, found by its own.
   macOnPhysicalEdge = withEdgeLinks {
     wan9 = {
-      interface = "enp9s0";
+      match.mac = "52:54:00:12:01:09";
       mac = "02:00:00:00:00:44";
     };
+  };
+  macOnMemberEdge = withEdgeLinks {
+    nic0.mac = "02:00:00:00:00:45";
   };
   guestPortsOnBondEdge = withEdgeLinks {
     agg0.bridge.guestPorts = true;
@@ -815,8 +819,21 @@ in {
       expr = failedAssertion bridgeInBridgeEdge "never a bridge inside a bridge";
       expected = true;
     };
-    test_macOnPhysicalRejected = {
-      expr = failedAssertion macOnPhysicalEdge "netif does not change a NIC's MAC";
+    test_macOnPhysical = {
+      expr = {
+        inherit (macOnPhysicalEdge.networking.ifstate.settings.interfaces.wan9) identify;
+        inherit (macOnPhysicalEdge.networking.ifstate.settings.interfaces.wan9.link) address kind;
+        rejected = failedAssertion macOnPhysicalEdge "sets 'mac'";
+      };
+      expected = {
+        identify.perm_address = "52:54:00:12:01:09";
+        address = "02:00:00:00:00:44";
+        kind = "physical";
+        rejected = false;
+      };
+    };
+    test_macOnMemberRejected = {
+      expr = failedAssertion macOnMemberEdge "a member takes the MAC of the bond or bridge above it";
       expected = true;
     };
     test_guestPortsOnNonBridgeRejected = {

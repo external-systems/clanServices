@@ -332,7 +332,7 @@ in {
       # §6.12: BGP only for node-bgp/shared-bgp pools; those pools only
       # with BGP. The two knobs are locked together.
       assertion = settings.bgp.enable == (bgpPoolNames != []);
-      message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but node-bgp/shared-bgp pools = [${lib.concatStringsSep ", " bgpPoolNames}] (§6.12: BGP only for node-bgp/shared-bgp pools, and such pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false)";
+      message = "kube-cluster/${instanceName}: bgp.enable = ${builtins.toJSON settings.bgp.enable} but node-bgp/shared-bgp pools = [${lib.concatStringsSep ", " bgpPoolNames}] (§6.12: BGP only for node-bgp/shared-bgp pools, and such pools require BGP — with the default fabric a shared-bgp pool always exists, so disabling fabric requires bgp.enable = false. On a tunnel transport such as wireguard-mesh the service turns BGP off itself: there is no route exchange, and node-bgp, shared-bgp and fabric pools cannot be used there; use Node IPAM, a floating pool or an external-class pool)";
     }
     {
       # D8: node-bgp pools need exactly one owner and it must be a member.

@@ -1,4 +1,4 @@
-# Decision record (D1–D66)
+# Decision record (D1–D72)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history. D64 (allocations in
@@ -207,6 +207,83 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D61 | active (r18) | IfState 2.5.1 is the exclusive static network renderer; live reconciliation, no networkd/netdev/scripted networking, per-link DHCP hooks, runtime-secret includes, FRR/Cilium ownership boundaries |
 | D62 | revised (r24) | `org-pkgs` (external-systems/pkgs) owns nixpkgs/flake-parts, overlays, runtime packages, and per-system airgap artifacts; clanServices follows and re-exports them; VM suites live under `legacyPackages.<system>.vmTests`, never `checks` |
 | D66 | active (r24) | Org standard: one `org-pkgs` input and `flakeModules.default` (treefmt, docs, lock-sync, VM runner), no dev partition, devenv shell, org CI; VM suites in `clanTests` on euc-hel-0 (96 GiB / 36 vCPUs per suite, 2 h), side by side within `vmTests.parallel`, shared k3s/RKE2 bodies, `subtest` phases, exit status is the result |
+
+## Round 48: router and NAT gateway (2026-11-20)
+
+Design only; nothing is built yet.
+
+### D67 — Clusters on an IPv6-only underlay (planned)
+
+A public IPv4 costs money in the cloud, so clan machines there get no
+IPv4 address on their NICs. Clusters stay dual-stack inside, because
+applications hard-code IPv4. The IPv4 a node needs is its private
+fabric address: node addresses stay the fabric loopbacks (D47) and the
+control-plane endpoint stays IPv4 on the fabric (D60). A probe comes
+first; every suite today runs on a dual-stack underlay.
+
+Proven by suites since 2026-11-21: both transports, k3s and rke2, run
+on machines whose network cards have no IPv4. No code changed for the
+join. The CLAT on each node is still set up by the tests, not by a
+service.
+
+### D69 — NodePorts answer on the node addresses only (2026-11-21)
+
+Cilium serves a NodePort before the node's firewall, on every network
+link it is attached to. A link that faces the outside therefore opened
+every NodePort to the outside. Every `LoadBalancer` Service has a
+NodePort, so this was the normal case.
+
+Now a NodePort answers only on the cluster's node addresses (the
+fabric or mesh addresses). LoadBalancer addresses are not affected.
+Found by the review of 2026-11-21; tested by
+`<distro>-data-plane-tunnel`.
+
+### D70 — CoreDNS copies never share a node (2026-11-21)
+
+Both CoreDNS copies used to start on the first node and stay there.
+When that node died, the cluster had no DNS.
+
+A cluster with two or more machines now places one copy per node. The
+second copy waits until a second node is ready. While a node is down,
+one copy serves. Tested by `<distro>-data-plane-tunnel`, `<distro>-ha`
+and `<distro>-ha-fabric`.
+
+### D71 — Cilium's network cards come from netif (2026-11-23, planned)
+
+k3s and RKE2 will fill Cilium's `devices` list themselves, per node:
+the fabric link, the CLAT link where one runs, and the network card
+when the machine has no IPv4 on it. The names come from netif, so a
+mixed fleet works (`eno1`, `enp0s1`, `wlp2s0` in one cluster). A VPN
+link such as `tailscale0` is never on the list. How one list serves
+nodes with different names is settled by one test first.
+
+### D72 — Native routing only (2026-11-23, planned)
+
+Cilium's tunnel mode (VXLAN over `wireguard-mesh`) and the
+`wireguard-mesh` service will be removed. Native routing with FRR is
+the only data plane.
+
+- Why: native routing is always preferred; VXLAN adds overhead inside
+  WireGuard anyway; tunnel mode cannot use BGP pools, the fabric or
+  the router's public service addresses; two modes double the tests
+  for every new feature.
+- The cost accepted: FRR runs on every node with no second data
+  plane. Tests for FRR failure cover it instead.
+- Nothing is lost: the last commit with tunnel mode gets the git tag
+  `tunnel-mode-final`.
+- Tests that only used the mesh as a base move to the routed fabric.
+
+### D68 — `router` and `nat-gateway` have their own contract (planned)
+
+Two new services, the edge of a LAN and IPv4 reach for machines that
+have none, are governed by `specs/gateway.md` (decisions G1–G23). See
+[Router and NAT gateway](../gateway/index.md).
+
+Two of its decisions touch the cluster contract. G20: a Service behind
+a router gets a public IPv6 address from the ISP's block; the pool
+model (D8) is unchanged. G21: your own address block is announced by
+fabric borders only (D9, D56); what the border still lacks for that
+needs a decision here first.
 
 ## Round 25: host networking gets its own contract
 

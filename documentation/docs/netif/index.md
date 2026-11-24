@@ -6,7 +6,7 @@ links, addresses and routes once in `inventory.nix`. netif renders them for
 whichever network manager the machine's current mode uses.
 
 This section is the human version of the netif contract. The agent edition,
-with numbered decisions `N1`–`N42`, is
+with numbered decisions `N1`–`N45`, is
 [`specs/netif.md`](https://github.com/external-systems/clanServices/blob/main/specs/netif.md).
 
 ## The model
@@ -68,7 +68,7 @@ It also brings an explicit default-route owner per link, so two DHCP
 NICs can coexist, and NICs found by device path for cloud VMs.
 
 After it come containers and VM hosts (phase P7), the NetworkManager
-renderer (P2), modes (P4), the lockout guard (P8) and the router module
+renderer (P2), modes (P4), the lockout guard (P8) and the router service
 (P5). See the [plan](plan.md).
 
 netif has no consumers yet. It is not used on real machines until it
@@ -96,7 +96,8 @@ passes the contract gate.
 - [Ownership and VPNs](ownership.md) — what IfState deletes unless told not
   to, and how Tailscale fits in.
 - [Home router](router.md) — the router split between netif and the
-  `modules` repo.
+  `router` service. Its design is in
+  [Router and NAT gateway](../gateway/index.md).
 - [Plan and evidence](plan.md) — delivery phases, probe results and test
   suites.
 - [netif service reference](../services/netif.md) — today's settings.

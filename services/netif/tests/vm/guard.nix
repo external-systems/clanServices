@@ -134,6 +134,8 @@ in {
   testScript = ''
     import time
 
+    ${import ../../../../tests/suite-lib.nix}
+
     LAST_GOOD = "/var/lib/netif/guard/last-good"
 
     def last_good():
@@ -152,9 +154,13 @@ in {
         return host.execute(f"systemctl reset-failed ifstate.service; {system}/bin/switch-to-configuration test 2>&1")
 
     def journal(pattern):
-        # journald writes behind the unit: sync, or a line the guard just
-        # printed is missing under load
-        host.succeed(f"journalctl --sync; journalctl -b -u netif-guard.service --no-pager | grep '{pattern}' >/dev/null")
+        # journald writes behind the unit: sync, and wait. Under load a
+        # line the guard just printed was still missing after the sync
+        # (full run of 2026-11-22: "rolled back").
+        host.wait_until_succeeds(
+            f"journalctl --sync; journalctl -b -u netif-guard.service --no-pager | grep '{pattern}' >/dev/null",
+            timeout=30,
+        )
 
     try:
         start_all()
@@ -162,6 +168,10 @@ in {
         host.wait_for_unit("multi-user.target", timeout=180)
         host.wait_until_succeeds("test $(systemctl show -p ExecMainExitTimestampMonotonic --value ifstate.service) != 0", timeout=120)
         assert guard_done() == "success"
+
+        with subtest("versions"):
+            print_versions(host, ["kernel", "ifstate", "nftables"])
+            print_versions(gw, ["kernel", "ifstate"])
 
         with subtest("boot: the gateway answers at layer 2 though it drops pings (N25)"):
             host.fail("ping -c1 -W2 192.168.1.1")
@@ -190,7 +200,12 @@ in {
             # the running generation still names the bad configuration:
             # a plain restart tries it again and rolls back again
             assert host.succeed("readlink -f /etc/ifstate/ifstate.yaml").strip() != first
-            host.succeed("systemctl restart ifstate.service; sleep 1")
+            # ifstate.service queues a guard run and returns: wait for that
+            # run to start, or `guard_done` reads the result of the one before
+            invocation = "systemctl show -p InvocationID --value netif-guard.service"
+            before_restart = host.succeed(invocation).strip()
+            host.succeed("systemctl restart ifstate.service")
+            host.wait_until_succeeds(f"test \"$({invocation})\" != '{before_restart}'", timeout=60)
             assert guard_done() != "success"
             host.succeed("ip -4 addr show eth1 | grep '192.168.1.2/24' >/dev/null")
             print("NETIF_GUARD_ROLLBACK_OK")

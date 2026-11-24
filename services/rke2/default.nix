@@ -570,6 +570,16 @@
         };
         k8sServiceHost = kubeapiAddr;
         k8sServicePort = haproxyKubeapiPort;
+        # D69: NodePorts answer on the members' node addresses only.
+        nodeAddresses = lib.concatMap (
+          name: let
+            addr = memberAddr name;
+          in
+            lib.filter (a: a != null) [
+              addr.ipv4
+              addr.ipv6
+            ]
+        ) (lib.attrNames allMembers);
       };
 
       manifestLabels = kube.render.mkManifestLabels {inherit instanceName;};
@@ -590,6 +600,7 @@
         podIPCidr = resolvedCidrs.clusterCidr;
         inherit (resolvedCidrs) clusterDNS;
         coreDNSImage = coreDNSImageRef;
+        memberCount = builtins.length (lib.attrNames allMembers);
         k8sServiceHost = kubeapiAddr;
         k8sServicePort = haproxyKubeapiPort;
         bgp = dp.bgpBundle;
@@ -806,7 +817,26 @@
           nixpkgs.overlays = lib.mkAfter [inputs.org-pkgs.overlays.kubernetes];
 
           clan = {
-            _networkFacts.forwarding = true;
+            _networkFacts = {
+              forwarding = true;
+              # The cluster's ranges, for the overlap checks of
+              # lib/ownership.nix (containers, the tailnet).
+              clusters.${instanceName} = {
+                distro = "rke2";
+                ciliumId = resolvedCiliumId;
+                inherit
+                  (resolvedCidrs)
+                  podCIDRv4
+                  podCIDRv6
+                  serviceCIDRv4
+                  serviceCIDRv6
+                  clusterDNS
+                  ;
+                fabric = {
+                  inherit (settings.network.fabric) service instance;
+                };
+              };
+            };
             kubeClusters.${instanceName} = {
               renderedDistroConfig = cleanConfig;
               bundleJson = lib.mkIf (isInit && settings.bootstrap.apply) bundle.json;

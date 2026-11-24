@@ -80,7 +80,10 @@ Beside IfState, netif runs (`host.nix`):
 - one supervised `netif-dhcpcd-<interface>.service` per DHCP link, with
   its own config (upstream dhcpcd 10.5, no RA handling, no stock hooks).
   `dhcp.prefixDelegation` asks for a prefix and assigns subnets of it to
-  other links of the machine;
+  other links of the machine; the delegated prefix is written to
+  `/run/netif/pd/<interface>`, only when it changes. The file lists
+  only prefixes the ISP still prefers, and is removed when the
+  delegation is lost;
 - `defaultRoute.{ipv4,ipv6}` per link (and as a segment default) say
   whether the link may carry the machine's default route; one link per
   family may, and a link with `ra = true` counts for IPv6. Every
@@ -99,7 +102,8 @@ Beside IfState, netif runs (`host.nix`):
   `netif-preview [system]` and the hourly `netif-drift.timer`, all
   read-only;
 - VM-host bridges: members may be physical, VLAN or bond links; the
-  bridge MAC follows a single `match.mac` member or `mac`;
+  bridge MAC follows a single `match.mac` member or `mac`; on a
+  physical link `mac` is the MAC the port presents (N43);
   `bridge.guestPorts` keeps a hypervisor's ports across applies (a
   pre-apply step names them to IfState, a post-apply step checks them);
 - the lockout guard (`guard.nix`, `clanServices.netif.guard`,

@@ -120,7 +120,15 @@ in {
     instanceName,
     k8sServiceHost,
     k8sServicePort ? 6443,
+    # D69: every member's node addresses. NodePorts answer on these and
+    # on no other address of a `devices` link. Empty: Cilium's default
+    # (the first address of every device).
+    nodeAddresses ? [],
   }: let
+    hostCidr = address:
+      if lib.hasInfix ":" address
+      then "${address}/128"
+      else "${address}/32";
     merged =
       lib.recursiveUpdate {
         cluster = {
@@ -152,6 +160,9 @@ in {
           else "";
         devices = lib.concatStringsSep " " (lib.unique transportFacts.interfaces);
         nodePort.directRoutingDevice = transportFacts.directRoutingDevice;
+        # D69: Cilium serves a NodePort in eBPF, before the node firewall,
+        # on every `devices` link. Limit it to the node addresses.
+        nodePort.addresses = map hostCidr nodeAddresses;
         MTU = transportFacts.mtu;
         ipam.mode = "multi-pool";
         # D41: Node IPAM is the default classless LoadBalancer mechanism

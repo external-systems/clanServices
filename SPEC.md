@@ -4,6 +4,107 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 52 (2026-11-23): owner decisions; docs only.** The owner
+answered the open points of round 51 and decided on tunnel mode.
+- **Locked** (`specs/gateway.md` §14): build the services, no more
+  probes; freeze the design-only decisions; the CLAT is the default
+  path and DNS64 is frozen (not built until a client cannot run a
+  CLAT); a rate limit per client at the gateway,
+  with a `trusted` tier for kube nodes; the kube services render
+  Cilium's `devices`.
+- **D71, new, planned:** `devices` rendered per node from netif facts,
+  never a VPN link. Amends D58.
+- **D72, new, planned:** native routing only. Cilium tunnel mode and
+  `wireguard-mesh` are removed; the last commit with them is tagged
+  `tunnel-mode-final`.
+- Directions for the unfixed findings (the `clat0` blip, health
+  targets, dual-WAN stability, the hairpin of G20):
+  `specs/gateway.md` §14.3.
+- Header range D1–D72. No code changed.
+
+**Round 51 (2026-11-21): devil's advocate review** (`specs/gateway.md`
+round G4, §13). Points that touch this file:
+- **D69, new, implemented:** NodePorts answer on the node addresses
+  only (`nodeport-addresses`). Closes "NodePorts bypass the node
+  firewall" of round 50.
+- **D70, new, implemented:** the clan CoreDNS replicas never share a
+  node when the cluster has two or more members. Closes "CoreDNS
+  replicas share one node" of round 50.
+- `clan.networkFacts.clusters` is written by k3s and rke2 (eval
+  `test_clusterRangesFact`). Closes the third finding of round 50.
+- The `ha` body is stricter: the server crashes, the scheduler places
+  the pod, the API answers on both survivors, cluster DNS answers, and
+  the dead server returns as a Ready node that serves the API.
+  `<distro>-ha` and `<distro>-ha-fabric` run it.
+- D67's status line now says what is proven and what a service must
+  still render (the CLAT and its `devices` entry).
+- **Found, needs a decision here:** on an IPv6-only node the underlay
+  NIC must be in Cilium's `devices` in both modes, or pod IPv6 egress
+  and external names in pods fail (`specs/gateway.md` G5, §13.2
+  point 10). D58 derives `devices` from the transport only. The
+  `<distro>-clat-<transport>` suites add the NIC by hand.
+- Open for the owner: `specs/gateway.md` §13.2.
+
+Round 50 (2026-11-21): **probes became suites; both Cilium modes have
+the same suites (`specs/gateway.md` round G3, §5, §12.3). Points that
+touch this file:
+- D67 is suite-verified: `<distro>-v6only` and
+  `<distro>-clat-<transport>` (k3s and rke2; `routed-fabric` with
+  native routing and `wireguard-mesh` with the tunnel). Pod IPv4
+  leaves through the node's CLAT, whose link is in Cilium's `devices`
+  (`specs/gateway.md` G5, decided). The kube services do not render
+  that yet: the suites set `cilium.helmValues.devices`.
+- New suites for mode parity: `<distro>-data-plane-tunnel`,
+  `<distro>-join-netif`, `k3s-modes-fabric`. No parity defect was found
+  in service code.
+- Three findings, open, each needs a decision here before code
+  (`specs/gateway.md` §12.2):
+  - CoreDNS replicas share one node after bootstrap (soft
+    anti-affinity; the bundle applies before the second node is
+    Ready). When that node dies, cluster DNS is gone.
+  - Cilium serves NodePorts in eBPF before nftables on every link in
+    `devices`; the underlay link is one. A machine outside the cluster
+    reaches a NodePort on a node's underlay address.
+  - `clan.networkFacts.clusters` is declared and nothing writes it.
+- The assertion that refuses a BGP pool on a tunnel transport now
+  names the transport.
+
+Round 49 (2026-11-21): **both transports proven on IPv6-only NICs; the
+HA contract on the routed fabric** (`specs/gateway.md` round G2, §10.11,
+§12.3). Points that touch this file:
+- D67 is probe-verified on both transports: `routed-fabric` with
+  native routing and `wireguard-mesh` with the tunnel, k3s and rke2,
+  two nodes whose NICs have no IPv4 (probes then; suites since round
+  50). No code changed.
+- New suites `k3s-ha-fabric` and `rke2-ha-fabric`
+  (`K3S_HA_FABRIC_OK`, `RKE2_HA_FABRIC_OK`): the `ha` contract and its
+  test script, on the routed fabric. alpha and beta are spines, gamma
+  is a leaf; the manager that dies is a spine. Body:
+  `lib/kube-cluster/tests/vm/ha-fabric.nix`.
+- The coverage of each Cilium mode is the table in
+  `specs/gateway.md` §12.3.
+
+Round 48 (2026-11-20): **router and NAT gateway designed; docs only.**
+The owner decided that the home router and a NAT gateway are
+clanServices in this repo, with their own contract `specs/gateway.md`
+(D68). Points that touch this file:
+- Cloud clan machines get an IPv6-only underlay; clusters stay
+  dual-stack inside, on fabric addresses (D67, planned, probe first).
+- Pod IPv4 egress on such nodes is `specs/gateway.md` G5.
+- Exposure has three classes (G12); the home router opens no inbound
+  port by default. ECMP from the router to a cluster gateway stays
+  available as class 3.
+- A Service behind a router gets a public IPv6 address from the ISP's
+  delegated prefix (G20). The pool model is D8, unchanged; the router
+  is the edge and joins `routed-fabric`. D10's non-goals stand.
+- Owned address space is announced by `routed-fabric` borders only
+  (G21). The border was built for a private upstream router; what it
+  lacks for a transit provider (a public AS number, aggregates only, a
+  default or full table inbound, per-peer session options, RPKI) is
+  listed in G21 and needs a decision here before code.
+- Metrics endpoints of host services are scraped from a monitoring
+  cluster over the fabric; Prometheus and Grafana are day-2 (G18).
+Nothing is implemented in this round.
 Round 47 (2026-11-18): **hot-plugged wired links**
 (`specs/netif.md` round P2-hotplug, N12).
 `clanServices.netif.hotplug.interfaces` names the prefixes of links
@@ -649,7 +750,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D66)
+## 4. Decision record (D1–D72)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1821,6 +1922,121 @@ unless noted) — revoked entries keep one-line reasons for history.
     imports `org-pkgs/devenv`). CI is the org `ci.yml` (`ci / flake-check`;
     Pages at `clanservices.external.systems`; `0.0.<commits>` releases).
     nixd settings are in `.vscode/`.
+
+- **D67 Clusters run on an IPv6-only underlay.** *(suite-verified, no
+  service code needed for the join; `<distro>-v6only`,
+  `<distro>-clat-<transport>`. The CLAT itself and its `devices` entry
+  are still set by the suites, not rendered by a service:
+  `specs/gateway.md` G5, planned)*
+  - **Why.** A public IPv4 costs money in the cloud. Clan machines
+    there have no IPv4 address on any NIC (`specs/netif.md` U13, N45).
+  - **Clusters stay dual-stack inside** (§3.2): applications hard-code
+    IPv4, so single-stack IPv6 clusters are not a goal.
+  - **How.** Node addresses stay the stable dual-stack fabric loopbacks
+    (D47); the control-plane endpoint stays IPv4 on the fabric (D60).
+    The IPv4 a node needs is a private fabric address. IPv4 routes ride
+    IPv6 BGP sessions (`extended-nexthop`) and tunnels with IPv6
+    endpoints.
+  - **IPv4 egress.** The host uses `nat-gateway` (NAT64 and DNS64). Pod
+    IPv4 egress is `specs/gateway.md` G5: a CLAT on the node, or NAT44
+    over the fabric as the fallback.
+  - Proven by suites on both transports and both distros (rounds 49
+    to 51): see the status line. What they do not cover is listed in
+    `specs/gateway.md` §13.
+
+- **D68 `router` and `nat-gateway` are governed by `specs/gateway.md`.**
+  *(planned, 2026-11-20)* Two clanServices over the private
+  `lib/gateway/`: the edge of a LAN, and IPv4 reach for machines that
+  have none. They are host networking, outside the two cluster
+  contracts (D39). That file is their contract and status authority
+  (decisions G1–G23), as `specs/netif.md` is for netif.
+
+- **D69 NodePorts answer on the node addresses only.** *(implemented,
+  2026-11-21; eval `test_nodePortAddresses`; suites
+  `<distro>-data-plane-tunnel`, `<DISTRO>_DATA_PLANE_TUNNEL_OK`)*
+  - **Why.** Cilium serves a NodePort in eBPF, before nftables, on the
+    first address of every link in `devices`. A link in `devices` that
+    faces the outside (the underlay for a floating address, the CLAT
+    link of `specs/gateway.md` G5) therefore opened every NodePort to
+    the outside, past the node firewall. Every `LoadBalancer` Service
+    allocates a NodePort, so this was the common case, not a corner.
+  - **How.** The profile renders `nodePort.addresses` (ConfigMap key
+    `nodeport-addresses`): each member's node addresses as host
+    prefixes (`/32`, `/128`). A NodePort answers there and on no other
+    address. A packet to another address of a `devices` link reaches
+    the host stack, where the node firewall decides.
+  - **Unchanged.** LoadBalancer addresses (LB-IPAM pools, floating
+    addresses, Node IPAM) are their own frontends, not NodePorts.
+    ClusterMesh `node-port` exposure publishes node addresses (D60),
+    which are in the list.
+  - `cilium.helmValues.nodePort.addresses` overrides the list. Cilium's
+    host firewall was the rejected alternative: it needs node policies
+    and can lock out SSH, WireGuard and BGP.
+
+- **D70 CoreDNS replicas never share a node.** *(implemented,
+  2026-11-21; eval `test_coreDNSSpread`; suites
+  `<distro>-data-plane-tunnel`, `<distro>-ha`, `<distro>-ha-fabric`)*
+  - **Why.** The anti-affinity was soft and the bundle applies before
+    the second node is Ready: both replicas started on the first node
+    and stayed. When that node died, cluster DNS was gone.
+  - **How.** A cluster with two or more members renders
+    `topologySpreadConstraints` on the clan CoreDNS Deployment: one
+    replica per node, `DoNotSchedule`, `minDomains: 2`. The second
+    replica stays Pending until a second node is Ready. A one-member
+    cluster keeps the soft rule and both replicas.
+  - While a node is down its replica is Pending, not moved: one replica
+    serves. That is the price of never sharing a node in a two-node
+    cluster.
+  - Not covered: `distroDefaults.enable = true` keeps the distro's own
+    CoreDNS and its placement.
+
+- **D71 The kube services render Cilium's `devices` from netif facts.**
+  *(owner, 2026-11-23; planned)* Amends D58, where `devices` derive
+  from the transport only. Full rules: `specs/gateway.md` §14.2.
+  - Per node: the transport link(s), the CLAT link where a CLAT runs
+    (G5), the underlay link(s) where the underlay has no IPv4.
+  - Names come from netif's zones (N10), so a mixed fleet works:
+    `eno1`, `enp0s1`, `wlp2s0` in one cluster.
+  - A VPN link (`tailscale0` and the like) is never in `devices`; an
+    eval assertion refuses it.
+  - Open, settled first by one suite: one cluster-wide list (the union
+    of exact names), a `CiliumNodeConfig` per node, or wildcards with
+    an exclusion.
+  - Hand-set `cilium.helmValues.devices` in suites goes away.
+
+- **D72 Native routing only; Cilium tunnel mode and `wireguard-mesh`
+  are removed.** *(owner, 2026-11-23; planned)* Revokes D58's tunnel
+  profile and "`wireguard-mesh` is a supported tunnel transport".
+  - **Why (owner):** native routing is always preferred; VXLAN adds
+    overhead and sits inside WireGuard anyway; FRR makes BGP, outside
+    services and the flat layer-3 fabric easy; tunnel mode cannot use
+    BGP pools, fabric pools, G20's service prefix or the router as a
+    fabric member; two modes double the suites, wall time and code for
+    every new feature (CLAT, D71).
+  - **Accepted cost:** FRR is on every node, with no second data plane
+    to fall back on. Answered by suites for FRR failure (bgpd crash,
+    bad reload), not by a second mode. Upstream users who want VXLAN
+    are not a goal (AGENTS.md rule 10).
+  - **What goes:** `services/wireguard-mesh`; Cilium `routingMode:
+    tunnel` and `tunnelProtocol`; the tunnel branches in
+    `lib/kube-cluster` (`cilium.nix`, `bundle.nix`, `assertions.nix`,
+    `fleet-checks.nix`, `mesh.nix`, `transport.nix`); `mode` and
+    `tunnelProtocol` in `node_transport` (one mode needs no field, no
+    shim); the suites `<distro>-data-plane-tunnel`,
+    `<distro>-clustermesh-tunnel`, `<distro>-clustermesh-selective-tunnel`,
+    `<distro>-clat-mesh`, `k3s-clat-mesh-mapped`, `wireguard-mesh`.
+  - **What moves onto `routed-fabric`:** the suites that use the mesh
+    only as their base: `<distro>-single`, `-join`, `-join-netif`, `-ha`,
+    `-clustermesh-external`, `k3s-modes`, and `routed-fabric` as base in
+    `selective` and `data-plane-fixtures`. They keep their contract and
+    their `*_OK` marker. Where a `-fabric`/`-native` twin already exists
+    (`ha-fabric`, `clustermesh-external-native`, `modes-fabric`), the
+    two merge into one suite under the plain name.
+  - **Nothing is lost:** before the removal, tag the last `main` commit
+    that has tunnel mode `tunnel-mode-final` and push the tag.
+  - **Order:** after PR 35 merges, the removal is the first PR of the
+    next session, before any service code, so the CLAT and D71 are
+    built once.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 

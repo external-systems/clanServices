@@ -57,3 +57,11 @@ native data-plane, and every native/tunnel/selective/external ClusterMesh
 profile. CIS hardening, the bootstrap bundle, and distro-specific bootstrap
 behavior remain unchanged.
 
+## Two safety rules (2026-11-21)
+
+- **NodePorts answer only on node addresses** (D69). Cilium serves a
+  NodePort before the node's firewall. Without this rule every
+  `LoadBalancer` Service opened a port on any outside-facing link
+  Cilium is attached to.
+- **CoreDNS copies never share a node** (D70) in a cluster of two or
+  more machines. One dead node no longer takes cluster DNS with it.
