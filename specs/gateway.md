@@ -2307,6 +2307,12 @@ flakiness measure (§12.4).
   CLAT link remade under load, both nodes rebooted.
 - The gateway trusted both members by itself (`kube_cluster` exports).
 
+### 15.2b `rke2-clat` (`RKE2_CLAT_OK`, passed, 1133 s)
+
+- The same body as `k3s-clat` on rke2: the rendered list
+  `[eth1, clat0, <fabric link>, <fabric loopback>]` on both nodes, every
+  phase passed.
+
 ### 15.3 `router` (`ROUTER_OK`)
 
 - First run (before the hairpin change): passed, 504 s, every phase of
