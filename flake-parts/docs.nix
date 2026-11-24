@@ -54,7 +54,6 @@ _: {
             {"kubernetes (upstream, reserved)" = "services/kubernetes.md";}
             {netif = "services/netif.md";}
             {routed-fabric = "services/routed-fabric.md";}
-            {wireguard-mesh = "services/wireguard-mesh.md";}
             {remote-builder = "services/remote-builder.md";}
           ];
         }

@@ -46,7 +46,7 @@ in NixOS VM tests. Right arrow for the next topic, down arrow for detail.
 <text x="480" y="162" font-size="22" text-anchor="start"><tspan class="mono">netif</tspan> · host links (IfState)</text>
 <rect x="410" y="195" width="360" height="56" rx="10" stroke="#6a9bcc" stroke-width="2" fill="#6a9bcc"/>
 <image href="icons/wireguard.svg" x="425" y="205" width="36" height="36"/>
-<text x="472" y="231" font-size="18" text-anchor="start"><tspan class="mono">routed-fabric</tspan> or <tspan class="mono">wireguard-mesh</tspan></text>
+<text x="480" y="231" font-size="22" text-anchor="start"><tspan class="mono">routed-fabric</tspan> · WG + FRR</text>
 <rect x="410" y="265" width="360" height="56" rx="10" stroke="#6a9bcc" stroke-width="2" fill="#6a9bcc"/>
 <image href="icons/cncf-k3s.svg" x="425" y="277" width="36" height="32"/>
 <text x="480" y="302" font-size="22" text-anchor="start"><tspan class="mono">k3s</tspan> or <tspan class="mono">rke2</tspan> · distro + PKI</text>
@@ -111,7 +111,7 @@ routers. After day one, a GitOps repo of your choice takes over.
 <b>Data plane</b>
 <span class="muted" style="display:block">packets flow correctly</span>
 <ul>
-<li>Cilium multi-pool, native or VXLAN</li>
+<li>Cilium multi-pool, native routing</li>
 <li>FRR: BGP, BFD, Zebra</li>
 <li>WireGuard per adjacency</li>
 <li>ClusterMesh with selective peers</li>
@@ -146,9 +146,9 @@ render it from the host.
 
 <div style="width:92%; margin:0 auto">
 <div class="layer" style="border-left-color:#b0aea5"><span><img src="icons/flux-cd.svg" alt=""><img src="icons/cncf-argo.svg" alt=""><b>Day two</b> · GitOps</span><span>operator-owned, never clan-rendered</span></div>
-<div class="layer" style="border-left-color:#c9789a"><span><img src="icons/cilium.svg" alt=""><b>Networking</b> · Cilium</span><span>multi-pool, native or VXLAN, ClusterMesh</span></div>
+<div class="layer" style="border-left-color:#c9789a"><span><img src="icons/cilium.svg" alt=""><b>Networking</b> · Cilium</span><span>multi-pool, native routing, ClusterMesh</span></div>
 <div class="layer" style="border-left-color:#8fa876"><span><img src="icons/cncf-k3s.svg" alt=""><img src="icons/rancher.svg" alt=""><b>Distro</b> · k3s, rke2</span><span>thin services over one shared lib</span></div>
-<div class="layer" style="border-left-color:#d97757"><span><img src="icons/wireguard.svg" alt=""><img src="icons/lucide-route.svg" alt=""><b>Transport</b> · WireGuard + FRR</span><span><code>routed-fabric</code> or <code>wireguard-mesh</code></span></div>
+<div class="layer" style="border-left-color:#d97757"><span><img src="icons/wireguard.svg" alt=""><img src="icons/lucide-route.svg" alt=""><b>Transport</b> · WireGuard + FRR</span><span><code>routed-fabric</code>, native routing</span></div>
 <div class="layer" style="border-left-color:#6a9bcc"><span><img src="icons/nixos.svg" alt=""><img src="icons/lucide-network.svg" alt=""><b>Host</b> · NixOS + IfState</span><span><code>netif</code>, live reconcile, no reboot</span></div>
 <div class="layer" style="border-left-color:#e3c08d"><span><img src="icons/lucide-package.svg" alt=""><b>Packaging</b> · <code>pkgs</code> flake</span><span>pins, overlays, airgap artifacts</span></div>
 </div>
@@ -355,9 +355,9 @@ the right leaf.
 
 ---
 
-<p class="kicker">Transport profiles</p>
+<p class="kicker">Transport</p>
 
-## Two ways to connect nodes
+## One way to connect nodes
 
 <div class="cols">
 <div>
@@ -388,31 +388,22 @@ the right leaf.
 </ul>
 </div>
 <div>
-<p class="kicker">wireguard-mesh · tunnel</p>
-<div class="diagram">
-<svg class="sketch" viewBox="0 0 520 240" xmlns="http://www.w3.org/2000/svg">
-<circle cx="260" cy="45" r="28" stroke="#8fa876" stroke-width="2" fill="#8fa876"/>
-<circle cx="110" cy="190" r="28" stroke="#8fa876" stroke-width="2" fill="#8fa876"/>
-<circle cx="410" cy="190" r="28" stroke="#8fa876" stroke-width="2" fill="#8fa876"/>
-<line x1="245" y1="70" x2="125" y2="165" stroke="#faf9f5" stroke-width="2"/>
-<line x1="275" y1="70" x2="395" y2="165" stroke="#faf9f5" stroke-width="2"/>
-<line x1="140" y1="190" x2="380" y2="190" stroke="#faf9f5" stroke-width="2"/>
-<text x="260" y="140" font-size="20" fill="#b0aea5" text-anchor="middle">full mesh</text>
-</svg>
-</div>
+<p class="kicker">tunnel mode · removed</p>
 <ul class="ticks">
-<li>every node peers with every node</li>
-<li>Cilium VXLAN over the mesh</li>
-<li>small clusters, no BGP needed</li>
+<li>no VXLAN, no <code>wireguard-mesh</code> (D72)</li>
+<li>one data plane, one set of tests</li>
+<li>FRR failure has its own test</li>
+<li>old code kept at tag <code>tunnel-mode-final</code></li>
 </ul>
 </div>
 </div>
 
 Note:
-Both are supported. routed-fabric is the native, routed design for many
-sites and borders. wireguard-mesh is a simple full mesh with Cilium in
-VXLAN tunnel mode, good for small clusters. Both export the same generic
-node_transport so the distros do not care which one you picked.
+There is one transport now: routed-fabric, with Cilium in native
+routing. Tunnel mode and wireguard-mesh were removed in round 53,
+because two modes doubled the tests for every feature and tunnel mode
+could not use BGP pools or the fabric. FRR is now on every node, so a
+test kills bgpd and feeds FRR a bad config to prove it recovers.
 
 ---
 

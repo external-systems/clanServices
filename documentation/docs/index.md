@@ -23,8 +23,8 @@ never something clan renders.
   default. Every cluster mints a read-only, no-secrets kubeconfig your AI
   agents can use.
 - **Data-plane contract — packets flow correctly.** Cilium-only networking
-  (kube-proxy replacement, multi-pool pod IPAM, native or tunnel/VXLAN
-  profile), Node IPAM for classless LoadBalancer Services, LB-IPAM pools
+  (kube-proxy replacement, multi-pool pod IPAM, native routing only,
+  D72), Node IPAM for classless LoadBalancer Services, LB-IPAM pools
   with BGP v2 and per-node FRR/Zebra, and a private routed fabric on by
   default (`routed-fabric` with `leaf`/`spine` topology and generic
   `node_transport` exports). IfState reconciles the static host network

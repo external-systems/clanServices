@@ -2,9 +2,7 @@
   lib,
   inputs,
   distro,
-  profile,
 }: let
-  native = profile == "native";
   k3s = distro == "k3s";
   clusterA = "${distro}-a";
   clusterB = "${distro}-b";
@@ -18,11 +16,7 @@
     then "k3s.service"
     else "rke2-server.service";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
-  marker = "${lib.toUpper distro}_CLUSTERMESH_EXTERNAL${lib.optionalString native "_NATIVE"}_OK";
-  transportModule =
-    if native
-    then "routed-fabric"
-    else "wireguard-mesh";
+  marker = "${lib.toUpper distro}_CLUSTERMESH_EXTERNAL_OK";
   underlayIp = name: "192.168.1.${
     toString
     {
@@ -49,11 +43,7 @@
       name
     }
   }";
-  stableIp6 = name: "${
-    if native
-    then "fd77"
-    else "fd00:77"
-  }::${
+  stableIp6 = name: "fd77::${
     toString
     {
       alpha = 1;
@@ -68,7 +58,7 @@
   }";
   clusterSettings = id: dns: {
     network.fabric = {
-      service = transportModule;
+      service = "routed-fabric";
       instance = "mesh";
     };
     cilium.id = id;
@@ -145,30 +135,19 @@
     );
   };
 in {
-  name = "${distro}-clustermesh-external-${profile}";
+  name = "${distro}-clustermesh-external";
 
   clan = {
     directory = ./.;
     test.useContainers = false;
 
-    modules =
-      lib.optionalAttrs native {
-        routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-        };
-      }
-      // lib.optionalAttrs (!native) {
-        wireguard-mesh = lib.modules.importApply ../../../../services/wireguard-mesh/default.nix {
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-        };
-      };
-    exportInterfaces =
-      {
-        node_transport = ../../../../lib/node-transport-interface.nix;
-      }
-      // lib.optionalAttrs native {
-        routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
-      };
+    modules.routed-fabric = lib.modules.importApply ../../../../services/routed-fabric/default.nix {
+      ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
+    };
+    exportInterfaces = {
+      node_transport = ../../../../lib/node-transport-interface.nix;
+      routed_fabric = ../../../../services/routed-fabric/routed-fabric-interface.nix;
+    };
 
     inventory = {
       meta.domain = "test.clan";
@@ -181,51 +160,40 @@ in {
       };
       instances = {
         mesh = {
-          module.name = transportModule;
+          module.name = "routed-fabric";
           module.input = "self";
-          roles =
-            if native
-            then {
-              spine.machines = {
-                alpha.settings = {
-                  ipv4 = stableIp "alpha";
-                  ipv6 = stableIp6 "alpha";
-                  endpoint = underlayIp "alpha";
-                };
-                gamma.settings = {
-                  ipv4 = stableIp "gamma";
-                  ipv6 = stableIp6 "gamma";
-                  endpoint = underlayIp "gamma";
-                };
+          roles = {
+            spine.machines = {
+              alpha.settings = {
+                ipv4 = stableIp "alpha";
+                ipv6 = stableIp6 "alpha";
+                endpoint = underlayIp "alpha";
               };
-              leaf.machines = {
-                beta.settings = {
-                  ipv4 = stableIp "beta";
-                  ipv6 = stableIp6 "beta";
-                  endpoint = underlayIp "beta";
-                };
-                delta.settings = {
-                  ipv4 = stableIp "delta";
-                  ipv6 = stableIp6 "delta";
-                  endpoint = underlayIp "delta";
-                };
-                dns.settings = {
-                  ipv4 = stableIp "dns";
-                  ipv6 = stableIp6 "dns";
-                  endpoint = underlayIp "dns";
-                  access = "admin";
-                };
+              gamma.settings = {
+                ipv4 = stableIp "gamma";
+                ipv6 = stableIp6 "gamma";
+                endpoint = underlayIp "gamma";
               };
-            }
-            else {
-              peer.machines = lib.genAttrs ["alpha" "beta" "gamma" "delta" "dns"] (name: {
-                settings = {
-                  ipv4 = stableIp name;
-                  ipv6 = stableIp6 name;
-                  endpoint = underlayIp name;
-                };
-              });
             };
+            leaf.machines = {
+              beta.settings = {
+                ipv4 = stableIp "beta";
+                ipv6 = stableIp6 "beta";
+                endpoint = underlayIp "beta";
+              };
+              delta.settings = {
+                ipv4 = stableIp "delta";
+                ipv6 = stableIp6 "delta";
+                endpoint = underlayIp "delta";
+              };
+              dns.settings = {
+                ipv4 = stableIp "dns";
+                ipv6 = stableIp6 "dns";
+                endpoint = underlayIp "dns";
+                access = "admin";
+              };
+            };
+          };
         };
         ${clusterA} = {
           module.name = distro;
@@ -282,8 +250,7 @@ in {
             allowedUDPPorts = [53];
           };
         };
-        # The DNS VM is outside both clusters, so tunnel-profile pod return
-        # traffic uses each cluster's init node. Native admin routes also exist.
+        # The DNS VM is outside both clusters; native admin routes reach it.
         services.dnsmasq = {
           enable = true;
           settings = {
@@ -322,7 +289,7 @@ in {
 
     try:
         start_all()
-        with subtest("underlay, tunnels and runtime up"):
+        with subtest("underlay, fabric tunnels and runtime up"):
             dns.wait_for_unit("dnsmasq.service", timeout=120)
             machines = [alpha, beta, gamma, delta]
             for m in machines:
@@ -350,15 +317,8 @@ in {
             alpha.wait_until_succeeds("cilium status", timeout=180)
             gamma.wait_until_succeeds("cilium status", timeout=180)
 
-            if ${
-      if native
-      then "False"
-      else "True"
-    }:
-                for m in [alpha, gamma]:
-                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -x tunnel >/dev/null")
-                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.tunnel-protocol}' | grep -x vxlan >/dev/null")
-                    m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.mtu}' | grep -x 1370 >/dev/null")
+            for m in [alpha, gamma]:
+                m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -x native >/dev/null")
 
         with subtest("apiserver exposed by external LoadBalancer"):
             for m, cluster in [(alpha, "${clusterA}"), (gamma, "${clusterB}")]:

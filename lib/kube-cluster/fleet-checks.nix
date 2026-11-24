@@ -191,8 +191,9 @@ in rec {
       )
       clusters;
 
-    # 8. ClusterMesh group uniformity (D60): identical datapath mode,
-    # tunnel protocol and maxConnectedClusters across every member.
+    # 8. ClusterMesh group uniformity (D60): identical
+    # maxConnectedClusters across every member (routing is always
+    # native, D72).
     groupUniformity = lib.concatMap (
       groupClusters:
         lib.filter (
@@ -200,10 +201,7 @@ in rec {
             a = p.fst.cluster;
             b = p.snd.cluster;
           in
-            (a.datapath.mode or null)
-            != (b.datapath.mode or null)
-            || (a.datapath.tunnelProtocol or null) != (b.datapath.tunnelProtocol or null)
-            || (a.mesh.maxConnectedClusters or 255) != (b.mesh.maxConnectedClusters or 255)
+            (a.mesh.maxConnectedClusters or 255) != (b.mesh.maxConnectedClusters or 255)
         ) (pairs groupClusters)
     ) (lib.attrValues (meshGroupsOf clusters));
 
@@ -377,20 +375,12 @@ in rec {
 
     kube-cluster-mesh-group-uniformity = {
       assertion = groupUniformity == [];
-      message = "kube-cluster fleet check: ClusterMesh group members must share datapath mode, tunnel protocol and maxConnectedClusters (D60): ${
+      message = "kube-cluster fleet check: ClusterMesh group members must share maxConnectedClusters (D60): ${
         lib.concatMapStringsSep "; " (
           p: "${p.fst.serviceName}/${p.fst.instanceName} ~ ${p.snd.serviceName}/${p.snd.instanceName} (${
             builtins.toJSON {
-              fst = {
-                mode = p.fst.cluster.datapath.mode or null;
-                proto = p.fst.cluster.datapath.tunnelProtocol or null;
-                mcc = p.fst.cluster.mesh.maxConnectedClusters or 255;
-              };
-              snd = {
-                mode = p.snd.cluster.datapath.mode or null;
-                proto = p.snd.cluster.datapath.tunnelProtocol or null;
-                mcc = p.snd.cluster.mesh.maxConnectedClusters or 255;
-              };
+              fst = p.fst.cluster.mesh.maxConnectedClusters or 255;
+              snd = p.snd.cluster.mesh.maxConnectedClusters or 255;
             }
           })"
         )

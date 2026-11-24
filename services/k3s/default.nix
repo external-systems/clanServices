@@ -184,9 +184,8 @@
       allTransportFacts
     );
 
-    nativeRouting = transportProfile == null || transportProfile.nativeRouting;
     localRouter =
-      transportProfile != null && nativeRouting && transportProfile.routeExchange == "local-router";
+      transportProfile != null && transportProfile.routeExchange == "local-router";
     effectiveSettings =
       settings
       // {
@@ -379,13 +378,11 @@
               instance = null;
             };
         };
-        # D58: the transport-derived datapath facts (group uniformity
-        # inputs for the fleet checks).
+        # D58: the transport-derived datapath facts (routing is always
+        # native, D72).
         datapath =
           if transportProfile == null
           then {
-            mode = "native";
-            tunnelProtocol = null;
             routeExchange = null;
             devices = [];
             directRoutingDevice = null;
@@ -396,8 +393,6 @@
           else {
             inherit
               (transportProfile)
-              mode
-              tunnelProtocol
               routeExchange
               mtu
               internalLoadBalancer
@@ -524,14 +519,6 @@
             if transportProfile != null
             then transportProfile.mtu
             else 1500;
-          mode =
-            if ownTransport != null
-            then ownTransport.mode
-            else "native";
-          tunnelProtocol =
-            if ownTransport != null
-            then ownTransport.tunnelProtocol
-            else null;
         };
         k8sServiceHost = kubeapiAddr;
         k8sServicePort = haproxyKubeapiPort;
@@ -820,7 +807,6 @@
                 if fabricEnabled
                 then allTransportFacts
                 else null;
-              inherit nativeRouting;
               # Cross-role parity (the export is per-member; fleet
               # consumers read one scope — all roles must agree on the
               # cluster-level knobs). Sourced from MACHINE-level

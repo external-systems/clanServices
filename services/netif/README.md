@@ -96,8 +96,8 @@ Beside IfState, netif runs (`host.nix`):
 - `match.path` finds a physical NIC by its udev path (a `.link` file
   renames it before IfState runs); cloud-init's network configuration
   is rejected next to netif;
-- `pathMtu` is published per link and instance; routed-fabric and
-  wireguard-mesh prefer it over the link MTU;
+- `pathMtu` is published per link and instance; routed-fabric
+  prefers it over the link MTU;
 - the operator tools (`tools.nix`): `netif-status [--json]`,
   `netif-preview [system]` and the hourly `netif-drift.timer`, all
   read-only;

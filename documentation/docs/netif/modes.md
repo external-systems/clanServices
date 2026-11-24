@@ -94,5 +94,5 @@ firewall openings exist only in the modes you name.
 - A spine, a border or an etcd voter of a shared cluster must run in every
   mode of its machine. Turning one off would cut transit or quorum for other
   machines, so evaluation rejects it.
-- The fabric, wireguard-mesh, k3s and RKE2 need IfState, so they only run in
+- The fabric, k3s and RKE2 need IfState, so they only run in
   IfState modes.

@@ -23,8 +23,8 @@
   };
   # mapped = false: the decided design of specs/gateway.md G5 (the CLAT
   # link is a Cilium device). true: the documented alternative.
-  clat = distro: transport: mapped: {
-    imports = [(import ./tests/vm/kube-clat.nix {inherit inputs distro transport mapped;})];
+  clat = distro: mapped: {
+    imports = [(import ./tests/vm/kube-clat.nix {inherit inputs distro mapped;})];
     clan = kube distro;
   };
   netif = lib.modules.importApply ../../services/netif/default.nix {
@@ -35,12 +35,9 @@ in {
     gateway-nat64.imports = [./tests/vm/nat64.nix];
     k3s-v6only = v6only "k3s";
     rke2-v6only = v6only "rke2";
-    k3s-clat-fabric = clat "k3s" "fabric" false;
-    k3s-clat-mesh = clat "k3s" "mesh" false;
-    rke2-clat-fabric = clat "rke2" "fabric" false;
-    rke2-clat-mesh = clat "rke2" "mesh" false;
-    k3s-clat-fabric-mapped = clat "k3s" "fabric" true;
-    k3s-clat-mesh-mapped = clat "k3s" "mesh" true;
+    k3s-clat = clat "k3s" false;
+    rke2-clat = clat "rke2" false;
+    k3s-clat-mapped = clat "k3s" true;
     netif-v6only = {
       imports = [./tests/vm/v6only-host.nix];
       clan.modules.netif = netif;

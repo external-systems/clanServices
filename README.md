@@ -18,9 +18,6 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
 - [routed-fabric](services/routed-fabric/README.md): per-adjacency WireGuard + FRR
   flat-L3 fabric with `leaf`/`spine` topology, orthogonal access and border
   settings, and dependency-free network facts; the native Cilium transport
-- [wireguard-mesh](services/wireguard-mesh/README.md): supported tunnel transport
-  (Cilium tunnel/VXLAN + nodePort, D58) — one shared multi-peer WireGuard
-  interface per machine
 - [remote-builder](services/remote-builder/README.md): a Nix remote builder
   served over `ssh-ng`, with pinned host keys for its clients (D65)
 - [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
@@ -40,7 +37,10 @@ artifact authority and moves VM suites to `legacyPackages.<system>.vmTests`.
 Round 18 (2026-10-27) replaces all systemd-networkd/netdev and scripted networking with
 IfState 2.5.1. Static host links, WireGuard, routes, rules, and sysctls reconcile live without
 reboot; FRR/Zebra and Cilium retain their dynamic ownership boundaries. The full netif, fabric,
-k3s, and RKE2 native/tunnel/selective/external VM matrix is green.
+k3s, and RKE2 native/selective/external VM matrix is green. Round 53
+(2026-11-23, D72) removes Cilium tunnel mode and `wireguard-mesh`:
+native routing on `routed-fabric` is the only data plane (the last
+commit with them is tag `tunnel-mode-final`).
 Breaking renames and renderer changes ship without migration shims — there are no external
 consumers or deployments. Round 13's scope remains: everything else in-cluster is a documented
 day-2 GitOps pattern, never clan-rendered; member-facing private DNS is wholly day-2.
@@ -76,8 +76,8 @@ clan.inventory.instances.<instance-name> = {
 };
 ```
 
-Run `clan vars generate <machine>` after changing routed-fabric or
-wireguard-mesh membership. Their addresses, ASNs, and adjacency ports are
+Run `clan vars generate <machine>` after changing routed-fabric
+membership. Their addresses, ASNs, and adjacency ports are
 committed public allocations, not name-derived values. Renaming a machine
 creates a new clan identity and requires new vars; no migration shim reuses
 the old machine's allocations.

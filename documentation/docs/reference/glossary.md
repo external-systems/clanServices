@@ -4,7 +4,7 @@ One term per concept. Mirrors SPEC.md §10.
 
 - **Bootstrap contract** — distro install/join, PKI, HAProxy kubeapi HA,
   bootstrap bundle, and control-domain substrate.
-- **Data-plane contract** — Cilium (native or tunnel/VXLAN profile), Node
+- **Data-plane contract** — Cilium (native routing only, D72), Node
   IPAM + pools, FRR/BGP/Zebra, ClusterMesh, per-adjacency WireGuard,
   in-cluster CoreDNS (cluster.local), and the fabric transport.
 - **Day-2 GitOps** — everything in-cluster outside those contracts.
@@ -80,13 +80,11 @@ One term per concept. Mirrors SPEC.md §10.
   (schemaVersion 2, D58) consumed by both distro services: stable
   dual-stack node addresses/service/instance/endpoint, datapath interfaces keyed
   by Linux name with MTU, one `directRoutingDevice`,
-  `datapath.mode` (`native`|`tunnel`) with sibling `datapath.tunnelProtocol`,
   `native.routeExchange = local-router`, the independent
   `internalLoadBalancer`/`nodePort` exposure capabilities, and a `port`
   plus nullable endpoint. k3s/rke2 never
-  branch on service names. The wireguard-mesh profile exports its ONE
-  full-mesh multi-peer interface; routed-fabric exports one interface per
-  derived adjacency.
+  branch on service names. routed-fabric exports one interface per
+  derived adjacency plus its loopback.
 - **ClusterMesh exposure** — the apiserver exposure enum (D60):
   `auto` (default; internal-load-balancer when capable, else node-port),
   `internal-load-balancer` (ONE pinned IPv4 VIP locked at host offset

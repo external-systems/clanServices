@@ -7,6 +7,9 @@ clan-vars allocation contract before its implementation commits. SPEC.md
 stays the status authority, and each phase below amends SPEC.md before it
 changes code (AGENTS.md rule 3).
 
+*Round 53 (D72): `wireguard-mesh` and Cilium tunnel mode were removed.
+The `wireguard-mesh` rows and items below are history.*
+
 Goal: make the Data-plane contract (SPEC.md §3.2) enforceable and stable on
 any underlay — bare metal, Proxmox, Hetzner, GCP, later AWS and Azure — by
 testing it under real-world conditions instead of one flat L2 segment.

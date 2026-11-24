@@ -3,7 +3,7 @@
 # addresses stay the dual-stack fabric addresses; the WireGuard endpoints
 # are the IPv6 underlay addresses. The join suite's test script is the
 # assertion; one more phase pins that no NIC has an IPv4 address and that
-# the mesh runs over IPv6 endpoints.
+# the fabric runs over IPv6 endpoints.
 {
   lib,
   inputs,
@@ -36,10 +36,10 @@ in
       ["print(\"${lib.toUpper distro}_JOIN_OK\")"]
       [
         (lib.concatStringsSep "\n    " [
-          "with subtest(\"no NIC has an IPv4 address; the mesh runs over IPv6 endpoints (D67)\"):"
+          "with subtest(\"no NIC has an IPv4 address; the fabric runs over IPv6 endpoints (D67)\"):"
           "    for node in [alpha, beta]:"
           "        assert \"inet \" not in node.succeed(\"ip -4 -br addr show dev eth1\"), f\"{node.name}: the NIC has an IPv4 address\""
-          "        endpoints = [line.split()[-1] for line in node.succeed(\"wg show wg-mesh endpoints\").strip().splitlines()]"
+          "        endpoints = [line.split()[-1] for line in node.succeed(\"wg show all endpoints\").strip().splitlines()]"
           "        assert endpoints and all(endpoint.startswith(\"[2001:db8:1::\") for endpoint in endpoints), f\"{node.name}: {endpoints}\""
           "print(\"${lib.toUpper distro}_V6ONLY_OK\")"
         ])

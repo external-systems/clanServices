@@ -911,7 +911,7 @@
     timerOverrideConflicts = builtins.filter (adjacency: adjacency.timerOverrideConflict) adjacencies;
     inherit (ownSettings) border;
 
-    # D58: routed-fabric is the native transport — every adjacency
+    # D58/D72: routed-fabric is the native transport — every adjacency
     # WireGuard interface is a datapath interface keyed by its Linux
     # name. The stable loopback is also exported on every node and is the
     # uniform directRoutingDevice in the cluster-wide Cilium ConfigMap.
@@ -947,10 +947,6 @@
         interfaces = transportInterfaces;
         inherit directRoutingDevice;
         endpoint = endpointString (endpointOf machine.name) ownSettings.port;
-        datapath = {
-          mode = "native";
-          tunnelProtocol = null;
-        };
         native.routeExchange = "local-router";
         internalLoadBalancer = true;
         nodePort = true;

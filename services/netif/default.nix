@@ -199,7 +199,7 @@
   firstV6 = addrs: mapOrNull stripPrefix (lib.findFirst isV6 null addrs);
 
   # Endpoint discovery (D47/D51): explicit endpoint wins, then ordered
-  # peer exports (endpointSources), like wireguard-mesh.
+  # peer exports (endpointSources), like routed-fabric.
   resolveHostValue = hostItem:
     hostItem.plain or (
       if hostItem ? var
@@ -277,8 +277,7 @@
         The smallest MTU on the path to the machine's peers through
         this link, when it is below the link MTU (GCP 1460, PPPoE
         1492). netif does not set it on the link; it publishes it, and
-        routed-fabric and wireguard-mesh size their tunnels from it
-        (specs/netif.md N17).
+        routed-fabric sizes its tunnels from it (specs/netif.md N17).
       '';
       example = 1460;
     };
@@ -841,7 +840,7 @@ in {
   };
 
   # Instance-scope networking priority: the direct underlay is tried
-  # before VPN overlays (wireguard-mesh uses 1000, clan-core internet 2000).
+  # before VPN overlays (clan-core internet uses 2000).
   exports =
     lib.mapAttrs' (instanceName: _: {
       name = clanLib.buildScopeKey {

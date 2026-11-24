@@ -10,9 +10,9 @@ in rec {
   clan = {
     modules.rke2 = module;
     exportInterfaces = {
-      # D58: the NEUTRAL node_transport schemaVersion 2 seam, shared by
-      # every transport provider (routed-fabric, wireguard-mesh, and any
-      # third-party overlay). rke2 consumes ONLY this export.
+      # D58/D72: the NEUTRAL node_transport schemaVersion 2 seam that a
+      # native transport provider (routed-fabric, or any third-party
+      # router) exports. rke2 consumes ONLY this export.
       node_transport = ../../lib/node-transport-interface.nix;
       kube_cluster = ../../lib/kube-cluster/kube-cluster-interface.nix;
     };
@@ -53,16 +53,8 @@ in rec {
       imports = [./tests/vm/ha.nix];
       inherit clan;
     };
-    rke2-ha-fabric = {
-      imports = [./tests/vm/ha-fabric.nix];
-      inherit clan;
-    };
     rke2-data-plane = {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
-      inherit clan;
-    };
-    rke2-data-plane-tunnel = {
-      imports = [(import ./tests/vm/data-plane-tunnel.nix {inherit inputs;})];
       inherit clan;
     };
     rke2-data-plane-netif = {
@@ -78,24 +70,17 @@ in rec {
       imports = [./tests/vm/clustermesh.nix];
       inherit clan;
     };
-    rke2-clustermesh-tunnel = {
-      imports = [./tests/vm/clustermesh-tunnel.nix];
+    # ClusterMesh with node-port exposure (D60), native routing.
+    rke2-clustermesh-nodeport = {
+      imports = [./tests/vm/clustermesh-nodeport.nix];
       inherit clan;
     };
     rke2-clustermesh-external = {
       imports = [./tests/vm/clustermesh-external.nix];
       inherit clan;
     };
-    rke2-clustermesh-external-native = {
-      imports = [./tests/vm/clustermesh-external-native.nix];
-      inherit clan;
-    };
     rke2-clustermesh-selective = {
       imports = [./tests/vm/clustermesh-selective.nix];
-      inherit clan;
-    };
-    rke2-clustermesh-selective-tunnel = {
-      imports = [./tests/vm/clustermesh-selective-tunnel.nix];
       inherit clan;
     };
   };

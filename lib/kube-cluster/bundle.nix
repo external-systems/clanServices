@@ -159,10 +159,7 @@ in rec {
         # profile (clustermesh-apiserver + agents, from first boot).
         "clustermesh-enable" = boolStr profile.clusterMesh.enable;
         "max-connected-clusters" = toString profile.clusterMesh.maxConnectedClusters;
-      }
-      # D49/D58: native-routing CIDRs apply to native routing only; on
-      # tunnel transports they render empty (unset), like the chart.
-      // lib.optionalAttrs (profile.routingMode == "native") {
+        # D49: the native-routing CIDRs (routing is always native, D72).
         "ipv4-native-routing-cidr" = profile.ipv4NativeRoutingCIDR;
         "ipv6-native-routing-cidr" = profile.ipv6NativeRoutingCIDR;
       }
@@ -170,11 +167,6 @@ in rec {
       # keeps Cilium's default: the first address of every device.
       // lib.optionalAttrs ((profile.nodePort.addresses or []) != []) {
         "nodeport-addresses" = lib.concatStringsSep "," profile.nodePort.addresses;
-      }
-      // lib.optionalAttrs (profile.routingMode == "tunnel") {
-        "ipv4-native-routing-cidr" = "";
-        "ipv6-native-routing-cidr" = "";
-        "tunnel-protocol" = profile.tunnelProtocol;
       }
     );
     # KPR's API endpoint is passed to the agent and operator as env, not
@@ -219,7 +211,6 @@ in rec {
     ["k8sServiceHost"]
     ["k8sServicePort"]
     ["routingMode"]
-    ["tunnelProtocol"]
     ["autoDirectNodeRoutes"]
     [
       "extraConfig"
@@ -405,8 +396,6 @@ in rec {
     renderedImages = lib.sort builtins.lessThan (imagesOf objects);
     baseImages = lib.sort builtins.lessThan (imagesOf baseObjects);
 
-    native = profile.routingMode == "native";
-
     svcType = apiserverSvc.spec.type or null;
     expectedType =
       if mesh.method == "node-port"
@@ -419,18 +408,12 @@ in rec {
         msg = "kube-proxy-replacement must stay enabled (KPR)";
       }
       {
-        ok = cmData."routing-mode" == profile.routingMode;
-        msg = "routing-mode must equal the transport-derived mode '${profile.routingMode}' (D58)";
+        ok = cmData."routing-mode" == "native" && profile.routingMode == "native";
+        msg = "routing-mode must be native (D72)";
       }
       {
-        ok = !native -> (cmData."tunnel-protocol" or null) == (profile.tunnelProtocol or null);
-        msg = "tunnel-protocol must equal the transport-derived protocol '${
-          profile.tunnelProtocol or "null"
-        }' (D58)";
-      }
-      {
-        ok = native -> (cmData ? "ipv4-native-routing-cidr" && cmData ? "ipv6-native-routing-cidr");
-        msg = "native-routing CIDRs must render on the native profile (D49)";
+        ok = cmData ? "ipv4-native-routing-cidr" && cmData ? "ipv6-native-routing-cidr";
+        msg = "native-routing CIDRs must render (D49)";
       }
       {
         ok = cmData."auto-direct-node-routes" == "false" && profile.autoDirectNodeRoutes == false;

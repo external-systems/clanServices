@@ -2,13 +2,13 @@
 
 The data plane is inventory-owned host networking (`netif`), an encrypted
 routed fabric (`routed-fabric`: per-adjacency WireGuard, FRR/Zebra routing),
-and Cilium with validated native and tunnel/VXLAN profiles. IfState 2.5.1
+and Cilium with native routing only (D72). IfState 2.5.1
 owns every static link, address, route, rule, and sysctl and reconciles them
 live; systemd-networkd, netdevs, and scripted networking are gone. The
 fabric uses **`leaf`/`spine`** roles and a generic neutral `node_transport`
-export consumed by both distros. `wireguard-mesh` is the supported
-tunnel/VXLAN profile — native routing is the routed-fabric default, not a
-mandate for every overlay.
+export consumed by both distros. Cilium tunnel mode and `wireguard-mesh`
+were removed in round 53 (D72; the last commit with them is tag
+`tunnel-mode-final`).
 
 ## Host links: `netif`
 
@@ -71,9 +71,8 @@ NAT or outbound-only leaves omit an endpoint and use a 25-second keepalive,
 dialing reachable spines; two NAT sites both work through the spines.
 Private endpoints are acceptable when actually reachable — every adjacency
 needs at least one reachable side, checked before peering is advertised.
-MTU derives from the underlay link export; the native routed-fabric
-profile uses the WireGuard MTU directly, while the wireguard-mesh
-tunnel/VXLAN profile budgets 50 bytes below it (D58).
+MTU derives from the underlay link export; Cilium uses the WireGuard
+MTU directly (D58).
 
 ## FRR and Zebra
 
@@ -110,34 +109,28 @@ not required for daemon-set changes. Preview with
 add/delete delta still exits zero, so convergence checks inspect the output.
 The NixOS module does not open BGP or BFD firewall ports automatically.
 
-## Cilium datapath profiles (D58)
+## The transport seam (D58)
 
 Transport is a generic, neutral **`node_transport` export
 (schemaVersion 2)** — stable dual-stack node addresses/instance/endpoint,
 datapath interfaces keyed by Linux interface name with MTU, one
-`directRoutingDevice`, `datapath.mode` (`native`|`tunnel`) with sibling
-`datapath.tunnelProtocol`, `native.routeExchange` (only `local-router`,
+`directRoutingDevice`, `native.routeExchange` (only `local-router`,
 daemon-neutral — not
 `local-frr`/`local-bgp`), the independent `internalLoadBalancer` and
 `nodePort` exposure capabilities, and a `port` plus nullable endpoint.
 k3s/rke2 consume only `node_transport` and never branch on service names
-(a third-party eval overlay proves it). Two validated profiles exist:
+(a third-party eval overlay proves it). One validated profile exists:
 
 - **`routed-fabric` → native**: Cilium native routing + `local-router`
   route exchange + `internalLoadBalancer` and `nodePort` capabilities.
-- **`wireguard-mesh` → tunnel/VXLAN**: Cilium tunnel mode + `nodePort`.
-  wireguard-mesh keeps its existing ONE shared full-mesh multi-peer
-  WireGuard interface (one peer per remote, stable `/32`+`/128` per
-  member) — it does not adopt routed-fabric's one-interface-per-adjacency
-  model; `node_transport` exports that single interface.
 
-The schema is open; other route-exchange or tunnel modes are representable
-but **rejected until implemented and tested**. Native mode takes the
-minimum interface MTU; VXLAN takes the minimum minus 50.
-`cilium.helmValues` may not contradict the derived mode, protocol, devices,
-`directRoutingDevice`, MTU, or exposure.
+There is no datapath mode field: routing is always native (D72). The
+schema is open; other route-exchange profiles are representable but
+**rejected until implemented and tested**. The Cilium MTU is the minimum
+interface MTU. `cilium.helmValues` may not set tunnel mode or contradict
+the derived devices, `directRoutingDevice`, MTU, or exposure.
 
-## Native-routed Cilium (the routed-fabric profile)
+## Native-routed Cilium
 
 The canonical Cilium 1.20+ profile uses kube-proxy replacement,
 `routing-mode: native`, multi-pool pod IPAM, dual-stack, BPF
@@ -153,11 +146,9 @@ that FIB.
 
 Dual-stack native-routing CIDRs cover every pod CIDR in the ClusterMesh
 trust domain. Cilium device configuration covers all fabric interfaces.
-A ClusterMesh group shares one datapath mode, one tunnel protocol, and one
-`maxConnectedClusters` (D54 revised): native members need non-overlapping
-pod CIDRs and working cross-cluster pod routes before readiness; tunnel
-members need node connectivity instead — native is not mandatory for every
-overlay.
+A ClusterMesh group shares one `maxConnectedClusters` (D54 revised):
+members need non-overlapping pod CIDRs and working cross-cluster pod
+routes before readiness.
 
 ## LoadBalancer arbitration
 

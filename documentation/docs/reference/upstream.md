@@ -12,10 +12,9 @@ The upstream facts behind the spec. Re-check these when versions move.
   per-remote clustermesh-apiserver connections, so selective peering and
   leaf isolation (unpeered clusters share no state and no pod routes) are
   upstream-supported behavior, not a custom deviation. Requirements stay:
-  same datapath mode and tunnel protocol across the mesh, non-overlapping
-  pod CIDRs, node connectivity, and — for native-routed members —
-  native-routing CIDRs covering all meshed pods (tunnel members need node
-  connectivity instead).
+  same datapath mode across the mesh (here always native, D72),
+  non-overlapping pod CIDRs, node connectivity, and native-routing CIDRs
+  covering all meshed pods.
   **Control-plane exposure is IPv4-only on the pinned profile:** the
   [v1.20.3 clustermesh-apiserver Deployment](https://github.com/cilium/cilium/blob/v1.20.3/install/kubernetes/cilium/templates/clustermesh-apiserver/deployment.yaml)
   embeds etcd with `--listen-client-urls=https://0.0.0.0:2379` (IPv4

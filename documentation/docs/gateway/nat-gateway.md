@@ -72,9 +72,8 @@ leave an IPv6-only node:
 - **A, the fallback, unused:** carry it over the fabric to a gateway
   that does ordinary NAT.
 
-B works on both transports (the routed fabric with native routing and
-the WireGuard mesh tunnel) and on k3s and rke2, with IPv6-only network
-cards. Test suites keep it proven.
+B works on the routed fabric with native routing (the only transport
+since D72) and on k3s and rke2, with IPv6-only network cards. Test suites keep it proven.
 
 **How, decided 2026-11-21:** the CLAT's link is added to Cilium's
 devices. Cilium then hides pods behind the CLAT's address, as it does

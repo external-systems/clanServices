@@ -93,8 +93,7 @@
   betaTransfer = nodes.beta.clan.networkFacts.fabric.mesh.adjacencies.alpha.ipv4;
   fabricPort = nodes.alpha.clan.networkFacts.fabric.mesh.adjacencies.beta.port;
 
-  # The workload and pools that mean the same on the tunnel transport
-  # (data-plane-tunnel.nix runs them there).
+  # The workload and pools that do not depend on BGP.
   fixtures = import ./data-plane-fixtures.nix {inherit lib inputs distro;};
   inherit
     (fixtures)

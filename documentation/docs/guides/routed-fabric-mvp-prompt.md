@@ -7,7 +7,7 @@
 > with an automatic adjacency graph (no mutual lists), transport is the
 > generic **`node_transport` export (schemaVersion 2)** that both distros
 > consume without service-name branching, `wireguard-mesh` is a supported
-> tunnel/VXLAN profile (not retiring), and ClusterMesh placement/exposure
+> tunnel/VXLAN profile (not retiring; later removed by D72, round 53), and ClusterMesh placement/exposure
 > follows D60. Terminology below (`member`/`hub`, `settings.hubs`,
 > routed-hub) is round-16 vocabulary.
 >

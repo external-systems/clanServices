@@ -45,12 +45,12 @@ different fabric instances never mesh; that is the trust-domain boundary.
 Distro services consume **only** the generic `node_transport` export
 (schemaVersion 2) — stable dual-stack node addresses/instance/endpoint,
 datapath interfaces keyed by Linux name with MTU, one
-`directRoutingDevice`, datapath mode + tunnel protocol, route exchange,
+`directRoutingDevice`, route exchange,
 and exposure capabilities — never the provider-specific `routed_fabric`
 export, and never a service name.
 
-Every cluster in a mesh group uses the same datapath mode, the same tunnel
-protocol, and the same `maxConnectedClusters` (D54 revised round 17).
+Every cluster in a mesh group uses the same `maxConnectedClusters` (D54
+revised round 17); routing is always native (D72).
 
 On a local-router member, routed-fabric owns FRR's `router bgp` ASN through its
 `routed-fabric-<inst>-asn` allocation. The cluster's `bgp.hostASN` setting is
@@ -262,9 +262,8 @@ machine (identical content on every member; SPEC.md §6.2). It carries:
 The generic **`node_transport` export (schemaVersion 2)** is the only
 transport view distro services consume: stable dual-stack node
 addresses/instance/endpoint; every datapath interface keyed by its Linux
-name with MTU; exactly one `directRoutingDevice`; `datapath.mode`
-(`native`|`tunnel`) with sibling `datapath.tunnelProtocol`; for native
-mode, `native.routeExchange = local-router` (daemon-neutral, not
+name with MTU; exactly one `directRoutingDevice`;
+`native.routeExchange = local-router` (daemon-neutral, not
 `local-frr`/`local-bgp`); the independent `internalLoadBalancer` and
 `nodePort` exposure capabilities; and a `port` plus nullable endpoint. The
 provider-specific **`routed_fabric` export (schemaVersion 2)** remains for

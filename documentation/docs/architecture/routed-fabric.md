@@ -175,8 +175,8 @@ Transport correctness is per adjacency (D51): every pair of endpoints must
 have at least one actually reachable side — private endpoints are fine when
 they are reachable. NAT/outbound-only leaves omit an endpoint and dial
 reachable spines with a 25-second keepalive. MTU derives from the underlay
-link export; native Cilium uses the WireGuard MTU directly (no VXLAN
-50-byte budget — that belongs to the wireguard-mesh tunnel profile, D58).
+link export; Cilium uses the WireGuard MTU directly (D58; no tunnel
+mode since D72).
 Per-adjacency reachability is evaluated before peering is advertised.
 
 ## Active-active spines
@@ -225,21 +225,19 @@ default-on). None of them is clan-rendered in the MVP.
 
 ## The native Cilium profile (D58)
 
-As the native profile provider, routed-fabric publishes the generic
+As the only transport (D72), routed-fabric publishes the generic
 `node_transport` export (schemaVersion 2) for both distro services:
 stable dual-stack node addresses/instance/endpoint, datapath interfaces
 keyed by Linux name with MTU, one `directRoutingDevice`,
-`datapath.mode = native` with sibling `datapath.tunnelProtocol`,
 `native.routeExchange = local-router`
 (daemon-neutral), and the `internalLoadBalancer` + `nodePort` exposure
 capabilities. Its provider-specific `routed_fabric` export carries the
 ASN, topology, adjacencies, ACL, `access`, and `border` facts. Distro
 services never branch on service names — they see only `node_transport`.
-`cilium.helmValues` cannot contradict the derived mode, protocol, devices,
-`directRoutingDevice`, MTU, or exposure. See
-[Networking](networking.md) for the tunnel/VXLAN wireguard-mesh profile
-and [Multi-cluster](multi-cluster.md) for what the mesh requires of each
-profile.
+`cilium.helmValues` cannot set tunnel mode or contradict the derived
+devices, `directRoutingDevice`, MTU, or exposure. See
+[Networking](networking.md) for the transport seam and
+[Multi-cluster](multi-cluster.md) for what the mesh requires.
 
 ## Relationship to netif and alternatives
 

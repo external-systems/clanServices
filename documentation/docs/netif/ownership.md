@@ -38,7 +38,7 @@ fails the build:
 - NetBird, Cloudflare WARP, ZeroTier, or scripted WireGuard
   (`networking.wireguard`, `wg-quick`) is enabled without an owner of that
   name. Those get presets only once a VM suite proves them; for WireGuard,
-  use `wireguard-mesh` or `routed-fabric`.
+  use `routed-fabric`.
 
 In the probe, a dry run without the registry would have deleted
 `tailscale0`, all eight Tailscale rules and a foreign namespace, and set

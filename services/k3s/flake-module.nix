@@ -10,9 +10,9 @@ in rec {
   clan = {
     modules.k3s = module;
     exportInterfaces = {
-      # D58: the NEUTRAL node_transport schemaVersion 2 seam, shared by
-      # every transport provider (routed-fabric, wireguard-mesh, and any
-      # third-party overlay). k3s consumes ONLY this export.
+      # D58/D72: the NEUTRAL node_transport schemaVersion 2 seam that a
+      # native transport provider (routed-fabric, or any third-party
+      # router) exports. k3s consumes ONLY this export.
       node_transport = ../../lib/node-transport-interface.nix;
       kube_cluster = ../../lib/kube-cluster/kube-cluster-interface.nix;
     };
@@ -54,16 +54,13 @@ in rec {
       imports = [./tests/vm/ha.nix];
       inherit clan;
     };
-    k3s-ha-fabric = {
-      imports = [./tests/vm/ha-fabric.nix];
+    # FRR failure on a cluster node: bgpd crash, refused bad reload (D72).
+    k3s-frr-failure = {
+      imports = [./tests/vm/frr-failure.nix];
       inherit clan;
     };
     k3s-data-plane = {
       imports = [(import ./tests/vm/data-plane.nix {inherit inputs;})];
-      inherit clan;
-    };
-    k3s-data-plane-tunnel = {
-      imports = [(import ./tests/vm/data-plane-tunnel.nix {inherit inputs;})];
       inherit clan;
     };
     k3s-data-plane-netif = {
@@ -85,38 +82,21 @@ in rec {
           exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
         };
     };
-    # The same contract with the cluster on the routed fabric (native routing).
-    k3s-modes-fabric = {
-      imports = [./tests/vm/modes-fabric.nix];
-      clan =
-        clan
-        // {
-          modules = clan.modules // {inherit (self.clan.modules) netif modes;};
-          exportInterfaces = clan.exportInterfaces // {netif = ../netif/netif-interface.nix;};
-        };
-    };
     k3s-clustermesh = {
       imports = [./tests/vm/clustermesh.nix];
       inherit clan;
     };
-    k3s-clustermesh-tunnel = {
-      imports = [./tests/vm/clustermesh-tunnel.nix];
+    # ClusterMesh with node-port exposure (D60), native routing.
+    k3s-clustermesh-nodeport = {
+      imports = [./tests/vm/clustermesh-nodeport.nix];
       inherit clan;
     };
     k3s-clustermesh-external = {
       imports = [./tests/vm/clustermesh-external.nix];
       inherit clan;
     };
-    k3s-clustermesh-external-native = {
-      imports = [./tests/vm/clustermesh-external-native.nix];
-      inherit clan;
-    };
     k3s-clustermesh-selective = {
       imports = [./tests/vm/clustermesh-selective.nix];
-      inherit clan;
-    };
-    k3s-clustermesh-selective-tunnel = {
-      imports = [./tests/vm/clustermesh-selective-tunnel.nix];
       inherit clan;
     };
   };

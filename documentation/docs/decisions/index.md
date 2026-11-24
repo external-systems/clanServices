@@ -154,7 +154,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D8 | revised (r14, r15) | 2 pool scopes × 5 delivery modes: node-fate-bound, node-bgp, floating, shared-bgp, external-class |
 | D9 | revised (r15, r17) | Per-node FRR eBGP over the derived leaf/spine adjacencies (D59) + local Cilium peering through the daemon-neutral `local-router` exchange (D58); next-hop-self, no iBGP/RR, BFD, Zebra, ECMP |
 | D10 | active | Private shared-bgp fabric default-on; public BGP needs routed space and controlled router |
-| D11 | revised (r15, r17) | `routed-fabric` (renamed from `fleet-routing`) owns the flat-L3 fabric; `wireguard-mesh` is now a supported tunnel/VXLAN profile (D58) |
+| D11 | revised (r15, r17) | `routed-fabric` (renamed from `fleet-routing`) owns the flat-L3 fabric; `wireguard-mesh` is now a supported tunnel/VXLAN profile (D58). Tunnel parts revoked by D72 (round 53). |
 | D12 | revised (r17) | ClusterMesh apiserver exposure is profiled (D60): ETP Local for every method, placement selectors, exposure enum `auto`/`internal-load-balancer`/`node-port`/`external-load-balancer` |
 | D13 | revised (r14, r15) | Native pod routes automatic for Kubernetes; non-Kubernetes pod/ClusterIP access admin-only |
 | D14 | active | Raw L4 uses plain LoadBalancer Services |
@@ -192,16 +192,16 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D46 | revised (2026-10-25) | Uniform clan-rendered CoreDNS with the k3s `coredns-custom` import seam (custom ConfigMap is GitOps day-2) |
 | D47 | revised (r15, r17) | One one-peer WireGuard interface per derived adjacency (spine/leaf fabric, D59); AllowedIPs derive from route policy |
 | D48 | active (r14) | FRR + Zebra owns routing and kernel FIB |
-| D49 | revised (r14, r17) | Native-routed multi-pool Cilium is the routed-fabric profile default (D58); the wireguard-mesh tunnel/VXLAN profile is equally supported — native is not mandatory for every overlay |
+| D49 | revised (r14, r17) | Native-routed multi-pool Cilium is the routed-fabric profile default (D58); the wireguard-mesh tunnel/VXLAN profile is equally supported — native is not mandatory for every overlay. Tunnel parts revoked by D72 (round 53). |
 | D50 | revised (r15, r18) | Inventory owns core host networking through multi-instance multi-link `netif`, rendered exclusively by IfState |
 | D51 | revised (r17) | Routed spine/leaf MVP: automatic spine↔spine peering, leaves default to all spines with an explicit subset allowed, eBGP/next-hop-self, two-spine active-active HA with no arbitrary maximum, transit and return-path correctness |
 | D52 | revised (r16, r17) | `routed-fabric` service: leaf/spine topology roles (renamed from member/hub); graph derived symmetrically, no mutual lists; access and border orthogonal; fabric-scoped Node IPAM; `routed_fabric` export schemaVersion 2 |
 | D53 | active (r15) | Multi-instance multi-link `netif`; multiple fabrics segment trust; one fabric membership per host |
-| D54 | revised (r15, r17) | ClusterMesh full by default in one fabric; explicit symmetric selective peers; mesh group derived from fabric; mesh members share datapath mode, tunnel protocol, and maxConnectedClusters |
+| D54 | revised (r15, r17) | ClusterMesh full by default in one fabric; explicit symmetric selective peers; mesh group derived from fabric; mesh members share datapath mode, tunnel protocol, and maxConnectedClusters. Tunnel parts revoked by D72 (round 53). |
 | D55 | revised (2026-10-25) | nftables host with Cilium KPR rules via iptables-nft; no legacy iptables or kube-proxy rules; dual-AF local Cilium↔FRR session |
 | D56 | revised (r16, r17) | Topology roles leaf/spine (renamed from member/hub, D59); orthogonal per-machine access (member default) and optional border; automatic spine graph; two-spine HA, no arbitrary max; no router role |
 | D57 | revised (r16, r17) | Versioned non-secret producer-owned `clan.networkFacts` NixOS interface (schemaVersion 2, D59); nix-topology stays consumer-owned; no clanServices dependency on it |
-| D58 | active (r17) | Generic neutral `node_transport` export (schemaVersion 2): Linux-name-keyed datapath interfaces + MTU, one directRoutingDevice, datapath.mode native\|tunnel + protocol, native.routeExchange = local-router, internalLoadBalancer/nodePort capabilities; k3s/rke2 consume only node_transport, never branch on service names |
+| D58 | active (r17) | Generic neutral `node_transport` export (schemaVersion 2): Linux-name-keyed datapath interfaces + MTU, one directRoutingDevice, datapath.mode native\|tunnel + protocol, native.routeExchange = local-router, internalLoadBalancer/nodePort capabilities; k3s/rke2 consume only node_transport, never branch on service names. Tunnel parts revoked by D72 (round 53). |
 | D59 | active (r17) | Fabric topology roles renamed leaf/spine; automatic symmetric adjacency graph (every spine pair adjacent, leaves default to all spines, explicit leaf subset allowed, no mutual lists); routed_fabric and networkFacts schemas bump to 2 |
 | D60 | active (r17, amended 2026-10-26) | ClusterMesh placement selectors (voters/workers/all/labels) and exposure enum auto\|internal-load-balancer\|node-port\|external-load-balancer; NodePort pins exactly one apiserver per selected node; internal exposure is ONE pinned IPv4 VIP (host offset `0x79`) from the existing `<instance>-fabric` pool — control plane IPv4-only on Cilium 1.20.3, data plane stays dual-stack; external always wins with explicit non-clan class + DNS name |
 | D61 | active (r18) | IfState 2.5.1 is the exclusive static network renderer; live reconciliation, no networkd/netdev/scripted networking, per-link DHCP hooks, runtime-secret includes, FRR/Cilium ownership boundaries |
@@ -234,9 +234,10 @@ every NodePort to the outside. Every `LoadBalancer` Service has a
 NodePort, so this was the normal case.
 
 Now a NodePort answers only on the cluster's node addresses (the
-fabric or mesh addresses). LoadBalancer addresses are not affected.
+fabric addresses). LoadBalancer addresses are not affected.
 Found by the review of 2026-11-21; tested by
-`<distro>-data-plane-tunnel`.
+`<distro>-clat` (`CLAT_NODEPORT_OK`) on native routing; the earlier
+`<distro>-data-plane-tunnel` went with D72.
 
 ### D70 — CoreDNS copies never share a node (2026-11-21)
 
@@ -245,8 +246,7 @@ When that node died, the cluster had no DNS.
 
 A cluster with two or more machines now places one copy per node. The
 second copy waits until a second node is ready. While a node is down,
-one copy serves. Tested by `<distro>-data-plane-tunnel`, `<distro>-ha`
-and `<distro>-ha-fabric`.
+one copy serves. Tested by `<distro>-ha`.
 
 ### D71 — Cilium's network cards come from netif (2026-11-23, planned)
 
@@ -257,11 +257,11 @@ mixed fleet works (`eno1`, `enp0s1`, `wlp2s0` in one cluster). A VPN
 link such as `tailscale0` is never on the list. How one list serves
 nodes with different names is settled by one test first.
 
-### D72 — Native routing only (2026-11-23, planned)
+### D72 — Native routing only (2026-11-23, implemented)
 
 Cilium's tunnel mode (VXLAN over `wireguard-mesh`) and the
-`wireguard-mesh` service will be removed. Native routing with FRR is
-the only data plane.
+`wireguard-mesh` service are removed (round 53). Native routing with
+FRR is the only data plane.
 
 - Why: native routing is always preferred; VXLAN adds overhead inside
   WireGuard anyway; tunnel mode cannot use BGP pools, the fabric or
@@ -271,7 +271,16 @@ the only data plane.
   plane. Tests for FRR failure cover it instead.
 - Nothing is lost: the last commit with tunnel mode gets the git tag
   `tunnel-mode-final`.
-- Tests that only used the mesh as a base move to the routed fabric.
+- Tests that only used the mesh as a base moved to the routed fabric:
+  `single`, `join`, `join-netif`, `v6only`.
+- Twins merged under the plain name: `ha`, `clustermesh-external`,
+  `k3s-modes`. The CLAT suites are now `<distro>-clat` and
+  `k3s-clat-mapped`.
+- `clustermesh-tunnel` was ported to the fabric as
+  `<distro>-clustermesh-nodeport`: ClusterMesh through a NodePort.
+- New: `k3s-frr-failure` kills bgpd on a spine and checks that sessions,
+  routes and pod traffic come back, then checks that FRR refuses a bad
+  configuration and keeps running the old one.
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 
@@ -316,9 +325,9 @@ The repo has the same shape as every other external-systems repo:
   `nix flake check`, publishes the docs to GitHub Pages and tags releases.
 
 VM suites are declared next to their service in `clanTests.<suite>` and
-wrapped in clan-core's `clanTest`; there are 24. k3s and RKE2 suites that
+wrapped in clan-core's `clanTest`; there are 45. k3s and RKE2 suites that
 test one contract (`single`, `join`, `ha`, `data-plane`, `clustermesh`,
-`clustermesh-tunnel`, `external`, `selective`) share one body in
+`clustermesh-nodeport`, `external`, `selective`) share one body in
 `lib/kube-cluster/tests/vm/<suite>.nix` behind thin per-service wrappers,
 with every distro difference an explicit branch. Test vars are generated
 during evaluation; there is no update-vars step. Test scripts group their

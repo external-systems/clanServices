@@ -1,17 +1,13 @@
-# <distro>-clat-<transport>[-mapped] (specs/gateway.md G5, G23; SPEC.md
-# D67): pod IPv4 egress from a two-node cluster whose NICs carry only
-# IPv6, on both transports.
+# <distro>-clat[-mapped] (specs/gateway.md G5, G23; SPEC.md D67): pod
+# IPv4 egress from a two-node cluster whose NICs carry only IPv6.
 #
 #   alpha, beta (Cilium; NIC IPv6 only; a CLAT each) ── vlan 1 ── gw (Jool
 #   NAT64 in a namespace, DNS64) ── vlan 2 ── server4 (IPv4 only)
 #   server6 (IPv6 only, on vlan 1): the IPv6 internet, and the machine
 #   outside the cluster
 #
-# `transport = "fabric"`: the <distro>-data-plane topology (routed-fabric,
-# FRR, per-pair WireGuard, Cilium native routing). `transport = "mesh"`:
-# the <distro>-join topology (wireguard-mesh, Cilium VXLAN tunnel). One
-# test script runs on both; a step that only one transport has branches
-# on `FABRIC`.
+# The <distro>-data-plane topology: routed-fabric, FRR, per-pair
+# WireGuard, Cilium native routing (SPEC.md D72).
 #
 # What the suite pins:
 #   - the transport and the cluster come up on IPv6-only NICs (D67);
@@ -49,7 +45,6 @@
 {
   inputs,
   distro,
-  transport,
   # false: the decided design, the CLAT link joins Cilium's devices and
   # Cilium's own masquerade covers it. true: the CLAT link stays out of
   # Cilium's devices and the test maps the pod pool statelessly.
@@ -60,38 +55,29 @@
   ...
 }: let
   k3s = distro == "k3s";
-  fabric = transport == "fabric";
   ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   base = import ../../../ifstate.nix {inherit ifstateOverlay;};
   echo = import ./echo.nix;
-  plain =
-    if fabric
-    then import ../../../kube-cluster/tests/vm/data-plane.nix {inherit inputs distro;} {inherit lib nodes;}
-    else import ../../../kube-cluster/tests/vm/join.nix {inherit lib inputs distro;};
+  plain = import ../../../kube-cluster/tests/vm/data-plane.nix {inherit inputs distro;} {inherit lib nodes;};
   nic = "eth1";
   # The underlay NIC is a Cilium device in the decided design. The
   # `-mapped` suites run on the transport's own devices, without it.
   nicDevice = !mapped;
-  # The devices the transport gives Cilium (the fabric topology adds the
-  # NIC itself), with or without the NIC, plus the CLAT link.
+  # The devices the fabric gives Cilium (the topology adds the NIC
+  # itself), with or without the NIC, plus the CLAT link.
   withDevices = settings: {
     cilium.helmValues.devices = lib.concatStringsSep " " (
-      lib.remove nic (lib.splitString " " (settings.cilium.helmValues.devices or "wg-mesh"))
+      lib.remove nic (lib.splitString " " settings.cilium.helmValues.devices)
       ++ lib.optional nicDevice nic
       ++ lib.optional (!mapped) "clat0"
     );
   };
-  body =
-    # the mesh topology as shipped: nothing to change
-    if mapped && !fabric
-    then plain
-    else
-      lib.recursiveUpdate plain {
-        clan.inventory.instances.${distro}.roles = lib.genAttrs ["server" "agent"] (role: {
-          settings = withDevices plain.clan.inventory.instances.${distro}.roles.${role}.settings;
-        });
-      };
-  suiteName = "${distro}-clat-${transport}" + lib.optionalString mapped "-mapped";
+  body = lib.recursiveUpdate plain {
+    clan.inventory.instances.${distro}.roles = lib.genAttrs ["server" "agent"] (role: {
+      settings = withDevices plain.clan.inventory.instances.${distro}.roles.${role}.settings;
+    });
+  };
+  suiteName = "${distro}-clat" + lib.optionalString mapped "-mapped";
   python = value:
     if value
     then "True"
@@ -267,16 +253,13 @@ in
         server4 = {};
         server6 = {};
       };
-      instances =
-        {
-          underlay.roles.default.machines = lib.mapAttrs (_: n: {settings.host = underlay n;}) members;
-        }
-        // lib.optionalAttrs fabric {
-          mesh.roles = {
-            spine.machines.alpha = lib.recursiveUpdate v6Endpoints.alpha v6Upstream;
-            leaf.machines.beta = lib.recursiveUpdate v6Endpoints.beta v6Upstream;
-          };
+      instances = {
+        underlay.roles.default.machines = lib.mapAttrs (_: n: {settings.host = underlay n;}) members;
+        mesh.roles = {
+          spine.machines.alpha = lib.recursiveUpdate v6Endpoints.alpha v6Upstream;
+          leaf.machines.beta = lib.recursiveUpdate v6Endpoints.beta v6Upstream;
         };
+      };
     };
 
     nodes =
@@ -368,7 +351,6 @@ in
       ${import ../../../../tests/ifstate-noop.nix}
 
       K = "KUBECONFIG=${kubeconfig}"
-      FABRIC = ${python fabric}
       MAPPED = ${python mapped}
       # the underlay NIC is one of Cilium's devices
       NIC_DEVICE = ${python nicDevice}
@@ -812,9 +794,8 @@ in
               f"journalctl -b --no-pager -u {unit}.service | grep -m1 -i 'cilium\\|Running kubelet' || true",
           )
           observe(f"{node}: the agent's own words about its devices", alpha, f"{K} kubectl -n kube-system logs {agent_pod(node)} -c cilium-agent | grep -i 'clat0' | head -n 8")
-          if FABRIC:
-              for peer in NODES.values():
-                  peer.wait_until_succeeds(BGP_ALL_UP, timeout=300)
+          for peer in NODES.values():
+              peer.wait_until_succeeds(BGP_ALL_UP, timeout=300)
           assert_cilium_on_clat(node, "after the reboot")
           anchor(node)
           egress_settles(node, "after the reboot")
@@ -848,9 +829,8 @@ in
                   machine.wait_for_unit("multi-user.target", timeout=300)
               for machine in NODES.values():
                   machine.wait_until_succeeds(IFSTATE_OK, timeout=300)
-                  if FABRIC:
-                      machine.wait_for_unit("frr.service", timeout=240)
-                  print_versions(machine, ["kernel", "ifstate", "jool", "wireguard", "${distro}"] + (["frr"] if FABRIC else []))
+                  machine.wait_for_unit("frr.service", timeout=240)
+                  print_versions(machine, ["kernel", "ifstate", "jool", "wireguard", "${distro}", "frr"])
               print_versions(gw, ["kernel", "ifstate", "jool", "nftables"])
 
           with subtest("the gateway and the IPv4 server are up"):
@@ -882,10 +862,9 @@ in
                   endpoints = [line.split()[-1] for line in machine.succeed("wg show all endpoints").strip().splitlines()]
                   print(f"FINDING {name}: WireGuard endpoints: {endpoints}")
                   assert endpoints and all(endpoint.startswith("[2001:db8:1::") for endpoint in endpoints), f"{name}: a WireGuard endpoint is not an IPv6 underlay address: {endpoints}"
-                  if FABRIC:
-                      machine.wait_for_unit("frr.service", timeout=240)
-                      machine.wait_until_succeeds(BGP_FABRIC_UP, timeout=180)
-                      observe(f"{name}: BGP sessions", machine, "vtysh -c 'show bgp summary' | tail -n 14")
+                  machine.wait_for_unit("frr.service", timeout=240)
+                  machine.wait_until_succeeds(BGP_FABRIC_UP, timeout=180)
+                  observe(f"{name}: BGP sessions", machine, "vtysh -c 'show bgp summary' | tail -n 14")
               print("CLAT_TRANSPORT_V6_OK")
 
           with subtest("the cluster comes up on IPv6-only NICs (D67)"):
@@ -895,22 +874,21 @@ in
               alpha.wait_until_succeeds(f"{K} cilium status", timeout=300)
               alpha.wait_until_succeeds(f"{K} kubectl wait -n kube-system --for=condition=Ready pod -l k8s-app=cilium --timeout=120s", timeout=300)
               alpha.wait_until_succeeds(f"{K} kubectl get serviceaccount default", timeout=120)
-              if FABRIC:
-                  for machine in NODES.values():
-                      machine.wait_until_succeeds(BGP_ALL_UP, timeout=300)
+              for machine in NODES.values():
+                  machine.wait_until_succeeds(BGP_ALL_UP, timeout=300)
 
-          with subtest("Cilium: the routing mode of the transport; clat0 is a masquerade device only in the decided design (G5)"):
+          with subtest("Cilium: native routing; clat0 is a masquerade device only in the decided design (G5)"):
               config = json.loads(kubectl("-n kube-system get configmap cilium-config -o json"))["data"]
               print("FINDING Cilium datapath settings: " + str({key: value for key, value in config.items() if re.search("device|native-routing|masq|routing-mode|tunnel-protocol", key)}))
               print("VERSION alpha cilium: " + agent("alpha", "cilium-dbg version").strip().replace("\n", " "))
-              assert config["routing-mode"] == ("native" if FABRIC else "tunnel"), config["routing-mode"]
+              assert config["routing-mode"] == "native", config["routing-mode"]
               assert config["enable-bpf-masquerade"] == "true" and config["enable-ipv4-masquerade"] == "true", config
               assert ("clat0" in config["devices"].split()) != MAPPED, config["devices"]
               assert ("${nic}" in config["devices"].split()) == NIC_DEVICE, config["devices"]
               for name in NODES:
                   routing = [line.strip() for line in agent(name, "cilium-dbg status --verbose").splitlines() if line.strip().startswith("Routing:")]
                   print(f"FINDING {name}: {routing}")
-                  assert len(routing) == 1 and ("Native" if FABRIC else "Tunnel [vxlan]") in routing[0], routing
+                  assert len(routing) == 1 and "Native" in routing[0], routing
                   assert_cilium_on_clat(name, "after the cluster came up")
 
           with subtest("the node's own IPv4 traffic still works with Cilium up"):
@@ -1072,13 +1050,10 @@ in
               # to another node's IPv4 address (the agent's to the API server
               # at 192.168.77.1:6443) takes the IPv4 default route into the
               # CLAT and reaches the gateway, which refuses it. Seen: 1 and 2
-              # packets. The mesh has a static route per peer: none.
+              # packets.
               targets = {match.group(1) for line in strays if (match := re.search(r" > (\S+)\.\d+: ", line)) is not None}
               node_v4s = {ip for found in node_ips.values() for ip in found if ":" not in ip}
-              if FABRIC:
-                  assert targets <= node_v4s and refused <= 10, f"stray packets to private IPv4 addresses that are not node addresses, or too many: {strays}"
-              else:
-                  assert refused == 0, f"the gateway refused {refused} packets to private IPv4 addresses before any test request"
+              assert targets <= node_v4s and refused <= 10, f"stray packets to private IPv4 addresses that are not node addresses, or too many: {strays}"
               for name, machine in NODES.items():
                   for private in ["172.20.0.1", "192.168.1.254"]:
                       observe(f"{name}: route to {private}", machine, f"ip route get {private}")

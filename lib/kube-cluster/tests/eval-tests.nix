@@ -48,7 +48,7 @@
   baseSettings = evalSettings {fabric.enable = true;};
 
   # Native transport device facts: EVERY datapath interface, smallest
-  # interface MTU (D58 — the derived profile MTU; VXLAN subtracts 50).
+  # interface MTU (D58 — the derived profile MTU).
   transportFacts = {
     interfaces = [
       "wg-fleet-1"
@@ -56,8 +56,6 @@
     ];
     directRoutingDevice = "wg-fleet-1";
     mtu = 1404;
-    mode = "native";
-    tunnelProtocol = null;
   };
 
   # The same facts via the generic resolver (profile validation, D58).
@@ -80,38 +78,8 @@
         };
       };
       directRoutingDevice = "wg-fleet-1";
-      datapath = {
-        mode = "native";
-        tunnelProtocol = null;
-      };
       native.routeExchange = "local-router";
       internalLoadBalancer = true;
-      nodePort = true;
-    };
-  };
-
-  tunnelProfile = kube.transport.resolve {
-    instanceName = "test";
-    machineName = "node-1";
-    transport = {
-      schemaVersion = 2;
-      ipv4 = "10.0.0.1";
-      ipv6 = "fd00::1";
-      instance = "mesh";
-      endpoint = null;
-      port = 51820;
-      interfaces = {
-        "wg-mesh" = {
-          mtu = 1420;
-        };
-      };
-      directRoutingDevice = "wg-mesh";
-      datapath = {
-        mode = "tunnel";
-        tunnelProtocol = "vxlan";
-      };
-      native.routeExchange = null;
-      internalLoadBalancer = false;
       nodePort = true;
     };
   };
@@ -359,8 +327,6 @@
     fabricService ? "routed-fabric",
     fabricInstance ? "fleet",
     meshPeers ? null,
-    datapathMode ? "native",
-    tunnelProtocol ? null,
     maxConnectedClusters ? 255,
     exposure ? {
       method = "internal-load-balancer";
@@ -391,12 +357,7 @@
       };
     };
     datapath = {
-      mode = datapathMode;
-      inherit tunnelProtocol;
-      routeExchange =
-        if datapathMode == "native"
-        then "local-router"
-        else null;
+      routeExchange = "local-router";
       devices = ["wg-fleet-1"];
       directRoutingDevice = "wg-fleet-1";
       mtu = 1404;
@@ -664,8 +625,6 @@
           interfaces = ["wg-fleet-1"];
           directRoutingDevice = "wg-fleet-1";
           mtu = 1404;
-          mode = "native";
-          tunnelProtocol = null;
         };
         inherit instanceName;
         k8sServiceHost = "kubeapi-test.example.org";
@@ -673,66 +632,8 @@
       true
     )).success;
 
-  # The VXLAN profile renders the tunnel cilium-config keys.
-  tunnelBundle = let
-    settings = baseSettings;
-    dp = kube.resolveDataPlane {
-      inherit settings instanceName members;
-      ciliumId = 1;
-    };
-  in
-    builtins.fromJSON
-    (kube.render.mkBundle {
-      inherit
-        pkgs
-        settings
-        instanceName
-        manifestLabels
-        baseManifest
-        ;
-      kubenixSrc = inputs.kubenix;
-      profile = kube.render.mkCiliumValues {
-        inherit settings instanceName;
-        transportFacts = {
-          interfaces = ["wg-mesh"];
-          directRoutingDevice = "wg-mesh";
-          inherit (tunnelProfile) mtu;
-          mode = "tunnel";
-          tunnelProtocol = "vxlan";
-        };
-        k8sServiceHost = "kubeapi-test.example.org";
-        k8sServicePort = 6443;
-      };
-      pools = kube.render.resolvePools {
-        inherit settings members;
-        extraPools = lib.optionalAttrs (dp.fabricPool != null) {${dp.fabricPool.name} = dp.fabricPool;};
-      };
-      podIPCidr = "10.1.0.0/16,fd10:1::/56";
-      clusterDNS = "10.2.0.10";
-      coreDNSImage = "${corednsVersions.repo}:${corednsVersions.tag}@${corednsVersions.digest}";
-      k8sServiceHost = "kubeapi-test.example.org";
-      bgp = dp.bgpBundle;
-      mesh = mkTestMesh {inherit settings;};
-    }).json;
-
-  # Uniformity: mixed datapath mode / maxConnectedClusters inside one
-  # group is rejected; identical members pass.
-  fleetExportsMixedMode = {
-    "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
-      name = "prod";
-      ciliumId = 1;
-    };
-    "k3s:staging:server:beta".kube_cluster = mkKubeExport {
-      name = "staging";
-      ciliumId = 2;
-      datapathMode = "tunnel";
-      tunnelProtocol = "vxlan";
-      podCIDRv4 = "10.3.0.0/16";
-      podCIDRv6 = "fd10:3::/56";
-      serviceCIDRv4 = "10.4.0.0/16";
-      serviceCIDRv6 = "fd10:4::/112";
-    };
-  };
+  # Uniformity: mixed maxConnectedClusters inside one group is
+  # rejected; identical members pass.
 
   fleetExportsSameGroupMccBase = {
     "rke2:prod:server:alpha".kube_cluster = mkKubeExport {
@@ -2936,22 +2837,16 @@ in {
   test_transportProfileDerivation = {
     expr = {
       nativeMtu = nativeProfile.mtu;
-      nativeMode = nativeProfile.mode;
       nativeDevices = nativeProfile.interfaces;
-      tunnelMtu = tunnelProfile.mtu;
-      tunnelProto = tunnelProfile.tunnelProtocol;
-      tunnelNative = tunnelProfile.routeExchange;
+      nativeRouteExchange = nativeProfile.routeExchange;
     };
     expected = {
-      nativeMtu = 1404; # minimum interface MTU, no VXLAN subtraction
-      nativeMode = "native";
+      nativeMtu = 1404; # the minimum interface MTU
       nativeDevices = [
         "wg-fleet-1"
         "wg-fleet-2"
       ];
-      tunnelMtu = 1370; # 1420 - 50 (VXLAN)
-      tunnelProto = "vxlan";
-      tunnelNative = null;
+      nativeRouteExchange = "local-router";
     };
   };
 
@@ -2966,55 +2861,8 @@ in {
         port = 51820;
         interfaces.wg0.mtu = 1400;
         directRoutingDevice = "wg0";
-        datapath.mode = "native";
-        datapath.tunnelProtocol = null;
         native.routeExchange = "local-router";
         internalLoadBalancer = true;
-        nodePort = true;
-      };
-      badMode = transportThrows {
-        schemaVersion = 2;
-        ipv4 = "10.0.0.1";
-        ipv6 = "fd00::1";
-        instance = "fleet";
-        endpoint = null;
-        port = 51820;
-        interfaces.wg0.mtu = 1400;
-        directRoutingDevice = "wg0";
-        datapath.mode = "ptp";
-        datapath.tunnelProtocol = null;
-        native.routeExchange = "local-router";
-        internalLoadBalancer = true;
-        nodePort = true;
-      };
-      nativeWithTunnel = transportThrows {
-        schemaVersion = 2;
-        ipv4 = "10.0.0.1";
-        ipv6 = "fd00::1";
-        instance = "fleet";
-        endpoint = null;
-        port = 51820;
-        interfaces.wg0.mtu = 1400;
-        directRoutingDevice = "wg0";
-        datapath.mode = "native";
-        datapath.tunnelProtocol = "vxlan";
-        native.routeExchange = "local-router";
-        internalLoadBalancer = true;
-        nodePort = true;
-      };
-      tunnelWithRouteExchange = transportThrows {
-        schemaVersion = 2;
-        ipv4 = "10.0.0.1";
-        ipv6 = "fd00::1";
-        instance = "fleet";
-        endpoint = null;
-        port = 51820;
-        interfaces.wg0.mtu = 1400;
-        directRoutingDevice = "wg0";
-        datapath.mode = "tunnel";
-        datapath.tunnelProtocol = "vxlan";
-        native.routeExchange = "local-router";
-        internalLoadBalancer = false;
         nodePort = true;
       };
       badRouteExchange = transportThrows {
@@ -3026,8 +2874,6 @@ in {
         port = 51820;
         interfaces.wg0.mtu = 1400;
         directRoutingDevice = "wg0";
-        datapath.mode = "native";
-        datapath.tunnelProtocol = null;
         native.routeExchange = "local-bgp";
         internalLoadBalancer = true;
         nodePort = true;
@@ -3041,8 +2887,6 @@ in {
         port = 51820;
         interfaces.wg0.mtu = 1400;
         directRoutingDevice = "wg-other";
-        datapath.mode = "native";
-        datapath.tunnelProtocol = null;
         native.routeExchange = "local-router";
         internalLoadBalancer = true;
         nodePort = true;
@@ -3056,8 +2900,6 @@ in {
         port = 51820;
         interfaces = {};
         directRoutingDevice = "wg0";
-        datapath.mode = "native";
-        datapath.tunnelProtocol = null;
         native.routeExchange = "local-router";
         internalLoadBalancer = true;
         nodePort = true;
@@ -3065,9 +2907,6 @@ in {
     };
     expected = {
       badVersion = true;
-      badMode = true;
-      nativeWithTunnel = true;
-      tunnelWithRouteExchange = true;
       badRouteExchange = true;
       badDirectDevice = true;
       emptyInterfaces = true;
@@ -3077,8 +2916,12 @@ in {
   # Admin cilium.helmValues cannot contradict the transport-derived profile
   test_ciliumHelmValuesContradictions = {
     expr = {
+      # D72: tunnel mode is gone; an override to it throws.
       routingMode = ciliumThrows {
         routingMode = "tunnel";
+      };
+      tunnelProtocol = ciliumThrows {
+        tunnelProtocol = "vxlan";
       };
       mtu = ciliumThrows {
         MTU = 1500;
@@ -3106,8 +2949,6 @@ in {
               interfaces = ["wg-fleet-1"];
               directRoutingDevice = "wg-fleet-1";
               mtu = 1404;
-              mode = "native";
-              tunnelProtocol = null;
             };
             inherit instanceName;
             k8sServiceHost = "kubeapi-test.example.org";
@@ -3117,6 +2958,7 @@ in {
     };
     expected = {
       routingMode = true;
+      tunnelProtocol = true;
       mtu = true;
       directDevice = true;
       devices = true;
@@ -3126,35 +2968,10 @@ in {
     };
   };
 
-  # The VXLAN profile renders the tunnel cilium-config keys.
-  test_tunnelProfileBundle = {
-    expr = let
-      cm = (findObjKind tunnelBundle "ConfigMap" "cilium-config").data;
-    in {
-      routing = cm."routing-mode";
-      proto = cm."tunnel-protocol";
-      nativeCidrV4 = cm."ipv4-native-routing-cidr";
-      mtu = cm."mtu";
-      autoDirect = cm."auto-direct-node-routes";
-    };
-    expected = {
-      routing = "tunnel";
-      proto = "vxlan";
-      nativeCidrV4 = "";
-      mtu = "1370";
-      autoDirect = "false";
-    };
-  };
-
   # --- ClusterMesh fleet checks (D54/D60) ----------------------------------
 
   test_clustermeshFleetChecks = {
     expr = {
-      # Mixed datapath mode inside one group.
-      mixedMode = let
-        checks = kube.mkFleetChecks clanLib fleetExportsMixedMode;
-      in
-        !checks."kube-cluster-mesh-group-uniformity".assertion;
       # Mixed maxConnectedClusters inside one group.
       mixedMcc = let
         checks = kube.mkFleetChecks clanLib fleetExportsSameGroupMccBase;
@@ -3185,7 +3002,6 @@ in {
         && checks."kube-cluster-mesh-vip-collisions".assertion;
     };
     expected = {
-      mixedMode = true;
       mixedMcc = true;
       selectiveOk = true;
       asymmetric = true;

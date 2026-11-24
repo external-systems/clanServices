@@ -12,8 +12,10 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`, `netif`,
   `modes` (network modes per machine, `specs/netif.md` N24; mechanism in
-  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65); `wireguard-mesh` and Cilium
-  tunnel mode are decided for removal, D72 — build nothing new on them). The obsolete `fleet-routing`,
+  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65)).
+  `routed-fabric` is the only transport: `wireguard-mesh` and Cilium
+  tunnel mode were removed (SPEC.md D72; the last commit with them is
+  tag `tunnel-mode-final`). The obsolete `fleet-routing`,
   `lib/import-flake/`, `lib/inputs-module.nix`, BIRD helpers, and
   BIRD-specific VM fixtures were deleted in the round-17 cleanup;
   their former ghost failures no longer block eval gates. No archives.
@@ -44,12 +46,12 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `observe`, `print_versions`, `seconds_until`, `holds_for`,
   `state_dump_on_failure`; use them in new suites).
   Each service, and `lib/gateway`, registers its suites in its
-  `flake-module.nix` (`vm-test --list` counts them)
+  `flake-module.nix` (45 in all; `vm-test --list` counts them)
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
-  (`single`, `join`, `ha`, `ha-fabric`, `data-plane`, `data-plane-tunnel`,
-  `clustermesh`, `clustermesh-tunnel`, `external`, `selective`); `services/{k3s,rke2}/tests/vm/` hold thin
+  (`single`, `join`, `ha`, `data-plane`, `clustermesh`,
+  `clustermesh-nodeport`, `external`, `selective`); `services/{k3s,rke2}/tests/vm/` hold thin
   wrappers, and the body branches on `distro` explicitly.
 - `devenv.yaml`/`devenv.nix` — the org dev shell (`fmt`, `check`,
   `sync-locks`, `docs-build`, `docs`, `slides`, `vm-test`). `flake.lock`
@@ -132,7 +134,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
    static network renderer (no systemd-networkd, netdevs or scripted
    network units; D61); one owner each for Cilium and FRR objects; FRR +
    per-pair WireGuard + native routing is the only data plane (D72:
-   tunnel mode and `wireguard-mesh` are being removed); Cilium is
+   tunnel mode and `wireguard-mesh` were removed); Cilium is
    networking-only (D1) and multi-pool; Node IPAM is the classless-LB
    default (D41); `node-bgp` is owner-only, `shared-bgp` uses ECMP (D8);
    servicelb stays disabled (D42); the control domain is GitOps-neutral

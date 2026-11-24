@@ -40,6 +40,53 @@
       nixpkgs.hostPlatform = "x86_64-linux";
     });
 
+  # A foreign overlay on the same host (wireguard-mesh did this until
+  # SPEC.md D72): one IfState WireGuard link and its own allocation pools.
+  # It exercises the shared base's host-wide checks against a second
+  # owner: WireGuard ports, the deploy target, pool overlaps.
+  foreignOverlayModule = {
+    _class = "clan.service";
+    manifest = {
+      name = "foreign-overlay";
+      description = "Eval-only foreign overlay fixture";
+      readme = "A WireGuard link and allocation pools that are not routed-fabric's.";
+    };
+    roles.default = {
+      description = "One WireGuard link and its pools";
+      interface = {lib, ...}: {
+        options = {
+          port = lib.mkOption {
+            type = lib.types.port;
+            description = "WireGuard listen port.";
+          };
+          address = lib.mkOption {
+            type = lib.types.str;
+            description = "IPv4 address on the link.";
+          };
+          pools = lib.mkOption {
+            type = lib.types.listOf lib.types.attrs;
+            default = [];
+            description = "Allocation pools ({ name, cidr }).";
+          };
+        };
+      };
+      perInstance = {
+        instanceName,
+        settings,
+        ...
+      }: {
+        nixosModule = {
+          networking.ifstate.settings.interfaces."wg-${instanceName}" = {
+            link.kind = "wireguard";
+            wireguard.listen_port = settings.port;
+            addresses = ["${settings.address}/32"];
+          };
+          clan._networkFacts.allocationPools."foreign-overlay/${instanceName}" = settings.pools;
+        };
+      };
+    };
+  };
+
   clusterModule = {
     _class = "clan.service";
     manifest = {
@@ -201,9 +248,7 @@
         netif = lib.modules.importApply ../../netif/default.nix {
           ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
         };
-        wireguard-mesh = lib.modules.importApply ../../wireguard-mesh/default.nix {
-          ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-        };
+        foreign-overlay = foreignOverlayModule;
         k3s = clusterModule;
         modes = ../../modes/default.nix;
       };
@@ -488,16 +533,16 @@
     }
   );
   crossServicePoolEval = mkEvaled (pairInventory {
-    extraInstances.cross = {
-      module.name = "wireguard-mesh";
-      module.input = "self";
-      roles.peer.machines.client.settings = {
-        ipv4 = "10.42.0.1";
-        ipv6 = "fd42::1";
-        port = 51822;
-        endpoint = "192.0.2.10";
-      };
-    };
+    extraInstances.cross = meshInstanceWith 51822 [
+      {
+        name = "ipv4Pool";
+        cidr = "198.18.0.0/18";
+      }
+      {
+        name = "loopback6";
+        cidr = "fd68:6868:6868::/64";
+      }
+    ];
   });
   netifPoolOverlapEval = mkEvaled (pairInventory {
     extraInstances.underlay = {
@@ -906,16 +951,26 @@
       targetHost = true;
     };
   };
-  meshInstance = port: {
-    module.name = "wireguard-mesh";
+  meshInstanceWith = port: pools: {
+    module.name = "foreign-overlay";
     module.input = "self";
-    roles.peer.machines.client.settings = {
-      inherit port;
-      ipv4 = "10.42.0.1";
-      ipv6 = "fd42::1";
-      endpoint = "192.0.2.10";
+    roles.default.machines.client.settings = {
+      inherit port pools;
+      address = "10.42.0.1";
     };
   };
+  # The pools wireguard-mesh's `mesh` instance held in these fixtures.
+  meshInstance = port:
+    meshInstanceWith port [
+      {
+        name = "ipv4Pool";
+        cidr = "198.18.128.0/17";
+      }
+      {
+        name = "loopback6";
+        cidr = "fd66:6666:6666::/64";
+      }
+    ];
   targetHostFabricEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
       instances.deploy = deployInstance "192.168.77.10";
@@ -1361,8 +1416,7 @@ in {
         role = exported.routed_fabric.topology;
         access = exported.routed_fabric.access;
         adjacencyCount = builtins.length (builtins.attrNames exported.routed_fabric.adjacencies);
-        mode = transport.datapath.mode;
-        tunnelProtocol = transport.datapath.tunnelProtocol;
+        noDatapathMode = !(transport ? datapath);
         routeExchange = transport.native.routeExchange;
         inherit (transport) internalLoadBalancer nodePort;
         interfacesKeyedByLinuxName = lib.all (
@@ -1384,8 +1438,7 @@ in {
         role = "leaf";
         access = "client";
         adjacencyCount = 2;
-        mode = "native";
-        tunnelProtocol = null;
+        noDatapathMode = true;
         routeExchange = "local-router";
         internalLoadBalancer = true;
         nodePort = true;
@@ -1608,7 +1661,7 @@ in {
       expected = true;
     };
     test_meshRoutedFabricPortCollisionRejected = {
-      expr = failedAssertion meshPortCollisionEval.config.nixosConfigurations.client.config "listen-port clashes with routed-fabric: 20001";
+      expr = failedAssertion meshPortCollisionEval.config.nixosConfigurations.client.config "WireGuard listen ports must be unique across all interfaces on a machine";
       expected = true;
     };
     test_allocationPositive = {
@@ -1763,7 +1816,7 @@ in {
       expected = true;
     };
     test_explicitAddressInForeignPoolRejected = {
-      expr = failedAssertion explicitForeignPoolEval.config.nixosConfigurations.client.config "ipv4=198.18.128.1/32 overlaps wireguard-mesh/mesh/ipv4Pool=198.18.128.0/17";
+      expr = failedAssertion explicitForeignPoolEval.config.nixosConfigurations.client.config "ipv4=198.18.128.1/32 overlaps foreign-overlay/mesh/ipv4Pool=198.18.128.0/17";
       expected = true;
     };
     test_explicitOverridesBeatVars = {

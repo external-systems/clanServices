@@ -99,7 +99,7 @@ The contract version is `specs/gateway.md` §14.
   sees one address per node.
 - **Cilium's network cards are filled in by k3s and RKE2** (D71), from
   netif, never a VPN link.
-- **Native routing only** (D72): tunnel mode and `wireguard-mesh` go.
+- **Native routing only** (D72): tunnel mode and `wireguard-mesh` are gone (done in round 53).
 
 How the open findings will be closed:
 

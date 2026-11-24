@@ -8,9 +8,6 @@
 }: let
   rke2Module = module;
   k3sModule = lib.modules.importApply ../../k3s/default.nix {inherit inputs;};
-  wgModule = lib.modules.importApply ../../wireguard-mesh/default.nix {
-    ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-  };
   kube = import ../../../lib/kube-cluster {inherit lib;};
 
   machineConfigs =
@@ -34,7 +31,6 @@
       # by clanLib.clan's checkConfig.
       imports = [kube.fleetChecksModule];
       modules = {
-        wireguard-mesh = wgModule;
         fake-transport = fakeTransportModule;
         rke2 = rke2Module;
         modes = ../../modes/default.nix;
@@ -78,31 +74,28 @@
   explicitEvaled = mkEvaled explicitInventory;
   alphaExplicit = explicitEvaled.config.nixosConfigurations.alpha.config;
 
-  # Inventory backed by a real wireguard-mesh instance: two servers plus
-  # one agent.
+  # Inventory backed by a native node_transport instance (the fake
+  # transport below; SPEC.md D72): two servers plus one agent.
   transportInventory = {
     instances = {
       mesh = {
-        module.name = "wireguard-mesh";
+        module.name = "fake-transport";
         module.input = "self";
-        roles.peer = {
-          settings.endpointSources = [];
-          machines = {
-            alpha.settings = {
-              ipv4 = "10.42.0.1";
-              ipv6 = "fd10:42::1";
-              endpoint = "alpha";
-            };
-            beta.settings = {
-              ipv4 = "10.42.0.2";
-              ipv6 = "fd10:42::2";
-              endpoint = "beta";
-            };
-            gamma.settings = {
-              ipv4 = "10.42.0.3";
-              ipv6 = "fd10:42::3";
-              endpoint = "gamma";
-            };
+        roles.node.machines = {
+          alpha.settings = {
+            ipv4 = "10.42.0.1";
+            ipv6 = "fd10:42::1";
+            asn = 4258224172;
+          };
+          beta.settings = {
+            ipv4 = "10.42.0.2";
+            ipv6 = "fd10:42::2";
+            asn = 4258224173;
+          };
+          gamma.settings = {
+            ipv4 = "10.42.0.3";
+            ipv6 = "fd10:42::3";
+            asn = 4258224174;
           };
         };
       };
@@ -112,7 +105,7 @@
         roles.server = {
           settings = {
             network.fabric = {
-              service = "wireguard-mesh";
+              service = "fake-transport";
               instance = "mesh";
             };
             cilium.id = 1;
@@ -129,7 +122,7 @@
         roles.agent = {
           settings = {
             network.fabric = {
-              service = "wireguard-mesh";
+              service = "fake-transport";
               instance = "mesh";
             };
             cilium.id = 1;
@@ -266,8 +259,8 @@
           mesh =
             transportInventory.instances.mesh
             // {
-              roles.peer.machines = {
-                inherit (transportInventory.instances.mesh.roles.peer.machines) alpha beta;
+              roles.node.machines = {
+                inherit (transportInventory.instances.mesh.roles.node.machines) alpha beta;
               };
             };
         };
@@ -285,7 +278,7 @@
         roles.server = {
           settings = {
             network.fabric = {
-              service = "wireguard-mesh";
+              service = "fake-transport";
               instance = "mesh";
             };
             cilium.id = 2;
@@ -366,10 +359,6 @@
               };
             };
             directRoutingDevice = builtins.head ifaces;
-            datapath = {
-              mode = "native";
-              tunnelProtocol = null;
-            };
             native.routeExchange = "local-router";
             internalLoadBalancer = true;
             nodePort = true;
@@ -608,29 +597,22 @@ in {
       "rancher-haproxy-rke2"
       "rancher-server-token-rke2"
       "state-version"
-      "wireguard-mesh-mesh"
-      "wireguard-mesh-mesh-node4"
-      "wireguard-mesh-mesh-node6"
-      "wireguard-mesh-mesh-prefixes"
-      "wireguard-mesh-mesh-ula"
     ];
   };
 
-  # D58: the wireguard-mesh transport derives the VXLAN tunnel profile.
+  # D58/D72: the transport derives the native routing profile.
   test_ciliumValuesNativeMode = {
     expr = {
       routing = ciliumConfigData."routing-mode";
-      tunnel = ciliumConfigData."tunnel-protocol";
       autoDirect = ciliumConfigData."auto-direct-node-routes";
       ciliumIptables = ciliumConfigData."install-iptables-rules";
       directDevice = ciliumConfigData."direct-routing-device";
     };
     expected = {
-      routing = "tunnel";
-      tunnel = "vxlan";
+      routing = "native";
       autoDirect = "false";
       ciliumIptables = "true";
-      directDevice = "wg-mesh";
+      directDevice = "fk-alpha-1";
     };
   };
 
@@ -640,9 +622,10 @@ in {
   };
 
   test_ciliumValuesMtu = {
-    # D58: VXLAN tunnel mode = minimum interface MTU minus 50.
+    # D58: the cluster-wide minimum interface MTU (the fake links are
+    # 1500 and 1400).
     expr = ciliumConfigData."mtu";
-    expected = "1370";
+    expected = "1400";
   };
 
   test_ciliumValuesApiViaLocalHaproxy = {
@@ -862,7 +845,7 @@ in {
   test_ciliumFirewallForwarding = {
     expr = {
       nftables = alphaTransport.networking.nftables.enable;
-      reversePathTransport = lib.hasInfix ''iifname "wg-mesh" accept'' alphaTransport.networking.firewall.extraReversePathFilterRules;
+      reversePathTransport = lib.hasInfix ''iifname "fk-alpha-1" accept'' alphaTransport.networking.firewall.extraReversePathFilterRules;
       reversePathProxy = lib.hasInfix "meta mark and 0x0f00 == 0x0200 accept" alphaTransport.networking.firewall.extraReversePathFilterRules;
       fromPods = lib.hasInfix ''iifname { "cilium*", "lxc*" } accept'' alphaTransport.networking.firewall.extraForwardRules;
       toPods = lib.hasInfix ''oifname { "cilium*", "lxc*" } accept'' alphaTransport.networking.firewall.extraForwardRules;
@@ -937,28 +920,27 @@ in {
       meshGroup = "mesh";
       meshPeers = null;
       meshPlacement = "voters";
-      # D60: wireguard-mesh exposes no internalLoadBalancer capability and
-      # no fabric pool → auto resolves to node-port with the default port.
+      # D60: a native transport exposes the internalLoadBalancer capability
+      # and the default fabric pool exists → auto resolves to the internal
+      # LoadBalancer on the fabric VIP (offset 79).
       meshExposure = {
-        method = "node-port";
-        nodePort = 32379;
+        method = "internal-load-balancer";
+        nodePort = null;
         replicas = 2;
-        vip4 = null;
+        vip4 = "172.16.1.79";
         dnsName = null;
-        loadBalancerClass = null;
-        published = [
-          "https://10.42.0.1:32379"
-          "https://10.42.0.2:32379"
-        ];
+        loadBalancerClass = "io.cilium/bgp-control-plane";
+        published = ["https://172.16.1.79:2379"];
       };
       datapath = {
-        mode = "tunnel";
-        tunnelProtocol = "vxlan";
-        routeExchange = null;
-        devices = ["wg-mesh"];
-        directRoutingDevice = "wg-mesh";
-        mtu = 1370;
-        internalLoadBalancer = false;
+        routeExchange = "local-router";
+        devices = [
+          "fk-alpha-1"
+          "fk-alpha-2"
+        ];
+        directRoutingDevice = "fk-alpha-1";
+        mtu = 1400;
+        internalLoadBalancer = true;
         nodePort = true;
       };
       network = {
@@ -968,7 +950,7 @@ in {
         serviceCIDRv6 = "fd10:2::/112";
         clusterDNS = "10.2.0.10";
         fabric = {
-          service = "wireguard-mesh";
+          service = "fake-transport";
           instance = "mesh";
         };
       };
@@ -982,10 +964,13 @@ in {
         role = "server";
         ipv4 = "10.42.0.1";
         ipv6 = "fd10:42::1";
-        endpoint = "alpha:51820";
-        interfaces = ["wg-mesh"];
-        mtu = 1370;
-        port = 51820;
+        endpoint = null;
+        interfaces = [
+          "fk-alpha-1"
+          "fk-alpha-2"
+        ];
+        mtu = 1400;
+        port = 59999;
         topology = {
           region = "rke2";
           zone = "rke2";
@@ -999,6 +984,7 @@ in {
         "alpha"
         "beta"
         "gamma"
+        "rke2-fabric"
       ];
       alphaPool = {
         blocks = [
@@ -1279,7 +1265,8 @@ in {
     };
   };
 
-  # Tunnel transports render no pod-route BGP plane or private fabric pool.
+  # A local-router transport renders the pod-route BGP plane and the
+  # private fabric pool (D9, D10).
   test_kubeClusterExportBgpFabric = {
     expr = {
       inherit
@@ -1293,17 +1280,17 @@ in {
       fabricPoolAbsent = !(kubeClusterExport.pools ? rke2-fabric);
     };
     expected = {
-      enabled = false;
+      enabled = true;
       ciliumAsn = 4200812391;
-      hostAsn = 4253360446;
+      hostAsn = 4258224172;
       advertiseClusterIPs = false;
       fabric = {
-        enabled = false;
-        pool = "";
-        ipv4Block = null;
-        ipv6Block = null;
+        enabled = true;
+        pool = "rke2-fabric";
+        ipv4Block = "172.16.1.0/24";
+        ipv6Block = "fd11:1::/64";
       };
-      fabricPoolAbsent = true;
+      fabricPoolAbsent = false;
     };
   };
 
@@ -1345,8 +1332,6 @@ in {
       a = {
         meshGroup = "fabric";
         datapath = {
-          mode = "native";
-          tunnelProtocol = null;
           routeExchange = "local-router";
           devices = [
             "fk-alpha-1"

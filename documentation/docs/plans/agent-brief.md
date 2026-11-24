@@ -44,7 +44,6 @@ day-2 or bundle concerns and are out of scope for the hardening plan.
 | `AGENTS.md` | layout, tool loop and hard rules (read all of them) |
 | `services/netif/` | underlay links, addressing, DHCP hook, policy routing, deploy-target export |
 | `services/routed-fabric/` | leaf/spine fabric: per-adjacency WireGuard, FRR, border, source return |
-| `services/wireguard-mesh/` | tunnel transport (full mesh, VXLAN profile) |
 | `services/k3s/`, `services/rke2/` | thin distro services; shared code goes in `lib/kube-cluster/` |
 | `services/remote-builder/` | Nix remote builder over `ssh-ng` (D65); eval-tested, no VM suite |
 | `lib/kube-cluster/fabric.nix` | adjacency keys, hash-derived adjacency interface names, adjacency MTU (addresses, ASNs, ports and transfer prefixes are clan vars, D64) |
@@ -55,7 +54,7 @@ day-2 or bundle concerns and are out of scope for the hardening plan.
 | `services/<name>/tests/eval-tests.nix` | nix-unit tests; throwaway clans via `clanLib.clan` with `directory = ./fixtures` |
 | `services/<name>/tests/fixtures/vars/` | committed public var values the eval tests read |
 | `services/<name>/tests/vm/` | VM suites, registered in `services/<name>/flake-module.nix` under `clanTests.<suite>` |
-| `lib/kube-cluster/tests/vm/` | suite bodies shared by k3s and RKE2 (`single`, `join`, `ha`, `data-plane`, `clustermesh`, `clustermesh-tunnel`, `external`, `selective`); the per-service files are thin wrappers passing `distro` |
+| `lib/kube-cluster/tests/vm/` | suite bodies shared by k3s and RKE2 (`single`, `join`, `ha`, `data-plane`, `clustermesh`, `clustermesh-nodeport`, `external`, `selective`); the per-service files are thin wrappers passing `distro` |
 | `flake-parts/clan-tests.nix` | wraps `clanTests` in clan-core's `clanTest` for the org `vm-test` runner; resource limits, `parallel` budget and timeout |
 | `flake-parts/nix-unit.nix` | `nix-unit.tests`, `tests.systems`, `checks.nix-unit` |
 | `devenv.yaml`, `devenv.nix` | the org dev shell (`fmt`, `check`, `docs-build`, `vm-test`) |
@@ -81,11 +80,9 @@ vm-test <suite> --driver --interactive   # debug only, runs VMs locally
 
 Outside the devenv shell, use `nix run .#vm-test -- <args>`.
 
-Registered suites today (24): `netif`, `netif-dhcp`, `routed-fabric`,
-`wireguard-mesh`, and for each of `k3s` and `rke2`: `-single`, `-join`,
-`-ha`, `-data-plane`, `-clustermesh`, `-clustermesh-tunnel`,
-`-clustermesh-external`, `-clustermesh-external-native`,
-`-clustermesh-selective`, `-clustermesh-selective-tunnel`.
+Registered suites today: 45; `vm-test --list` prints them. Since D72
+(round 53) every cluster suite runs on `routed-fabric` with native
+routing: Cilium tunnel mode and `wireguard-mesh` were removed.
 
 - **Pass/fail:** a suite passes when its sandboxed build exits 0. With
   `--all`, each suite ends `PASS`, `PASS(!)` (failed beside other suites,
