@@ -69,6 +69,13 @@ commit with them is tag `tunnel-mode-final`.
   phase was ported from the tunnel suite: the underlay refuses the
   kubelet, the API, etcd, the API LB port and the NodePort from the
   other node and from outside; the same ports answer over the fabric.
+  Its Kubernetes phases were ported too: pod to pod across nodes in both
+  families with a 200 KB body (the pod MTU equals Cilium's and fits the
+  fabric link), a slice of the pod pool per node, ClusterIP from pods
+  with backends on both nodes and DNS by name, Node IPAM publishing
+  every node of a Service with a backend on each; and when beta is
+  gone: Node NotReady, EndpointSlice withdrawal, ClusterIP served only
+  by alpha, Node IPAM dropping beta, a new pod using the Service.
 - Cilium helm overrides of `ipv4NativeRoutingCIDR` or
   `ipv6NativeRoutingCIDR` now fail eval (D49/D72): pod CIDR containment
   is asserted against those constants.

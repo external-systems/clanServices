@@ -287,7 +287,9 @@ FRR is the only data plane.
   fails the build instead (syntax only).
 - The native `data-plane` suite now carries the firewall phase of the
   old tunnel suite: underlay refused, fabric trusted, NodePort only on
-  node addresses (D69).
+  node addresses (D69). It also carries the tunnel suite's Kubernetes
+  checks: cross-node pod traffic with a 200 KB body (the MTU proof),
+  ClusterIP from pods, and Node IPAM dropping a dead node.
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 

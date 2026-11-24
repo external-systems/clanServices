@@ -49,7 +49,7 @@
   # Python for the netif variant only. Both are empty for the fixture
   # variant, whose test script must stay exactly as it was.
   indent = prefix: text: lib.concatMapStringsSep "\n" (line: lib.optionalString (line != "") (prefix + line)) (lib.splitString "\n" text);
-  netifHelpers = lib.optionalString netifUnderlay ("import json\n\n" + import ../../../../tests/ifstate-noop.nix);
+  netifHelpers = lib.optionalString netifUnderlay (import ../../../../tests/ifstate-noop.nix);
   # one more phase inside the script's `try:` block
   netifPhase = lib.optionalString netifUnderlay (
     indent "    " ''
@@ -101,13 +101,109 @@
     (fixtures)
     httpbinImage
     manifestLabels
-    httpbinDaemonSet
     poolService
     floatService
     httpbinPinned
     classlessService
     ;
   rke2ImageLinks = lib.optionals (!k3s) [(fixtures.rke2ImageLink httpbinImage)];
+  # the shell image of the client pods (preloaded: the suite is offline)
+  busyboxImage = pkgs:
+    pkgs.dockerTools.pullImage {
+      imageName = "busybox";
+      imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
+      hash = "sha256-OasmfjRQsuVWudSc4qWuMKK5nNz4hdIS8Si4B0okXEw=";
+      finalImageTag = "1.36.1";
+    };
+  dualStack = {
+    ipFamilies = [
+      "IPv4"
+      "IPv6"
+    ];
+    ipFamilyPolicy = "RequireDualStack";
+  };
+
+  # /hostname answers with the pod name, so a caller sees which backend
+  # (which node) served it.
+  httpbinDaemonSet = lib.recursiveUpdate fixtures.httpbinDaemonSet {
+    spec.template.spec.containers =
+      map (
+        container:
+          container
+          // {
+            env = [
+              {
+                name = "USE_REAL_HOSTNAME";
+                value = "true";
+              }
+            ];
+          }
+      )
+      fixtures.httpbinDaemonSet.spec.template.spec.containers;
+  };
+
+  # A pod with a shell on every node: the source of pod traffic
+  # (ported from the tunnel suite, D72).
+  clientDaemonSet = {
+    apiVersion = "apps/v1";
+    kind = "DaemonSet";
+    metadata.name = "client";
+    spec = {
+      selector.matchLabels.app = "client";
+      template = {
+        metadata.labels.app = "client";
+        spec = {
+          terminationGracePeriodSeconds = 1;
+          containers = [
+            {
+              name = "client";
+              image = "busybox:1.36.1";
+              command = [
+                "sleep"
+                "86400"
+              ];
+            }
+          ];
+        };
+      };
+    };
+  };
+
+  clusterIPService = {
+    apiVersion = "v1";
+    kind = "Service";
+    metadata = {
+      name = "httpbin-cluster";
+      labels = manifestLabels;
+    };
+    spec =
+      {
+        type = "ClusterIP";
+        selector.app = "httpbin";
+        ports = [
+          {
+            port = 80;
+            targetPort = 8080;
+          }
+        ];
+      }
+      // dualStack;
+  };
+
+  # Classless with a backend on every node: Node IPAM publishes every
+  # node, and withdraws the one that dies.
+  classlessAllService = lib.recursiveUpdate classlessService {
+    metadata.name = "httpbin-nodeipam-all";
+    spec = {
+      selector.app = "httpbin";
+      ports = [
+        {
+          port = 83;
+          targetPort = 8080;
+        }
+      ];
+    };
+  };
 
   routerNeighbor = {
     address,
@@ -263,6 +359,9 @@
       floatService
       httpbinPinned
       classlessService
+      clientDaemonSet
+      clusterIPService
+      classlessAllService
     ];
   };
 in {
@@ -412,6 +511,8 @@ in {
         pkgs.curl
         pkgs.jq
       ];
+      services.${distro}.images = [(busyboxImage pkgs)];
+      systemd.tmpfiles.rules = lib.optionals (!k3s) [(fixtures.rke2ImageLink (busyboxImage pkgs))];
     };
   in {
     alpha = {...}: {
@@ -475,7 +576,78 @@ in {
   };
 
   testScript = ''
-    ${netifHelpers}def fail_dump(m):
+    import json
+    import time
+
+    ${netifHelpers}FABRIC = {"alpha": ("192.168.77.1", "fd77::1"), "beta": ("192.168.77.2", "fd77::2")}
+    UNDERLAY = {"alpha": ("192.168.1.1", "2001:db8:1::1"), "beta": ("192.168.1.2", "2001:db8:1::2")}
+    HOST_HTTP = "curl -sf --max-time 5 -o /dev/null "
+
+
+    def url(ip, port=80, path="/get"):
+        host = f"[{ip}]" if ":" in ip else ip
+        return f"http://{host}:{port}{path}"
+
+
+    def pod_on(node, app, namespace="default"):
+        return alpha.succeed(
+            f"kubectl -n {namespace} get pod -l {app} --field-selector spec.nodeName={node},status.phase=Running"
+            " -o jsonpath='{.items[0].metadata.name}'"
+        ).strip()
+
+
+    def pod_ips(pod):
+        ips = alpha.succeed("kubectl get pod " + pod + " -o jsonpath='{.status.podIPs[*].ip}'").split()
+        return next(ip for ip in ips if ":" not in ip), next(ip for ip in ips if ":" in ip)
+
+
+    def from_pod(pod, target):
+        """A shell command: fetch `target` from inside `pod`."""
+        return f"kubectl exec {pod} -- wget -q -T 5 -O - '{target}'"
+
+
+    def backends(pod, target, wanted, tries=80):
+        """The httpbin pods that answer `target`, asked from `pod`."""
+        seen = set()
+        for _ in range(tries):
+            seen.add(json.loads(alpha.succeed(from_pod(pod, target)))["hostname"])
+            if seen == wanted:
+                break
+        return seen
+
+
+    def seconds_until(cmd, limit=120):
+        """Seconds until `cmd` succeeds on alpha, or None."""
+        started = time.time()
+        while time.time() - started < limit:
+            if alpha.execute(cmd + " 2>/dev/null")[0] == 0:
+                return round(time.time() - started, 1)
+            time.sleep(0.5)
+        return None
+
+
+    def seconds_until_only(pod, target, wanted, limit=180, streak=20):
+        """Seconds until `target`, asked from `pod`, is answered `streak`
+        times in a row and only by the httpbin pod `wanted`; or None."""
+        started = time.time()
+        run = 0
+        while time.time() - started < limit:
+            status, out = alpha.execute(from_pod(pod, target))
+            run = run + 1 if status == 0 and json.loads(out)["hostname"] == wanted else 0
+            if run == streak:
+                return round(time.time() - started, 1)
+        return None
+
+
+    def lb_ingress(service):
+        return sorted(
+            alpha.succeed(
+                "kubectl get service " + service + " -o jsonpath='{.status.loadBalancer.ingress[*].ip}'"
+            ).split()
+        )
+
+
+    def fail_dump(m):
         for cmd in [
             "journalctl -u ${serverUnit} --no-pager -l | tail -n 80",
             "journalctl -u ${bootstrapUnit} --no-pager -l | tail -n 60 >&2 || true",
@@ -620,6 +792,54 @@ in {
             alpha.wait_until_succeeds(f"curl -sf --max-time 5 http://{pinned4}:8080/get | grep '\"url\"' >/dev/null", timeout=120)
             alpha.wait_until_succeeds(f"curl -sf --max-time 5 http://[{pinned6}]:8080/get | grep '\"url\"' >/dev/null", timeout=120)
 
+        with subtest("pod to pod across nodes: pod pools, pod MTU, a 200 KB body in both families"):
+            # Ported from the tunnel suite (D72). The body is larger than
+            # one packet: a pod MTU above the fabric path drops it.
+            for ds in ["httpbin", "client"]:
+                alpha.wait_until_succeeds(f"kubectl rollout status daemonset/{ds} --timeout=180s", timeout=240)
+            # multi-pool IPAM: a slice of the pod pool for every node
+            for name in ["alpha", "beta"]:
+                alpha.succeed(
+                    "kubectl get ciliumnode " + name + " -o json | jq -e '[.spec.ipam.pools.allocated[].cidrs[]]"
+                    " | (any(test(\"^10[.]1[.]\")) and any(test(\"^fd10:1:\")))' >/dev/null"
+                )
+            web = {name: pod_on(name, "app=httpbin") for name in ["alpha", "beta"]}
+            shell = {name: pod_on(name, "app=client") for name in ["alpha", "beta"]}
+            ips = {name: pod_ips(web[name]) for name in ["alpha", "beta"]}
+            for name, (ipv4, ipv6) in ips.items():
+                assert ipv4.startswith("10.1."), f"{name} pod IPv4 {ipv4} is not from the pod pool"
+                assert ipv6.startswith("fd10:1:"), f"{name} pod IPv6 {ipv6} is not from the pod pool"
+            assert ips["alpha"][0].rsplit(".", 1)[0] != ips["beta"][0].rsplit(".", 1)[0], f"both nodes share one IPv4 slice: {ips!r}"
+            # the pod MTU is Cilium's (the minimum transport MTU, D58) and
+            # fits the fabric link
+            mtu = alpha.succeed("kubectl -n kube-system get configmap cilium-config -o jsonpath='{.data.mtu}'").strip()
+            assert mtu.isdigit(), f"cilium-config has no mtu: {mtu!r}"
+            for node in [alpha, beta]:
+                link_mtu = int(node.succeed("ip -j link show ${fabricLink} | jq '.[0].mtu'").strip())
+                assert int(mtu) <= link_mtu, f"{node.name}: Cilium MTU {mtu} exceeds the fabric link MTU {link_mtu}"
+            for name in ["alpha", "beta"]:
+                pod_mtu = alpha.succeed(f"kubectl exec {shell[name]} -- cat /sys/class/net/eth0/mtu").strip()
+                assert pod_mtu == mtu, f"pod MTU on {name} is {pod_mtu}, Cilium's is {mtu}"
+            print(f"FINDING pod MTU {mtu}")
+            for source, target in [("alpha", "beta"), ("beta", "alpha")]:
+                for ip in ips[target]:
+                    alpha.wait_until_succeeds(from_pod(shell[source], url(ip, 8080)) + " | grep '\"url\"' >/dev/null", timeout=120)
+                    alpha.succeed(from_pod(shell[source], url(ip, 8080, "/bytes/200000")) + " | wc -c | grep -x 200000 >/dev/null")
+
+        with subtest("ClusterIP Service from pods: both families, backends on both nodes, DNS"):
+            cluster_ips = alpha.succeed("kubectl get service httpbin-cluster -o jsonpath='{.spec.clusterIPs[*]}'").split()
+            assert len(cluster_ips) == 2 and ":" not in cluster_ips[0] and ":" in cluster_ips[1], f"ClusterIPs: {cluster_ips!r}"
+            everyone = set(web.values())
+            for name in ["alpha", "beta"]:
+                for ip in cluster_ips:
+                    alpha.wait_until_succeeds(from_pod(shell[name], url(ip)) + " >/dev/null", timeout=120)
+                    seen = backends(shell[name], url(ip, 80, "/hostname"), everyone)
+                    assert seen == everyone, f"{ip} from the pod on {name} reached {seen!r}, wanted {everyone!r}"
+                alpha.wait_until_succeeds(
+                    from_pod(shell[name], "http://httpbin-cluster.default.svc.cluster.local/get") + " | grep '\"url\"' >/dev/null",
+                    timeout=120,
+                )
+
         with subtest("LB-IPAM pool allocation"):
             # --- Pool allocation (io.cilium/bgp-control-plane + selector) -------------
             alpha.wait_until_succeeds(
@@ -667,6 +887,18 @@ in {
             # ETP-Local negative: alpha is not a candidate — nothing answers on
             # alpha's mesh address for this Service.
             alpha.fail("curl -sf --max-time 5 http://192.168.77.1:81/get")
+            # A backend on every node: every node's fabric addresses.
+            alpha.wait_until_succeeds(
+                "kubectl get service httpbin-nodeipam-all -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w | grep -x 4 >/dev/null",
+                timeout=240,
+            )
+            all_ingress = lb_ingress("httpbin-nodeipam-all")
+            assert all_ingress == sorted(FABRIC["alpha"] + FABRIC["beta"]), f"httpbin-nodeipam-all ingress: {all_ingress!r}"
+            for ip in FABRIC["alpha"]:
+                beta.wait_until_succeeds(HOST_HTTP + url(ip, 83), timeout=120)
+            for ip in FABRIC["beta"]:
+                alpha.wait_until_succeeds(HOST_HTTP + url(ip, 83), timeout=120)
+                alpha.wait_until_succeeds(from_pod(shell["alpha"], url(ip, 81)) + " >/dev/null", timeout=120)
 
         with subtest("shared-bgp ECMP to the foreign router"):
             # --- shared-bgp ECMP (D9/D10) -----------------------------------
@@ -761,8 +993,6 @@ in {
             # --- Firewall: positive + negative ------------------------------
             # Ported from the tunnel suite (D72): eth1 is a Cilium device
             # here too, so the same refusals must hold on the underlay.
-            FABRIC = {"alpha": ("192.168.77.1", "fd77::1"), "beta": ("192.168.77.2", "fd77::2")}
-            UNDERLAY = {"alpha": ("192.168.1.1", "2001:db8:1::1"), "beta": ("192.168.1.2", "2001:db8:1::2")}
             def nc(address, port):
                 return f"nc -z -w3 {address} {port}"
             # A listener on a port nobody opens: the probe of a refusal is
@@ -841,6 +1071,52 @@ in {
             # The floating VIP blackholes: no controller re-homes it. This
             # assertion DOCUMENTS the window (D8) — it must keep failing.
             router.fail("curl -sf --max-time 5 http://192.0.2.100:82/get")
+
+        with subtest("beta is gone: the cluster notices, ClusterIP and Node IPAM drop it, alpha keeps working"):
+            # Ported from the tunnel suite (D72).
+            for ip in ips["alpha"]:
+                alpha.succeed(from_pod(shell["alpha"], url(ip, 8080)) + " >/dev/null")
+            noticed = seconds_until(
+                "kubectl get node beta -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep -x -E 'Unknown|False'",
+                limit=180,
+            )
+            print(f"FINDING node beta NotReady after {noticed} s")
+            assert noticed is not None, "the cluster did not notice the dead node"
+            withdrawn = seconds_until(
+                "kubectl get endpointslices -l kubernetes.io/service-name=httpbin-cluster -o json"
+                " | jq -e '[.items[].endpoints[] | select(.conditions.ready) | .nodeName] | unique == [\"alpha\"]'",
+                limit=300,
+            )
+            print(f"FINDING httpbin-cluster endpoints on beta not ready {withdrawn} s after NotReady")
+            assert withdrawn is not None, "the dead node's endpoints stayed ready"
+            # ClusterIP from a pod and from the node: only alpha's backend
+            # answers now, 20 times in a row
+            for target in cluster_ips:
+                clean = seconds_until_only(shell["alpha"], url(target, 80, "/hostname"), web["alpha"])
+                print(f"FINDING {target} served only by alpha's backend {clean} s after the endpoints")
+                assert clean is not None, f"{target} still reaches the dead node's backend"
+                alpha.succeed(HOST_HTTP + url(target))
+            dns = seconds_until(from_pod(shell["alpha"], "http://httpbin-cluster.default.svc.cluster.local/get"), limit=120)
+            print(f"FINDING cluster DNS and the Service by name answer {dns} s later")
+            assert dns is not None, "no cluster DNS after the death"
+            # Node IPAM withdraws the dead node
+            shrunk = seconds_until(
+                "kubectl get service httpbin-nodeipam-all -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w | grep -x 2",
+                limit=300,
+            )
+            print(f"FINDING Node IPAM withdrew beta {shrunk} s after the endpoints")
+            assert shrunk is not None, "Node IPAM kept the dead node"
+            assert lb_ingress("httpbin-nodeipam-all") == sorted(FABRIC["alpha"]), lb_ingress("httpbin-nodeipam-all")
+            # the Service whose only backend was on beta has no address left
+            assert lb_ingress("httpbin-nodeipam") == [], lb_ingress("httpbin-nodeipam")
+            for ip in FABRIC["alpha"]:
+                alpha.succeed(HOST_HTTP + url(ip, 83))
+            # a new pod starts on alpha and uses the Service
+            alpha.succeed("kubectl run after --image=busybox:1.36.1 --restart=Never --command -- sleep 3600")
+            alpha.wait_until_succeeds("kubectl wait --for=condition=Ready pod/after --timeout=120s", timeout=180)
+            alpha.succeed("kubectl get pod after -o jsonpath='{.spec.nodeName}' | grep -x alpha >/dev/null")
+            for ip in cluster_ips:
+                alpha.succeed(from_pod("after", url(ip)) + " >/dev/null")
         print("${lib.toUpper (lib.replaceStrings ["-"] ["_"] suiteName)}_OK")
     except Exception:
         safe_dump(alpha)
