@@ -8,8 +8,13 @@ service gives them a way to IPv4-only sites such as GitHub.
 
 | Role | Machine | Does |
 |---|---|---|
-| `gateway` | a fleet machine with a public IPv4 | translates IPv6 to IPv4 (NAT64) and answers DNS with DNS64 |
-| `client` | an IPv6-only machine | uses the gateways as DNS servers |
+| `gateway` | a fleet machine with a public IPv4 | translates IPv6 to IPv4 (NAT64) |
+| `client` | an IPv6-only machine | runs a CLAT that sends its IPv4 to a gateway |
+
+**Decided 2026-11-23:** the CLAT is the only path. DNS64 is frozen:
+it is not built until a machine that cannot run a CLAT needs it
+(`specs/gateway.md` §14.1). Clients use any IPv6 resolver. The DNS64
+text below describes the frozen design.
 
 A gateway is a role, not a dedicated machine. With three machines, two
 carry an IPv4 and the role, and one is IPv6-only.

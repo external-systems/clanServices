@@ -72,7 +72,7 @@ read every new suite against this file. §13 holds the result.
 Round G5 (2026-11-23): **owner decisions; docs only.** §14 locks the
 answers to §13.2: build the services (nat-gateway and the CLAT first,
 then the router with one WAN), freeze the design-only decisions, the
-CLAT as default path with DNS64 optional, a per-client rate limit with
+CLAT as the only path with DNS64 frozen, a per-client rate limit with
 a `trusted` tier, rendered Cilium `devices` (SPEC.md D71), and native
 routing only (SPEC.md D72). §14.3 sets the direction for each unfixed
 finding.
@@ -188,7 +188,8 @@ any code (AGENTS.md rule 3).
 
   *(planned)*
 
-- **G4 Gateways are off-path.**
+- **G4 Gateways are off-path.** *(DNS64 parts frozen, §14.1 point 3,
+  2026-11-23: the first `nat-gateway` serves no DNS.)*
   - Each gateway serves its own /96 out of its public IPv6 prefix, and
     its own DNS64 that synthesizes into that /96.
   - Clients reach both over plain IPv6. A source allowlist, built from
@@ -2045,14 +2046,27 @@ owner.
 2. **Freeze the design-only decisions** (point 2): G9, G16's open
    points, G17, G19, G21. Written down; nothing is built for them
    until S2 and S4 are green on service code.
-3. **The CLAT is the default path; DNS64 is optional** (point 3).
-   - Every `nat-gateway` client runs a CLAT (G23) and uses plain
-     resolvers.
-   - DNS64 is a per-client option, off by default, for a machine that
-     cannot run Jool. A gateway serves DNS64 only when a client asks
-     for it.
-   - G4's DNS64 listener, its TTL cap and its health coupling apply
-     only then.
+3. **The CLAT is the only path; DNS64 is frozen** (point 3; amended
+   by the owner the same day).
+   - Every `nat-gateway` client runs a CLAT (G23) and uses plain IPv6
+     resolvers, which need not be the gateways. DNS no longer depends
+     on a gateway.
+   - DNS64 is **not built** in the first `nat-gateway`. It is frozen
+     like the decisions of point 2: written down, built only when a
+     real client cannot run a CLAT (macOS, an appliance, a kernel
+     without Jool). It would then be a per-client option, off by
+     default, served by the gateway.
+   - DNS64 never runs on a client. On the home router it is needed at
+     most for G9 (IPv6-mostly, frozen).
+   - G4's DNS64 listener, port 53 allowlist, TTL cap and health
+     coupling are frozen with it. The fixture
+     `lib/gateway/tests/vm/nat64-gateway.nix` keeps the proof; a suite
+     that ported to service code drops its DNS64 subtests, and the
+     fixture stays in git.
+   - Why: a CLAT covers names, IPv4 literals and IPv4-only sockets;
+     DNS64 covers names only. DNS64 costs a gateway dependency for
+     every lookup, stale synthesized addresses after a failover,
+     broken DNSSEC validation, and its own failure coupling.
 4. **Rate-limit per client source at the gateway** (point 4).
    - Every allowlisted source gets a packet and new-flow limit in the
      gateway's `inet nat64` table (nftables `meter`, keyed by source

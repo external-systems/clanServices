@@ -91,8 +91,9 @@ The contract version is `specs/gateway.md` §14.
   stand-ins switch to the service code.
 - **Freeze the design-only parts:** IPv6-mostly, the open points of two
   WANs, several routers, flow records, owned address space.
-- **The CLAT is the default path.** DNS64 is an option for a machine
-  that cannot run the CLAT.
+- **The CLAT is the only path. DNS64 is frozen:** not built until a
+  machine that cannot run a CLAT needs it. Machines use any IPv6
+  resolver, so DNS no longer depends on the gateways.
 - **A rate limit per client at the gateway.** Kube nodes get a higher
   tier. It trusts the machine, not the workloads on it: the gateway
   sees one address per node.

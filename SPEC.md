@@ -8,7 +8,8 @@ both the *target contract* and the *status authority*.
 answered the open points of round 51 and decided on tunnel mode.
 - **Locked** (`specs/gateway.md` §14): build the services, no more
   probes; freeze the design-only decisions; the CLAT is the default
-  path and DNS64 is optional; a rate limit per client at the gateway,
+  path and DNS64 is frozen (not built until a client cannot run a
+  CLAT); a rate limit per client at the gateway,
   with a `trusted` tier for kube nodes; the kube services render
   Cilium's `devices`.
 - **D71, new, planned:** `devices` rendered per node from netif facts,
