@@ -34,8 +34,8 @@ Each zone name is a netif zone label. From netif the router takes:
 
 DHCP hands out the upper half of the zone's IPv4 subnet. SSH to the
 router is open from every zone (`ssh = false` closes it for a zone).
-Proof: the suite `router`, the checks of the stand-in suite
-`gateway-router` run on the service.
+Proof: the suite `router` runs every check of the former stand-in
+suite `gateway-router` on the service.
 
 ## What runs on it
 

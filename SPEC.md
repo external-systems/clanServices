@@ -4,6 +4,25 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 54 (2026-11-24): D71 implemented; the gateway services exist**
+(`specs/gateway.md` round G7).
+- **D71 implemented:** k3s and rke2 render Cilium `devices` as the
+  union, over the members, of the transport's links, each
+  `nat-gateway` client's CLAT link and the links of its uplink zone
+  that carry no IPv4 (`lib/kube-cluster/devices.nix`, from the `netif`
+  and `nat_gateway` exports; both services now take those exports as
+  inputs). A VPN link is refused at eval. Eval tests
+  `test_d71RenderedDevices`, `test_d71VpnLinkRefused`,
+  `test_d71NoVpnByDefault`, `test_clusterMembersTrusted` (k3s, rke2).
+- **`<distro>-clat` runs on the services:** netif renders every link,
+  `nat-gateway` the gateway and each node's CLAT, and nothing sets
+  `devices` by hand (it renders `<fabric link> <fabric loopback> clat0
+  eth1`). The nodes use a plain IPv6 resolver (no DNS64). The
+  `-mapped` suite keeps its fixtures, unchanged (`suite-compare`).
+- New services `nat-gateway` and `router`; their contract and status
+  is `specs/gateway.md`.
+- Header range D1–D72 (unchanged).
+
 **Round 53 (2026-11-23): native routing only (D72 implemented).**
 Cilium tunnel mode and `wireguard-mesh` are gone. The last `main`
 commit with them is tag `tunnel-mode-final`.
@@ -2075,18 +2094,28 @@ unless noted) — revoked entries keep one-line reasons for history.
     CoreDNS and its placement.
 
 - **D71 The kube services render Cilium's `devices` from netif facts.**
-  *(owner, 2026-11-23; planned)* Amends D58, where `devices` derive
-  from the transport only. Full rules: `specs/gateway.md` §14.2.
+  *(owner, 2026-11-23; implemented round 54)* Amends D58, where
+  `devices` derive from the transport only. Full rules:
+  `specs/gateway.md` §14.2.
   - Per node: the transport link(s), the CLAT link where a CLAT runs
     (G5), the underlay link(s) where the underlay has no IPv4.
   - Names come from netif's zones (N10), so a mixed fleet works:
     `eno1`, `enp0s1`, `wlp2s0` in one cluster.
   - A VPN link (`tailscale0` and the like) is never in `devices`; an
     eval assertion refuses it.
-  - Open, settled first by one suite: one cluster-wide list (the union
-    of exact names), a `CiliumNodeConfig` per node, or wildcards with
-    an exclusion.
-  - Hand-set `cilium.helmValues.devices` in suites goes away.
+  - Settled (round 54): one cluster-wide list, the union of exact
+    names, as the transport's links already were. Rejected for now: a
+    `CiliumNodeConfig` per node, wildcards.
+  - Built in `lib/kube-cluster/devices.nix`; the CLAT link comes from a
+    member's `nat_gateway` export, the IPv6-only underlay from its
+    `netif` export (links of the client's uplink zone with no static
+    IPv4 and no DHCPv4). A VPN link (zone `vpn` or `tailnet`, or a name
+    starting `tailscale`, `wt`, `nb-`, `zt`, `tun`) fails eval, also
+    when set in `cilium.helmValues.devices`.
+  - Hand-set `cilium.helmValues.devices` is gone from `<distro>-clat`.
+    `k3s-clat-mapped` keeps it: it proves the alternative in which the
+    CLAT link is not a device. `<distro>-data-plane` still adds `eth1`
+    by hand for its foreign router's VIP ingress (allowed: a superset).
 
 - **D72 Native routing only; Cilium tunnel mode and `wireguard-mesh`
   are removed.** *(owner, 2026-11-23; implemented round 53)* Revokes D58's tunnel

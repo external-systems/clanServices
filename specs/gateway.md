@@ -999,11 +999,12 @@ any code (AGENTS.md rule 3).
   |---|---|---|
   | `gateway-wan` | netif N43 (MAC override), N44 (VLAN 0) | `GATEWAY_WAN_OK` |
   | `netif-v6only` | netif N45; G4 and G23 from a host's side; path MTU through both translators | `NETIF_V6ONLY_OK` |
-  | `gateway-nat64` | G2, G3, G4, G6, G23: two gateways, a client with a CLAT, an outsider; failover, hysteresis, the health check | `GATEWAY_NAT64_OK` |
-  | `gateway-router` | G8, G10, G11, G14, G15, G20, G22; netif N16: zones, advertisements, the prefix hook, the service prefix | `GATEWAY_ROUTER_OK` |
+  | `gateway-nat64` | the frozen DNS64 design (§14.1 point 3) on fixtures: G2, G3, G4, G6, G23; kept as its proof, not extended | `GATEWAY_NAT64_OK` |
+  | `router` (round G7; replaced `gateway-router`, same script) | the `router` service: G8, G10, G11, G14, G15, G20, G22, §14.3's hairpin; netif N16: zones, advertisements, the prefix hook, the service prefix | `ROUTER_OK` |
+  | `nat-gateway` (round G7) | the `nat-gateway` service: G2–G6, G23, G24, §14.1 point 4, §14.3; the proofs of `gateway-nat64` without DNS64 | `NAT_GATEWAY_OK` |
   | `gateway-dual-wan` | G16; netif N21: two DHCPv4 WANs, failover without a route change | `GATEWAY_DUAL_WAN_OK` |
   | `k3s-v6only`, `rke2-v6only` | SPEC.md D67: the `join` contract on IPv6-only NICs | `<DISTRO>_V6ONLY_OK` |
-  | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric | `<DISTRO>_CLAT_OK` |
+  | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric; since round G7 on the services (netif, `nat-gateway`, D71's rendered `devices`, a plain resolver) | `<DISTRO>_CLAT_OK` |
   | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative | `K3S_CLAT_MAPPED_OK` |
 
 - A suite asserts a bound with margin (about three times the measured
@@ -2256,3 +2257,72 @@ Decided 2026-11-23: native routing only (SPEC.md D72).
 removed; the last commit with them is tag `tunnel-mode-final`. The
 `<distro>-clat-mesh*` suites went with them; `<distro>-clat` (the
 former `-clat-fabric`) is the CLAT proof.
+
+## 15. Service evidence (round G7, 2026-11-24, euc-hel-0)
+
+The first runs of the services. Each line is one run: a sample, not a
+flakiness measure (§12.4).
+
+### 15.1 `nat-gateway` (`NAT_GATEWAY_OK`, passed, 608 s)
+
+- Every phase of `gateway-nat64` that is not DNS64 passes on the
+  service: the allowlist for every protocol (ping 2, TCP 3, UDP 1,
+  beacon 1 and 2 packets counted per gateway), the namespaced Jool seen
+  by the forward chain and conntrack, the two negative proofs, the
+  follower's address arithmetic, the CLAT on both clients, path MTU
+  (1420 through NAT64, 1400 through the CLAT), nftables ownership, an
+  IfState apply, 30 % loss for 40 s without a move, an idle flow of
+  40 s, a crash that stalls a flow without a reset, a gateway back
+  without state.
+- **Rate limits (§14.1 point 4):** a `default` client (gw2 lowered to
+  5 new flows/s, burst 10) got 20 of 40 simultaneous connections
+  through, 75 SYNs dropped; a `trusted` client got 40 of 40. 2000
+  datagrams/s for 3 s against 500/s, burst 1000: 3481 of 5981 dropped
+  for `default`, none for `trusted`.
+- **Beacon and health (G24, §14.3):** one target of three dead: the
+  gateway stayed healthy for 15 s. All of a gateway's targets dead:
+  beacon withdrawn after 3.9 s, an IPv4 literal through the other
+  gateway after 15.4 s; back 0.6 s after the targets returned. The
+  translator removed: withdrawn after 3.4 s, the CLATs moved. Both
+  gateways' targets dead: both withdrew, the follower stayed 20 s and a
+  CLAT flow got 20 echoes in 20 s. Health check stopped: beacon closed
+  at once; killed: restarted, beacon back.
+- Failover: an IPv4 literal through the live gateway 14.2 s after a
+  crash; a CLAT remade on the dead gateway's /96 corrected after 12.3 s.
+- A gateway and a client reboot; everything comes back and no unit
+  failed.
+
+### 15.2 `k3s-clat` (`K3S_CLAT_OK`, passed, 613 s)
+
+- The cluster on IPv6-only NICs behind the service, with nothing
+  hand-set: each agent masquerades on `[eth1, clat0, <fabric link>,
+  <fabric loopback>]`, the rendered D71 list. Cilium attached to `clat0`
+  0.2 to 0.3 s after it was asked.
+- Nodes resolve at a plain IPv6 resolver; an IPv4-only name goes
+  through the CLAT (2 MB), a name with an AAAA record goes direct. Pods
+  resolve through cluster DNS and the node's resolver (only with the
+  NIC in `devices`) and reach IPv4 by name through the CLAT.
+- Every other phase of the fixture version passes: NodePorts (D69),
+  ClusterIP, the private-destination refusal, an IfState apply, the
+  CLAT link remade under load, both nodes rebooted.
+- The gateway trusted both members by itself (`kube_cluster` exports).
+
+### 15.3 `router` (`ROUTER_OK`)
+
+- First run (before the hairpin change): passed, 504 s, every phase of
+  `gateway-router` on the service.
+- With §14.3's hairpin rewrite: passed, 346 s. The backend node reached
+  its own public service address in 0.04 s and saw the router's address
+  in its zone (`fd00:10:2::1`); the home zone reaches the service the
+  same way now (it saw its own address before). WAN clients keep their
+  address (asserted: the node saw the ISP's address).
+- Two runs in between failed on the suite, not the service: a helper
+  that did not skip an `ip -j` entry without `local`, and a check that
+  the word `dnat` was gone from the hook's table (the hairpin rule
+  holds `ct status dnat`; the check now looks for the rewrite rule).
+- **Flake seen once:** right after the ISP fixture switched to another
+  delegation (a specialisation switch that restarts its IfState), the
+  home client's IPv4 request failed within 1 ms. The check now waits up
+  to 30 s. The cause on the ISP side is not proven.
+- Not yet tested: a second host in the same zone as the backend (§14.3
+  asks for it; the topology has one host in `servers`).

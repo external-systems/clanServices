@@ -1089,6 +1089,16 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
       N17). *(implemented, round P3b-4; eval tests `test_zoneSeam`,
       `test_zoneNameChecked`)* Phase P5 builds `services/router`
       on it (`specs/gateway.md` §7, slice S2).
+    - **Consumers (round G7, 2026-11-24):** `services/router` reads
+      `zones`, the internal `clanServices.netif.links.<interface>`
+      (the router's static addresses in a zone, the WAN link's
+      `prefixDelegation.assign` for each zone's subnet id) and
+      `/run/netif/pd/<wan>`. `services/nat-gateway` reads `zones` (the
+      gateway's uplink, the client's proxy NDP links) and the `netif`
+      export (a client's static uplink addresses for the gateways'
+      allowlist). k3s and rke2 read the `netif` export (SPEC.md D71:
+      the IPv6-only underlay links in Cilium's `devices`). None of them
+      declares a link (`specs/gateway.md` invariant 1).
   - **NAT is never netif's (N20).** The home router's NAT lives in the
     router service. A NAT gateway for other machines (U9, U13) is the
     separate clanService `nat-gateway`, built on the same seam

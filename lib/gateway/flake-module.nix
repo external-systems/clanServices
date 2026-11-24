@@ -1,10 +1,10 @@
 # lib/gateway: the private shared implementation of the router and
-# nat-gateway services (specs/gateway.md G1). No service code yet: it
-# holds the VM suites that pin the proven mechanisms of specs/gateway.md
-# §10 (Jool NAT64 and CLAT, the router's building blocks, dual WAN,
-# IPv6-only hosts and clusters). They started as probes and now assert
-# what the probes showed, on fixture modules in `tests/vm/`. When a
-# service exists, its suite imports the service in place of the fixture.
+# nat-gateway services (specs/gateway.md G1): the modules are
+# default.nix and its imports. This file registers the suites that still
+# run on fixtures (the frozen DNS64 design, dual WAN, the WAN link,
+# IPv6-only hosts and clusters) and the <distro>-clat suites, which run
+# on the services. The services' own suites are registered in
+# services/nat-gateway and services/router.
 {
   inputs,
   lib,
@@ -71,10 +71,6 @@ in {
     };
     gateway-wan = {
       imports = [./tests/vm/wan.nix];
-      clan.modules.netif = netif;
-    };
-    gateway-router = {
-      imports = [./tests/vm/router.nix];
       clan.modules.netif = netif;
     };
   };

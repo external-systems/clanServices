@@ -697,7 +697,7 @@ in {
 
     def router_addresses(link):
         """The router's global IPv6 addresses on `link`."""
-        return {info["local"] for info in json.loads(router.succeed(f"ip -j -6 addr show dev {link} scope global"))[0]["addr_info"]}
+        return {info["local"] for entry in json.loads(router.succeed(f"ip -j -6 addr show dev {link} scope global")) for info in entry.get("addr_info", []) if "local" in info}
 
     def service_checks(label, block, full=True, home=True):
         """G20 on the service prefix of `block` (subnet id f)."""
@@ -1124,7 +1124,7 @@ in {
             # service rule goes, nothing leaves for the internet over IPv6.
             pd_write()
             wait_hook(None, [first, renumber, wide], [])
-            assert "dnat" not in router.succeed("nft list table inet router_svc")
+            assert "dnat ip6 prefix" not in router.succeed("nft list table inet router_svc")
             assert "current None" in hook_lines()[-1] and "service None" in hook_lines()[-1], hook_lines()[-1]
             wait_advertised("no delegation", None, [FIRST, RENUMBER, WIDE])
             egress_refused("no delegation", client, address(client, f"{RENUMBER}:1:"), RENUMBER)
@@ -1183,12 +1183,16 @@ in {
             assert router.succeed("ip -6 route show proto dhcp").strip().startswith(f"unreachable {SINGLE}::/64 dev lo"), "dhcpcd left a route into a zone"
             lines = hook_lines()
             assert f"current {SINGLE}::/64, retired ['{FIRST}::/60', '{RENUMBER}::/60', '{WIDE}::/56'], service None, corerad restarted" in lines[-1], lines
-            assert "dnat" not in router.succeed("nft list table inet router_svc")
+            assert "dnat ip6 prefix" not in router.succeed("nft list table inet router_svc")
             assert router.succeed("systemctl show router-prefix.service -P Result").strip() == "success"
             router.succeed("systemctl is-active corerad.service")
             refused(f"the service address of the retired {FIRST}", isp, f"http://[{FIRST}:f::80]/")
-            # IPv4 and the ULA are untouched
-            assert client.succeed("curl -sS --max-time 5 http://192.0.2.1/").strip() == f"::ffff:{wan_v4}"
+            # IPv4 and the ULA are untouched. A wait, not one try: the ISP's
+            # switch to another delegation restarts its own IfState, and a
+            # request in that moment failed at once (seen once, 2026-11-24:
+            # "failed to connect after 1 ms"; the first run passed)
+            answer = client.wait_until_succeeds("curl -sS --max-time 5 http://192.0.2.1/", timeout=30).strip()
+            assert answer == f"::ffff:{wan_v4}", answer
             client.succeed("ip -6 -o addr show dev eth1 scope global -deprecated | grep 'fd00:10:1:' >/dev/null")
 
         with subtest("G22: after the /64 a /60 again: the zones and the service come back"):

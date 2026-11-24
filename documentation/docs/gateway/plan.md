@@ -12,8 +12,9 @@ result on every run:
 |---|---|
 | `gateway-wan` | MAC override and VLAN 0 on the WAN port |
 | `netif-v6only` | a machine with no IPv4: names, IPv4 literals, path MTU, reboot |
-| `gateway-nat64` | two NAT gateways, failover, the CLAT's health check |
-| `gateway-router` | zones, DNS, advertisements, a prefix change, public Service addresses |
+| `gateway-nat64` | the frozen DNS64 design on stand-in code: two NAT gateways, failover, the CLAT's health check |
+| `router` | the service: zones, DNS, advertisements, a prefix change, public Service addresses (replaced `gateway-router` on 2026-11-24) |
+| `nat-gateway` | the service: two gateways, two client tiers, failover, the health beacon |
 | `gateway-dual-wan` | two WANs with DHCP, failover and back |
 | `k3s-v6only`, `rke2-v6only` | a cluster on IPv6-only machines |
 | `k3s-clat`, `rke2-clat`, `k3s-clat-mapped` | pod IPv4 through the node's CLAT, native routing (D72) |

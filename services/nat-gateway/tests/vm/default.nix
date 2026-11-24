@@ -182,11 +182,24 @@
                 pass
             sock.close()
         print(done)
-    # `flood HOST PORT N`: N datagrams as fast as possible, no reply read
+    # `flood HOST PORT RATE SECONDS`: datagrams at RATE a second, paced in
+    # batches every 10 ms (a burst at full speed overruns the sender's
+    # own queue); prints how many were sent
     if mode == "flood":
         sock = socket.socket(family, socket.SOCK_DGRAM)
-        for _ in range(int(sys.argv[4])):
-            sock.sendto(b"x" * 64, (host, port))
+        rate, seconds = int(sys.argv[4]), float(sys.argv[5])
+        sent = 0
+        started = time.monotonic()
+        while time.monotonic() - started < seconds:
+            due = int((time.monotonic() - started) * rate)
+            while sent < due:
+                try:
+                    sock.sendto(b"x" * 64, (host, port))
+                    sent += 1
+                except BlockingIOError:
+                    break
+            time.sleep(0.01)
+        print(sent)
     if mode == "idle":
         go, result = sys.argv[4], sys.argv[5]
         sock = socket.create_connection((host, port), timeout=10)
@@ -701,16 +714,16 @@ in {
             before = counted(gw2, "forward", "nat64-flows-trusted")
             got = int(trusted.succeed(f"python3 /etc/suite/shapes.py burst {G2.server} 9002 40").strip())
             assert got == 40 and counted(gw2, "forward", "nat64-flows-trusted") == before, got
-            # packets: 3000 datagrams as fast as they go, against a burst of
-            # 1000 and 500 a second
+            # packets: 2000 datagrams a second for 3 s, against a burst of
+            # 1000 and 500 a second: about 3500 of 6000 must go
             before = counted(gw2, "forward", "nat64-packets-default")
-            client.succeed(f"python3 /etc/suite/shapes.py flood {G2.server} 9001 3000")
+            sent = int(client.succeed(f"python3 /etc/suite/shapes.py flood {G2.server} 9001 2000 3").strip())
             dropped = counted(gw2, "forward", "nat64-packets-default") - before
-            print(f"FINDING default tier: {dropped} of 3000 datagrams dropped")
-            assert dropped >= 500, dropped
+            print(f"FINDING default tier: {dropped} of {sent} datagrams dropped (2000/s for 3 s against 500/s, burst 1000)")
+            assert sent >= 5000 and dropped >= 1500, (sent, dropped)
             before = counted(gw2, "forward", "nat64-packets-trusted")
-            trusted.succeed(f"python3 /etc/suite/shapes.py flood {G2.server} 9001 3000")
-            assert counted(gw2, "forward", "nat64-packets-trusted") == before
+            sent = int(trusted.succeed(f"python3 /etc/suite/shapes.py flood {G2.server} 9001 2000 3").strip())
+            assert sent >= 5000 and counted(gw2, "forward", "nat64-packets-trusted") == before, sent
             # a minute of quiet later nothing is held against the client
             client.wait_until_succeeds(http(G2.server), timeout=30)
             # gw1 keeps the default limits: the same burst passes there

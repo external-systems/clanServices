@@ -248,14 +248,18 @@ A cluster with two or more machines now places one copy per node. The
 second copy waits until a second node is ready. While a node is down,
 one copy serves. Tested by `<distro>-ha`.
 
-### D71 — Cilium's network cards come from netif (2026-11-23, planned)
+### D71 — Cilium's network cards come from netif (2026-11-23, implemented 2026-11-24)
 
-k3s and RKE2 will fill Cilium's `devices` list themselves, per node:
-the fabric link, the CLAT link where one runs, and the network card
-when the machine has no IPv4 on it. The names come from netif, so a
-mixed fleet works (`eno1`, `enp0s1`, `wlp2s0` in one cluster). A VPN
-link such as `tailscale0` is never on the list. How one list serves
-nodes with different names is settled by one test first.
+k3s and RKE2 fill Cilium's `devices` list themselves: the fabric links,
+the CLAT link of every node that runs one, and the network card of such
+a node when it has no IPv4 on it. The names come from netif, so a mixed
+fleet works (`eno1`, `enp0s1`, `wlp2s0` in one cluster).
+
+- One list serves every node: it is the union of all the nodes' names,
+  as the fabric links already were. Cilium uses the names a node has.
+- A VPN link such as `tailscale0` is never on the list; the build
+  refuses it.
+- Tested by `k3s-clat` and `rke2-clat`, which set nothing by hand.
 
 ### D72 — Native routing only (2026-11-23, implemented)
 
