@@ -4,6 +4,15 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 55 (2026-11-24): D71 covers a gateway that is a node**
+(`specs/gateway.md` round G8, §14.5 point 5).
+- A `nat-gateway` gateway exports its uplink zone (`nat_gateway`,
+  `gateway = true`). On a cluster member that is a gateway, every link
+  of that zone joins `devices`: its public IPv4 is there, and Cilium
+  masquerades pod IPv4 only on a `devices` link. Eval test
+  `test_d71GatewayUplink` (k3s, rke2); suite `nat-gateway-kube`.
+- A gateway is never a client, so it runs no CLAT.
+
 **Round 54 (2026-11-24): D71 implemented; the gateway services exist**
 (`specs/gateway.md` round G7).
 - **D71 implemented:** k3s and rke2 render Cilium `devices` as the
@@ -2098,7 +2107,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   `devices` derive from the transport only. Full rules:
   `specs/gateway.md` §14.2.
   - Per node: the transport link(s), the CLAT link where a CLAT runs
-    (G5), the underlay link(s) where the underlay has no IPv4.
+    (G5), the underlay link(s) where the underlay has no IPv4, and on
+    a `nat-gateway` gateway the links of its uplink zone (round 55).
   - Names come from netif's zones (N10), so a mixed fleet works:
     `eno1`, `enp0s1`, `wlp2s0` in one cluster.
   - A VPN link (`tailscale0` and the like) is never in `devices`; an

@@ -1,6 +1,8 @@
-# Export interface `nat_gateway`: what a `nat-gateway` client tells
-# other services (specs/gateway.md G5, SPEC.md D71). The kube services
-# read it to put the CLAT link into Cilium's `devices`. Every leaf has a
+# Export interface `nat_gateway`: what a `nat-gateway` machine tells
+# other services (specs/gateway.md G5, §14.5 point 5, SPEC.md D71). The
+# kube services read it: a client's CLAT link and IPv6-only uplink, and a
+# gateway's uplink (its pods' IPv4 leaves there), go into Cilium's
+# `devices`. Every leaf has a
 # default: the clan CLI deep-evaluates exports.
 {lib, ...}: let
   inherit (lib) mkOption types;
@@ -26,7 +28,12 @@ in {
     uplinkZone = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "The netif zone of the client's uplink, whose links carry no IPv4.";
+      description = "The netif zone of the machine's uplink: a client's carries no IPv4, a gateway's carries its public IPv4.";
+    };
+    gateway = mkOption {
+      type = types.bool;
+      default = false;
+      description = "The machine is a gateway (it has its own IPv4 and runs no CLAT).";
     };
   };
 }

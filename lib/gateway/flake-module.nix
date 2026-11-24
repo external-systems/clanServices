@@ -1,9 +1,9 @@
 # lib/gateway: the private shared implementation of the router and
 # nat-gateway services (specs/gateway.md G1): the modules are
 # default.nix and its imports. This file registers the suites that still
-# run on fixtures (the frozen DNS64 design, dual WAN, the WAN link,
-# IPv6-only hosts and clusters) and the <distro>-clat suites, which run
-# on the services. The services' own suites are registered in
+# run on fixtures (dual WAN, the WAN link, IPv6-only hosts and clusters
+# behind a provider's NAT64, the mapped CLAT alternative) and the
+# <distro>-clat suites, which run on the services. The services' own suites are registered in
 # services/nat-gateway and services/router.
 {
   inputs,
@@ -55,12 +55,16 @@
   };
 in {
   clanTests = {
-    gateway-nat64.imports = [./tests/vm/nat64.nix];
     k3s-v6only = v6only "k3s";
     rke2-v6only = v6only "rke2";
     k3s-clat = clat "k3s" false;
     rke2-clat = clat "rke2" false;
     k3s-clat-mapped = clat "k3s" true;
+    # specs/gateway.md §14.5 point 5: a gateway that is a kube node
+    nat-gateway-kube = {
+      imports = [(import ./tests/vm/kube-gateway.nix {inherit inputs;})];
+      inherit ((clat "k3s" false)) clan;
+    };
     netif-v6only = {
       imports = [./tests/vm/v6only-host.nix];
       clan.modules.netif = netif;

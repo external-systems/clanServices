@@ -520,6 +520,11 @@
     objs = builtins.fromJSON d71Alpha.clan.kubeClusters.rke2-a.bundleJson;
   in
     (lib.findFirst (o: o.kind == "ConfigMap" && o.metadata.name == "cilium-config") null objs).data.devices;
+  # gamma is a gateway in cluster rke2-b: its uplink joins devices
+  d71GatewayDevices = let
+    objs = builtins.fromJSON d71Evaled.config.nixosConfigurations.gamma.config.clan.kubeClusters.rke2-b.bundleJson;
+  in
+    (lib.findFirst (o: o.kind == "ConfigMap" && o.metadata.name == "cilium-config") null objs).data.devices;
   d71Vpn = mkEvaled (lib.recursiveUpdate d71Inventory {
     instances.rke2-a.roles.server.settings.cilium.helmValues.devices = "fk-alpha-1 fk-alpha-2 fk-beta-1 fk-beta-2 clat0 eno1 wlp2s0 tailscale0";
   });
@@ -1630,6 +1635,18 @@ in {
       "eno1"
       "wlp2s0"
     ];
+  };
+  # specs/gateway.md §14.5 point 5: a gateway that is a node gets its
+  # uplink (its public IPv4) into devices, and no CLAT.
+  test_d71GatewayUplink = {
+    expr = {
+      uplink = lib.elem "eth0" (lib.splitString " " d71GatewayDevices);
+      clat = lib.elem "clat0" (lib.splitString " " d71GatewayDevices);
+    };
+    expected = {
+      uplink = true;
+      clat = false;
+    };
   };
   test_d71VpnLinkRefused = {
     expr = failedAssertion d71Vpn.config.nixosConfigurations.alpha.config "'tailscale0' is a VPN link";

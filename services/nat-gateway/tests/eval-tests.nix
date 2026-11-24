@@ -160,6 +160,81 @@ in {
         trustedSet = true;
       };
     };
+    # §14.5 point 3: one client's own numbers; the rest from its tier on
+    # each gateway. It leaves its tier's set and gets meters of its own.
+    test_clientOverride = let
+      eval = with' {
+        instances.nat64.roles.client.machines.node.settings.limits.newFlows = 7;
+      };
+      config = machine eval "gw2";
+    in {
+      expr = {
+        inherit (config.clanServices.gateway.nat64) custom;
+        default = config.clanServices.gateway.nat64.allow.default;
+        rule = lib.hasInfix ''limit rate over 7/second burst 200 packets } counter drop comment "nat64-flows-client-node"'' (table config);
+        packets = lib.hasInfix ''limit rate over 20000/second burst 40000 packets } counter drop comment "nat64-packets-client-node"'' (table config);
+        clean = clean config;
+      };
+      expected = {
+        custom = [
+          {
+            name = "node";
+            sources = [
+              "2001:db8:c::c1a7"
+              "2001:db8:c::10"
+            ];
+            limits = {
+              newFlows = 7;
+              newFlowsBurst = 200;
+              packets = 20000;
+              packetsBurst = 40000;
+            };
+          }
+        ];
+        default = [];
+        rule = true;
+        packets = true;
+        clean = true;
+      };
+    };
+    # §14.5 point 3: the role's settings set every gateway's limits once;
+    # a machine's own setting still wins.
+    test_instanceLimits = let
+      eval = with' {
+        instances.nat64.roles.gateway.settings.limits.trusted.packets = 1234;
+      };
+    in {
+      expr = {
+        gw1 = (machine eval "gw1").clanServices.gateway.nat64.limits.trusted.packets;
+        gw2 = (machine eval "gw2").clanServices.gateway.nat64.limits.trusted.packets;
+        gw2Default = (machine eval "gw2").clanServices.gateway.nat64.limits.default.newFlows;
+      };
+      expected = {
+        gw1 = 1234;
+        gw2 = 1234;
+        gw2Default = 5;
+      };
+    };
+    # §14.5 point 4 and 5: the stability defaults, and Jool's private
+    # IPv4 out of 10.0.0.0/8 (Cilium's native-routing CIDR).
+    test_stability = {
+      expr = {
+        inherit (gw1.clanServices.gateway.nat64.health) quorum down up resume;
+        followAfter = node.clanServices.gateway.clat.followAfter;
+        pool4 = gw1.networking.ifstate.settings.namespaces.nat64.interfaces.jool1.addresses;
+      };
+      expected = {
+        quorum = 2;
+        down = 30;
+        up = 120;
+        resume = 60;
+        followAfter = 60;
+        pool4 = [
+          "192.0.0.2/30"
+          "fd64::2/64"
+        ];
+      };
+    };
     test_tooFewTargets = {
       expr = failedAssertion (machine (with' {
         instances.nat64.roles.gateway.machines.gw1.settings.health.targets = ["1.1.1.1"];
@@ -214,6 +289,20 @@ in {
             interface = "clat0";
             address = "2001:db8:c::c1a7";
           };
+          uplinkZone = "wan";
+          gateway = false;
+        }
+      ];
+    };
+    # a gateway exports its uplink zone for D71 (§14.5 point 5)
+    test_gatewayExport = {
+      expr = let
+        values = builtins.attrValues (clanLib.selectExports (scope: scope.serviceName == "nat-gateway" && scope.machineName == "gw1") evaled.config.exports);
+      in
+        map (value: {inherit (value.nat_gateway) gateway uplinkZone;}) values;
+      expected = [
+        {
+          gateway = true;
           uplinkZone = "wan";
         }
       ];

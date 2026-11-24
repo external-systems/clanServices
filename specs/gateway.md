@@ -109,6 +109,13 @@ Code now exists; each mechanism below runs as service code in a suite.
   builds §14.3's hairpin rewrite of G20.
 - What each suite showed is in §5 and §15.
 
+Round G8 (2026-11-24): **owner decisions on PR #38** (§14.5). Locked:
+the CLAT is the only path and our DNS64 is removed; G24 accepted;
+stability over fast failover (hysteresis on both sides); limit
+overrides per gateway, per client and per instance; a gateway may be a
+Kubernetes node and is never a client; no metrics yet (G18 later, the
+path kept open); the home box is `router` and a node, no gateway yet.
+
 
 
 As in `specs/netif.md` §0: *(planned)*, *(probe-verified)*,
@@ -162,7 +169,8 @@ any code (AGENTS.md rule 3).
     advertisements.
   - `services/nat-gateway`: IPv4 reach for clan machines that have none.
     Roles `gateway` (1-n machines) and `client`. Clan configures the
-    clients.
+    clients. A machine is never both (§14.5 point 5); a gateway may be
+    a Kubernetes node.
   - `lib/gateway/`: the private shared implementation (NAT44, NAT64,
     SIIT, CoreDNS rendering, firewall, metrics). Not a clan service
     (as `lib/kube-cluster/`).
@@ -921,6 +929,12 @@ any code (AGENTS.md rule 3).
       every gateway closes its DNS while translation still works: no
       name resolves (asserted). The CLAT stays put and its flows live.
       Targets must be several and differ per gateway (§13.2).
+  - **Amended in round G8 (§14.5 point 4):** the follower moves after
+    60 s without an answer from its gateway's beacon (was 8 checks), and
+    the gateway's check uses windows: withdrawn when 30 of the last 60
+    rounds are bad, back after 120 clean rounds (was 3 failures down, 1
+    answer up). The fixture suite `gateway-nat64` that measured the old
+    numbers is removed with our DNS64.
   - **The follower keeps no state** (round G4). Jool's `pool6` is the
     truth, read every round. It moves only to a nameserver that names
     a valid /96; when none answers it stays. A CLAT instance that is
@@ -937,8 +951,8 @@ any code (AGENTS.md rule 3).
   *(planned; suite-verified on fixtures: `gateway-nat64`,
   `GATEWAY_NAT64_OK`; `netif-v6only`)*
 
-- **G24 The health beacon** (proposed round G7, 2026-11-24; for the
-  owner to confirm). G23's follower asks each gateway's DNS for
+- **G24 The health beacon** (proposed round G7, 2026-11-24; accepted
+  by the owner in round G8, §14.5 point 2). G23's follower asks each gateway's DNS for
   `ipv4only.arpa`. §14.1 point 3 froze DNS64, and with it the only
   thing that answered. Without a signal a CLAT cannot follow a live
   gateway: a design gap, not a choice.
@@ -999,13 +1013,13 @@ any code (AGENTS.md rule 3).
   |---|---|---|
   | `gateway-wan` | netif N43 (MAC override), N44 (VLAN 0) | `GATEWAY_WAN_OK` |
   | `netif-v6only` | netif N45; G4 and G23 from a host's side; path MTU through both translators | `NETIF_V6ONLY_OK` |
-  | `gateway-nat64` | the frozen DNS64 design (§14.1 point 3) on fixtures: G2, G3, G4, G6, G23; kept as its proof, not extended | `GATEWAY_NAT64_OK` |
   | `router` (round G7; replaced `gateway-router`, same script) | the `router` service: G8, G10, G11, G14, G15, G20, G22, §14.3's hairpin; netif N16: zones, advertisements, the prefix hook, the service prefix | `ROUTER_OK` |
-  | `nat-gateway` (round G7) | the `nat-gateway` service: G2–G6, G23, G24, §14.1 point 4, §14.3; the proofs of `gateway-nat64` without DNS64 | `NAT_GATEWAY_OK` |
+  | `nat-gateway` (round G7) | the `nat-gateway` service: G2–G6, G23, G24, §14.1 point 4, §14.3; since round G8 §14.5's timings (withdrawn after 30 s, back after 120 s, a move after 60 s), 80 % loss, flapping targets, a client's own limit, a deploy that resumes the health state | `NAT_GATEWAY_OK` |
+  | `nat-gateway-kube` (round G8) | §14.5 point 5: a gateway that is a k3s node; D71 puts its uplink in `devices`; Cilium's eBPF masquerade and the gateway's nftables masquerade share one public IPv4; the allowlist on a Cilium node; no NodePort on the public IPv4 | `NAT_GATEWAY_KUBE_OK` |
   | `gateway-dual-wan` | G16; netif N21: two DHCPv4 WANs, failover without a route change | `GATEWAY_DUAL_WAN_OK` |
   | `k3s-v6only`, `rke2-v6only` | SPEC.md D67: the `join` contract on IPv6-only NICs | `<DISTRO>_V6ONLY_OK` |
   | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric; since round G7 on the services (netif, `nat-gateway`, D71's rendered `devices`, a plain resolver) | `<DISTRO>_CLAT_OK` |
-  | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative | `K3S_CLAT_MAPPED_OK` |
+  | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative; since round G8 with a plain resolver (no DNS64) | `K3S_CLAT_MAPPED_OK` |
 
 - A suite asserts a bound with margin (about three times the measured
   sample), never the sample. It prints the measured value.
@@ -2257,6 +2271,79 @@ Decided 2026-11-23: native routing only (SPEC.md D72).
 removed; the last commit with them is tag `tunnel-mode-final`. The
 `<distro>-clat-mesh*` suites went with them; `<distro>-clat` (the
 former `-clat-fabric`) is the CLAT proof.
+
+### 14.5 Owner decisions, round G8 (2026-11-24)
+
+Locked, as §14.1. They answer the open questions of round G7.
+
+1. **The CLAT is the only IPv4 path. Our DNS64 is removed** (amends
+   §14.1 point 3: from frozen to removed).
+   - The `gateway-nat64` suite goes; the fixture
+     `nat64-gateway.nix` loses its health check and beacon, and
+     `k3s-clat-mapped` resolves at a plain resolver like the others.
+   - Kept: the **provider's** DNS64 in `netif-v6only` and
+     `<distro>-v6only` (`v6only-host.nix`). It is not ours: it proves
+     netif on a provider network that offers DNS64.
+   - git keeps the old design (the commit before round G8).
+2. **G24 (the beacon) is accepted.**
+3. **Limits: the round G7 defaults stay; every number can be
+   overridden** at three levels, the most specific wins:
+   - the instance: `roles.gateway.settings.limits` (clan's role
+     settings apply to every gateway of the instance);
+   - one gateway: `roles.gateway.machines.<m>.settings.limits`;
+   - one client: `roles.client.machines.<m>.settings.limits` (any of
+     the four numbers; the rest come from the client's tier on each
+     gateway). A client with an override gets meters of its own.
+4. **Stability over fast failover** (sharpens §14.3). A healthy
+   gateway never looks sick, and a sick one never looks healthy, given
+   time to settle. The price is failover in about a minute and a half,
+   not seconds.
+   - **Gateway:** one round a second. A round is good when two or more
+     targets answer (all of them when fewer than two are set). The
+     beacon is withdrawn when **30 of the last 60 rounds** are bad (a
+     dead upstream: after 30 s), and comes back only when **the last
+     120 rounds** hold at most 5 % bad ones (a clean recovery: after
+     120 s). So one lucky ping does not bring a sick gateway back, and
+     one dead target does not take a healthy one down.
+     - Windows, not "in a row" (found while building it): at 80 % loss
+       one lucky round in ten reset a count "in a row", so a lossy
+       gateway never went down. Simulated: down after 30 to 36 s at
+       80 % loss and never back; no change in 50 min at 30 % loss, with
+       one dead target, or with one target flapping every 5 s; a
+       gateway whose whole upstream flaps every 5 s goes down and stays
+       down.
+   - A restart of the health check alone (a deploy) keeps the state
+     it had, if it was written less than 60 s before; a reboot starts
+     from cold (120 good rounds).
+   - **Client:** the follower moves only when its gateway's beacon has
+     not answered for **60 s**, and only to a gateway whose beacon
+     answers. It never moves back on its own. **No hold after a move**
+     (the owner, 2026-11-24): a hold could pin a client to a gateway
+     that died within it; the gateway's 120 good rounds already keep a
+     flapping gateway from attracting clients.
+   - Suite cases: 80 % loss on a gateway's upstream, and a target that
+     flaps every 5 s; neither may cause a client move or a beacon
+     return while sick.
+5. **A gateway may be a Kubernetes node; a gateway is never a client**
+   (amends G1: a machine is not both).
+   - A gateway has its own IPv4: its pods leave through Cilium's
+     masquerade to that IPv4 and need no CLAT.
+   - Required first: Jool's private IPv4 moves out of `10.0.0.0/8`
+     (Cilium's native-routing CIDR and the pod pools) to `192.0.0.0/30`
+     (RFC 7335's host-local range, the one a CLAT uses; a gateway is
+     never a client, so they never meet; `192.0.0.8/29` is no choice:
+     `.9` and `.10` are global anycast addresses), and a suite
+     `nat-gateway-kube`: a gateway that is a cluster node, pods on it
+     sending IPv4 through Cilium's eBPF masquerade while clients send
+     through the gateway's nftables masquerade on the same uplink;
+     every flow completes.
+6. **No metrics yet** (G18 stays planned). The path stays open: rule
+   comments are stable names, and the health check writes its state
+   to a file an exporter can read later.
+7. **The home box** (the owner's ISP edge, SFP+ WAN, ECMP into the
+   cluster): `router` and a Kubernetes node; **no `nat-gateway` role
+   for now**. Its LAN is dual-stack through NAT44, so no LAN machine is
+   a client.
 
 ## 15. Service evidence (round G7, 2026-11-24, euc-hel-0)
 

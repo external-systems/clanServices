@@ -28,10 +28,11 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   Python helpers (health check, CLAT follower, prefix hook) and the
   fixed names (`names.nix`). One translator, one CLAT and one router per
   machine; the services assert it. It also holds the fixture suites
-  (`tests/vm/*.nix`, registered in its `flake-module.nix`): the DNS64
-  proof (`gateway-nat64`, frozen design), dual WAN (frozen), the WAN
-  link, IPv6-only hosts and clusters, and `<distro>-clat`, which runs on
-  the services (`k3s-clat-mapped` keeps its fixtures). A new design
+  (`tests/vm/*.nix`, registered in its `flake-module.nix`): dual WAN
+  (frozen), the WAN link, IPv6-only hosts and clusters behind a
+  provider's NAT64 and DNS64, `<distro>-clat` and `nat-gateway-kube`,
+  which run on the services (`k3s-clat-mapped` keeps its fixtures). Our
+  own DNS64 is removed (`specs/gateway.md` §14.5 point 1). A new design
   question starts as a probe (a throwaway suite that prints `FINDING`
   lines) and ends as assertions in a real suite.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s

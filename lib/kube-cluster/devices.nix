@@ -5,7 +5,10 @@
 #   - the CLAT link, when the machine is a `nat-gateway` client (G5);
 #   - the underlay links of that client's uplink zone that carry no
 #     IPv4 (no static IPv4 address, no DHCPv4): pod IPv6 leaves only
-#     through a `devices` link (§13.2 point 10).
+#     through a `devices` link (§13.2 point 10);
+#   - every link of a `nat-gateway` gateway's uplink zone: its public
+#     IPv4 is there, and pod IPv4 is masqueraded only on a `devices`
+#     link (specs/gateway.md §14.5 point 5).
 # Names come from the machines' netif and nat_gateway exports, whatever
 # the kernel calls a link. `devices` is one cluster-wide Helm value: it
 # is the union over the members, as the transport's links already are.
@@ -28,9 +31,9 @@
 
   # One member's extra devices, with where each came from.
   memberDevices = clanLib: exports: machineName: let
-    clients = builtins.filter (value: (value.nat_gateway.clat.interface or null) != null) (
-      map (value: value) (exportsOf clanLib exports "nat-gateway" machineName)
-    );
+    natGateway = exportsOf clanLib exports "nat-gateway" machineName;
+    clients = builtins.filter (value: (value.nat_gateway.clat.interface or null) != null) natGateway;
+    gateways = builtins.filter (value: value.nat_gateway.gateway or false) natGateway;
     netifLinks = lib.concatMap (value: builtins.attrValues (value.netif.links or {})) (
       exportsOf clanLib exports "netif" machineName
     );
@@ -42,7 +45,14 @@
       in
         [client.nat_gateway.clat.interface] ++ map (link: link.interface) underlay
     )
-    clients;
+    clients
+    ++ lib.concatMap (
+      gateway: let
+        zone = gateway.nat_gateway.uplinkZone or null;
+      in
+        map (link: link.interface) (builtins.filter (link: zone != null && (link.zone or null) == zone && (link.interface or null) != null) netifLinks)
+    )
+    gateways;
 
   vpnNames = clanLib: exports: machineName:
     map (link: link.interface) (

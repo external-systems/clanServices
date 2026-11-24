@@ -114,3 +114,25 @@ How the open findings will be closed:
 - **A backend reaching its own public address:** the router also
   rewrites the source of such a packet from inside the LAN, so the
   answer comes back through the router.
+
+## What the owner decided (2026-11-24)
+
+After the first cut of the services (PR #38):
+
+- **The CLAT is the only path. Our DNS64 is removed**, not only
+  frozen. The provider DNS64 in the IPv6-only host suites stays: it
+  stands for a cloud network that offers one.
+- **The health beacon (G24) is accepted.**
+- **Stability over fast failover.** A gateway goes down when half of
+  the last 60 s were bad and comes back after 120 clean seconds. A
+  client moves after 60 s without its gateway's beacon and never
+  moves back by itself. No hold after a move: it could pin a client
+  to a dead gateway.
+- **Rate limits:** the defaults stay; every number can be changed for
+  the instance, one gateway or one client.
+- **A gateway may be a Kubernetes node; it is never a client.** Proof:
+  the `nat-gateway-kube` suite.
+- **No metrics yet**, but counter names and a health state file are
+  ready for an exporter.
+- **The home box** is a router and a Kubernetes node, with no NAT
+  gateway role for now.

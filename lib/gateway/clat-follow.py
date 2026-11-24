@@ -1,12 +1,14 @@
-# The CLAT follower (specs/gateway.md G23, G24).
+# The CLAT follower (specs/gateway.md G23, G24, §14.5 point 4).
 #
 # A CLAT has one pool6, so it follows one gateway. Every round the
 # follower reads the CLAT's live pool6 from Jool (its only state) and
 # asks the gateways' beacons for `ipv4only.arpa` (RFC 7050). While a
-# beacon names that /96 it does nothing. A round fails when nobody names
-# it and another beacon names a /96 of its own; after NEED such rounds
-# in a row it moves there. When no beacon answers there is nowhere to
-# go: it stays, and the count starts again.
+# beacon names that /96 it does nothing. When none has named it for
+# `missing` seconds and another beacon names a /96 of its own, it moves
+# there. When no beacon answers there is nowhere to go: it stays, and
+# the clock starts again. It never moves back on its own, and there is
+# no hold after a move (the gateways' own hysteresis keeps a flapping
+# gateway from attracting clients).
 #
 # `clat-follow prefix ADDRESS` prints the /96 an answer names, or fails.
 import ipaddress
@@ -62,9 +64,9 @@ def pace(started, period):
 
 def follow(config):
     beacons = config["beacons"]
-    need = int(config["need"])
+    missing = float(config["missing"])
     jool = ["ip", "netns", "exec", config["netns"], "jool_siit", "-i", config["instance"], "global"]
-    fails = 0
+    lost = None  # when the current /96 was last named, if it is not now
     owner = None
     said = None
     while True:
@@ -87,25 +89,27 @@ def follow(config):
         if beacon is not None:
             if said != "healthy" or beacon != owner:
                 print(f"clat-follow: pool6 {pool6} is named by {beacon}")
-            owner, fails, said = beacon, 0, "healthy"
+            owner, lost, said = beacon, None, "healthy"
             pace(started, 2)
             continue
         proven = [(server, prefix) for server, prefix in answers.items() if prefix is not None]
         if not proven:
             if said != "alone":
                 print(f"clat-follow: no beacon answers ipv4only.arpa, pool6 stays {pool6}")
-            fails, said = 0, "alone"
+            lost, said = None, "alone"
             pace(started, 1.5)
             continue
+        if lost is None:
+            lost = started
         said = "failing"
-        fails += 1
         server, prefix = proven[0]
-        print(f"clat-follow: check {fails}/{need} failed: nobody names pool6 {pool6}, {server} names {prefix}")
-        if fails >= need:
+        gone = started - lost
+        print(f"clat-follow: nobody has named pool6 {pool6} for {gone:.0f}/{missing:.0f} s, {server} names {prefix}")
+        if gone >= missing:
             update = subprocess.run([*jool, "update", "pool6", str(prefix)], capture_output=True, text=True)
             if update.returncode == 0:
                 print(f"clat-follow: pool6 -> {prefix} (beacon {server}, was {pool6})")
-                owner, fails = server, 0
+                owner, lost = server, None
             else:
                 print(f"clat-follow: pool6 update to {prefix} failed: {update.stderr.strip()}")
         pace(started, 1.5)

@@ -1,17 +1,21 @@
 # nat-gateway: the service on two gateways and two clients
-# (specs/gateway.md G2–G6, G23, G24, §14.1, §14.3). Ported from the
-# fixture suite gateway-nat64: the same proofs on the code a machine
-# runs, without DNS64 (frozen, §14.1 point 3), and with the decisions of
-# round G5 (the rate limit per source in two tiers, several health
-# targets per gateway).
+# (specs/gateway.md G2–G6, G23, G24, §14.1, §14.3, §14.5). Ported from
+# the removed fixture suite gateway-nat64: the same proofs on the code a
+# machine runs, without DNS64 (removed, §14.5 point 1), with the
+# decisions of round G5 (the rate limit per source in two tiers, several
+# health targets per gateway) and of round G8 (stability over fast
+# failover, a client's own limit). Timing bounds are the defaults:
+# withdrawn after 30 s, back after 120 s, a client moves after 60 s.
 #
 #   client  ─┐                      ┌─ gw1 ─┐
-#   trusted ─┼─ vlan 1, IPv6 only ──┤       ├─ vlan 2, IPv4 only ── server4
+#   trusted ─┤                      │       │
+#   capped  ─┼─ vlan 1, IPv6 only ──┤       ├─ vlan 2, IPv4 only ── server4
 #   outsider─┘   2001:db8:c::/64    └─ gw2 ─┘    198.51.100.0/24
 #
 # netif renders every machine's links. `client` is a `default`-tier
-# client, `trusted` a `trusted`-tier one, `outsider` is no client. gw2
-# has low `default` limits so the suite can cross them.
+# client, `trusted` a `trusted`-tier one, `capped` a client with a packet
+# limit of its own, `outsider` is no client. gw2 has low `default`
+# limits so the suite can cross them.
 {lib, ...}: let
   pool1 = "2001:db8:a1:0:64::/96";
   # Printed with `::` in the middle of every address inside it: the
@@ -25,6 +29,8 @@
   trustedAddr = "2001:db8:c::20";
   trustedClat = "2001:db8:c::c1a8";
   outsiderAddr = "2001:db8:c::66";
+  cappedAddr = "2001:db8:c::30";
+  cappedClat = "2001:db8:c::c1a9";
   # Three health targets per gateway, each its own /32 on server4, so
   # one can die while the server stays (§14.3).
   targets = {
@@ -38,7 +44,10 @@
     packets = 500;
     packetsBurst = 1000;
   };
-  followNeed = 8;
+  # the defaults of lib/gateway (specs/gateway.md §14.5 point 4)
+  down = 30;
+  up = 120;
+  followAfter = 60;
 
   # Both gateways' prefixes are routed to the gateway, as a provider
   # routes a machine's /64.
@@ -296,7 +305,7 @@ in {
     directory = ./.;
     test.useContainers = false;
     inventory = {
-      machines = lib.genAttrs ["client" "trusted" "outsider" "gw1" "gw2" "server4"] (_: {});
+      machines = lib.genAttrs ["client" "trusted" "capped" "outsider" "gw1" "gw2" "server4"] (_: {});
       instances = {
         links = {
           module.name = "netif";
@@ -304,6 +313,7 @@ in {
           roles.default.machines = {
             client.settings.links.wan = v6link clientAddr;
             trusted.settings.links.wan = v6link trustedAddr;
+            capped.settings.links.wan = v6link cappedAddr;
             outsider.settings.links.wan = v6link outsiderAddr;
             gw1.settings.links = gatewayLinks "1";
             gw2.settings.links = gatewayLinks "2";
@@ -335,6 +345,15 @@ in {
             };
             client.machines = {
               client.settings.clat.address = clatAddr;
+              # §14.5 point 3: a packet limit of its own on every
+              # gateway; its other numbers are its tier's
+              capped.settings = {
+                clat.address = cappedClat;
+                limits = {
+                  packets = 500;
+                  packetsBurst = 1000;
+                };
+              };
               trusted.settings = {
                 clat.address = trustedClat;
                 tier = "trusted";
@@ -349,6 +368,7 @@ in {
   nodes = {
     client = v6host;
     trusted = v6host;
+    capped = v6host;
     outsider = v6host;
     gw1 = gateway pool1;
     gw2 = gateway pool2;
@@ -392,7 +412,12 @@ in {
     assert (G1.server, G2.server) == ("${server1}", "${server2}")
     SERVER_HOST = "2001:db8:a1:0:65:0:c633:6450"
     PRIVATE = ["10.0.0.1", "100.64.0.1", "169.254.0.1", "172.16.0.1", "192.168.1.1"]
-    NEED = ${toString followNeed}
+    # specs/gateway.md §14.5 point 4: withdrawn when DOWN of the last
+    # 2 x DOWN rounds are bad, back when the last UP rounds are clean, a
+    # client moves after FOLLOW_AFTER s without its beacon
+    DOWN = ${toString down}
+    UP = ${toString up}
+    FOLLOW_AFTER = ${toString followAfter}
     FOLLOW = "${followScript}".split()
     FOLLOW_MOVES = "journalctl -b -u clat-follow -o cat --no-pager | grep -c 'clat-follow: pool6 ->'"
 
@@ -504,9 +529,9 @@ in {
         for unit in ["nat64-jool.service", "nat64-health.service", "nftables.service"]:
             machine.wait_for_unit(unit, timeout=60)
         client.wait_until_succeeds(f"ping -c1 -W2 {gateway.addr}", timeout=60)
-        # the health check has answered through the translator: only then
-        # does it start the beacon
-        machine.wait_until_succeeds("systemctl is-active nat64-beacon.service >/dev/null", timeout=60)
+        # the health check has answered through the translator for UP
+        # rounds: only then does it start the beacon
+        machine.wait_until_succeeds("systemctl is-active nat64-beacon.service >/dev/null", timeout=UP + 180)
         client.wait_until_succeeds(names_prefix(gateway), timeout=60)
 
 
@@ -518,7 +543,7 @@ in {
         machine.fail("jool -i default global display")
         for proto in ["tcp", "udp", "icmp"]:
             pool4 = machine.succeed(f"ip netns exec nat64 jool pool4 display --{proto} --csv")
-            assert pool4.count("10.64.0.2,1100,65535") == 1, pool4
+            assert pool4.count("192.0.0.2,1100,65535") == 1, pool4
         # a declared source is translated, behind the gateway's own IPv4:
         # TCP, ICMP and UDP, from both tiers
         for source in [client, trusted]:
@@ -565,14 +590,14 @@ in {
             for machine in [client, trusted, outsider, server4]:
                 machine.wait_for_unit("multi-user.target", timeout=300)
             server4.wait_until_succeeds("ss -tln | grep ':80 ' >/dev/null", timeout=60)
-            for machine in [client, trusted]:
+            for machine in [client, trusted, capped]:
                 machine.wait_for_unit("clat.service", timeout=60)
                 machine.wait_for_unit("clat-follow.service", timeout=60)
             for gateway in [G1, G2]:
                 gateway_ready(gateway)
             print_versions(gw1, ["kernel", "jool", "ifstate", "nftables", "coredns"])
             print_versions(client, ["kernel", "jool", "ifstate"])
-            for machine in [client, trusted, outsider, gw1, gw2, server4]:
+            for machine in [client, trusted, capped, outsider, gw1, gw2, server4]:
                 machine.fail("systemctl --failed --no-legend | grep .")
 
         with subtest("G2, G5, G24: each gateway translates declared sources only, every protocol"):
@@ -595,10 +620,10 @@ in {
                 assert grown >= 300000, f"{comment}: {grown}"
             # the translator is another machine to the host: nothing is input
             assert hook(gw1, "input v6 to pool6") == before_input == 0
-            gw1.succeed("conntrack -L -p tcp 2>/dev/null | grep 'dst=198.51.100.80' | grep 'src=10.64.0.2' >/dev/null")
+            gw1.succeed("conntrack -L -p tcp 2>/dev/null | grep 'dst=198.51.100.80' | grep 'src=192.0.0.2' >/dev/null")
 
         with subtest("G2: Jool's pool4 cannot overlap the namespace's ephemeral ports"):
-            status, out = gw1.execute("ip netns exec nat64 jool pool4 add 10.64.0.2 1024-65535 --tcp 2>&1")
+            status, out = gw1.execute("ip netns exec nat64 jool pool4 add 192.0.0.2 1024-65535 --tcp 2>&1")
             print(f"FINDING pool4 add 1024-65535: rc={status}\n{out.rstrip()}")
             assert status != 0 and "ephemeral" in out, out
             out = gw1.succeed("ip netns exec nat64 sysctl -n net.ipv4.ip_local_port_range").split()
@@ -729,6 +754,19 @@ in {
             # gw1 keeps the default limits: the same burst passes there
             got = int(client.succeed(f"python3 /etc/suite/shapes.py burst {G1.server} 9002 40").strip())
             assert got == 40, got
+            # §14.5 point 3: `capped` has a packet limit of its own (500 a
+            # second, burst 1000) on gw1, where the tiers would let the
+            # flood pass; its own meters count it, the tiers' do not
+            before = {name: counted(gw1, "forward", name) for name in ["nat64-packets-client-capped", "nat64-packets-default", "nat64-packets-trusted"]}
+            sent = int(capped.succeed(f"python3 /etc/suite/shapes.py flood {G1.server} 9001 2000 3").strip())
+            grown = {name: counted(gw1, "forward", name) - value for name, value in before.items()}
+            print(f"FINDING capped client: {grown} of {sent} datagrams dropped (2000/s for 3 s against its own 500/s, burst 1000)")
+            assert sent >= 5000 and grown["nat64-packets-client-capped"] >= 1500, (sent, grown)
+            assert grown["nat64-packets-default"] == grown["nat64-packets-trusted"] == 0, grown
+            # its new flows keep the tier's numbers: a burst of 40 passes
+            got = int(capped.succeed(f"python3 /etc/suite/shapes.py burst {G1.server} 9002 40").strip())
+            assert got == 40, got
+            print("NAT_GATEWAY_LIMITS_OK")
 
         with subtest("nftables ownership: a restart of the firewall or of Jool leaves other tables alone"):
             tables = sorted(gw2.succeed("nft list tables").strip().split("\n"))
@@ -766,13 +804,13 @@ in {
         second = other(first)
         assert first is G1
 
-        with subtest("G23 hysteresis: 40 s on a gateway with 30 % packet loss, the follower does not move"):
+        with subtest("G23, §14.5 point 4: 90 s on a gateway with 30 % packet loss towards the clients, the follower does not move"):
             client.succeed(f"systemd-run --unit=idle python3 /etc/suite/shapes.py idle {second.server} 9002 /tmp/idle-go /tmp/idle")
             client.wait_until_succeeds("grep open /tmp/idle >/dev/null", timeout=30)
             before = moves()
             first.machine.succeed("tc qdisc add dev eth1 root netem loss 30%")
             try:
-                holds_for(client, stays(first, before), 40, interval=2)
+                holds_for(client, stays(first, before), 90, interval=2)
                 client.wait_until_succeeds(http("198.51.100.80"), timeout=60)
             finally:
                 first.machine.succeed("tc qdisc del dev eth1 root")
@@ -795,13 +833,15 @@ in {
             dead.machine.crash()
             crashed = time.time()
             heard = echoes("/tmp/talk")
-            took = seconds_until(client, http("198.51.100.80", limit=2), limit=90, wanted=live.v4)
+            took = seconds_until(client, http("198.51.100.80", limit=2), limit=FOLLOW_AFTER + 90, wanted=live.v4)
             since = round(time.time() - crashed, 1)
             print(f"FINDING an IPv4 literal works through the live gateway {since} s after the crash")
-            assert took is not None and since < 45, since
+            # the follower waits FOLLOW_AFTER s without the beacon
+            assert took is not None and FOLLOW_AFTER - 5 <= since < FOLLOW_AFTER + 30, since
             assert clat_gateway() is live and moves() == before + 1
             # the trusted client's CLAT followed too
             trusted.wait_until_succeeds(clat_on(live), timeout=60)
+            capped.wait_until_succeeds(clat_on(live), timeout=60)
             holds_for(client, talk_stalled(heard), 20)
             print("NAT_GATEWAY_FAILOVER_OK")
 
@@ -819,10 +859,10 @@ in {
             client.succeed("systemctl restart clat.service")
             created = time.time()
             assert clat_gateway() is first
-            took = seconds_until(client, http("198.51.100.80", limit=2), limit=90, wanted=second.v4)
+            took = seconds_until(client, http("198.51.100.80", limit=2), limit=FOLLOW_AFTER + 90, wanted=second.v4)
             since = round(time.time() - created, 1)
             print(f"FINDING the follower corrected a CLAT that came back on the dead gateway's /96 after {since} s")
-            assert took is not None and since < 45, since
+            assert took is not None and since < FOLLOW_AFTER + 30, since
             assert clat_gateway() is second and moves() == before + 1
             client.wait_for_unit("clat-follow.service", timeout=30)
 
@@ -845,12 +885,12 @@ in {
             client.succeed("systemctl stop talk.service")
             first.machine.succeed("nft delete table inet probe")
 
-        with subtest("§14.3: one health target dies; the gateway stays healthy for 15 s"):
+        with subtest("§14.3, §14.5 point 4: one health target dies; the gateway stays healthy for 75 s"):
             current = clat_gateway()
             before = moves()
             server4.succeed(f"ip addr del {current.targets[0]}/32 dev eth1")
             try:
-                holds_for(client, names_prefix(current) + " && " + stays(current, before), 15, interval=1)
+                holds_for(client, names_prefix(current) + " && " + stays(current, before), 2 * DOWN + 15, interval=1)
                 current.machine.succeed("systemctl is-active nat64-beacon.service")
             finally:
                 server4.succeed(f"ip addr add {current.targets[0]}/32 dev eth1")
@@ -862,22 +902,23 @@ in {
                 server4.succeed(f"ip addr del {target}/32 dev eth1")
             cut = time.time()
             try:
-                closed = seconds_until(client, beacon_closed(sick), limit=60)
+                closed = seconds_until(client, beacon_closed(sick), limit=DOWN + 60)
                 print(f"FINDING the gateway withdrew its beacon {closed} s after its last target died")
-                assert closed is not None and closed < 20, closed
+                assert closed is not None and DOWN - 5 <= closed < DOWN + 20, closed
                 client.succeed(beacon_closed(sick, "+tcp"))
-                took = seconds_until(client, http("198.51.100.80", limit=2), limit=90, wanted=healthy.v4)
+                took = seconds_until(client, http("198.51.100.80", limit=2), limit=FOLLOW_AFTER + 90, wanted=healthy.v4)
                 since = round(time.time() - cut, 1)
                 print(f"FINDING an IPv4 literal works through the healthy gateway {since} s after the targets died")
-                assert took is not None and since < 60, since
+                assert took is not None and since < DOWN + FOLLOW_AFTER + 40, since
                 assert clat_gateway() is healthy and moves() == before + 1
                 trusted.wait_until_succeeds(clat_on(healthy), timeout=60)
             finally:
                 for target in sick.targets:
                     server4.succeed(f"ip addr add {target}/32 dev eth1")
-            took = seconds_until(client, names_prefix(sick), limit=60)
+            took = seconds_until(client, names_prefix(sick), limit=UP + 90)
             print(f"FINDING the gateway served its beacon again {took} s after its targets returned")
-            assert took is not None and took < 20, took
+            # never early: UP clean rounds first
+            assert took is not None and UP - 10 <= took < UP + 40, took
             before = moves()
             holds_for(client, stays(healthy, before), 10, interval=2)
 
@@ -886,17 +927,63 @@ in {
             before = moves()
             sick.machine.succeed("ip netns exec nat64 jool instance remove default")
             try:
-                closed = seconds_until(client, beacon_closed(sick), limit=60)
+                closed = seconds_until(client, beacon_closed(sick), limit=DOWN + 60)
                 print(f"FINDING the gateway withdrew its beacon {closed} s after its translator was removed")
-                assert closed is not None and closed < 20, closed
-                took = seconds_until(client, http("198.51.100.80", limit=2), limit=90, wanted=healthy.v4)
+                assert closed is not None and DOWN - 5 <= closed < DOWN + 20, closed
+                took = seconds_until(client, http("198.51.100.80", limit=2), limit=FOLLOW_AFTER + 90, wanted=healthy.v4)
                 assert took is not None
                 assert clat_gateway() is healthy and moves() == before + 1
             finally:
                 sick.machine.succeed("systemctl restart nat64-jool.service")
             sick.machine.succeed("ip netns exec nat64 jool instance display | grep -w default >/dev/null")
-            client.wait_until_succeeds(names_prefix(sick), timeout=60)
+            client.wait_until_succeeds(names_prefix(sick), timeout=UP + 90)
             assert_gateway(sick)
+
+        def flap(machine, unit, on, off, rounds):
+            """A unit that runs `off`, waits 5 s, runs `on`, waits 5 s, `rounds` times."""
+            shell = machine.succeed("readlink -f $(command -v sh)").strip()
+            machine.succeed(f"systemd-run --unit={unit} {shell} -c 'for i in $(seq {rounds}); do {off}; sleep 5; {on}; sleep 5; done'")
+
+        with subtest("§14.5 point 4: 80 % loss on a gateway's upstream: it withdraws, the CLATs move once, and it stays withdrawn while lossy and while its upstream flaps"):
+            sick, healthy = clat_gateway(), other(clat_gateway())
+            before = moves()
+            tc = sick.machine.succeed("readlink -f $(command -v tc)").strip()
+            sick.machine.succeed(f"{tc} qdisc add dev eth2 root netem loss 80%")
+            try:
+                closed = seconds_until(client, beacon_closed(sick), limit=2 * DOWN + 60)
+                print(f"FINDING the gateway withdrew its beacon {closed} s after 80 % loss began on its upstream")
+                assert closed is not None and closed < 2 * DOWN + 30, closed
+                took = seconds_until(client, http("198.51.100.80", limit=2), limit=FOLLOW_AFTER + 90, wanted=healthy.v4)
+                assert took is not None
+                assert clat_gateway() is healthy and moves() == before + 1
+                # still lossy: a lucky round never brings it back
+                holds_for(client, beacon_closed(sick), UP + 30, interval=5)
+            finally:
+                sick.machine.succeed(f"{tc} qdisc del dev eth2 root")
+            # an upstream that is gone 5 s and back 5 s: still sick
+            flap(sick.machine, "flap-upstream", f"{tc} qdisc del dev eth2 root", f"{tc} qdisc add dev eth2 root netem loss 100%", 15)
+            try:
+                holds_for(client, beacon_closed(sick) + " && " + stays(healthy, before + 1), 140, interval=5)
+            finally:
+                sick.machine.succeed(f"systemctl stop flap-upstream.service; {tc} qdisc del dev eth2 root 2>/dev/null || true")
+            took = seconds_until(client, names_prefix(sick), limit=UP + 90)
+            print(f"FINDING the gateway served its beacon again {took} s after its upstream was clean")
+            assert took is not None and UP - 10 <= took < UP + 40, took
+            assert clat_gateway() is healthy and moves() == before + 1
+            print("NAT_GATEWAY_LOSSY_OK")
+
+        with subtest("§14.5 point 4: one target of the current gateway flaps every 5 s for 100 s; the gateway stays up and nobody moves"):
+            current = clat_gateway()
+            before = moves()
+            target = current.targets[0]
+            ip = server4.succeed("readlink -f $(command -v ip)").strip()
+            flap(server4, "flap-target", f"{ip} addr add {target}/32 dev eth1", f"{ip} addr del {target}/32 dev eth1", 10)
+            try:
+                holds_for(client, names_prefix(current) + " && " + stays(current, before), 100, interval=2)
+            finally:
+                server4.succeed(f"systemctl stop flap-target.service; ip addr add {target}/32 dev eth1 2>/dev/null || true")
+            current.machine.succeed("systemctl is-active nat64-beacon.service")
+            print("NAT_GATEWAY_FLAPPING_OK")
 
         with subtest("G23: every target of both gateways dies; both withdraw; the follower stays for 20 s and CLAT flows go on"):
             current = clat_gateway()
@@ -909,7 +996,7 @@ in {
                 server4.succeed(f"ip addr del {target}/32 dev eth1")
             try:
                 for gateway in [G1, G2]:
-                    took = seconds_until(client, beacon_closed(gateway), limit=60)
+                    took = seconds_until(client, beacon_closed(gateway), limit=DOWN + 60)
                     assert took is not None, gateway.machine.name
                 heard_clat = echoes("/tmp/talk-clat")
                 holds_for(client, stays(current, before) + " && ! grep error /tmp/talk-clat >/dev/null", 20, interval=2)
@@ -922,11 +1009,11 @@ in {
                 for target in every:
                     server4.succeed(f"ip addr add {target}/32 dev eth1")
             for gateway in [G1, G2]:
-                client.wait_until_succeeds(names_prefix(gateway), timeout=60)
+                client.wait_until_succeeds(names_prefix(gateway), timeout=UP + 90)
             holds_for(client, stays(current, before) + " && ! grep error /tmp/talk-clat >/dev/null", 10, interval=2)
             client.succeed("systemctl stop talk-clat.service")
 
-        with subtest("health check fail-safe: the beacon stops with the health check and comes back with it"):
+        with subtest("health check fail-safe: the beacon stops with the health check; a restart resumes its state (a deploy does not look like sickness)"):
             gateway = other(clat_gateway())
             machine = gateway.machine
             machine.succeed("systemctl stop nat64-health.service")
@@ -937,6 +1024,10 @@ in {
             machine.succeed("systemctl start nat64-health.service")
             took = seconds_until(client, names_prefix(gateway), limit=60)
             assert took is not None and took < 20, took
+            machine.succeed("journalctl -b -u nat64-health -o cat --no-pager | tail -n 1 | grep 'resumed up' >/dev/null")
+            state = json.loads(machine.succeed("cat /run/nat64-gateway/health.json"))
+            print(f"FINDING the health state file: {state}")
+            assert state["state"] == "up" and len(state["targets"]) == 3, state
             pid = machine.succeed("systemctl show -p MainPID --value nat64-health.service").strip()
             machine.succeed("systemctl kill -s KILL --kill-whom=main nat64-health.service")
             machine.wait_until_succeeds(f"pid=$(systemctl show -p MainPID --value nat64-health.service); test \"$pid\" -gt 0 && test \"$pid\" -ne {pid}", timeout=30)

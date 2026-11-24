@@ -10,10 +10,21 @@ IPv4 reach for clan machines that have no IPv4 on their network cards
   nothing else.
 - **client**: an IPv6-only machine. A CLAT (Jool SIIT) turns its IPv4
   into IPv6 towards one gateway; a follower moves it to a live gateway
-  when the current one withdraws its beacon.
+  when the current one's beacon has been gone for 60 s.
+
+A machine with its own IPv4 needs no role. A gateway may be a
+Kubernetes node; it is never a client (`specs/gateway.md` §14.5).
 
 There is no DNS64: every client runs a CLAT and uses plain IPv6
 resolvers, which netif sets.
+
+## Stability over speed
+
+- A gateway withdraws its beacon when half of the last 60 s were bad
+  (fewer than two targets answered), and brings it back only after 120
+  clean seconds.
+- A client moves after 60 s without its gateway's beacon, only to a
+  beacon that answers, and never moves back on its own.
 
 ## Requirements
 
@@ -48,3 +59,12 @@ inventory.instances.nat64 = {
 
 A member of a kube cluster is `trusted` by default; set `tier` to
 change it.
+
+## Rate limits
+
+Defaults per source address: `default` 50 new flows/s (burst 200) and
+20 000 packets/s (burst 40 000); `trusted` 1 000 (4 000) and 200 000
+(400 000). Override them for the whole instance
+(`roles.gateway.settings.limits`), for one gateway (its machine
+settings), or for one client (`roles.client.machines.<m>.settings.limits`,
+any of `newFlows`, `newFlowsBurst`, `packets`, `packetsBurst`).

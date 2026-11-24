@@ -21,7 +21,7 @@
   followScript = pkgs.writeText "clat-follow.py" (builtins.readFile ./clat-follow.py);
   followConfig = pkgs.writeText "clat-follow.json" (builtins.toJSON {
     inherit (cfg) beacons;
-    need = cfg.followNeed;
+    missing = cfg.followAfter;
     inherit netns instance;
   });
 in {
@@ -46,10 +46,10 @@ in {
       type = types.listOf types.str;
       description = "The gateways' beacon addresses (G24), asked for `ipv4only.arpa`.";
     };
-    followNeed = mkOption {
+    followAfter = mkOption {
       type = types.ints.positive;
-      default = 8;
-      description = "Failed rounds in a row before the follower moves the CLAT (G23).";
+      default = 60;
+      description = "Seconds without an answer from the current gateway's beacon before the follower moves the CLAT to one that answers (specs/gateway.md §14.5 point 4).";
     };
     proxyNdp = mkOption {
       type = types.listOf types.str;

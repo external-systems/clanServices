@@ -40,6 +40,16 @@
     };
   };
 
+  # A client's own numbers: each one that is set replaces its tier's
+  # (specs/gateway.md §14.5 point 3).
+  overrideOptions = lib:
+    lib.genAttrs ["newFlows" "newFlowsBurst" "packets" "packetsBurst"] (name:
+      lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = null;
+        description = "This client's `${name}` on every gateway; null: its tier's.";
+      });
+
   # specs/gateway.md §14.1 point 4: the defaults chosen in round G7.
   defaultLimits = {
     default = {
@@ -108,6 +118,8 @@ in {
               (specs/gateway.md §14.3). Give each gateway its own list.
             '';
           };
+          # Set once for every gateway with the role's settings
+          # (`roles.gateway.settings.limits`), or per gateway (§14.5 point 3).
           limits = {
             default = limitOptions lib defaultLimits.default;
             trusted = limitOptions lib defaultLimits.trusted;
@@ -121,8 +133,17 @@ in {
         roles,
         settings,
         exports,
+        mkExports,
         ...
       }: {
+        # SPEC.md D71: a gateway that is a kube node gets its uplink into
+        # Cilium's `devices`, so its pods' IPv4 is masqueraded there
+        exports = mkExports {
+          nat_gateway = {
+            gateway = true;
+            inherit (settings) uplinkZone;
+          };
+        };
         nixosModule = {
           config,
           lib,
@@ -153,6 +174,8 @@ in {
           client = name: let
             s = roles.client.machines.${name}.settings;
           in {
+            inherit name;
+            overrides = lib.filterAttrs (_: value: value != null) s.limits;
             tier =
               if s.tier != null
               then s.tier
@@ -162,7 +185,8 @@ in {
             sources = lib.unique ([s.clat.address] ++ s.sources ++ netifAddresses name s.uplinkZone);
           };
           clients = map client (sortedNames (roles.client.machines or {}));
-          tierSources = tier: lib.concatMap (c: c.sources) (builtins.filter (c: c.tier == tier) clients);
+          inTier = builtins.filter (c: c.overrides == {}) clients;
+          tierSources = tier: lib.concatMap (c: c.sources) (builtins.filter (c: c.tier == tier) inTier);
           uplinks = config.clanServices.netif.zones.${settings.uplinkZone} or [];
         in {
           imports = [../../lib/gateway];
@@ -180,6 +204,10 @@ in {
               default = tierSources "default";
               trusted = tierSources "trusted";
             };
+            custom = map (c: {
+              inherit (c) name sources;
+              limits = settings.limits.${c.tier} // c.overrides;
+            }) (builtins.filter (c: c.overrides != {}) clients);
             health.targets = settings.health.targets;
           };
         };
@@ -215,6 +243,7 @@ in {
             default = null;
             description = "The gateways' rate-limit tier for this machine. null: `trusted` for a member of a kube cluster, else `default` (specs/gateway.md §14.1 point 4).";
           };
+          limits = overrideOptions lib;
         };
       };
 
