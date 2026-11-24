@@ -38,7 +38,12 @@ read the section of a component before changing code that touches it.
   logs "Reloaded FRRouting" and `switch-to-configuration` exits 0. FRR
   keeps the running config, bgpd and every session. A broken FRR config
   deploys green; only the journal shows it. nixpkgs has no build-time
-  check (`k3s-frr-failure`, `FRR_BAD_RELOAD_OK`).
+  check (`k3s-frr-failure`, `FRR_BAD_RELOAD_OK`); this repo adds one
+  (`lib/frr-check.nix`).
+- FRR 10.7.1: `vtysh --config_dir DIR --dryrun --inputfile FILE` runs
+  in the Nix sandbox and exits non-zero on a line it rejects (2 for an
+  unknown command, 4 for an incomplete one). It checks syntax only: a
+  neighbor command for an undefined peer exits 0 (`checks.frr-conf`).
 - FRR 10.7.1: watchfrr restarts a bgpd killed by SIGKILL; every
   session comes back without action (`k3s-frr-failure`,
   `FRR_BGPD_CRASH_OK`).

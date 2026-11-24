@@ -12,6 +12,9 @@
 #     the running config, bgpd and every session; pods still reach each
 #     other. Switching back reloads cleanly. The switch itself exits 0:
 #     the refusal shows only in the journal (an upstream fact, D72).
+#     A real deploy never gets that far: the build-time check
+#     (lib/frr-check.nix, `checks.frr-conf`) fails the build first, so
+#     the specialisation turns it off to reach the runtime path.
 {
   lib,
   inputs,
@@ -36,7 +39,11 @@
     KUBECTL = "KUBECONFIG=${kubeconfig} kubectl"
     nodes = [alpha, beta]
     # every BGP session of the node, with Cilium's to the local FRR
-    PEERS = "vtysh -c 'show bgp summary json' | jq -c '[.[] | (.peers // {}) | to_entries[] | [.key, .value.state]] | sort'"
+    # (one entry per peer: a peer active in both families is listed once)
+    PEERS = "vtysh -c 'show bgp summary json' | jq -c '[.[] | (.peers // {}) | to_entries[] | [.key, .value.state]] | unique'"
+    # sessions the peers of a node have lost since bgpd started (FRR counts
+    # every Established -> down transition per neighbor)
+    DROPPED = "vtysh -c 'show bgp neighbors json' | jq '[.[] | objects | .connectionsDropped // 0] | add // 0'"
     BGPD_PID = "pgrep -x bgpd"
 
     def peers(node):
@@ -45,7 +52,7 @@
     def all_established(node, expected):
         """Every session of `expected` (peer names) is Established again."""
         node.wait_until_succeeds(
-            PEERS + " | jq -e --argjson want '" + json.dumps(sorted(expected)) + "' '[.[] | select(.[1] == \"Established\") | .[0]] | sort == $want' >/dev/null",
+            PEERS + " | jq -e --argjson want '" + json.dumps(sorted(expected)) + "' '[.[] | select(.[1] == \"Established\") | .[0]] | unique == $want' >/dev/null",
             timeout=300,
         )
 
@@ -85,15 +92,27 @@
             alpha.wait_until_succeeds(f"{KUBECTL} wait --for=condition=Ready pod/probe-alpha pod/probe-beta --timeout=120s", timeout=300)
             pods_reach_each_other(120)
             leaf_has_spine_pod_routes(120)
-            sessions = {node.name: [peer for peer, _ in peers(node)] for node in nodes}
+            # Cilium's local session (::1) must be up before the snapshot:
+            # a session missing here is never checked again.
             for node in nodes:
-                assert len(sessions[node.name]) >= 2, f"{node.name}: fewer BGP sessions than the fabric and Cilium: {sessions[node.name]}"
+                node.wait_until_succeeds(
+                    PEERS + " | jq -e 'any(.[]; .[0] == \"::1\" and .[1] == \"Established\")' >/dev/null",
+                    timeout=300,
+                )
+            sessions = {node.name: sorted({peer for peer, _ in peers(node)}) for node in nodes}
+            for node in nodes:
+                assert "::1" in sessions[node.name], f"{node.name}: no Cilium session: {sessions[node.name]}"
+                assert len(sessions[node.name]) >= 2, f"{node.name}: no fabric session beside Cilium's: {sessions[node.name]}"
                 all_established(node, sessions[node.name])
             print(f"FINDING BGP sessions: {sessions}")
 
         with subtest("bgpd crashes on the spine: watchfrr restarts it, sessions, routes and pods come back"):
             old_pid = alpha.succeed(BGPD_PID).strip()
+            dropped = int(beta.succeed(DROPPED).strip())
             alpha.succeed("pkill -KILL -x bgpd")
+            # the crash is an outage: the leaf loses its session to the
+            # spine (else "everything comes back" would prove nothing)
+            beta.wait_until_succeeds(f"test \"$({DROPPED})\" -gt {dropped}", timeout=120)
             alpha.wait_until_succeeds(f"test -n \"$({BGPD_PID})\" && test \"$({BGPD_PID})\" != {old_pid}", timeout=120)
             alpha.succeed("systemctl is-active frr.service")
             for node in nodes:
@@ -152,9 +171,14 @@ in
           etc."frr-reload.py".source = "${pkgs.frr}/libexec/frr/frr-reload.py";
         };
         services.k3s.images = [(busyboxImage pkgs)];
-        specialisation.bad-frr.configuration.services.frr.config = lib.mkAfter ''
-          ${badLine}
-        '';
+        # The build-time check (lib/frr-check.nix) would refuse this
+        # specialisation; the phase deploys a broken config on purpose.
+        specialisation.bad-frr.configuration = {
+          clanServices.frr.checkConfig = false;
+          services.frr.config = lib.mkAfter ''
+            ${badLine}
+          '';
+        };
       };
       beta = {pkgs, ...}: {
         imports = [body.nodes.beta];
@@ -163,15 +187,15 @@ in
       };
     };
 
-    # The phases run where the join suite prints its marker; the marker
-    # moves after them. Fail the evaluation when the marker is gone: a
-    # miss would drop the phases and leave the suite green.
+    # The phases run right after the join suite prints its marker. Fail
+    # the evaluation when the marker is gone: a miss would drop the phases
+    # and leave the suite green.
     testScript = assert lib.hasInfix marker body.testScript;
       "import ipaddress\nimport json\n\n"
       + import ../../../../tests/suite-lib.nix
       + "\n"
       + builtins.replaceStrings [marker] [
-        (lib.concatStringsSep "\n    " (lib.splitString "\n" phases) + ''print("K3S_FRR_FAILURE_OK")'')
+        (marker + "\n    " + lib.concatStringsSep "\n    " (lib.splitString "\n" phases) + ''print("K3S_FRR_FAILURE_OK")'')
       ]
       body.testScript;
   }

@@ -1826,7 +1826,10 @@ in {
           ) "${instanceName}:spine"
       ) (builtins.attrNames instances);
     in {
-      imports = [(import ../../lib/ifstate.nix {inherit ifstateOverlay;})];
+      imports = [
+        (import ../../lib/ifstate.nix {inherit ifstateOverlay;})
+        ../../lib/frr-check.nix
+      ];
 
       assertions = [
         {

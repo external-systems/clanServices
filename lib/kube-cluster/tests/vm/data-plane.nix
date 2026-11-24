@@ -92,6 +92,8 @@
   nodeAsns = lib.genAttrs ["alpha" "beta"] (name: nodes.${name}.clan.networkFacts.fabric.mesh.asn);
   betaTransfer = nodes.beta.clan.networkFacts.fabric.mesh.adjacencies.alpha.ipv4;
   fabricPort = nodes.alpha.clan.networkFacts.fabric.mesh.adjacencies.beta.port;
+  # the LB port of the kube API (7442 + cilium.id; the id is pinned to 1)
+  apiLbPort = "7443";
 
   # The workload and pools that do not depend on BGP.
   fixtures = import ./data-plane-fixtures.nix {inherit lib inputs distro;};
@@ -755,15 +757,58 @@ in {
                 timeout=120,
             )
 
-        with subtest("firewall positive and negative"):
+        with subtest("node firewall: the underlay is refused, the fabric is trusted"):
             # --- Firewall: positive + negative ------------------------------
-            alpha.fail("nc -z -w3 192.168.77.2 9999")
-            # The classless Service does not expose its LB port on the untrusted
-            # underlay address; its Node-IPAM candidates are fabric addresses.
-            beta_underlay = beta.succeed(
-                "ip -4 -o addr show dev eth1 | awk '{print $4}' | cut -d/ -f1 | head -n1"
-            ).strip()
-            alpha.fail(f"curl -sf --max-time 5 http://{beta_underlay}:81/get")
+            # Ported from the tunnel suite (D72): eth1 is a Cilium device
+            # here too, so the same refusals must hold on the underlay.
+            FABRIC = {"alpha": ("192.168.77.1", "fd77::1"), "beta": ("192.168.77.2", "fd77::2")}
+            UNDERLAY = {"alpha": ("192.168.1.1", "2001:db8:1::1"), "beta": ("192.168.1.2", "2001:db8:1::2")}
+            def nc(address, port):
+                return f"nc -z -w3 {address} {port}"
+            # A listener on a port nobody opens: the probe of a refusal is
+            # only meaningful when something answers on the trusted path.
+            beta.succeed("systemd-run --unit=probe-listener $(command -v socat) TCP6-LISTEN:9999,fork,reuseaddr EXEC:true")
+            beta.wait_until_succeeds("ss -tln | grep ':9999 ' >/dev/null", timeout=30)
+            for address in FABRIC["beta"]:
+                # over the fabric: the kubelet and any other port (the
+                # fabric links are trusted interfaces)
+                for port in ["10250", "9999"]:
+                    alpha.succeed(nc(address, port))
+            for address in UNDERLAY["beta"]:
+                # on the underlay: nothing, from the other node or from outside
+                for port in ["10250", "9999", "${apiLbPort}", "81", "83", "80"]:
+                    alpha.fail(nc(address, port))
+                    router.fail(nc(address, port))
+            for address in UNDERLAY["alpha"]:
+                for port in ["6443", "${apiLbPort}", "10250", "2379", "2380", "83"]:
+                    beta.fail(nc(address, port))
+                    router.fail(nc(address, port))
+            # the same control-plane ports answer over the fabric
+            for address in FABRIC["alpha"]:
+                for port in ["6443", "${apiLbPort}", "10250"]:
+                    beta.succeed(nc(address, port))
+            beta.succeed("systemctl stop probe-listener")
+            # D69: a NodePort answers on the node addresses (the fabric)
+            # and on no other address. eth1 is a Cilium device, and Cilium
+            # serves a NodePort in BPF before the NixOS firewall sees the
+            # packet: `nodeport-addresses` keeps it off the underlay.
+            node_port = alpha.succeed("kubectl get service httpbin-pool -o jsonpath='{.spec.ports[0].nodePort}'").strip()
+            assert node_port.isdigit(), f"httpbin-pool has no NodePort: {node_port!r}"
+            def http(address, port):
+                host = f"[{address}]" if ":" in address else address
+                return f"curl -sf --max-time 5 -o /dev/null http://{host}:{port}/get"
+            for name in ["alpha", "beta"]:
+                for address in FABRIC[name]:
+                    alpha.wait_until_succeeds(http(address, node_port), timeout=60)
+                    beta.wait_until_succeeds(http(address, node_port), timeout=60)
+                for address in UNDERLAY[name]:
+                    router.fail(http(address, node_port))
+            for address in UNDERLAY["beta"]:
+                alpha.fail(http(address, node_port))
+            # The classless Service does not expose its LB port on the
+            # untrusted underlay address; its Node-IPAM candidates are
+            # fabric addresses.
+            alpha.fail(http(UNDERLAY["beta"][0], 81))
             for m in [alpha, beta]:
                 m.succeed("ss -tln | grep ':179 ' >/dev/null")
             # The expected upstream BGP listen is reachable; no legacy BIRD

@@ -282,7 +282,12 @@ FRR is the only data plane.
   routes and pod traffic come back, then checks that FRR refuses a bad
   configuration and keeps running the old one. Finding: the deploy
   still reports success, so a broken FRR config is only visible in the
-  journal. A build-time check is an open follow-up.
+  journal. Fix: every `routed-fabric` machine checks its rendered
+  `frr.conf` with `vtysh --dryrun` at build time, so a broken config
+  fails the build instead (syntax only).
+- The native `data-plane` suite now carries the firewall phase of the
+  old tunnel suite: underlay refused, fabric trusted, NodePort only on
+  node addresses (D69).
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 

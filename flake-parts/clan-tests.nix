@@ -61,7 +61,7 @@
     # since-removed tunnel suite) and under 10 alone.
     globalTimeout = 45 * 60;
 
-    # Evaluating every node of 24 multi-machine suites takes minutes and
+    # Evaluating every node of the multi-machine suites takes minutes and
     # gigabytes, too much for CI. Run the same checks with
     # `vm-test --check` before VM runs.
     flakeChecks.enable = false;

@@ -1292,6 +1292,18 @@ in {
         ibgp = false;
       };
     };
+    # SPEC.md D72: every routed-fabric machine checks its rendered
+    # frr.conf with `vtysh --dryrun` at build time (lib/frr-check.nix).
+    test_frrConfigCheckedAtBuild = {
+      expr = map (config: {
+        enabled = config.clanServices.frr.checkConfig;
+        checked = builtins.any (check: check.name == "frr-conf-check") config.system.checks;
+      }) [spine client node];
+      expected = lib.replicate 3 {
+        enabled = true;
+        checked = true;
+      };
+    };
     test_localCiliumFrr = {
       expr = {
         peer = lib.hasInfix "neighbor ::1 remote-as 4200000001" node.services.frr.config;

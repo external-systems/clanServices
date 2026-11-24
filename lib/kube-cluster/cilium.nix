@@ -90,6 +90,12 @@
       "routingMode '${merged.routingMode}' is not native; Cilium tunnel mode was removed (D72)"
       ++ lib.optional (merged ? tunnelProtocol)
       "tunnelProtocol ${builtins.toJSON merged.tunnelProtocol} is set; Cilium tunnel mode was removed (D72)"
+      # D49/D72: pod CIDR containment is asserted against these constants
+      # (assertions.nix); an override would masquerade peer-cluster pods.
+      ++ lib.optional (merged.ipv4NativeRoutingCIDR != "10.0.0.0/8")
+      "ipv4NativeRoutingCIDR '${merged.ipv4NativeRoutingCIDR}' contradicts the native-routing CIDR 10.0.0.0/8 (D49/D72)"
+      ++ lib.optional (merged.ipv6NativeRoutingCIDR != "fd10::/16")
+      "ipv6NativeRoutingCIDR '${merged.ipv6NativeRoutingCIDR}' contradicts the native-routing CIDR fd10::/16 (D49/D72)"
       ++ lib.optional (merged.MTU != transportFacts.mtu)
       "MTU ${toString merged.MTU} contradicts the transport-derived MTU ${toString transportFacts.mtu} (D58)"
       ++ lib.optional (merged.nodePort.directRoutingDevice != transportFacts.directRoutingDevice)

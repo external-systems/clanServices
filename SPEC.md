@@ -43,9 +43,20 @@ commit with them is tag `tunnel-mode-final`.
     is unchanged, the running config has no bad line, sessions and pods
     are fine; switching back leaves `frr-reload` nothing to change
     (`FRR_BAD_RELOAD_OK`).
-  - **Open (finding):** a broken FRR config deploys green. A build-time
-    check of the rendered `frr.conf` (for example `vtysh --dryrun`) is a
-    follow-up for the owner to decide; it is not in this round.
+  - **Finding, closed by a build-time check (owner decision):** a
+    broken FRR config deploys green at runtime. Every `routed-fabric`
+    machine now parses its rendered `/etc/frr/frr.conf` with
+    `vtysh --dryrun` in `system.checks` (`lib/frr-check.nix`, option
+    `clanServices.frr.checkConfig`, default on), so a line FRR rejects
+    fails the system build before a switch. It checks syntax only:
+    unknown neighbor, route-map or prefix-list names still pass.
+    `checks.frr-conf` proves the renderer's output passes against the
+    pinned FRR and a rejected line fails; nix-unit pins the wiring
+    (`test_frrConfigCheckedAtBuild`). The suite's `bad-frr`
+    specialisation turns the check off to reach the runtime path.
+  - The suite also proves the crash is an outage (the leaf's
+    `connectionsDropped` rises) and that Cilium's `::1` session is
+    among the sessions checked.
 - **Ported:** `<distro>-clustermesh-tunnel` →
   `<distro>-clustermesh-nodeport` (`<DISTRO>_CLUSTERMESH_NODEPORT_OK`,
   body `lib/kube-cluster/tests/vm/clustermesh-nodeport.nix`). It sets
@@ -54,7 +65,13 @@ commit with them is tag `tunnel-mode-final`.
   Local, two replicas one per voter, mTLS on every node's NodePort,
   peering on both sides, a cross-cluster pod ping, a global Service.
 - D69 stays VM-proven on native routing by `<distro>-clat`
-  (`CLAT_NODEPORT_OK`).
+  (`CLAT_NODEPORT_OK`) and by `<distro>-data-plane`, whose firewall
+  phase was ported from the tunnel suite: the underlay refuses the
+  kubelet, the API, etcd, the API LB port and the NodePort from the
+  other node and from outside; the same ports answer over the fabric.
+- Cilium helm overrides of `ipv4NativeRoutingCIDR` or
+  `ipv6NativeRoutingCIDR` now fail eval (D49/D72): pod CIDR containment
+  is asserted against those constants.
 - 45 suites in all. No VM run is claimed in this entry.
 
 **Round 52 (2026-11-23): owner decisions; docs only.** The owner
@@ -2827,8 +2844,10 @@ Current registered VM suites:
   watchfrr and sessions, pod routes and pod traffic recover; a
   configuration FRR rejects is refused at reload and leaves FRR, its
   running config and the sessions as they were. The switch still exits
-  0: a broken FRR config deploys green (upstream fact; a build-time
-  check is open).
+  0 (upstream fact), so every `routed-fabric` machine checks its
+  rendered `frr.conf` with `vtysh --dryrun` at build time
+  (`lib/frr-check.nix`, `checks.frr-conf`): a rejected line fails the
+  build, not the deploy.
 - **netif**: multi-NIC physical/VLAN/bond/bridge links, multi-instance
   ownership, static/DHCP/RA addressing, on-link/policy routes, exports,
   and conflict negatives. Live static reconfiguration is applied, checked,

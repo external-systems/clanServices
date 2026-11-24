@@ -2923,6 +2923,12 @@ in {
       tunnelProtocol = ciliumThrows {
         tunnelProtocol = "vxlan";
       };
+      nativeCidr4 = ciliumThrows {
+        ipv4NativeRoutingCIDR = "10.1.0.0/16";
+      };
+      nativeCidr6 = ciliumThrows {
+        ipv6NativeRoutingCIDR = "fd10:1::/32";
+      };
       mtu = ciliumThrows {
         MTU = 1500;
       };
@@ -2959,6 +2965,8 @@ in {
     expected = {
       routingMode = true;
       tunnelProtocol = true;
+      nativeCidr4 = true;
+      nativeCidr6 = true;
       mtu = true;
       directDevice = true;
       devices = true;

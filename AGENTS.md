@@ -38,7 +38,10 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   - `docs.nix`: the site nav and deck settings;
   - `overlays.nix`: re-exports the org-pkgs overlays.
   - `spec-checks.nix`: `checks.spec-headings` (section numbers of
-    `SPEC.md` and `specs/*.md` ascend) and `checks.jool-available`.
+    `SPEC.md` and `specs/*.md` ascend) and `checks.jool-available`;
+  - `frr-checks.nix`: `checks.frr-conf`, the self-test of the
+    build-time `vtysh --dryrun` check (`lib/frr-check.nix`) that every
+    `routed-fabric` machine runs on its rendered `frr.conf`.
 - `tests/` — fixtures shared by VM suites: `ifstate-vm.nix` (the
   IfState node), `ifstate-noop.nix` (the "a reapply changes nothing"
   helper), `headscale-vm.nix` (an offline Headscale), `wifi-ap.nix`

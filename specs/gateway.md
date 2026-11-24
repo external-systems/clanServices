@@ -173,7 +173,7 @@ any code (AGENTS.md rule 3).
   - The namespace and the veth pair are declared in IfState
     (`namespaces`), because IfState deletes a namespace it does not
     know. `lib/gateway` renders them into the shared IfState base, as
-    `wireguard-mesh` renders its tunnel, and claims them in the
+    `routed-fabric` renders its links, and claims them in the
     ownership registry. An IfState apply keeps the namespace and the
     Jool instance (§10.1).
   - `lib/gateway` renders its own Jool units. The NixOS module
@@ -301,8 +301,9 @@ any code (AGENTS.md rule 3).
     slow one). A pod's IPv4 packet in that window was not tested; it
     most likely leaves with the pod's address and is lost. The window
     opens at boot and when the link is really recreated.
-  - **Proven on both transports** (native routing on `routed-fabric`,
-    the VXLAN tunnel on `wireguard-mesh`), two nodes, IPv6-only NICs:
+  - **Proven on native routing** (`routed-fabric`; the VXLAN tunnel
+    proof on `wireguard-mesh` was removed with it, SPEC.md D72), two
+    nodes, IPv6-only NICs:
     the decided design on k3s and rke2, the alternative on k3s (§10.11).
   - **Found on the way:** the cluster's CoreDNS forwarded to the node's
     IPv4 nameserver, and the gateway translated that private IPv4

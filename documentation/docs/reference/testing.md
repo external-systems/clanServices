@@ -149,7 +149,9 @@ Then run the changed suites (`vm-test --all --remote --rebuild`).
   refusal is only in the journal), FRR stays active with the same
   bgpd and the old running config, and sessions and pods stay fine;
   switching back leaves `frr-reload` nothing to change
-  (`FRR_BAD_RELOAD_OK`).
+  (`FRR_BAD_RELOAD_OK`). A real deploy never gets there: the build-time
+  `vtysh --dryrun` check (`lib/frr-check.nix`, `checks.frr-conf`)
+  fails the build, so the suite's specialisation turns it off.
 - **IfState (D61):** live static reconfiguration with apply/check/restore,
   real DHCPv4 and SLAAC/default-route convergence, one persistent DHCP
   client across reapply, and clean `ifstatecli check` output.
