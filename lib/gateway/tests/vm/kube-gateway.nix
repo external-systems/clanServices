@@ -314,12 +314,16 @@ in
           lines = [line.strip() for line in agent(node, "cilium-dbg status --verbose").splitlines() if line.strip().startswith("Masquerading:")]
           assert len(lines) == 1 and "BPF" in lines[0], lines
           print(f"FINDING {node}: {lines[0]}")
-          return sorted(device.strip() for device in re.search(r"\[([^\]]*)\]", lines[0]).group(1).split(","))
+          match = re.search(r"\[([^\]]*)\]", lines[0])
+          assert match is not None, lines[0]
+          return sorted(device.strip() for device in match.group(1).split(","))
 
 
       def counted(chain, comment):
           rule = alpha.succeed(f"nft list chain inet nat64 {chain} | grep '{comment}'")
-          return int(re.search(r"counter packets (\d+)", rule).group(1))
+          match = re.search(r"counter packets (\d+)", rule)
+          assert match is not None, rule
+          return int(match.group(1))
 
 
       def pod_page(node):
@@ -456,11 +460,12 @@ in
               print(f"FINDING Cilium nodeport-addresses: {config.get('nodeport-addresses')!r}")
               assert PUBLIC4 not in config.get("nodeport-addresses", ""), config.get("nodeport-addresses")
               code = "curl -s --max-time 4 -o /dev/null -w '%{http_code}' "
-              # positive control: alpha's node addresses answer from beta
-              internal = kubectl("get node alpha -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}'").split()
+              # positive control: alpha's IPv4 node address answers from
+              # beta (`expose` makes an IPv4-only Service)
+              internal = [ip for ip in kubectl("get node alpha -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}'").split() if ":" not in ip]
+              assert internal, "alpha has no IPv4 node address"
               for ip in internal:
-                  host = f"[{ip}]" if ":" in ip else ip
-                  answer = beta.wait_until_succeeds(f"{code}http://{host}:30080/ | grep -v '^000$'", timeout=60).strip()
+                  answer = beta.wait_until_succeeds(f"{code}http://{ip}:30080/ | grep -v '^000$'", timeout=60).strip()
                   print(f"FINDING the NodePort on {ip} answered beta with HTTP {answer}")
               status, answer = server4.execute(f"{code}http://{PUBLIC4}:30080/")
               print(f"FINDING the NodePort on the public IPv4 from the IPv4 internet: rc={status} code={answer!r}")

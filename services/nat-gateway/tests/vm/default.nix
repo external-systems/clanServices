@@ -942,7 +942,9 @@ in {
         def flap(machine, unit, on, off, rounds):
             """A unit that runs `off`, waits 5 s, runs `on`, waits 5 s, `rounds` times."""
             shell = machine.succeed("readlink -f $(command -v sh)").strip()
-            machine.succeed(f"systemd-run --unit={unit} {shell} -c 'for i in $(seq {rounds}); do {off}; sleep 5; {on}; sleep 5; done'")
+            # a transient unit has no PATH of the system: name it
+            machine.succeed(f"systemd-run --unit={unit} {shell} -c 'export PATH=/run/current-system/sw/bin; for i in $(seq {rounds}); do {off}; sleep 5; {on}; sleep 5; done'")
+            machine.succeed(f"systemctl is-active {unit}.service >/dev/null")
 
         with subtest("§14.5 point 4: 80 % loss on a gateway's upstream: it withdraws, the CLATs move once, and it stays withdrawn while lossy and while its upstream flaps"):
             sick, healthy = clat_gateway(), other(clat_gateway())
@@ -965,7 +967,13 @@ in {
             try:
                 holds_for(client, beacon_closed(sick) + " && " + stays(healthy, before + 1), 140, interval=5)
             finally:
-                sick.machine.succeed(f"systemctl stop flap-upstream.service; {tc} qdisc del dev eth2 root 2>/dev/null || true")
+                sick.machine.succeed(f"systemctl stop flap-upstream.service 2>/dev/null || true; {tc} qdisc del dev eth2 root 2>/dev/null || true")
+            # a known start for the clock: 10 s of total loss, then clean.
+            # The window forgives up to UP / 20 bad rounds, so the flap's
+            # last seconds alone could bring the beacon back early
+            sick.machine.succeed(f"{tc} qdisc add dev eth2 root netem loss 100%")
+            time.sleep(10)
+            sick.machine.succeed(f"{tc} qdisc del dev eth2 root")
             took = seconds_until(client, names_prefix(sick), limit=UP + 90)
             print(f"FINDING the gateway served its beacon again {took} s after its upstream was clean")
             assert took is not None and UP - 10 <= took < UP + 40, took
@@ -981,7 +989,7 @@ in {
             try:
                 holds_for(client, names_prefix(current) + " && " + stays(current, before), 100, interval=2)
             finally:
-                server4.succeed(f"systemctl stop flap-target.service; ip addr add {target}/32 dev eth1 2>/dev/null || true")
+                server4.succeed(f"systemctl stop flap-target.service 2>/dev/null || true; ip addr add {target}/32 dev eth1 2>/dev/null || true")
             current.machine.succeed("systemctl is-active nat64-beacon.service")
             print("NAT_GATEWAY_FLAPPING_OK")
 

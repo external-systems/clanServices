@@ -2419,3 +2419,48 @@ flakiness measure (§12.4).
   to 30 s. The cause on the ISP side is not proven.
 - Not yet tested: a second host in the same zone as the backend (§14.3
   asks for it; the topology has one host in `servers`).
+
+### 15.4 Round G8 (2026-11-24, euc-hel-0)
+
+- **`nat-gateway`** (`NAT_GATEWAY_OK`, passed, 2 234 s; 37 min of the
+  45 min timeout, the price of the default timings):
+  - Withdrawn 31.9 to 32.4 s after every target or the translator died,
+    34.4 to 37.0 s after 80 % loss began; back 113.4 to 113.9 s after
+    the upstream was clean (never earlier than 120 clean rounds allow).
+  - A client moved 61.7 to 63.4 s after a crash, 93.5 to 94.9 s after
+    its gateway's targets died; it corrected a CLAT made again on the
+    dead gateway's /96 after 62.4 s.
+  - At 80 % loss the gateway stayed withdrawn for 150 s, and while its
+    upstream flapped every 5 s for 140 s; one target flapping for 100 s
+    on the current gateway moved nothing (`NAT_GATEWAY_LOSSY_OK`,
+    `NAT_GATEWAY_FLAPPING_OK`).
+  - The capped client's own meter dropped 3 491 of 5 981 datagrams on
+    gw1 (500/s, burst 1 000); the tiers' meters counted none.
+  - A stopped and restarted health check resumed `up` from its state
+    file; the beacon was back in under 20 s.
+- **`nat-gateway-kube`** (`NAT_GATEWAY_KUBE_OK`, passed, 214 s): alpha
+  is a k3s server and the gateway, beta a k3s agent and its client.
+  - Rendered `devices`: `<fabric link> <fabric loopback> clat0 eth1
+    eth2`; alpha's agent masquerades on `eth1, eth2` and the fabric
+    links (`eth2` holds the public IPv4).
+  - alpha's pod leaves with the public IPv4 by eBPF masquerade; beta's
+    host and pod through beta's CLAT and alpha's NAT64 (Jool sessions
+    from beta's CLAT address).
+  - Two masquerades on one public IPv4: 150 long flows (8 s each) from
+    each of alpha's pod, alpha's host, beta's pod and beta's host at
+    once; all 600 came back, twice. Cilium held 1 796 and 3 094 NAT
+    entries while they were open.
+  - The router (no client) towards alpha's /96: 6 packets dropped and
+    counted (`nat64-undeclared`); its beacon query too.
+  - `nodeport-addresses` holds only the fabric addresses; the NodePort
+    answered beta on 192.168.77.1 and timed out on the public IPv4 from
+    the IPv4 internet.
+  - After a restart of nftables, of `nat64-jool`, and an IfState apply
+    on alpha, all three egress paths still work.
+- **`k3s-clat`** (passed, 735 s), **`rke2-clat`** (passed, 834 s),
+  **`k3s-clat-mapped`** (passed, 290 s, now with a plain resolver).
+  - Before the fabric converges a node's SYNs to the server's fabric
+    address go into its CLAT and the gateway refuses them: 5 packets in
+    2.7 s (k3s), 14 to 16 in 2.9 to 3.1 s (rke2). The suite bounds the
+    window (20 s) and the targets (node addresses only), not the count:
+    the first rke2 run sent 16 against a bound of 10.
