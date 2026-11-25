@@ -260,6 +260,11 @@ fleet works (`eno1`, `enp0s1`, `wlp2s0` in one cluster).
 - A VPN link such as `tailscale0` is never on the list; the build
   refuses it.
 - Tested by `k3s-clat` and `rke2-clat`, which set nothing by hand.
+- Since 2026-11-25 the list also holds, for every node, **the network
+  card of its default route**, and a router's WAN port. A pod's traffic
+  to the outside leaves there, and Cilium hides the pod's address only
+  on a listed card. The test `router-kube` found the gap: a pod on a
+  normal node behind the router could not reach the internet.
 
 ### D72 — Native routing only (2026-11-23, implemented)
 

@@ -57,7 +57,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `observe`, `print_versions`, `seconds_until`, `holds_for`,
   `state_dump_on_failure`; use them in new suites).
   Each service, and `lib/gateway`, registers its suites in its
-  `flake-module.nix` (46 in all; `vm-test --list` counts them)
+  `flake-module.nix` (48 in all; `vm-test --list` counts them)
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
@@ -77,10 +77,14 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   ownership registry. It supersedes SPEC.md D50/D53/D61 where they
   conflict; its human pages are `documentation/docs/netif/`. Edit them
   together.
-- `specs/gateway.md` — the contract and status authority for the planned
+- `specs/gateway.md` — the contract and status authority for the
   `router` and `nat-gateway` services and `lib/gateway/` (decisions
-  G…, probes PR…, slices S…). No service is implemented yet; the
-  mechanisms are pinned by suites on fixtures (its §5).
+  G…, probes PR…, slices S…). Both services exist; their suites and
+  the fixture suites that remain are its §5. Its §16 is the hardening
+  review of round G9: what was fixed, and a ranked list of findings in
+  the other services that wait for the owner. A router judges its own
+  links only and the NixOS firewall stays on (G25): never set
+  `networking.firewall.enable = false` in a service.
   Its human pages are `documentation/docs/gateway/`. Edit them together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision

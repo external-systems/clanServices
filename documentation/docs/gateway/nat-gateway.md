@@ -92,6 +92,8 @@ relayed traffic from a machine that was not a client.
   declares on its uplink, and its `sources`. Everything else is dropped
   and counted, for every protocol.
 - A destination inside a private IPv4 range is refused.
+- So is a destination that is the gateway's own IPv4 address: the
+  translator is no way into the gateway itself.
 - **A rate limit per client address**, in two tiers:
 
   | Tier | New connections | Packets |
@@ -139,6 +141,10 @@ relayed traffic from a machine that was not a client.
   beacons. When its gateway's beacon has not answered for 60 s, it
   moves the CLAT to a gateway whose beacon answers. It never moves back
   on its own. When no beacon answers it stays where it is.
+- **A beacon is believed only for its own prefix.** The client knows
+  each gateway's prefix from the inventory. An answer that names
+  another prefix counts as silence, so a forged answer cannot send a
+  client's IPv4 somewhere else.
 - **Connections through a dead gateway hang.** Nothing tells the client
   that the gateway is gone, so a program notices through its own
   timeout. New connections go through the other gateway. This is
@@ -168,7 +174,8 @@ which pod sent a packet.
 
 | Suite | What it shows |
 |---|---|
-| `nat-gateway` | two gateways, a `default`, a `trusted` and a client with its own limit, an outsider: translation, the allowlist, the limits, the beacon, failover, one target dead or flapping, all targets dead, 80 % loss, a broken translator, a deploy, reboots |
+| `nat-gateway` | two gateways, a `default`, a `trusted` and a client with its own limit, an outsider: translation, the allowlist, the limits, the beacon; the gateway's own IPv4 ports stay closed to clients; a changed prefix or CLAT address is applied; a beacon that names a foreign prefix is ignored |
+| `nat-gateway-failover` | the same machines when something fails: 30 % and 80 % loss, one target dead or flapping, all targets dead, a broken translator, a dead gateway, a deploy, reboots |
 | `nat-gateway-kube` | a gateway that is a k3s node, and a node behind it: pods on both reach IPv4; two masquerades share one public IPv4 under load; no NodePort on the public IPv4 |
 | `k3s-clat`, `rke2-clat` | a two-node cluster on IPv6-only cards behind the service: pods reach IPv4 through the node's CLAT, IPv6 through the card |
 

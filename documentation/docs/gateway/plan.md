@@ -13,7 +13,9 @@ result on every run:
 | `gateway-wan` | MAC override and VLAN 0 on the WAN port |
 | `netif-v6only` | a machine with no IPv4: names, IPv4 literals, path MTU, reboot |
 | `router` | the service: zones, DNS, advertisements, a prefix change, public Service addresses (replaced `gateway-router` on 2026-11-24) |
-| `nat-gateway` | the service: two gateways, two client tiers, failover, the health beacon |
+| `nat-gateway` | the service: two gateways, two client tiers, the allowlist, the limits, the health beacon |
+| `nat-gateway-failover` | the same machines under loss, flaps, dead targets, dead gateways, deploys and reboots |
+| `router-kube` | a router that is also a k3s node: both firewalls, zones, NAT, pods |
 | `gateway-dual-wan` | two WANs with DHCP, failover and back |
 | `k3s-v6only`, `rke2-v6only` | a cluster on IPv6-only machines |
 | `k3s-clat`, `rke2-clat`, `k3s-clat-mapped` | pod IPv4 through the node's CLAT, native routing (D72) |

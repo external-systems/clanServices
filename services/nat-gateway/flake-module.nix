@@ -24,16 +24,22 @@ in {
     };
   };
 
-  # The service on two gateways and a client, ported from the fixture
-  # suite gateway-nat64 (specs/gateway.md §5, §14.1 point 1).
-  clanTests.nat-gateway = {
-    imports = [./tests/vm/default.nix];
-    clan = {
-      modules = {
-        nat-gateway = module;
-        inherit (self.clan.modules) netif;
+  # The service on two gateways and four machines beside them, in two
+  # suites on one topology (specs/gateway.md §5): what the translator
+  # does, and what it does when something fails (§14.5 point 4).
+  clanTests = lib.genAttrs' ["function" "failover"] (phases:
+    lib.nameValuePair (
+      if phases == "function"
+      then "nat-gateway"
+      else "nat-gateway-${phases}"
+    ) {
+      imports = [(import ./tests/vm/default.nix {inherit phases;})];
+      clan = {
+        modules = {
+          nat-gateway = module;
+          inherit (self.clan.modules) netif;
+        };
+        inherit exportInterfaces;
       };
-      inherit exportInterfaces;
-    };
-  };
+    });
 }

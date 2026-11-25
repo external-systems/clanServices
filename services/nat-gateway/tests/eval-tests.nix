@@ -142,6 +142,8 @@ in {
       expr = {
         undeclared = lib.hasInfix ''comment "nat64-undeclared"'' (table gw1);
         private = lib.hasInfix ''comment "nat64-private"'' (table gw1);
+        # the translator is no way into the gateway's own IPv4 ports
+        host = lib.hasInfix ''iifname "jool0" meta nfproto ipv4 counter reject with icmp type host-prohibited comment "nat64-host"'' (table gw1);
         masquerade = lib.hasInfix ''oifname { "eth1" } masquerade'' (table gw1);
         beacon = lib.hasInfix ''comment "beacon-undeclared"'' (table gw1);
         defaultRate = lib.hasInfix "limit rate over 50/second burst 200 packets" (table gw1);
@@ -152,6 +154,7 @@ in {
       expected = {
         undeclared = true;
         private = true;
+        host = true;
         masquerade = true;
         beacon = true;
         defaultRate = true;
@@ -235,6 +238,38 @@ in {
         ];
       };
     };
+    # A gateway without a client (three managers that are all gateways):
+    # it evaluates, and its empty allowlist lets nobody through.
+    test_noClients = let
+      alone = machine (mkEvaled {
+        instances =
+          baseInventory.instances
+          // {
+            nat64 =
+              baseInventory.instances.nat64
+              // {
+                roles = {inherit (baseInventory.instances.nat64.roles) gateway;};
+              };
+          };
+      }) "gw1";
+    in {
+      expr = {
+        clean = clean alone;
+        inherit (alone.clanServices.gateway.nat64) allow custom;
+        undeclared = lib.hasInfix ''comment "nat64-undeclared"'' (table alone);
+        elements = lib.hasInfix "elements" (table alone);
+      };
+      expected = {
+        clean = true;
+        allow = {
+          default = [];
+          trusted = [];
+        };
+        custom = [];
+        undeclared = true;
+        elements = false;
+      };
+    };
     test_tooFewTargets = {
       expr = failedAssertion (machine (with' {
         instances.nat64.roles.gateway.machines.gw1.settings.health.targets = ["1.1.1.1"];
@@ -263,7 +298,17 @@ in {
       expected = {
         address = "2001:db8:c::c1a7";
         pool6 = "2001:db8:a1:0:64::/96";
-        beacons = ["2001:db8:c::1" "2001:db8:c::2"];
+        # each beacon with its gateway's /96: the only prefix it may name
+        beacons = [
+          {
+            address = "2001:db8:c::1";
+            pool6 = "2001:db8:a1:0:64::/96";
+          }
+          {
+            address = "2001:db8:c::2";
+            pool6 = "2001:db8:a2::/96";
+          }
+        ];
         proxyNdp = ["enp1s0"];
         interface = "clat0";
         units = ["clat" "clat-follow"];

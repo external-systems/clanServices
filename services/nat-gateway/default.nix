@@ -283,7 +283,7 @@ in {
             enable = true;
             inherit (settings.clat) address;
             inherit ((gatewaySettings (builtins.head gateways))) pool6;
-            beacons = map (name: (gatewaySettings name).address) gateways;
+            beacons = map (name: {inherit ((gatewaySettings name)) address pool6;}) gateways;
             proxyNdp = lib.optionals settings.proxyNdp (config.clanServices.netif.zones.${settings.uplinkZone} or []);
           };
         };

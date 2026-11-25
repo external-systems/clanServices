@@ -7,7 +7,12 @@
   ...
 }: let
   machineConfigs = {
-    router.nixpkgs.hostPlatform = "x86_64-linux";
+    router = {
+      nixpkgs.hostPlatform = "x86_64-linux";
+      # what another service on the machine opens to everyone (a
+      # fabric's WireGuard port): `hostPorts` zones may reach it
+      networking.firewall.allowedUDPPorts = [51900];
+    };
   };
 
   baseInventory = {
@@ -131,6 +136,7 @@ in {
         internet = true;
         allowTo = ["servers"];
         ssh = true;
+        hostPorts = false;
         subnet = 1;
         dns = {
           ipv4 = "192.168.10.1";
@@ -180,8 +186,118 @@ in {
       pinhole = true;
       dropPolicy = true;
       nat = true;
-      firewall = false;
+      firewall = true;
     };
+  };
+  # G25: the router's table judges its own links only; the NixOS
+  # firewall stays on for the rest of the machine and gets, on a router
+  # link, what the router accepts.
+  test_ownLinksOnly = {
+    expr = {
+      input = lib.hasInfix ''iifname != { "enp1s0", "enp2s0", "enp4s0", "enp3s0" } accept comment "not a router link: the machine's firewall decides"'' table;
+      forward = lib.hasInfix ''iifname != { "enp1s0", "enp2s0", "enp4s0", "enp3s0" } oifname != { "enp1s0", "enp2s0", "enp4s0", "enp3s0" } accept comment "no router link: not the router's"'' table;
+      loopback = lib.hasInfix ''iifname "lo" accept'' table;
+      unzonedInternet = lib.hasInfix ''oifname { "enp1s0" } accept comment "unzoned: internet"'' table;
+      unzonedOther = lib.hasInfix "to unzoned" table || lib.hasInfix "unzoned to zone" table;
+      wanPort = lib.hasInfix "WAN port" table;
+      hostPorts = lib.hasInfix "host ports" table;
+      inherit (base.networking.firewall.interfaces) enp2s0 enp3s0;
+      rpfilter = base.networking.firewall.checkReversePath;
+    };
+    expected = {
+      input = true;
+      forward = true;
+      loopback = false;
+      unzonedInternet = true;
+      unzonedOther = false;
+      wanPort = false;
+      hostPorts = false;
+      # home: the resolver and DHCPv4; servers: the resolver only
+      enp2s0 = {
+        allowedTCPPortRanges = [];
+        allowedTCPPorts = [53];
+        allowedUDPPortRanges = [];
+        allowedUDPPorts = [53 67];
+      };
+      enp3s0 = {
+        allowedTCPPortRanges = [];
+        allowedTCPPorts = [53];
+        allowedUDPPortRanges = [];
+        allowedUDPPorts = [53];
+      };
+      rpfilter = false;
+    };
+  };
+  # G25: a router that is a node: the WAN port of the fabric, a zone of
+  # cluster nodes that reaches the machine's open ports, a zone that
+  # reaches the cluster.
+  test_node = let
+    node = with' {
+      instances.edge.roles.router.machines.router.settings = {
+        wanPorts.udp = [51820];
+        zones.servers.hostPorts = true;
+        unzoned = {
+          zones = ["home"];
+          source.ipv4 = "192.168.77.1";
+        };
+      };
+    };
+    nodeTable = node.networking.nftables.tables.router.content;
+  in {
+    expr = {
+      wanPort = lib.hasInfix ''iifname { "enp1s0" } udp dport { 51820 } accept comment "WAN port"'' nodeTable;
+      # one rule: the zone's link, every UDP port the machine opens
+      hostPorts = map (line: lib.hasInfix ''iifname { "enp3s0" } udp dport {'' line && lib.hasInfix "51900" line) (
+        lib.filter (lib.hasInfix "host ports") (lib.splitString "\n" nodeTable)
+      );
+      # both directions, and the way in ahead of connection tracking
+      zoneIn = lib.hasInfix ''iifname { "enp2s0" } oifname != { "enp1s0", "enp2s0", "enp4s0", "enp3s0" } accept comment "zone to unzoned: home"'' nodeTable;
+      # the named source for IPv4, the outgoing link's address for IPv6
+      source4 = lib.hasInfix ''iifname { "enp2s0" } oifname != { "enp1s0", "enp2s0", "enp4s0", "enp3s0" } meta nfproto ipv4 snat ip to 192.168.77.1 comment "zone to unzoned"'' nodeTable;
+      source6 = lib.hasInfix ''iifname { "enp2s0" } oifname != { "enp1s0", "enp2s0", "enp4s0", "enp3s0" } meta nfproto ipv6 masquerade comment "zone to unzoned"'' nodeTable;
+      zoneOut = lib.hasInfix ''iifname != { "enp1s0", "enp2s0", "enp4s0", "enp3s0" } oifname { "enp2s0" } accept comment "unzoned to zone: home"'' nodeTable;
+      beforeTracking = let
+        at = needle: lib.stringLength (builtins.head (lib.splitString needle nodeTable));
+      in
+        at "zone to unzoned: home" < at "ct state invalid";
+    };
+    expected = {
+      wanPort = true;
+      hostPorts = [true];
+      zoneIn = true;
+      source4 = true;
+      source6 = true;
+      zoneOut = true;
+      beforeTracking = true;
+    };
+  };
+  test_export = {
+    expr = let
+      evaled = mkEvaled baseInventory;
+    in
+      map (value: {inherit (value.router) wanZone zones;}) (builtins.attrValues (clanLib.selectExports (scope: scope.serviceName == "router") evaled.config.exports));
+    expected = [
+      {
+        wanZone = "wan";
+        zones = ["home" "mgmt" "servers"];
+      }
+    ];
+  };
+  test_unknownUnzoned = {
+    expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.unzoned.zones = ["guest"];}) "'unzoned.zones' names unknown zones";
+    expected = true;
+  };
+  test_twoLinksInAZone = {
+    expr = failedAssertion (with' {instances.lan.roles.default.machines.router.settings.links.mgmt.zone = "home";}) "have more than one netif link";
+    expected = true;
+  };
+  test_zoneAcceptsRa = {
+    expr = failedAssertion (with' {instances.lan.roles.default.machines.router.settings.links.home.ra = true;}) "accept router advertisements";
+    expected = true;
+  };
+  test_routerInThePool = {
+    expr = failedAssertion (with' {instances.lan.roles.default.machines.router.settings.links.home.static.ipv4 = ["192.168.10.254/24"];}) "is in the upper half of the subnet";
+    expected = true;
   };
   # G14: a resolver per zone, port 53 only from that zone
   test_dns = {

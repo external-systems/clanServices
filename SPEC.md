@@ -4,6 +4,26 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 56 (2026-11-25): D71 covers a router that is a node; a
+hardening review** (`specs/gateway.md` round G9, G25, §16).
+- A `router` exports its WAN zone (`router`, new export interface;
+  k3s and rke2 take it as an input). On a cluster member that is a
+  router the WAN link joins `devices`, for the reason a gateway's
+  uplink does. Suite `router-kube`.
+- **Every member's default-route link joins `devices`** (netif
+  `gatewayInMain`; never a VPN zone's link). Found by `router-kube`:
+  a pod on a plain dual-stack node left with its pod address, because
+  Cilium masquerades on a `devices` link only. Eval test
+  `test_d71DefaultRouteLink` (k3s, rke2). The other cluster suites
+  render the same list as before (their derivations are unchanged).
+- The review read `routed-fabric`, `lib/kube-cluster`, k3s, rke2 and
+  netif. Nothing in them changed in this round. Its findings are
+  ranked in `specs/gateway.md` §16.3 and wait for the owner; the first
+  three concern stability: no BGP graceful restart between Cilium and
+  FRR, a restart of FRR that withdraws a manager's fabric address, and
+  LAN timers between members that never set `site`.
+- Header range D1–D72 (unchanged).
+
 **Round 55 (2026-11-24): D71 covers a gateway that is a node**
 (`specs/gateway.md` round G8, §14.5 point 5).
 - A `nat-gateway` gateway exports its uplink zone (`nat_gateway`,
@@ -2108,7 +2128,9 @@ unless noted) — revoked entries keep one-line reasons for history.
   `specs/gateway.md` §14.2.
   - Per node: the transport link(s), the CLAT link where a CLAT runs
     (G5), the underlay link(s) where the underlay has no IPv4, and on
-    a `nat-gateway` gateway the links of its uplink zone (round 55).
+    a `nat-gateway` gateway the links of its uplink zone (round 55),
+    and on a `router` its WAN link (round 56; `specs/gateway.md` G25).
+    On every node: the link that owns its default route (round 56).
   - Names come from netif's zones (N10), so a mixed fleet works:
     `eno1`, `enp0s1`, `wlp2s0` in one cluster.
   - A VPN link (`tailscale0` and the like) is never in `devices`; an

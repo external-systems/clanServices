@@ -33,6 +33,7 @@
         // {
           netif = ../../netif/netif-interface.nix;
           nat_gateway = ../../nat-gateway/nat-gateway-interface.nix;
+          router = ../../router/router-interface.nix;
         };
       # Fleet-wide kube-cluster assertions (§6.2) as clan.checks — enforced
       # by clanLib.clan's checkConfig.
@@ -42,7 +43,7 @@
         rke2 = rke2Module;
         modes = ../../modes/default.nix;
         k3s = k3sModule;
-        inherit (self.clan.modules) netif nat-gateway;
+        inherit (self.clan.modules) netif nat-gateway router;
       };
       machines = machineConfigs;
       inherit inventory;
@@ -493,6 +494,14 @@
             static.ipv6 = ["2001:db8:c::3/64"];
             ra = false;
           };
+          # a plain dual-stack member (no nat-gateway role, no router):
+          # the link of its default route
+          delta.settings.links.lan = {
+            interface = "enp7s0";
+            zone = "lan";
+            dhcp.ipv4 = true;
+            ra = false;
+          };
         };
       };
       nat64 = {
@@ -525,6 +534,26 @@
     objs = builtins.fromJSON d71Evaled.config.nixosConfigurations.gamma.config.clan.kubeClusters.rke2-b.bundleJson;
   in
     (lib.findFirst (o: o.kind == "ConfigMap" && o.metadata.name == "cilium-config") null objs).data.devices;
+  # delta is also a router: its WAN is its default-route link, and its
+  # zone link has the name of gamma's uplink, which is a device
+  d71Router = mkEvaled (lib.recursiveUpdate d71Inventory {
+    instances = {
+      links.roles.default.machines.delta.settings.links.inner = {
+        interface = "eth0";
+        zone = "inner";
+        static.ipv4 = ["192.168.50.1/24"];
+        ra = false;
+      };
+      edge = {
+        module.name = "router";
+        module.input = "self";
+        roles.router.machines.delta.settings = {
+          wanZone = "lan";
+          zones.inner = {};
+        };
+      };
+    };
+  });
   d71Vpn = mkEvaled (lib.recursiveUpdate d71Inventory {
     instances.rke2-a.roles.server.settings.cilium.helmValues.devices = "fk-alpha-1 fk-alpha-2 fk-beta-1 fk-beta-2 clat0 eno1 wlp2s0 tailscale0";
   });
@@ -1647,6 +1676,19 @@ in {
       uplink = true;
       clat = false;
     };
+  };
+  # A member's default-route link joins devices whatever its role: its
+  # pods leave there, and Cilium masquerades on a devices link only
+  # (specs/gateway.md §16.4).
+  test_d71DefaultRouteLink = {
+    expr = lib.elem "enp7s0" (lib.splitString " " d71GatewayDevices);
+    expected = true;
+  };
+  # specs/gateway.md G25: a router's zone link is never a Cilium
+  # device; the one cluster-wide list of names would make it one.
+  test_d71RouterZoneLinkRefused = {
+    expr = failedAssertion d71Router.config.nixosConfigurations.delta.config "'eth0' is a zone link of the router 'delta' and also a Cilium device";
+    expected = true;
   };
   test_d71VpnLinkRefused = {
     expr = failedAssertion d71Vpn.config.nixosConfigurations.alpha.config "'tailscale0' is a VPN link";

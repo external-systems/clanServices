@@ -901,12 +901,13 @@ in {
         with subtest("nftables: one table per owner; a restart of one owner leaves the other tables byte-equal"):
             tables = sorted(router.succeed("nft -j list tables | jq -r '.nftables[] | select(.table) | .table | .family + \" \" + .name'").splitlines())
             print(f"FINDING nftables tables on the router: {tables}; 'inet router' is nftables.service's (zones, NAT44, pinholes), 'inet router_svc' (the service rewrite) and 'netdev router_src' (the egress source filter) are the prefix hook's")
-            assert tables == ["inet router", "inet router_svc", "netdev router_src"], tables
+            # G25: the NixOS firewall stays on beside the router's table
+            assert tables == ["inet nixos-fw", "inet router", "inet router_svc", "netdev router_src"], tables
             # a third owner, as Cilium or a dual-WAN steering unit would be
             router.succeed("printf 'table inet foreign { chain forward { type filter hook forward priority 10; counter comment \"another owner\"; }; }\\n' | nft -f -")
 
             def snapshot():
-                return {name: router.succeed(f"nft -s list table {name}") for name in ["inet router", "inet router_svc", "netdev router_src", "inet foreign"]}
+                return {name: router.succeed(f"nft -s list table {name}") for name in ["inet nixos-fw", "inet router", "inet router_svc", "netdev router_src", "inet foreign"]}
 
             before = snapshot()
             assert "dnat ip6 prefix" in before["inet router_svc"] and "another owner" in before["inet foreign"] and "egress source" in before["netdev router_src"], before

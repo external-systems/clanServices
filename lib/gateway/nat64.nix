@@ -160,10 +160,6 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.allow.default != [] || cfg.allow.trusted != [] || cfg.custom != [];
-        message = "nat-gateway: the gateway has no client; the allowlist would be empty (specs/gateway.md G4)";
-      }
-      {
         assertion = lib.hasSuffix "/96" cfg.pool6;
         message = "nat-gateway: pool6 '${cfg.pool6}' is not a /96 (specs/gateway.md G4)";
       }
@@ -268,6 +264,12 @@ in {
             type filter hook input priority -10; policy accept;
             # the health beacon answers declared clients only (G24)
             ip6 daddr ${cfg.address} meta l4proto { tcp, udp } th dport 53 ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom counter drop comment "beacon-undeclared"
+            # A /96 destination that embeds one of the gateway's own IPv4
+            # addresses (Jool's link or the public one) is delivered here,
+            # not forwarded: the translator is no way into the gateway
+            # itself. Nothing legitimate arrives as IPv4 on this link (the
+            # health check's answers are IPv6).
+            iifname "${host}" meta nfproto ipv4 counter reject with icmp type host-prohibited comment "nat64-host"
           }
           chain postrouting {
             type nat hook postrouting priority srcnat; policy accept;
@@ -325,30 +327,45 @@ in {
     };
 
     systemd.services = {
-      # Idempotent: an IfState apply restarts it (Requires), and the
+      # Idempotent: an IfState apply restarts it (PartOf), and the
       # instance is still there (`instance add` fails on an existing one).
+      # Not `requires`: IfState's unit also fails when some other
+      # declared link is missing, after it applied this namespace; the
+      # translator must not go down with an absent second NIC.
       ${names.nat64.jool} = {
         description = "Jool NAT64 in the ${netns} namespace (specs/gateway.md G2)";
         wantedBy = ["multi-user.target"];
         after = ["ifstate.service"];
-        requires = ["ifstate.service"];
+        wants = ["ifstate.service"];
+        partOf = ["ifstate.service"];
         path = [
           pkgs.iproute2
           pkgs.kmod
           pkgs.jool-cli
           pkgs.procps
           pkgs.gnugrep
+          pkgs.gnused
+          pkgs.python3
         ];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
         };
         script = ''
+          canon() { python3 -c 'import ipaddress, sys; print(ipaddress.IPv6Network(sys.argv[1], strict=False))' "$1"; }
           modprobe jool
           ip netns exec ${netns} sysctl -w net.ipv4.conf.all.forwarding=1 net.ipv6.conf.all.forwarding=1
           # Jool refuses a pool4 range that overlaps the namespace's
           # ephemeral ports; nothing opens a socket in the namespace.
           ip netns exec ${netns} sysctl -w net.ipv4.ip_local_port_range="1024 1099"
+          # A pool6 that changed in the configuration: the live instance
+          # is replaced (a NAT64 instance's pool6 cannot be updated).
+          # Compared as networks, never as strings.
+          live=$(ip netns exec ${netns} jool -i default global display 2>/dev/null | sed -n 's/^ *pool6: *//p' || true)
+          if [ -n "$live" ] && [ "$(canon "$live")" != "$(canon ${lib.escapeShellArg cfg.pool6})" ]; then
+            echo "nat64-jool: pool6 was $live, the configuration says ${cfg.pool6}: the instance is made again"
+            ip netns exec ${netns} jool instance remove default
+          fi
           if ! ip netns exec ${netns} jool instance display | grep -w default >/dev/null; then
             ip netns exec ${netns} jool instance add default --netfilter --pool6 ${cfg.pool6}
             for proto in tcp udp icmp; do

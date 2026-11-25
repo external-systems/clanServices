@@ -6,7 +6,7 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G24`, so they never collide
+pages together.** Decisions are numbered `G1`–`G25`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
 `specs/netif.md` §2 (U3, U13–U18).
 
@@ -115,6 +115,33 @@ stability over fast failover (hysteresis on both sides); limit
 overrides per gateway, per client and per instance; a gateway may be a
 Kubernetes node and is never a client; no metrics yet (G18 later, the
 path kept open); the home box is `router` and a node, no gateway yet.
+
+Round G9 (2026-11-25): **hardening review of PR #38 and of the
+networking and cluster services** (§16). Three reviewers read the
+existing services, one the gateway code; every finding below was
+checked against the code.
+- **The owner answered round G8's questions:** windows, not "in a row"
+  ("if that is most stable"); the stray-packet check bounds a time
+  window; the `nat-gateway` suite is split.
+- **G25, new: a router shares its machine.** The largest gap: the
+  router turned the NixOS firewall off and dropped by policy whatever
+  it did not know, so on the owner's home box (router and node,
+  §14.5 point 7) the cluster's and the fabric's rules were void and
+  their traffic was dropped. No suite combined them. Now the router's
+  table judges its own links only; suite `router-kube`.
+- **Three fixes in `nat-gateway`:** the translator was a way into the
+  gateway's own IPv4 ports (`nat64-host`); the follower took any /96 a
+  beacon named (now only that gateway's own); a `pool6` or CLAT
+  address that changed in the configuration was never applied, and one
+  written in another spelling failed the unit (now reconciled, compared
+  as addresses).
+- **Router assertions:** one link per zone, no router advertisements
+  accepted on a zone link, the router's own address outside the DHCPv4
+  pool; the prefix hook runs after IfState.
+- **Suites:** `nat-gateway` is split into `nat-gateway` (function) and
+  `nat-gateway-failover` (§14.5 point 4); new `router-kube`.
+- **Not fixed, for the owner:** §16.3 ranks what the review found in
+  `routed-fabric`, the cluster services and netif.
 
 
 
@@ -973,7 +1000,86 @@ any code (AGENTS.md rule 3).
     (the client would need internet targets of its own, G23 moved that
     check to the gateway); a route that follows gateway health (the
     fabric; G4 keeps the host path off it).
-  *(implemented: `nat-gateway`, `NAT_GATEWAY_OK`)*
+  - **An answer is proof only for the gateway's own /96** (round G9).
+    The follower knows each gateway's /96 from the inventory. A beacon
+    that names another prefix (forged on the path, or misconfigured) is
+    treated as no answer and logged once: the CLAT is never moved to a
+    prefix the inventory does not know.
+  *(implemented: `nat-gateway`, `NAT_GATEWAY_OK`,
+  `NAT_GATEWAY_FOREIGN_PREFIX_OK`)*
+
+- **G25 A router shares its machine: ownership by link** (round G9,
+  2026-11-25; found by the review, §16). The owner's home box is a
+  router and a Kubernetes node (§14.5 point 7). The first cut's router
+  set `networking.firewall.enable = false` and had `policy drop` on
+  input and forward for the whole machine. Every other service opens
+  its ports through the NixOS firewall (netif N19, `routed-fabric`,
+  k3s, rke2): on a router those rules were void, and the router's
+  table dropped the fabric's WireGuard and BGP, the API, and every
+  forwarded pod packet.
+  - **A router link** is the WAN link or a zone's link. **An unzoned
+    link** is every other link of the machine: a fabric's WireGuard
+    links, Cilium's links, a VPN.
+  - **The router's table judges a packet only when it enters or leaves
+    through a router link.** Input from an unzoned link, and forwarding
+    between two unzoned links, is not the router's: it accepts, and the
+    machine's own firewall decides.
+  - **The NixOS firewall stays on** (an eval assertion). On a router
+    link a packet must pass both. The router gives the NixOS firewall
+    what its own table accepts there (the resolver and DHCPv4 ports per
+    zone link); reverse path filtering stays off by default, because
+    the prefix hook answers a wrong source with an error (G22) and a
+    filter would drop it in silence.
+  - **Crossing between the two sides is named, default deny:**
+    - unzoned links always reach the WAN;
+    - `unzoned.zones`: the zones that exchange flows with unzoned
+      links (a zone that reaches the cluster's pods and services), **in
+      both directions**. Found by `router-kube`: Cilium sends a local
+      pod's packets straight out of the zone's link, past netfilter.
+      Connection tracking then sees one direction only and calls the
+      other invalid, so the first design (a direction per rule) let the
+      SYN in and dropped the client's next packet. The rule for packets
+      from the zone is therefore stateless and stands before the
+      tracking rules. A flow from the zone is also **masqueraded**
+      behind the router's address on the unzoned link: the fabric's
+      WireGuard accepts cluster sources only (a LAN client's SYN to a
+      pod on another node was dropped there), and the answer then
+      returns through the router's stack. Pods see the router as the
+      source, not the client. `unzoned.source.ipv4`/`.ipv6` name that
+      source; on a node it is the node's fabric address (the fabric's
+      links hold transfer addresses a peer does not accept as a source:
+      a plain masquerade chose the LAN address, and the peer dropped
+      it). Unset: the outgoing link's address. For a zone that is not named, the router drops
+      what the zone sends towards unzoned links: no connection forms,
+      but it cannot stop a single packet from a pod on the router
+      itself into the zone. A Cilium network policy narrows either;
+    - `zones.<zone>.hostPorts` (default off): the zone may reach the
+      ports the machine opens to everyone
+      (`networking.firewall.allowedTCPPorts` and the like), such as the
+      fabric's WireGuard ports. For a zone that holds other nodes;
+    - `wanPorts.tcp`, `wanPorts.udp` (default empty): ports of the
+      router itself that the WAN may reach. Invariant 3 holds until the
+      owner names a port (22 for deploys over the WAN; a WireGuard port
+      towards a remote site).
+  - **SPEC.md D71:** the router exports its WAN zone (`router`); on a
+    cluster member that is a router the WAN link joins Cilium's
+    `devices`, so its pods are masqueraded there (the same reason as a
+    gateway's uplink, §14.5 point 5). A node behind the router gets
+    the link of its default route into `devices` (round G9, §16.2).
+  - **A zone link is never a Cilium device** (eval assertion in k3s
+    and rke2, `routerViolations`). `devices` is one list of names for
+    the whole cluster (§14.2), so a zone link of the router whose name
+    another member's uplink also has would get Cilium attached, and
+    Cilium would pass that zone's traffic by the router's firewall in
+    both directions. Evaluation refuses it and says which name; the
+    owner gives one of the two links another name. A `CiliumNodeConfig`
+    per node (§14.2, candidate 2) would lift the limit.
+  - Not covered: a BGP peer inside a zone (the fabric opens such a
+    peer with a rule of its own, not with a port everyone may reach);
+    a router that is also a `nat-gateway` gateway (both set the
+    forward filter; the rules are rendered, no suite).
+  *(implemented: `router`, `ROUTER_OK`; `router-kube`,
+  `ROUTER_KUBE_OK`)*
 
 ## 3. Invariants (target)
 
@@ -1014,7 +1120,9 @@ any code (AGENTS.md rule 3).
   | `gateway-wan` | netif N43 (MAC override), N44 (VLAN 0) | `GATEWAY_WAN_OK` |
   | `netif-v6only` | netif N45; G4 and G23 from a host's side; path MTU through both translators | `NETIF_V6ONLY_OK` |
   | `router` (round G7; replaced `gateway-router`, same script) | the `router` service: G8, G10, G11, G14, G15, G20, G22, §14.3's hairpin; netif N16: zones, advertisements, the prefix hook, the service prefix | `ROUTER_OK` |
-  | `nat-gateway` (round G7) | the `nat-gateway` service: G2–G6, G23, G24, §14.1 point 4, §14.3; since round G8 §14.5's timings (withdrawn after 30 s, back after 120 s, a move after 60 s), 80 % loss, flapping targets, a client's own limit, a deploy that resumes the health state | `NAT_GATEWAY_OK` |
+  | `nat-gateway` (round G7; split in round G9) | the `nat-gateway` service, what it does: G2–G6, G24, §14.1 point 4, a client's own limit, nftables ownership, an IfState apply; since round G9 the gateway's own IPv4 ports closed to the translator, a changed `pool6` or CLAT address reconciled, a beacon that names a foreign /96 ignored | `NAT_GATEWAY_OK` |
+  | `nat-gateway-failover` (round G9; the second half of the same file) | G6, G23, §14.3, §14.5 point 4: the timings (withdrawn after 30 s, back after 120 s, a move after 60 s), 30 % and 80 % loss, flapping targets and upstream, dead targets and gateways, a deploy that resumes the health state, reboots | `NAT_GATEWAY_FAILOVER_OK` |
+  | `router-kube` (round G9) | G25: a router that is a k3s node. Both firewalls loaded; the cluster up through them; D71 puts the WAN in `devices`; NAT44 for a LAN client, a node and pods; default deny between zones, from the WAN and towards pods; DHCPv4 and DNS through both firewalls; no NodePort on the WAN | `ROUTER_KUBE_OK` |
   | `nat-gateway-kube` (round G8) | §14.5 point 5: a gateway that is a k3s node; D71 puts its uplink in `devices`; Cilium's eBPF masquerade and the gateway's nftables masquerade share one public IPv4; the allowlist on a Cilium node; no NodePort on the public IPv4 | `NAT_GATEWAY_KUBE_OK` |
   | `gateway-dual-wan` | G16; netif N21: two DHCPv4 WANs, failover without a route change | `GATEWAY_DUAL_WAN_OK` |
   | `k3s-v6only`, `rke2-v6only` | SPEC.md D67: the `join` contract on IPv6-only NICs | `<DISTRO>_V6ONLY_OK` |
@@ -2210,6 +2318,11 @@ owner.
     `netif` export: no static IPv4, no DHCPv4);
   - an eval assertion refuses a VPN link: a netif link in zone `vpn` or
     `tailnet`, or a name starting `tailscale`, `wt`, `nb-`, `zt`, `tun`.
+  - round G8: every link of a gateway's uplink zone; round G9: a
+    router's WAN link, and **the link that owns any member's default
+    route** (netif `gatewayInMain`, N21; never a VPN zone's link). The
+    first cut covered only a node without IPv4; a pod on a dual-stack
+    node needs the same (§16.2).
   - Not yet proven: two nodes with different underlay names in one
     cluster (eval tests only: `test_d71RenderedDevices`).
 - Was open: `devices` is one cluster-wide Helm value, and the names
@@ -2464,3 +2577,160 @@ flakiness measure (§12.4).
     2.7 s (k3s), 14 to 16 in 2.9 to 3.1 s (rke2). The suite bounds the
     window (20 s) and the targets (node addresses only), not the count:
     the first rke2 run sent 16 against a bound of 10.
+
+## 16. Hardening review (round G9, 2026-11-25)
+
+The owner asked for a devil's advocate review of PR #38 and of the
+networking and cluster services, for two use cases: a cloud cluster of
+three managers of which two or more are gateways, and a home box that
+is a router and a node. Stability comes before fast failover.
+
+### 16.1 Owner answers to round G8
+
+1. **Windows, not "in a row"**: accepted, "if that is most stable".
+   §14.5 point 4 stands as written.
+2. **The stray-packet check bounds a time window** (20 s), not a
+   count: accepted ("build for stability").
+3. **The `nat-gateway` suite is split**: `nat-gateway` and
+   `nat-gateway-failover`, one file, one topology.
+
+### 16.2 Found in PR #38 and fixed
+
+| Found | What it did | Now | Proof |
+|---|---|---|---|
+| The router is the machine's only firewall (G25) | On a router that is a node: the cluster's and the fabric's firewall rules void, their traffic dropped by policy | Ownership by link; the NixOS firewall stays on | `router-kube`; eval `test_ownLinksOnly`, `test_node` |
+| The translator reaches the gateway itself | A declared client that sends to the /96 with the gateway's own IPv4 (Jool's link address or the public one) inside is delivered to the gateway's input, not forwarded: G5's refusal of private destinations never saw it, and the gateway's IPv4 ports were open to it | Rule `nat64-host`: IPv4 that arrives on Jool's link is refused | `nat-gateway`, in `assert_gateway` on both gateways |
+| The follower trusts any answer | A beacon answer names the /96 a CLAT moves to; a forged or wrong answer moved every client's IPv4 to a foreign prefix | G24: only the gateway's own /96 is proof | `NAT_GATEWAY_FOREIGN_PREFIX_OK` |
+| A changed `pool6` is never applied | The unit kept a live instance whatever its prefix; the gateway then failed its own health check until a reboot | The instance is made again when the prefix differs, compared as networks | `NAT_GATEWAY_RECONCILE_OK` |
+| A CLAT address in another spelling fails the unit | The mapping was matched as a string; `2001:db8:c:0::c1a7` never matched, the second `eamt add` failed, at every start | Compared as addresses; a changed address replaces the mapping | `NAT_GATEWAY_RECONCILE_OK` |
+| A zone of two links is half configured | Addresses, DHCPv4 and the resolver came from the first link only | Eval assertion: one link per zone | eval `test_twoLinksInAZone` |
+| A zone link accepts router advertisements | netif's default is `ra = true`; a LAN host could give the router addresses and routes | Eval assertion: `ra = false` on zone links | eval `test_zoneAcceptsRa` |
+| The DHCPv4 pool can hold the router's address | The pool is the upper half; a router at `.254` could be leased | Eval assertion | eval `test_routerInThePool` |
+| The prefix hook may run before IfState | Its netdev chain names the LAN links | Ordered after `ifstate.service` | `router` |
+| A missing other link stops the translator | The Jool units required `ifstate.service`, which also fails when any declared physical link is absent (netif P3a), after it applied the namespaces | `Wants` and `PartOf`: an apply still restarts them, a failed check does not stop them | the gateway suites' IfState phases |
+| A plain node's pods cannot leave (SPEC.md D71) | `devices` held a member's uplink only for a `nat-gateway` client or gateway. On any other node with a default route the pod's packets left with the pod's address. Found by the first run of `router-kube`: beta's pod reached the internet host through the router's NAT44, and the answer came back over the fabric, whose WireGuard refuses a source that is not the cluster's | The link that owns a member's default route joins `devices` (netif `gatewayInMain`) | `router-kube`; eval `test_d71DefaultRouteLink` |
+| One list of device names can attach Cilium to a router's zone link | Two machines with the same link name (identical mini PCs): the router's zone link and another node's uplink. Cilium on the zone link forwards past the router's table | Eval refusal, with the name | eval `test_d71RouterZoneLinkRefused` (k3s, rke2) |
+| A gateway needs a client | An instance of gateways only (three managers, all with a public IPv4) failed evaluation | Allowed: an empty allowlist lets nobody through | eval `test_noClients` |
+
+### 16.3 Found in the existing services, not fixed
+
+Read in the code by the reviewers and checked again against it; none
+was run. Ranked by damage to the two use cases. Each needs the owner's
+word before code: most change every cluster suite.
+
+1. **No BGP graceful restart between Cilium and FRR**
+   (`lib/kube-cluster/bgp.nix`, `frr.nix`; nothing renders
+   `gracefulRestart`). A restart of the Cilium agent keeps forwarding
+   but drops the session; FRR withdraws that node's pod and service
+   routes everywhere until the agent is back. A healthy node looks
+   sick. Direction: `gracefulRestart` in the peer config, and a suite
+   case that restarts the agent under traffic.
+2. **A restart of FRR withdraws the node's fabric address**, and the
+   control plane (etcd, the API) rides it. A deploy that restarts FRR
+   on all three managers at once can lose quorum for seconds.
+   Direction: BGP graceful restart on the fabric sessions, or a
+   documented rule: one manager at a time.
+3. **`site` defaults to `"default"` on every member**
+   (`services/routed-fabric`), so two members in different places that
+   never set it get the LAN timers (BFD 300 ms x 3) over the internet.
+   A second of jitter drops a healthy peer. Direction: `wan` timers
+   unless both ends name the same site.
+4. **A `clusterInit` server that is reinstalled starts a second
+   cluster** (empty etcd, the same CAs): the other nodes' HAProxy check
+   accepts it. Direction: refuse to start when another server answers.
+5. **A change of `cilium-config` reaches no running agent**: a manager
+   that becomes a gateway gets its uplink masqueraded only after a
+   restart of its agent, at some later reboot. Direction: a documented
+   step, one node at a time.
+6. **The ClusterMesh secrets unit restarts `clustermesh-apiserver` at
+   every run** (`bootstrap.nix`), so every restart of the init server
+   drops the mesh sessions. Direction: restart only on a change.
+7. **`operator.replicas = 1`** in a cluster of three managers: while
+   its node is down, no new pod CIDR and no new LoadBalancer address.
+8. **`maximum-prefix 4096 restart 10` on the Cilium session**: past
+   the limit FRR drops the session for 10 minutes, and with it the
+   node's pod routes. Direction: `warning-only` there.
+9. **A leaf can pass routes on** (the export filter matches prefixes,
+    not the path), against "leaves never provide transit".
+10. **`ipv4NativeRoutingCIDR` is `10.0.0.0/8`, fixed**: pods reach a
+    host in a provider's or a home's 10/8 network with their pod
+    address. Direction: an eval check against the netif addresses.
+11. **netif's guard rolls back the IfState file only**: not a dhcpcd
+    configuration, and with the old ignore list.
+12. **The PKI install is skipped, not failed, when its secret is
+    missing** (`ConditionPathExists`): the server then makes its own
+    CAs. Direction: `AssertPathExists`.
+13. **HAProxy has no `timeout tunnel`**: an idle `kubectl exec` or
+    `logs -f` ends after a minute.
+14. **The router reads netif's internal `clanServices.netif.links`**
+    (round G7's question 4), with defaults that hide a renamed key.
+15. **Every router boot retires the current prefix for a few seconds**
+    (the hook runs before dhcpcd's first reply; netif N16 lists it as
+    open).
+16. **A rate-limit meter that is full fails open**: a source prefix
+    with more than 65 535 live addresses is no longer limited.
+
+### 16.4 Evidence (2026-11-25, euc-hel-0)
+
+Each line is one run, a sample (§12.4).
+
+- **`nat-gateway-failover`** (`NAT_GATEWAY_FAILOVER_OK`, passed,
+  2 176 s; the run before, beside other suites, 2 123 s). The timings
+  of round G8 hold: withdrawn 31.6 s after every target or the
+  translator died and 32.6 s after 80 % loss began; back 113.5 to
+  114.4 s after a clean upstream; a client moved 62.9 s after a crash
+  and 92.5 s after its gateway's targets died; a CLAT made again on
+  the dead gateway's /96 corrected after 61.5 s.
+
+- **`router-kube`** (`ROUTER_KUBE_OK`, passed, 326 s): alpha is a k3s
+  server, a fabric spine and the router; beta a k3s agent in zone
+  `servers`; a client in zone `home`; an internet host on the WAN.
+  - Tables on alpha: `inet router`, `inet nixos-fw`, and Cilium's
+    (through iptables-nft). The cluster came up through both.
+  - Rendered `devices`: `<fabric link> <fabric loopback> eth2`. `eth2`
+    is alpha's WAN and beta's uplink; both agents masquerade on it. No
+    zone link of alpha is a device.
+  - The IPv4 internet saw the WAN address from alpha's pod, beta's
+    host, beta's pod, the home client and alpha itself. The IPv6
+    internet saw the home client's and beta's own addresses (routed),
+    and alpha's WAN address and beta's node address for their pods.
+  - Refused: home to servers; the WAN to ports 22, 53, 6443, 10250,
+    2379 on both address families (sshd and the kubelet listen on
+    every address); a zone to 6443, 10250, 2379; a host in zone
+    `servers` (not in `unzoned.zones`) to a pod on either node; the
+    other zone's resolver address; a NodePort on the WAN address.
+  - Allowed: SSH and the zone's own resolver from each zone; DHCPv4 in
+    zone `home`; the home client to a pod on each node.
+  - After a restart of nftables and an IfState apply: the same.
+- **What the earlier runs of `router-kube` found** (each fixed before
+  the next):
+  1. beta's pod could not reach the internet: its packets left with
+     the pod's address through a link that was no Cilium device. Fixed
+     in SPEC.md D71 (the default-route link).
+  2. The home client reached no pod on alpha: Cilium answered straight
+     out of the zone link, conntrack saw no answer and dropped the
+     client's next packets as invalid (12 counted). Fixed: the
+     stateless rule ahead of connection tracking, and the masquerade.
+  3. The home client reached no pod on beta: the fabric's WireGuard
+     dropped a source that is not the cluster's, first the client's own
+     address, then the LAN address a plain masquerade chose. Fixed:
+     `unzoned.source`.
+- **`nat-gateway`** (`NAT_GATEWAY_OK`, passed, 444 s; 2 234 s before
+  the split): on both gateways the translator refused the gateway's
+  own IPv4 addresses (`nat64-host` counted each try). A Jool instance
+  given another pool6 was made again at the next start ("pool6 was
+  2001:db8:ffff::/96 ..."), and not again at the start after. A
+  mapping for another address was replaced. A beacon made to name
+  `2001:db8:bad::/96` was logged once and moved nobody. Limits as in
+  round G8: 20 of 40 simultaneous connections, 3 488 of 5 990
+  datagrams dropped, the capped client's own meter 3 494 of 5 985.
+- **`router`** (`ROUTER_OK`): every phase of round G7 with the NixOS
+  firewall on; the tables are now `inet nixos-fw`, `inet router`,
+  `inet router_svc`, `netdev router_src`. Passed, 378 s.
+- **`k3s-clat`** (passed, 741 s), **`rke2-clat`** (passed, 928 s),
+  **`nat-gateway-kube`** (passed, 255 s).
+- Untouched suites were not run: `k3s-single`, `k3s-join`,
+  `k3s-join-netif`, `k3s-modes`, `k3s-data-plane-netif`, `k3s-v6only`,
+  `k3s-clat-mapped` and `netif-v6only` evaluate to the derivations of
+  the commit before this round.
+

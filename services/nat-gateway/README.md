@@ -25,6 +25,20 @@ resolvers, which netif sets.
   clean seconds.
 - A client moves after 60 s without its gateway's beacon, only to a
   beacon that answers, and never moves back on its own.
+- A beacon is believed only when it names its own gateway's `pool6`.
+  Any other answer counts as silence.
+
+## What the gateway refuses
+
+- A source that is no client: every protocol, and the beacon.
+- A destination that embeds a private IPv4 address.
+- A destination that embeds one of the gateway's own IPv4 addresses:
+  the translator is no way into the gateway itself.
+
+## Changing `pool6` or a CLAT address
+
+The next start of the unit applies it. On a gateway the translator is
+made again, which ends the flows through it; clients follow after 60 s.
 
 ## Requirements
 

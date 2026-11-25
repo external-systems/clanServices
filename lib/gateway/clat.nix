@@ -43,8 +43,19 @@ in {
       description = "The /96 the CLAT starts on: a gateway's pool6. The follower moves it.";
     };
     beacons = mkOption {
-      type = types.listOf types.str;
-      description = "The gateways' beacon addresses (G24), asked for `ipv4only.arpa`.";
+      type = types.listOf (types.submodule {
+        options = {
+          address = mkOption {
+            type = types.str;
+            description = "The gateway's beacon address (G24), asked for `ipv4only.arpa`.";
+          };
+          pool6 = mkOption {
+            type = types.str;
+            description = "The gateway's /96. An answer that names another prefix is no proof: the follower never moves the CLAT to a prefix the inventory does not know.";
+          };
+        };
+      });
+      description = "The gateways: each one's beacon address and its /96.";
     };
     followAfter = mkOption {
       type = types.ints.positive;
@@ -133,19 +144,22 @@ in {
     };
 
     systemd.services = {
-      # Idempotent: an IfState apply restarts it (Requires), and the
+      # Idempotent: an IfState apply restarts it (PartOf; not `requires`,
+      # see nat64.nix: a missing other link must not stop the CLAT), and the
       # instance, its pool6 (the follower's choice) and its mapping stay.
       ${names.clat.jool} = {
         description = "CLAT: Jool SIIT in the ${netns} namespace (specs/gateway.md G23)";
         wantedBy = ["multi-user.target"];
         after = ["ifstate.service"];
-        requires = ["ifstate.service"];
+        wants = ["ifstate.service"];
+        partOf = ["ifstate.service"];
         path = [
           pkgs.iproute2
           pkgs.kmod
           pkgs.jool-cli
           pkgs.procps
           pkgs.gnugrep
+          pkgs.python3
         ];
         serviceConfig = {
           Type = "oneshot";
@@ -157,8 +171,12 @@ in {
           if ! ip netns exec ${netns} jool_siit instance display | grep -w ${instance} >/dev/null; then
             ip netns exec ${netns} jool_siit instance add ${instance} --netfilter --pool6 ${cfg.pool6}
           fi
-          if ! ip netns exec ${netns} jool_siit -i ${instance} eamt display --csv | grep -F '${cfg.address}/128,192.0.0.1/32' >/dev/null; then
-            ip netns exec ${netns} jool_siit -i ${instance} eamt add ${cfg.address} 192.0.0.1
+          # The host's mapping, compared as addresses, never as strings.
+          # One that changed in the configuration replaces the old one.
+          wanted=$(python3 -c 'import ipaddress, sys; print(ipaddress.IPv6Address(sys.argv[1]))' ${lib.escapeShellArg cfg.address})
+          if ! ip netns exec ${netns} jool_siit -i ${instance} eamt display --csv --no-headers | grep -Fx "$wanted/128,192.0.0.1/32" >/dev/null; then
+            ip netns exec ${netns} jool_siit -i ${instance} eamt flush
+            ip netns exec ${netns} jool_siit -i ${instance} eamt add "$wanted" 192.0.0.1
           fi
           ip route replace default via 192.0.0.2 dev ${host} mtu ${toString cfg.mtu}
           ${lib.concatMapStrings (link: ''

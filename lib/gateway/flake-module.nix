@@ -65,6 +65,23 @@ in {
       imports = [(import ./tests/vm/kube-gateway.nix {inherit inputs;})];
       inherit ((clat "k3s" false)) clan;
     };
+    # specs/gateway.md G25: a router that is a kube node (the home box)
+    router-kube = {
+      imports = [(import ./tests/vm/kube-router.nix {inherit inputs;})];
+      clan = {
+        modules =
+          (kube "k3s").modules
+          // {
+            inherit (self.clan.modules) netif router;
+          };
+        exportInterfaces =
+          (kube "k3s").exportInterfaces
+          // {
+            netif = ../../services/netif/netif-interface.nix;
+            router = ../../services/router/router-interface.nix;
+          };
+      };
+    };
     netif-v6only = {
       imports = [./tests/vm/v6only-host.nix];
       clan.modules.netif = netif;

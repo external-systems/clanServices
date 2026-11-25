@@ -16,7 +16,13 @@
 # client, `trusted` a `trusted`-tier one, `capped` a client with a packet
 # limit of its own, `outsider` is no client. gw2 has low `default`
 # limits so the suite can cross them.
-{lib, ...}: let
+#
+# Two suites share this file (the topology and the helpers):
+#   nat-gateway           `phases = "function"`: the translator, the
+#                         allowlist, the limits, reconciliation;
+#   nat-gateway-failover  `phases = "failover"`: loss, flaps, dead
+#                         targets and gateways, restarts and reboots.
+{phases}: {lib, ...}: let
   pool1 = "2001:db8:a1:0:64::/96";
   # Printed with `::` in the middle of every address inside it: the
   # follower must not cut the /96 out of an answer as a string.
@@ -299,7 +305,10 @@
     networking.nftables.tables.suite = hooksTable pool;
   };
 in {
-  name = "nat-gateway";
+  name =
+    if phases == "function"
+    then "nat-gateway"
+    else "nat-gateway-${phases}";
 
   clan = {
     directory = ./.;
@@ -579,27 +588,20 @@ in {
             before = refused_private(machine)
             client.fail(f"ping -c1 -W2 {embed(gateway, private)}")
             assert refused_private(machine) == before + 1, f"{machine.name} did not refuse {private}"
+        # The translator is no way into the gateway's own IPv4 ports: a
+        # /96 destination that embeds Jool's link address or the public
+        # address is delivered to the gateway, and refused there
+        for own in ["192.0.0.1", gateway.v4]:
+            before = counted(machine, "input", "nat64-host")
+            client.fail(http(embed(gateway, own), limit=3))
+            assert counted(machine, "input", "nat64-host") > before, f"{machine.name} let {own} in through its translator"
         # the gateway's own IPv4 traffic does not pass the translator
         out = machine.succeed(http("198.51.100.80")).strip()
         assert out == gateway.v4, out
 
 
-    with state_dump_on_failure([client, gw1, gw2, server4], extra=["ip netns exec nat64 jool instance display", "ip netns exec nat64 jool pool4 display", "ip netns exec clat jool_siit -i clat global display", "journalctl -b --no-pager -u clat-follow -u nat64-health -u nat64-jool -u nat64-beacon | tail -n 80"]):
-        with subtest("boot and versions"):
-            start_all()
-            for machine in [client, trusted, outsider, server4]:
-                machine.wait_for_unit("multi-user.target", timeout=300)
-            server4.wait_until_succeeds("ss -tln | grep ':80 ' >/dev/null", timeout=60)
-            for machine in [client, trusted, capped]:
-                machine.wait_for_unit("clat.service", timeout=60)
-                machine.wait_for_unit("clat-follow.service", timeout=60)
-            for gateway in [G1, G2]:
-                gateway_ready(gateway)
-            print_versions(gw1, ["kernel", "jool", "ifstate", "nftables", "coredns"])
-            print_versions(client, ["kernel", "jool", "ifstate"])
-            for machine in [client, trusted, capped, outsider, gw1, gw2, server4]:
-                machine.fail("systemctl --failed --no-legend | grep .")
-
+    def function_phases():
+        """The translator, the allowlist, the limits: nothing here waits for a failover."""
         with subtest("G2, G5, G24: each gateway translates declared sources only, every protocol"):
             for gateway in [G1, G2]:
                 assert_gateway(gateway)
@@ -800,6 +802,50 @@ in {
             assert clat_gateway() is gateway and moves() == before
             print("NAT_GATEWAY_IFSTATE_OK")
 
+
+        with subtest("a pool6 or a CLAT address that changed is reconciled at the next start, compared as addresses"):
+            # the gateway: a live instance with another pool6 is replaced
+            gw2.succeed("ip netns exec nat64 jool instance remove default && ip netns exec nat64 jool instance add default --netfilter --pool6 2001:db8:ffff::/96")
+            gw2.succeed("systemctl restart nat64-jool.service")
+            gw2.succeed("journalctl -b -u nat64-jool -o cat --no-pager | grep -F 'the instance is made again' >/dev/null")
+            made = int(gw2.succeed("journalctl -b -u nat64-jool -o cat --no-pager | grep -cF 'the instance is made again'").strip())
+            client.wait_until_succeeds(http(G2.server), timeout=30)
+            # the same pool6 again: nothing is replaced, sessions stay
+            gw2.succeed("systemctl restart nat64-jool.service")
+            assert int(gw2.succeed("journalctl -b -u nat64-jool -o cat --no-pager | grep -cF 'the instance is made again'").strip()) == made
+            assert_gateway(G2)
+            # the client: a mapping for another address is replaced
+            client.succeed("ip netns exec clat jool_siit -i clat eamt flush && ip netns exec clat jool_siit -i clat eamt add 2001:db8:c::dead 192.0.0.1")
+            client.fail(http("198.51.100.80", limit=3))
+            client.succeed("systemctl restart clat.service")
+            mapping = client.succeed("ip netns exec clat jool_siit -i clat eamt display --csv --no-headers").strip()
+            assert mapping == "${clatAddr}/128,192.0.0.1/32", mapping
+            client.wait_until_succeeds(http("198.51.100.80"), timeout=30)
+            print("NAT_GATEWAY_RECONCILE_OK")
+
+        with subtest("G23: a beacon that names a /96 that is not its gateway's is no proof; the follower ignores it"):
+            current = clat_gateway()
+            liar = other(current)
+            before = moves()
+            records = liar.machine.succeed("cat /run/nat64-gateway/ipv4only.hosts")
+            liar.machine.succeed("printf '2001:db8:bad::c000:aa ipv4only.arpa\\n2001:db8:bad::c000:ab ipv4only.arpa\\n' > /run/nat64-gateway/ipv4only.hosts")
+            try:
+                trusted.wait_until_succeeds(f"dig +short AAAA ipv4only.arpa @{liar.addr} | grep -F '2001:db8:bad::' >/dev/null", timeout=30)
+                # a follower that starts asks every beacon
+                client.succeed("systemctl restart clat-follow.service")
+                client.succeed("ip netns exec clat jool_siit -i clat global update pool6 2001:db8:eeee::/96")
+                client.wait_until_succeeds(f"journalctl -b -u clat-follow -o cat --no-pager | grep -F \"{liar.addr} names 2001:db8:bad::/96, not its gateway's {liar.pool}: ignored\" >/dev/null", timeout=30)
+                assert moves() == before
+            finally:
+                liar.machine.succeed(f"printf '%s' '{records}' > /run/nat64-gateway/ipv4only.hosts")
+                client.succeed(f"ip netns exec clat jool_siit -i clat global update pool6 {current.pool}")
+            client.wait_until_succeeds(names_prefix(liar), timeout=30)
+            client.wait_until_succeeds(http("198.51.100.80"), timeout=30)
+            print("NAT_GATEWAY_FOREIGN_PREFIX_OK")
+
+
+    def failover_phases():
+        """Loss, flaps, dead targets, dead gateways, restarts and reboots (§14.5 point 4)."""
         first = clat_gateway()
         second = other(first)
         assert first is G1
@@ -843,7 +889,7 @@ in {
             trusted.wait_until_succeeds(clat_on(live), timeout=60)
             capped.wait_until_succeeds(clat_on(live), timeout=60)
             holds_for(client, talk_stalled(heard), 20)
-            print("NAT_GATEWAY_FAILOVER_OK")
+            print("NAT_GATEWAY_CRASH_OK")
 
         with subtest("G23: the follower restarts on a /96 that is not its first one and stays for 15 s"):
             before = moves()
@@ -1056,10 +1102,33 @@ in {
             assert clat_gateway() is G1
             client.fail("systemctl --failed --no-legend | grep .")
 
+
+    with state_dump_on_failure([client, gw1, gw2, server4], extra=["ip netns exec nat64 jool instance display", "ip netns exec nat64 jool pool4 display", "ip netns exec clat jool_siit -i clat global display", "journalctl -b --no-pager -u clat-follow -u nat64-health -u nat64-jool -u nat64-beacon | tail -n 80"]):
+        with subtest("boot and versions"):
+            start_all()
+            for machine in [client, trusted, outsider, server4]:
+                machine.wait_for_unit("multi-user.target", timeout=300)
+            server4.wait_until_succeeds("ss -tln | grep ':80 ' >/dev/null", timeout=60)
+            for machine in [client, trusted, capped]:
+                machine.wait_for_unit("clat.service", timeout=60)
+                machine.wait_for_unit("clat-follow.service", timeout=60)
+            for gateway in [G1, G2]:
+                gateway_ready(gateway)
+            print_versions(gw1, ["kernel", "jool", "ifstate", "nftables", "coredns"])
+            print_versions(client, ["kernel", "jool", "ifstate"])
+            for machine in [client, trusted, capped, outsider, gw1, gw2, server4]:
+                machine.fail("systemctl --failed --no-legend | grep .")
+
+        ${phases}_phases()
+
         with subtest("the end state: both gateways pass every assertion again"):
             for gateway in [G1, G2]:
                 assert_gateway(gateway)
 
-    print("NAT_GATEWAY_OK")
+    print("${
+      if phases == "function"
+      then "NAT_GATEWAY_OK"
+      else "NAT_GATEWAY_FAILOVER_OK"
+    }")
   '';
 }

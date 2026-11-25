@@ -37,6 +37,55 @@ router is open from every zone (`ssh = false` closes it for a zone).
 Proof: the suite `router` runs every check of the former stand-in
 suite `gateway-router` on the service.
 
+## A router that is also a Kubernetes node
+
+Your home box is both. Since 2026-11-25 the service is built for it.
+
+- **The router judges its own links only.** A router link is the WAN
+  port or a zone's port. Every other link of the machine is *unzoned*:
+  the cluster's WireGuard links, Cilium's links, a VPN. The normal
+  NixOS firewall judges those, as on any machine.
+- **Both firewalls run.** On a router link a packet must pass both.
+- **Nothing crosses between the two sides unless you say so:**
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `unzoned.zones = ["home"]` | none | zone `home` and the cluster's pods and Services may reach each other, both ways |
+| `unzoned.source.ipv4`, `.ipv6` | the outgoing port's address | the address such traffic appears to come from. On a node: set it to the node's cluster-network address, or pods on other nodes are unreachable |
+| `zones.<zone>.hostPorts` | off | the zone may reach the ports the machine opens to everyone, such as the cluster network's WireGuard ports. Turn it on for the zone that holds your other nodes |
+| `wanPorts.tcp`, `wanPorts.udp` | empty | ports of the router itself that the internet may reach |
+
+- **The cluster always reaches the internet.** And a zone in
+  `unzoned.zones` is open in both directions: Cilium sends a pod's
+  packets straight out of the zone's port, past the router's firewall,
+  so the router cannot tell who started a connection. A pod sees the
+  router's address as the caller, not the LAN device's: the cluster
+  network carries cluster addresses only. Use a Cilium
+  network policy to narrow it. For a zone that is not listed the router
+  drops what the zone sends to the cluster, so no connection forms.
+- **Deploys over the WAN need `wanPorts.tcp = [22]`.** Without it the
+  first deploy closes SSH from the internet. SSH from a zone is open by
+  default.
+- **Pods on the router leave with the WAN address.** The cluster
+  service adds the WAN port to Cilium's device list by itself.
+- **Port names must differ between the router's zones and other nodes'
+  uplinks.** Cilium gets one list of port names for the whole cluster.
+  If a zone port of the router has the same name as another node's
+  uplink (two identical mini PCs, both `enp2s0`), Cilium would attach
+  to the zone port and pass traffic by the router's firewall. The build
+  refuses this and names the port; rename one of the two in netif.
+- Three checks stop a broken setup before it is deployed: a zone is one
+  port (use a bridge for several), a zone port does not accept router
+  advertisements (`ra = false`), and the router's own address is in the
+  lower half of the zone's IPv4 range (the upper half is handed out).
+
+Before this change the router switched the NixOS firewall off and
+dropped everything it did not know. On a node that silently removed the
+cluster's firewall rules and blocked the cluster's own traffic.
+
+Proof: suite `router-kube`, a k3s server that is the router, a second
+node in a zone behind it, a LAN client and an internet host.
+
 ## What runs on it
 
 | Job | Tool |

@@ -2,10 +2,12 @@
 #
 # A CLAT has one pool6, so it follows one gateway. Every round the
 # follower reads the CLAT's live pool6 from Jool (its only state) and
-# asks the gateways' beacons for `ipv4only.arpa` (RFC 7050). While a
-# beacon names that /96 it does nothing. When none has named it for
-# `missing` seconds and another beacon names a /96 of its own, it moves
-# there. When no beacon answers there is nowhere to go: it stays, and
+# asks the gateways' beacons for `ipv4only.arpa` (RFC 7050). An answer
+# is proof only when it names that gateway's own /96 (the inventory's):
+# a forged or wrong answer never moves the CLAT to an unknown prefix.
+# While a beacon names the CLAT's /96 it does nothing. When none has
+# named it for `missing` seconds and another beacon names its own /96,
+# it moves there. When no beacon answers there is nowhere to go: it stays, and
 # the clock starts again. It never moves back on its own, and there is
 # no hold after a move (the gateways' own hysteresis keeps a flapping
 # gateway from attracting clients).
@@ -34,16 +36,28 @@ def prefix_of_answer(text):
     return prefix
 
 
-def prefix_of(beacon):
-    """The one /96 that a beacon names, or None: no answer, an answer
-    that is not an address, or answers that disagree."""
+foreign = set()  # (beacon, prefix) pairs already reported
+
+
+def prefix_of(beacon, expected):
+    """The /96 that a beacon names when it is `expected`, its gateway's
+    own; else None: no answer, an answer that is not an address, answers
+    that disagree, or a prefix that is not the gateway's."""
     query = ["dig", "+short", "+time=1", "+tries=1", "AAAA", "ipv4only.arpa", "@" + beacon]
     try:
         lines = subprocess.run(query, capture_output=True, text=True, timeout=5).stdout.splitlines()
         found = {prefix_of_answer(line) for line in lines}
     except (ValueError, subprocess.TimeoutExpired):
         return None
-    return found.pop() if len(found) == 1 else None
+    if len(found) != 1:
+        return None
+    named = found.pop()
+    if named != expected:
+        if (beacon, named) not in foreign:
+            foreign.add((beacon, named))
+            print(f"clat-follow: {beacon} names {named}, not its gateway's {expected}: ignored")
+        return None
+    return named
 
 
 def live_pool6(jool):
@@ -63,7 +77,7 @@ def pace(started, period):
 
 
 def follow(config):
-    beacons = config["beacons"]
+    beacons = {entry["address"]: ipaddress.IPv6Network(entry["pool6"]) for entry in config["beacons"]}
     missing = float(config["missing"])
     jool = ["ip", "netns", "exec", config["netns"], "jool_siit", "-i", config["instance"], "global"]
     lost = None  # when the current /96 was last named, if it is not now
@@ -81,7 +95,7 @@ def follow(config):
         # the beacon that named pool6 last time is asked first
         answers = {}
         for beacon in sorted(beacons, key=lambda item: item != owner):
-            answers[beacon] = prefix_of(beacon)
+            answers[beacon] = prefix_of(beacon, beacons[beacon])
             if answers[beacon] is not None and answers[beacon] == pool6:
                 break
         else:

@@ -6,14 +6,20 @@
 }: let
   module = ./default.nix;
 in {
-  clan.modules.router = module;
+  clan = {
+    modules.router = module;
+    exportInterfaces.router = ./router-interface.nix;
+  };
 
   perSystem = _: {
     nix-unit.tests.router = import ./tests/eval-tests.nix {
       inherit module lib;
       clanLib = inputs.clan-core.lib;
       netifModule = self.clan.modules.netif;
-      exportInterfaces.netif = ../netif/netif-interface.nix;
+      exportInterfaces = {
+        netif = ../netif/netif-interface.nix;
+        router = ./router-interface.nix;
+      };
     };
   };
 
@@ -26,7 +32,10 @@ in {
         router = module;
         inherit (self.clan.modules) netif;
       };
-      exportInterfaces.netif = ../netif/netif-interface.nix;
+      exportInterfaces = {
+        netif = ../netif/netif-interface.nix;
+        router = ./router-interface.nix;
+      };
     };
   };
 }

@@ -20,6 +20,7 @@ in {
     description = "The edge of a LAN: zones with default deny, NAT44, DHCPv4, router advertisements from the delegated prefix, a resolver per zone";
     readme = builtins.readFile ./README.md;
     categories = ["Network"];
+    exports.out = ["router"];
   };
 
   roles.router = {
@@ -56,8 +57,55 @@ in {
                 default = true;
                 description = "The zone may reach the router's SSH (deploys).";
               };
+              hostPorts = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+                description = "The zone may reach the ports this machine opens to everyone (`networking.firewall.allowedTCPPorts` and the like), such as a fabric's WireGuard ports. For a zone that holds other cluster nodes (G25).";
+              };
             };
           });
+        };
+        wanPorts = {
+          tcp = lib.mkOption {
+            type = lib.types.listOf lib.types.port;
+            default = [];
+            example = [22];
+            description = "TCP ports of the router itself that the WAN may reach. Empty: nothing inbound (invariant 3). Name 22 here when deploys arrive over the WAN.";
+          };
+          udp = lib.mkOption {
+            type = lib.types.listOf lib.types.port;
+            default = [];
+            description = "UDP ports of the router itself that the WAN may reach, such as a fabric's WireGuard port towards a remote site.";
+          };
+        };
+        # G25: the machine's links in no zone (a fabric's WireGuard
+        # links, Cilium's links). The machine's own firewall judges
+        # what stays among them. They always reach the WAN. A zone
+        # exchanges flows with them only when it is named here.
+        unzoned.source = lib.genAttrs ["ipv4" "ipv6"] (family:
+          lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = ''
+              The ${family} source address a zone's flow gets on the
+              unzoned side. On a cluster node: the node's own fabric
+              address, because the fabric's WireGuard accepts cluster
+              addresses only and its links may hold no address a peer
+              accepts. null: the outgoing link's address (masquerade).
+            '';
+          });
+        unzoned.zones = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+          example = ["home"];
+          description = ''
+            Zones that exchange flows with the unzoned links, such as a
+            cluster's pods and services on a router that is a node. Both
+            directions: Cilium sends a pod's packets straight out of the
+            zone's link, past the router's table, so the router cannot
+            tell who opened a flow. Narrow it with a Cilium network
+            policy.
+          '';
         };
         domain = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
@@ -129,8 +177,17 @@ in {
       instanceName,
       machine,
       settings,
+      mkExports,
       ...
     }: {
+      # SPEC.md D71: a router that is a kube node gets its WAN into
+      # Cilium's `devices`, so its pods are masqueraded there
+      exports = mkExports {
+        router = {
+          inherit (settings) wanZone;
+          zones = builtins.attrNames settings.zones;
+        };
+      };
       nixosModule = {
         config,
         lib,
@@ -154,7 +211,7 @@ in {
           ids = map (entry: entry.subnet) (builtins.filter (entry: entry.interface == first) assigned);
         in {
           interfaces = links;
-          inherit (zone) internet allowTo ssh;
+          inherit (zone) internet allowTo ssh hostPorts;
           subnet =
             if ids == []
             then null
@@ -179,6 +236,21 @@ in {
             else null;
         };
         missing = builtins.filter (name: (netif.zones.${name} or []) == []) (builtins.attrNames settings.zones);
+        zoneLinks = lib.concatMap (name: netif.zones.${name} or []) (builtins.attrNames settings.zones);
+        # a zone's addresses, DHCPv4 and resolver come from one link
+        several = builtins.filter (name: lib.length (netif.zones.${name} or []) > 1) (builtins.attrNames settings.zones);
+        # a LAN host must not configure the router by an advertisement
+        listening = builtins.filter (link: (netif.links.${link} or {ra = false;}).ra) zoneLinks;
+        # the router's own IPv4 address inside the pool kea leases from
+        inPool = builtins.filter (name: let
+          zone = resolved.${name};
+          first = builtins.head zone.interfaces;
+          v4 = lib.findFirst (a: !(lib.hasInfix ":" a)) null (netif.links.${first} or {addresses = [];}).addresses;
+          net = c.parse v4;
+          own = (c.parse "${withoutLength v4}/32").start;
+        in
+          zone.dhcp4 != null && own >= net.start + (net.end - net.start + 1) / 2 && own < net.end) (builtins.attrNames resolved);
+        resolved = lib.mapAttrs resolve (lib.filterAttrs (name: _: (netif.zones.${name} or []) != []) settings.zones);
         tls = lib.any (lib.hasPrefix "tls://") settings.dns.upstream;
       in {
         imports = [../../lib/gateway];
@@ -197,6 +269,18 @@ in {
             message = "router/${instanceName}: servicePrefix.subnet ${toString settings.servicePrefix.subnet} is also assigned to a link by netif's prefixDelegation.assign (specs/gateway.md G20)";
           }
           {
+            assertion = several == [];
+            message = "router/${instanceName}: zone(s) ${toString several} have more than one netif link; a zone is one link (put the ports in a bridge)";
+          }
+          {
+            assertion = listening == [];
+            message = "router/${instanceName}: the zone link(s) ${toString listening} accept router advertisements; set 'ra = false' on the netif link (the router advertises there, it does not listen)";
+          }
+          {
+            assertion = inPool == [];
+            message = "router/${instanceName}: in zone(s) ${toString inPool} the router's own IPv4 address is in the upper half of the subnet, which is the DHCPv4 pool; give the router an address in the lower half";
+          }
+          {
             assertion = !(settings.zones ? ${settings.wanZone});
             message = "router/${instanceName}: the WAN zone '${settings.wanZone}' is not a LAN zone";
           }
@@ -205,7 +289,7 @@ in {
           enable = true;
           inherit wan;
           zones = lib.mapAttrs resolve settings.zones;
-          inherit (settings) domain pref64 servicePrefix;
+          inherit (settings) domain pref64 servicePrefix wanPorts unzoned;
           dns = {
             inherit (settings.dns) blocklist records upstream;
             forwardOptions = lib.optional tls "tls_servername ${settings.dns.tlsServerName}";

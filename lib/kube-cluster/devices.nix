@@ -2,13 +2,21 @@
 # transport's links, rendered from facts, never hand-set.
 #
 # Per member machine:
+#   - the link that owns the machine's default route (netif N21,
+#     `gatewayInMain`): pod traffic to the outside leaves there, and
+#     Cilium masquerades only on a `devices` link. Without it a pod's
+#     packets leave with the pod's address, and the answers come back
+#     another way or not at all (specs/gateway.md §16.4, `router-kube`).
+#     Never a VPN zone's link;
 #   - the CLAT link, when the machine is a `nat-gateway` client (G5);
 #   - the underlay links of that client's uplink zone that carry no
 #     IPv4 (no static IPv4 address, no DHCPv4): pod IPv6 leaves only
 #     through a `devices` link (§13.2 point 10);
 #   - every link of a `nat-gateway` gateway's uplink zone: its public
 #     IPv4 is there, and pod IPv4 is masqueraded only on a `devices`
-#     link (specs/gateway.md §14.5 point 5).
+#     link (specs/gateway.md §14.5 point 5);
+#   - the WAN link of a `router`: the same reason, for a router that is
+#     a node (specs/gateway.md G25).
 # Names come from the machines' netif and nat_gateway exports, whatever
 # the kernel calls a link. `devices` is one cluster-wide Helm value: it
 # is the union over the members, as the transport's links already are.
@@ -34,11 +42,16 @@
     natGateway = exportsOf clanLib exports "nat-gateway" machineName;
     clients = builtins.filter (value: (value.nat_gateway.clat.interface or null) != null) natGateway;
     gateways = builtins.filter (value: value.nat_gateway.gateway or false) natGateway;
+    routers = builtins.filter (value: (value.router.wanZone or null) != null) (exportsOf clanLib exports "router" machineName);
     netifLinks = lib.concatMap (value: builtins.attrValues (value.netif.links or {})) (
       exportsOf clanLib exports "netif" machineName
     );
+    defaults = map (link: link.interface) (
+      builtins.filter (link: (link.gatewayInMain or false) && (link.interface or null) != null && !(lib.elem (link.zone or null) vpnZones)) netifLinks
+    );
   in
-    lib.concatMap (
+    defaults
+    ++ lib.concatMap (
       client: let
         zone = client.nat_gateway.uplinkZone or null;
         underlay = builtins.filter (link: zone != null && (link.zone or null) == zone && !(hasIpv4 link) && (link.interface or null) != null) netifLinks;
@@ -52,7 +65,12 @@
       in
         map (link: link.interface) (builtins.filter (link: zone != null && (link.zone or null) == zone && (link.interface or null) != null) netifLinks)
     )
-    gateways;
+    gateways
+    ++ lib.concatMap (
+      router:
+        map (link: link.interface) (builtins.filter (link: (link.zone or null) == router.router.wanZone && (link.interface or null) != null) netifLinks)
+    )
+    routers;
 
   vpnNames = clanLib: exports: machineName:
     map (link: link.interface) (
@@ -60,8 +78,37 @@
         lib.concatMap (value: builtins.attrValues (value.netif.links or {})) (exportsOf clanLib exports "netif" machineName)
       )
     );
+  # The zone links of a member that is a `router` (specs/gateway.md
+  # G25): the router's firewall judges them, never Cilium.
+  zoneLinks = clanLib: exports: machineName: let
+    zones = lib.concatMap (value: value.router.zones or []) (exportsOf clanLib exports "router" machineName);
+  in
+    map (link: link.interface) (
+      builtins.filter (link: lib.elem (link.zone or null) zones && (link.interface or null) != null) (
+        lib.concatMap (value: builtins.attrValues (value.netif.links or {})) (exportsOf clanLib exports "netif" machineName)
+      )
+    );
 in {
   inherit vpnPrefixes vpnZones;
+
+  # Names in `devices` that are a zone link of a member that is a
+  # router: a list of messages. `devices` is one list of names for the
+  # whole cluster, so another member's uplink of the same name would
+  # attach Cilium to the router's zone link, and Cilium would pass that
+  # zone's traffic by the router's firewall.
+  routerViolations = {
+    clanLib,
+    exports,
+    members,
+    devices,
+  }:
+    lib.concatMap (
+      member:
+        map (name: "'${name}' is a zone link of the router '${member}' and also a Cilium device (another member's uplink has that name): Cilium would pass the zone's traffic by the router's firewall. Give one of the two links another name (specs/gateway.md G25)") (
+          builtins.filter (name: lib.elem name devices) (zoneLinks clanLib exports member)
+        )
+    )
+    members;
 
   # The extra devices of the cluster: a sorted, unique list of names.
   extra = {

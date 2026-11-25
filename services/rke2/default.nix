@@ -851,10 +851,16 @@
             ++ map (message: {
               assertion = false;
               message = "rke2/${instanceName}: Cilium devices: ${message}";
-            }) (kube.devices.vpnViolations {
-              inherit clanLib exports members;
-              devices = lib.splitString " " (ciliumProfile.devices or "");
-            })
+            }) (
+              kube.devices.vpnViolations {
+                inherit clanLib exports members;
+                devices = lib.splitString " " (ciliumProfile.devices or "");
+              }
+              ++ kube.devices.routerViolations {
+                inherit clanLib exports members;
+                devices = lib.splitString " " (ciliumProfile.devices or "");
+              }
+            )
             ++ (kube.assertions.mkClusterAssertions {
               inherit
                 instanceName
@@ -1154,6 +1160,8 @@ in {
         # D71: the CLAT link and the IPv6-only underlay of each member
         "netif"
         "nat_gateway"
+        # D71: the WAN of a member that is a router
+        "router"
       ];
       out = ["kube_cluster"];
     };
