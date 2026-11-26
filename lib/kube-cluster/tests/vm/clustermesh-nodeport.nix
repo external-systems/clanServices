@@ -36,6 +36,11 @@
     if k3s
     then "k3s"
     else "rke2-server";
+  # beta and delta are agents (SPEC.md §6.12: two servers are refused)
+  agentUnit =
+    if k3s
+    then "k3s"
+    else "rke2-agent";
   marker = lib.toUpper distro;
   member = n: {
     settings = {
@@ -218,7 +223,7 @@ in {
             for m in [alpha, beta, gamma, delta]:
                 m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
                 m.wait_for_unit("haproxy.service", timeout=240)
-                m.wait_for_unit("${runtimeUnit}.service", timeout=600)
+                m.wait_for_unit(("${agentUnit}" if m.name in ("beta", "delta") else "${runtimeUnit}") + ".service", timeout=600)
 
         with subtest("bootstrap bundles and mesh secrets applied"):
             # Both bootstrap bundles applied (each cluster's clusterInit node).

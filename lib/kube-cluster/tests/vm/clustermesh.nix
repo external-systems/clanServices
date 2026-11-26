@@ -36,6 +36,11 @@
     if k3s
     then "k3s"
     else "rke2-server";
+  # beta and delta are agents (SPEC.md §6.12: two servers are refused)
+  agentUnit =
+    if k3s
+    then "k3s"
+    else "rke2-agent";
   marker = lib.toUpper distro;
   # One server and one agent per cluster (SPEC.md §6.12: two servers are
   # refused); the mesh apiserver runs on both nodes.
@@ -245,7 +250,7 @@ in {
             for m in [alpha, beta, gamma, delta]:
                 m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
                 m.wait_for_unit("haproxy.service", timeout=240)
-                m.wait_for_unit("${runtimeUnit}.service", timeout=600)
+                m.wait_for_unit(("${agentUnit}" if m.name in ("beta", "delta") else "${runtimeUnit}") + ".service", timeout=600)
 
         with subtest("bootstrap bundles and mesh secrets applied"):
             # Both bootstrap bundles applied (each cluster's clusterInit node).
@@ -278,6 +283,16 @@ in {
                 "kubectl wait --for=condition=Ready node/gamma node/delta --timeout=120s",
                 timeout=300,
             )
+
+        # The agents have no kubeconfig of their own: the test gives them
+        # their cluster's admin kubeconfig (it dials the local HAProxy), so
+        # kubectl and the cilium CLI run on every node.
+        with subtest("the agents get their cluster's admin kubeconfig"):
+            import base64
+            for server, agent in [(alpha, beta), (gamma, delta)]:
+                cfg = base64.b64encode(server.succeed("cat /etc/rancher/${distro}/admin-kubeconfig").encode()).decode()
+                agent.succeed(f"mkdir -p /etc/rancher/${distro} && echo {cfg} | base64 -d > /etc/rancher/${distro}/${distro}.yaml")
+                agent.succeed("kubectl get --raw /readyz | grep ok >/dev/null")
 
         with subtest("Cilium healthy with BGP config, advertisements and peers"):
             # Cilium healthy on both clusters, with every node's local-router

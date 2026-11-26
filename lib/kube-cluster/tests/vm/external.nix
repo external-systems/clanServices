@@ -15,6 +15,11 @@
     if k3s
     then "k3s.service"
     else "rke2-server.service";
+  # beta and delta are agents (SPEC.md §6.12: two servers are refused)
+  agentUnit =
+    if k3s
+    then "k3s.service"
+    else "rke2-agent.service";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
   marker = "${lib.toUpper distro}_CLUSTERMESH_EXTERNAL_OK";
   underlayIp = name: "192.168.1.${
@@ -307,7 +312,7 @@ in {
                     timeout=120,
                 )
                 m.wait_for_unit("haproxy.service", timeout=240)
-                m.wait_for_unit("${runtimeUnit}", timeout=600)
+                m.wait_for_unit("${agentUnit}" if m.name in ("beta", "delta") else "${runtimeUnit}", timeout=600)
 
         with subtest("both clusters bootstrap"):
             for m, cluster in [(alpha, "${clusterA}"), (gamma, "${clusterB}")]:
