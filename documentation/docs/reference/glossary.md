@@ -8,8 +8,9 @@ One term per concept. Mirrors SPEC.md §10.
   IPAM + pools, FRR/BGP/Zebra, ClusterMesh, per-adjacency WireGuard,
   in-cluster CoreDNS (cluster.local), and the fabric transport.
 - **Day-2 GitOps** — everything in-cluster outside those contracts.
-- **Bootstrap bundle** — one kubenix manifest set applied once by SSA on
-  the clusterInit node.
+- **Bootstrap bundle** — one kubenix manifest set applied by SSA on
+  the clusterInit node at boot and on each deploy that changes it; it
+  prunes only its own labelled objects (D40).
 - **Shared lib** — `lib/kube-cluster/`: interfaces, renderers, vars, and
   assertions shared by distro services.
 - **Artifact flake** — `external-systems/pkgs`: nixpkgs/flake-parts

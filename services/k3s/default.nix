@@ -1098,7 +1098,7 @@
 
         (lib.mkIf (modeActive && isInit && settings.bootstrap.apply) (
           kube.mkBootstrapApply {
-            inherit pkgs instanceName;
+            inherit config pkgs instanceName;
             namePrefix = "k3s";
             serverUnit = "k3s.service";
             kubeconfigPath = "/etc/rancher/k3s/k3s.yaml";

@@ -764,7 +764,7 @@ Round 15 (D53) revises this: `netif` is multi-instance and multi-link, and
 
 ## Round 13 decisions retained
 
-- **D39/D40:** exactly two contracts; one kubenix bundle applied once with
+- **D39/D40:** exactly two contracts; one kubenix bundle applied at boot and on each changing deploy with
   SSA, then adopted by the operator's GitOps tool without a first-reconcile
   diff.
 - **D41/D42:** Node IPAM serves classless Services; servicelb never runs.

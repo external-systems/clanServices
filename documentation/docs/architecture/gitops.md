@@ -10,9 +10,12 @@ the [Day-2 GitOps guide](../guides/day-2-gitops.md).
 
 The whole day-1 in-cluster surface is ONE kubenix-rendered manifest set per
 cluster — Cilium, pools, ClusterMesh config, clan CoreDNS (cluster-local),
-mirror Services, RBAC. A systemd oneshot on the `clusterInit` machine applies it once at
-first boot: wait for apiserver health, then
-`kubectl apply --server-side --field-manager=clan-bootstrap`.
+mirror Services, RBAC. A systemd oneshot on the `clusterInit` machine applies it at
+every server start and again on every deploy that changes the bundle: wait
+for apiserver health, apply the non-CR documents with
+`kubectl apply --server-side --force-conflicts --field-manager=clan-bootstrap`,
+wait until the Cilium CRDs are `Established`, then apply the custom
+resources.
 
 Properties of the mechanism:
 
@@ -21,8 +24,18 @@ Properties of the mechanism:
   cluster.
 - **Idempotent.** Server-side apply is a no-op when cluster state matches
   the bundle.
+- **Follows the deploy.** A deploy that changes the bundle (a new pool, a
+  new mesh peer, a Cilium setting) re-runs the unit; the server keeps
+  running. A regenerated ClusterMesh certificate re-runs the mesh secrets
+  unit, which rolls the ClusterMesh apiserver once.
+- **Prunes only its own objects.** After a successful apply the unit
+  deletes an object that carries `clan.lol/cluster=<instance>`, has a
+  `clan-bootstrap` managed-fields entry, and is no longer in the bundle. A
+  hand-made object, or one another manager owns alone, stays.
+- **Fails visibly.** Retries grow from 10 s to 2 min, at most 12 starts an
+  hour; then the unit stays `failed` (`systemctl --failed`).
 - **Off-ramp.** `bootstrap.apply = false` removes the unit once your GitOps
-  owns the set.
+  owns the set. From then on nothing is applied or pruned from the host.
 
 ## Day-2 adoption: the handoff
 

@@ -37,6 +37,8 @@
             -- nslookup kubernetes.default.svc.cluster.local
     """)
     assert "10.2.0.1" in out, f"kubernetes.default lookup failed: {out!r}"'';
+  applyUnit = "${distro}-${distro}-bootstrap-apply";
+  bundleEtc = "clan-bootstrap/${distro}/bundle.yaml";
 in {
   name = "${distro}-single";
 
@@ -108,7 +110,11 @@ in {
     };
   };
 
-  nodes.alpha = {pkgs, ...}: let
+  nodes.alpha = {
+    config,
+    pkgs,
+    ...
+  }: let
     busyboxImage = pkgs.dockerTools.pullImage {
       imageName = "busybox";
       imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
@@ -132,7 +138,31 @@ in {
       pkgs.kubectl
       pkgs.cilium-cli
       pkgs.socat
+      pkgs.openssl
     ];
+
+    # D40 (K4/K5): a generation whose deployed bundle has one more
+    # labelled pool. Switching to it re-applies the bundle; switching
+    # back prunes the pool. Only the deployed file differs, as after a
+    # deploy that adds a pool to the inventory.
+    specialisation.morepool.configuration.environment.etc.${bundleEtc}.source = lib.mkForce (
+      pkgs.concatText "bundle-morepool.yaml" [
+        config.environment.etc.${bundleEtc}.source
+        (pkgs.writeText "k4-extra-pool.yaml" ''
+
+          ---
+          apiVersion: cilium.io/v2alpha1
+          kind: CiliumLoadBalancerIPPool
+          metadata:
+            name: k4-extra
+            labels:
+              clan.lol/cluster: ${distro}
+          spec:
+            blocks:
+              - cidr: 198.51.100.0/28
+        '')
+      ]
+    );
     environment.sessionVariables.KUBECONFIG = kubeconfig;
 
     services.${distro}.images = [busyboxImage];
@@ -268,6 +298,18 @@ in {
                 "kubectl --kubeconfig /etc/rancher/${distro}/admin-kubeconfig get --raw /readyz | grep ok >/dev/null"
             )
 
+        # K10: the system:masters identity lives 365 days; the HAProxy
+        # health-check certificate keeps a long life; serials are random.
+        with subtest("certificate lifetimes and random serials"):
+            admin = "grep client-certificate-data /etc/rancher/${distro}/admin-kubeconfig | awk '{print $2}' | base64 -d"
+            alpha.succeed(f"{admin} | openssl x509 -noout -checkend {364 * 86400}")
+            alpha.fail(f"{admin} | openssl x509 -noout -checkend {366 * 86400}")
+            pem = alpha.succeed("grep -o '/[^ ]*kubeapi-client.pem' /etc/haproxy.cfg | head -n1").strip()
+            alpha.succeed(f"openssl x509 -noout -checkend {9 * 365 * 86400} -in {pem}")
+            for cert in [admin, f"cat {pem}"]:
+                serial = alpha.succeed(f"{cert} | openssl x509 -noout -serial").strip().split("=")[1]
+                assert len(serial) >= 30, f"serial {serial!r} is not random"
+
         # Pod API clients need both the real apiserver endpoint and Cilium's
         # ClusterIP translation.
         with subtest("pods reach the apiserver directly and via ClusterIP"):
@@ -290,6 +332,32 @@ in {
             alpha.wait_until_succeeds(
                 "KUBECONFIG=${kubeconfig} cilium status", timeout=180
             )
+
+        # D40 (K4/K5): a deploy that changes the bundle re-applies it
+        # without restarting the server; one that drops an object prunes
+        # it, and only it: hand-made pools stay.
+        with subtest("a changed bundle is re-applied and pruned without a server restart"):
+            pid = alpha.succeed("systemctl show -p MainPID --value ${serverUnit}").strip()
+            alpha.succeed(
+                "echo '{\"apiVersion\":\"cilium.io/v2alpha1\",\"kind\":\"CiliumLoadBalancerIPPool\",\"metadata\":{\"name\":\"hand-unlabelled\"},\"spec\":{\"blocks\":[{\"cidr\":\"198.51.100.32/28\"}]}}' | kubectl create -f -"
+            )
+            alpha.succeed(
+                "echo '{\"apiVersion\":\"cilium.io/v2alpha1\",\"kind\":\"CiliumLoadBalancerIPPool\",\"metadata\":{\"name\":\"hand-labelled\",\"labels\":{\"clan.lol/cluster\":\"${distro}\"}},\"spec\":{\"blocks\":[{\"cidr\":\"198.51.100.48/28\"}]}}' | kubectl create -f -"
+            )
+            alpha.fail("kubectl get ciliumloadbalancerippool k4-extra")
+            alpha.succeed("/run/booted-system/specialisation/morepool/bin/switch-to-configuration test >&2")
+            alpha.succeed("systemctl show -p Result --value ${applyUnit} | grep '^success$' >/dev/null")
+            alpha.succeed("kubectl get ciliumloadbalancerippool k4-extra")
+            alpha.succeed("/run/booted-system/bin/switch-to-configuration test >&2")
+            alpha.succeed("systemctl show -p Result --value ${applyUnit} | grep '^success$' >/dev/null")
+            alpha.wait_until_fails("kubectl get ciliumloadbalancerippool k4-extra", timeout=60)
+            alpha.succeed("journalctl -u ${applyUnit} --no-pager | grep 'pruning ciliumloadbalancerippools.cilium.io /k4-extra' >/dev/null")
+            alpha.succeed("kubectl get ciliumloadbalancerippool hand-unlabelled hand-labelled")
+            # nothing the current bundle has was pruned
+            alpha.fail("journalctl -u ${applyUnit} --no-pager | grep pruning | grep -v k4-extra")
+            after = alpha.succeed("systemctl show -p MainPID --value ${serverUnit}").strip()
+            assert pid == after, f"the server restarted: MainPID {pid} -> {after}"
+            alpha.succeed("kubectl delete ciliumloadbalancerippool hand-unlabelled hand-labelled")
 
         # ClusterIP service round-trip proves kube-proxy replacement works.
         with subtest("ClusterIP round-trip"):
@@ -384,6 +452,24 @@ in {
             alpha.succeed("kubectl create configmap ${distro}-smoke --from-literal=probe=ok")
             out = alpha.succeed("kubectl get configmap ${distro}-smoke -o jsonpath={.data.probe}")
             assert out.strip() == "ok", f"etcd smoke read back {out!r}"
+        ${indent 4 (lib.optionalString (!k3s) ''
+      # K10: a regenerated vars CA set is staged, never copied into the
+      # live TLS dir (the probe rke2-probe-pki-sync: rke2 then refuses
+      # to start, "newer than datastore"). The server restarts on its
+      # live CAs.
+      with subtest("a changed vars CA set is staged and the server still starts"):
+          key = alpha.succeed("systemctl cat rke2-rke2-pki-sync-tls.service | sed -n 's/^AssertPathExists=//p'").strip()
+          vars_dir = key.rsplit("/", 1)[0]
+          live = alpha.succeed("sha256sum /var/lib/rancher/rke2/server/tls/client-ca.key").split()[0]
+          alpha.succeed(f"openssl ecparam -name prime256v1 -genkey -noout -out /root/new-client-ca.key && cat /root/new-client-ca.key > {vars_dir}/client-ca.key")
+          alpha.succeed("systemctl restart rke2-server.service")
+          alpha.wait_for_unit("rke2-server.service", timeout=600)
+          alpha.wait_until_succeeds("kubectl wait --for=condition=Ready node/alpha --timeout=60s", timeout=600)
+          after = alpha.succeed("sha256sum /var/lib/rancher/rke2/server/tls/client-ca.key").split()[0]
+          assert live == after, "the live client CA key was overwritten"
+          alpha.succeed("cmp /root/new-client-ca.key /var/lib/rancher/rke2/server/tls-staged/client-ca.key")
+          alpha.succeed("journalctl -u rke2-rke2-pki-sync-tls --no-pager | grep 'differ from the live ones' >/dev/null")
+    '')}
         print("${lib.toUpper distro}_SINGLE_OK")
     except Exception:
         fail_dump(alpha)

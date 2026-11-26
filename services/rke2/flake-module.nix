@@ -80,11 +80,6 @@ in rec {
       imports = [./tests/vm/clustermesh-external.nix];
       inherit clan;
     };
-    # throwaway probe (K10): the PathChanged CA copy into a live server
-    rke2-probe-pki-sync = {
-      imports = [./tests/vm/probe-pki-sync.nix];
-      inherit clan;
-    };
     rke2-clustermesh-selective = {
       imports = [./tests/vm/clustermesh-selective.nix];
       inherit clan;

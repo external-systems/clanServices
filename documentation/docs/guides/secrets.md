@@ -68,6 +68,20 @@ generators. The recipes are in the [Day-2 GitOps guide](day-2-gitops.md).
 - **CA rotation** — staged directory plus `rotate-ca`. Rotating to the same
   root can be non-disruptive; rotating to a new root is disruptive — tokens,
   kubeconfigs, and restarts. Service-account signing keys are append/retain.
+  On rke2 a regenerated `rancher-pki` set is never copied into a running
+  server: the sync unit stages it in
+  `/var/lib/rancher/rke2/server/tls-staged` and logs that it differs; rotate
+  with `rke2 certificate rotate-ca --path=/var/lib/rancher/rke2/server/tls-staged`.
+- **Admin kubeconfig** — a `system:masters` certificate valid 365 days.
+  Renew before it expires: on a branch, the owner runs
+  `clan vars generate --regenerate --generator rancher-admin-kubeconfig-<instance>`,
+  commits the vars, and deploys the servers. Same CA, so the cluster is
+  untouched. `openssl x509 -enddate` on the decoded
+  `client-certificate-data` shows the date.
+- **HAProxy health check, ClusterMesh leaves, CAs** — long lives (3650 days,
+  CAs 3700/7300) on purpose: each is on every node or peer and would expire
+  everywhere on one day. A regenerated ClusterMesh leaf set re-runs the mesh
+  secrets unit on deploy.
 - **Client-identity certs** (`gitops-hub`, read-only) — regenerate via
   `clan vars generate --regenerate` plus secret-sync re-apply; clusters are
   untouched (same CA).

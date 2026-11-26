@@ -89,3 +89,16 @@ read the section of a component before changing code that touches it.
 - A test node that sends RAs must forward IPv6, or Linux hosts drop it
   as default router seconds after first use (`specs/netif.md` §7).
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).
+- rke2 v1.37.1: CA files written into the TLS directory of a running
+  server (`/var/lib/rancher/rke2/server/tls`) change nothing at once: old
+  client certificates keep working, the node stays Ready and HAProxy keeps
+  the backend UP for minutes. The next start is fatal and crash-loops:
+  "… newer than datastore and could cause a cluster outage. Remove the
+  file(s) from disk and restart to be recreated from datastore." The
+  datastore holds the CA set; rotation goes through
+  `rke2 certificate rotate-ca` (probe `rke2-probe-pki-sync`, 2026-11-26;
+  the assertion now lives in `rke2-single`).
+- kubectl 1.36: `kubectl get -o json` leaves out `metadata.managedFields`
+  unless `--show-managed-fields` is given, so a filter on the field
+  manager sees nothing without it. The bootstrap prune (D40) passes it
+  (`k3s-single`, 2026-11-26).

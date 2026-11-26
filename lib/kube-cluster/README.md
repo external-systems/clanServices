@@ -69,7 +69,7 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape (clusterInit count, addresses, resolved-id uniformity, id>127 ⇒ explicit v4 CIDRs, all-or-none transport posture, topology non-empty). |
 | `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (incl. against pod/service CIDRs), scope⇒mode, floating coverage, node-name collisions, bgp.enable⇔shared-bgp coupling, fabric block size (§6.12). |
 | `mkFleetChecks` / `fleetChecksModule` | Fleet-wide assertions (§6.2) computed from the `kube_cluster` exports as `clan.checks`: duplicate names/ids, same-group CIDR overlap, node-in-two-clusters (D16, cross-service), mesh-group transport consistency. Wire into a clan with `clan.imports = [ kube.fleetChecksModule ]`. |
-| `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40). |
+| `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40): re-runs when the deployed bundle changes, CRDs before CRs, bounded retry, prunes only its own labelled objects. |
 | `mkImageDigestAliases` | Per-node oneshot tagging each preloaded pinned image under its `name@digest` alias — the bundle references images digest-pinned, and containerd's CRI resolves digested references only via that canonical alias (offline airgap would otherwise ImagePullBackOff). |
 | `vars.mkTokenGenerators` | Join token generators (`rancher-server-token-<instance>` / `rancher-agent-token-<instance>`). |
 | `vars.mkPkiGenerator` | `rancher-pki-<instance>` — the pre-generated cluster CA tree. |

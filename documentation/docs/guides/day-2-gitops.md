@@ -37,9 +37,11 @@ Flux prune garbage-collects only the Kustomization's own
 ### The off-ramp
 
 Once your GitOps owns the set, stop the bootstrap oneshot from re-applying
-on every boot: set `bootstrap.apply = false` on the cluster instance. The
-bundle file stays at `/etc/clan-bootstrap/<instance>/bundle.yaml` for
-reference; the systemd unit is removed.
+on every boot and deploy: set `bootstrap.apply = false` on the cluster
+instance. The bundle file stays at `/etc/clan-bootstrap/<instance>/bundle.yaml`
+for reference; the systemd unit is removed, so the host neither applies nor
+prunes anything after the handoff. Until then the unit prunes only objects
+labelled `clan.lol/cluster=<instance>` that it applied itself.
 
 ### With Argo CD
 

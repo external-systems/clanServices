@@ -1130,7 +1130,7 @@
 
         (lib.mkIf (modeActive && isInit && settings.bootstrap.apply) (
           kube.mkBootstrapApply {
-            inherit pkgs instanceName;
+            inherit config pkgs instanceName;
             namePrefix = "rke2";
             serverUnit = "rke2-server.service";
             kubeconfigPath = "/etc/rancher/rke2/rke2.yaml";
