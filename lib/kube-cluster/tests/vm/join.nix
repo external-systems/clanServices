@@ -254,8 +254,10 @@ in {
         underlay = {
           module.name = "internet";
           roles.default.machines = {
-            alpha.settings.host = "alpha";
-            beta.settings.host = "beta";
+            # IP literals: a hostname endpoint is an eval error
+            # (routed-fabric R4)
+            alpha.settings.host = "192.168.1.1";
+            beta.settings.host = "192.168.1.2";
           };
         };
 

@@ -11,6 +11,7 @@
 # the consumed node_transport exports.
 {lib, ...}: let
   t = lib.types;
+  podMask = import ./pod-mask.nix;
 in {
   options = {
     schemaVersion = lib.mkOption {
@@ -53,6 +54,16 @@ in {
         type = t.nullOr t.str;
         default = null;
         description = "Resolved IPv6 pod CIDR.";
+      };
+      podMaskSizeV4 = lib.mkOption {
+        type = t.ints.between 1 32;
+        default = podMask.ipv4;
+        description = "Prefix length of the IPv4 pod block each node gets (the CiliumPodIPPool maskSize): the length of its pod route on the fabric.";
+      };
+      podMaskSizeV6 = lib.mkOption {
+        type = t.ints.between 1 128;
+        default = podMask.ipv6;
+        description = "Prefix length of the IPv6 pod block each node gets (the CiliumPodIPPool maskSize): the length of its pod route on the fabric.";
       };
       serviceCIDRv4 = lib.mkOption {
         type = t.nullOr t.str;

@@ -15,6 +15,13 @@
 #     A real deploy never gets that far: the build-time check
 #     (lib/frr-check.nix, `checks.frr-conf`) fails the build first, so
 #     the specialisation turns it off to reach the runtime path.
+#   - a deploy carries a valid FRR change: FRR reloads it, bgpd and
+#     every session stay (a deploy never restarts FRR).
+#   - FRR restarts as a whole (`systemctl restart frr`): bfdd goes with
+#     bgpd, so the leaf may treat the spine as dead and drop its routes
+#     at once (a race; graceful restart is promised for a bgpd restart
+#     only: routed-fabric R2, accepted, BFD must still find a dead node
+#     fast). Everything comes back by itself.
 {
   lib,
   inputs,
@@ -34,6 +41,8 @@
     };
   # Not an FRR command: `vtysh -C` and frr-reload refuse the file.
   badLine = "this-is-not-an-frr-command";
+  # A valid line a deploy adds: an unused prefix-list.
+  goodLine = "ip prefix-list rf_deploy_probe seq 5 permit 192.0.2.0/24";
   marker = ''print("K3S_JOIN_OK")'';
   phases = ''
     KUBECTL = "KUBECONFIG=${kubeconfig} kubectl"
@@ -186,6 +195,45 @@
             pods_reach_each_other(60)
             print("FRR_BAD_RELOAD_OK")
 
+        with subtest("a deploy with a valid FRR change reloads FRR: bgpd, the sessions and the pods stay"):
+            pid = alpha.succeed(BGPD_PID).strip()
+            dropped = int(beta.succeed(DROPPED).strip())
+            good = "/run/current-system/specialisation/good-frr"
+            alpha.succeed(f"{good}/bin/switch-to-configuration test")
+            alpha.wait_until_succeeds("vtysh -c 'show running-config' | grep -F '${goodLine}' >/dev/null", timeout=60)
+            assert alpha.succeed(BGPD_PID).strip() == pid, "bgpd restarted on a deploy"
+            alpha.succeed("/run/booted-system/bin/switch-to-configuration test")
+            alpha.wait_until_succeeds("! vtysh -c 'show running-config' | grep -F 'rf_deploy_probe' >/dev/null", timeout=60)
+            assert alpha.succeed(BGPD_PID).strip() == pid, "bgpd restarted on the switch back"
+            assert int(beta.succeed(DROPPED).strip()) == dropped, "the leaf lost a session to a deploy"
+            for node in nodes:
+                all_established(node, sessions[node.name])
+            pods_reach_each_other(60)
+            print("FRR_DEPLOY_RELOADS_OK")
+
+        with subtest("FRR restarts as a whole on the spine: the session drops (the routes may go at once), and everything comes back"):
+            ipv4, _ = pod_ips("alpha")
+            spine_pods = ipaddress.ip_network(f"{ipv4}/24", strict=False)
+            present = f"ip -4 route show proto bgp {spine_pods} | grep . >/dev/null"
+            beta.succeed(present)
+            dropped = int(beta.succeed(DROPPED).strip())
+            old_pid = alpha.succeed(BGPD_PID).strip()
+            alpha.succeed("systemctl restart frr")
+            took = seconds_until(beta, f"! {present}", limit=60)
+            print(f"FINDING a full FRR restart on the spine: the leaf dropped its pod route after {took} s")
+            # R2, accepted: graceful restart is not promised for a full
+            # restart. Which one happens is a race between bgpd's
+            # NOTIFICATION and bfdd going down: two runs, one dropped the
+            # route at once (0.0 s), one kept it stale past 60 s. Only the
+            # recovery is asserted.
+            alpha.wait_until_succeeds(f"test -n \"$({BGPD_PID})\" && test \"$({BGPD_PID})\" != {old_pid}", timeout=120)
+            for node in nodes:
+                all_established(node, sessions[node.name])
+            assert int(beta.succeed(DROPPED).strip()) > dropped, "the leaf kept its session through a full FRR restart"
+            leaf_has_spine_pod_routes(300)
+            pods_reach_each_other(300)
+            print("FRR_FULL_RESTART_OK")
+
         with subtest("the spine itself dies: BFD ends the session and the leaf drops the spine's routes within 15 s; graceful restart does not hold a dead node's routes"):
             ipv4, _ = pod_ips("alpha")
             spine_pods = ipaddress.ip_network(f"{ipv4}/24", strict=False)
@@ -210,10 +258,15 @@ in
         services.k3s.images = [(busyboxImage pkgs)];
         # The build-time check (lib/frr-check.nix) would refuse this
         # specialisation; the phase deploys a broken config on purpose.
-        specialisation.bad-frr.configuration = {
-          clanServices.frr.checkConfig = false;
-          services.frr.config = lib.mkAfter ''
-            ${badLine}
+        specialisation = {
+          bad-frr.configuration = {
+            clanServices.frr.checkConfig = false;
+            services.frr.config = lib.mkAfter ''
+              ${badLine}
+            '';
+          };
+          good-frr.configuration.services.frr.config = lib.mkAfter ''
+            ${goodLine}
           '';
         };
       };

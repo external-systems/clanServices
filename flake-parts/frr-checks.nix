@@ -10,14 +10,25 @@
     routes = {
       hosts = ["192.0.2.2/32" "2001:db8::2/128"];
       vips = ["198.51.100.0/24" "2001:db8:100::/64"];
-      pods = ["10.42.0.0/16" "fd42::/56"];
+      pods = [
+        {
+          cidr = "10.42.0.0/16";
+          mask = 24;
+        }
+        {
+          cidr = "fd42::/56";
+          mask = 64;
+        }
+      ];
       services = ["10.43.0.0/16" "fd43::/112"];
+      extra = ["203.0.113.0/24" "2001:db8:ff::/48"];
     };
     noRoutes = {
       hosts = [];
       vips = [];
       pods = [];
       services = [];
+      extra = [];
     };
     adjacency = key: timerProfile: index: {
       inherit key timerProfile;
@@ -46,12 +57,15 @@
         (adjacency "spine-a:spine-b" "wan" 3)
       ];
       networks = ["192.0.2.1/32" "2001:db8::1/128"];
+      maximumPaths = 16;
       border = {
         ownedPrefixes = ["198.51.100.0/24" "2001:db8:100::/48"];
         upstreamPeers = [
           {
             address = "203.0.113.1";
             asn = 64496;
+            acceptedPrefixes = ["0.0.0.0/0" "192.0.2.0/24 le 28"];
+            ttlSecurity = true;
           }
           {
             address = "2001:db8:ffff::1";

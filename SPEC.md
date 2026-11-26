@@ -871,8 +871,11 @@ buildable diagrams without becoming a clanServices dependency (D57).
   derive from the same route policy; external-transit adjacencies may
   carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route. D63 scopes
   BGP/BFD exposure, reserves listen ports, validates endpoint/policy
-  coherence, and uses stable `site`/`wan` timers with DelayOpen and
-  maximum-prefix restart.
+  coherence, and uses stable `site`/`wan` timers with DelayOpen and a
+  fabric route limit that warns (round G11). A spine↔spine session carries
+  the union of what every member consumes or originates, the same on both
+  ends, so leaves on different dedicated spines reach each other (round
+  G11, R1).
 - Access-scoped route consumption (D13): Kubernetes machines always
   install remote pod-pool blocks and advertised-VIP routes (native-
   routing requirement, D49); non-Kubernetes `access = "client"` machines
@@ -1845,7 +1848,25 @@ unless noted) — revoked entries keep one-line reasons for history.
   TCP 179 and UDP 3784/4784 are never opened globally by routed-fabric:
   they are allowed on fabric WireGuard interfaces and, for external
   sessions, only from declared literal `border.upstreamPeers` addresses.
-  Hostnames, zones, and malformed upstream literals are eval errors. The
+  Hostnames, zones, and malformed upstream literals are eval errors.
+  **Amended round G11 (R5): the fabric is no trust zone.**
+  `firewall.trust` defaults to false: a fabric link opens 179 and BFD
+  only, and each service opens its own ports there (k3s/rke2: the
+  cluster's ports and Cilium health 4240). `trust = true` never reaches an
+  `externalTransit` link. Forwarding nodes carry a stateless forward
+  filter in their own table `inet routed-fabric-<instance>` (it only
+  drops; stateless so ECMP that splits a flow over two spines passes): an
+  `externalTransit` link forwards only to the border's `ownedPrefixes`, and
+  a forwarding border forwards nothing from outside the fabric (any link
+  but its fabric links and Cilium's) to the fabric's own addresses
+  (member loopbacks, transfer pool, ULA /48). Where another service turns
+  on the NixOS forward filter, routed-fabric accepts fabric↔fabric transit.
+  **Amended round G11 (R9): upstream policy.** A border announces its
+  `ownedPrefixes` and accepts only the peer's `acceptedPrefixes` (default
+  nothing). `ttlSecurity` (GTSM, both ends) is per peer, default off. No
+  session password: FRR reads it from `frr.conf`, which is in the Nix
+  store, and a password added at runtime would be removed by the next
+  reload. The
   shared IfState base has a stable module key so repeated service imports
   deduplicate, requires globally unique rendered WireGuard listen ports, and
   reserves them, together with entries from the composable clanServices-owned
@@ -1860,8 +1881,17 @@ unless noted) — revoked entries keep one-line reasons for history.
   `sourceReturnTable` and `sourceReturnPriority` pin either derived value.
   Netif policy tables and effective rule priorities are unique across
   instances. Every adjacency with two
-  declared literal endpoints must share an address family; a hostname
-  produces an eval warning because eval does not resolve DNS. This is a
+  declared literal endpoints must share an address family. **Amended
+  round G11 (R4): a hostname endpoint is an eval error.** IfState 2.5.1
+  resolves a WireGuard endpoint name once, at apply, drops the endpoint
+  when DNS fails then, and never resolves it again. The side whose address
+  changes sets `endpoint = null` and dials out to the fixed side; a
+  re-resolve timer is built only when a real case needs it.
+  **Round G11 (R6): per-adjacency overrides bind both ends.** Two
+  different `port` overrides are an eval error, the smaller `underlayMtu`
+  override of the two ends applies to both, and `extraAllowedIPs` is the
+  union of both ends' lists, in both ACLs and in both ends' import and
+  export prefix-lists (exact match). This is a
   declared-endpoint check, not the phase-5 per-host underlay reachability
   matrix. Wireguard-mesh rejects pairs with no endpoint on either side,
   overlapping `extraAllowedIPs`, and same-host routed-fabric listen-port
@@ -1888,8 +1918,25 @@ unless noted) — revoked entries keep one-line reasons for history.
   hold-down. DelayOpen is fixed, not exponential flap damping; FRR route
   dampening is not substituted because upstream discourages it and its
   dual-stack coverage is incomplete. Periodic-flap behavior belongs to the
-  phase-6 WAN soak. Every rendered `maximum-prefix 4096` uses `restart 10`,
-  but for the Cilium session, which uses `warning-only` (round 57).
+  phase-6 WAN soak. **Amended round G11 (R3):** fabric and Cilium
+  sessions render `maximum-prefix 4096 warning-only` (a reset fabric session
+  takes the node's loopback, API and etcd with it); an eval warning names
+  an adjacency whose countable prefixes (members plus Kubernetes nodes)
+  reach 80 % of the limit. Upstream sessions keep `restart 10`.
+  `maximum-paths` is rendered once per address family, from
+  `maximumPaths` (R8). Each distinct prefix set is one shared prefix-list
+  (R10). Pod routes take their length from the cluster's published
+  `network.podMaskSizeV4/V6` (`lib/kube-cluster/pod-mask.nix`, the
+  CiliumPodIPPool `maskSize`, R11). **Supported size (R10):** about 30
+  adjacencies on one machine; random ports and transfer /31s then collide
+  on one machine with about 2 % and 1 % chance (an eval error naming the
+  generator), at 100 about 22 % and 14 %. **Graceful restart (round G11,
+  R2, accepted):** it is promised for a bgpd restart only. A restart of
+  all of FRR stops bfdd too; whether the peers then drop the node at once,
+  as for a dead node, or hold its routes stale is a race (`k3s-frr-failure`
+  saw both). Accepted: BFD must still find a dead node fast. Drain a node
+  before restarting FRR by hand. A deploy reloads FRR (nixpkgs
+  `reloadIfChanged`) and restarts nothing.
   Every profiled neighbor also renders plain `bfd`; site profile defaults
   stay implicit and `use-underlays-nexthop-weight` is explicit, matching FRR
   running-config serialization. A no-op FRR reload therefore has an empty
@@ -2321,8 +2368,8 @@ unless noted) — revoked entries keep one-line reasons for history.
 24. Exposure and convergence follow D63: BGP/BFD are interface/source
     scoped, WireGuard ports are reserved, policy/endpoint/AllowedIP/deploy
     collisions fail eval, forwarding-safe RA is used, and symmetric BFD/BGP
-    profiles plus DelayOpen and maximum-prefix restart favor stability over
-    speed.
+    profiles plus DelayOpen and a warning-only fabric route limit favor
+    stability over speed. The fabric is no trust zone (R5).
 
 ## 6. Subsystem contracts (condensed)
 
@@ -2468,7 +2515,7 @@ evaluated per adjacency; private endpoints are allowed when
 actually reachable. One `routed-fabric` instance = one trust domain; one
 machine has at most one membership and one topology role. Declared literal
 endpoints on one adjacency must share an address family; hostname endpoints
-generate an eval warning instead of impure DNS resolution. Source-return
+are an eval error (round G11, R4). Source-return
 tables have an explicit per-adjacency pin, avoid all kernel/Cilium owners
 and netif/source-return collisions, and use independent unique rule
 priorities below 32766. `settings.site` (default `null`) selects the default timer profile:
@@ -2476,9 +2523,11 @@ two ends that name the same site use `site` (BFD 300 ms x3), every
 other pair uses `wan` (BFD 1000 ms x5 and BGP 10/30 seconds), and
 `adjacencies.<remote>.timerProfile` overrides either. Upstreams use `wan`.
 Both ends and upstreams use a five-second fixed DelayOpen hold-down;
-fabric and upstream maximum-prefix limits restart after ten minutes, the
-Cilium session's only warns. Fabric sessions use BGP graceful restart
-(60 s) with BFD as the authority on a dead peer (round 57). No-op reloads preserve
+upstream maximum-prefix limits restart after ten minutes, fabric and
+Cilium limits only warn (round G11). Fabric sessions use BGP graceful
+restart (60 s) for a bgpd restart, with BFD as the authority on a dead
+peer (round 57); a restart of all of FRR may look like a dead node (a
+race, round G11). No-op reloads preserve
 peer uptimes and the immediate RIB (D63).
 
 ```nix
@@ -2699,8 +2748,9 @@ authorized ClusterIPs, then exports according to the receiving machine's
 routes on Kubernetes and fleet hosts alike; Cilium's local endpoint
 routes remain more specific. FRR next-hop rewriting resolves each path
 through its per-adjacency interface. Foreign upstreams are configured
-only under `border`, with strict prefix and maximum-prefix policy and
-optional proxy-NDP for on-LAN prefixes.
+only under `border`, with strict prefix and maximum-prefix policy (in:
+`acceptedPrefixes`, nothing by default; out: `ownedPrefixes`), optional
+GTSM and optional proxy-NDP for on-LAN prefixes.
 
 ### 6.8 Day-2 proxy layer (out of contract)
 No Gateway API, Ingress, or proxy implementation is clan-rendered
