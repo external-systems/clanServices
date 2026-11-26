@@ -629,8 +629,12 @@ in {
         assert router.succeed("systemctl show router-prefix.service -P Result").strip() == "success"
 
     def wait_hook_failed(timeout=30):
-        router.wait_until_succeeds("test \"$(systemctl show router-prefix.service -P ActiveState)\" = failed", timeout=timeout)
-        assert router.succeed("systemctl show router-prefix.service -P Result").strip() == "exit-code"
+        """A run of the hook failed. Since round G11 (specs/gateway.md §17,
+        G7) systemd runs it again after 10 s: the unit waits in
+        `auto-restart`, or is `failed` when the limit stops it."""
+        router.wait_until_succeeds("test \"$(systemctl show router-prefix.service -P Result)\" = exit-code", timeout=timeout)
+        state = router.succeed("systemctl show router-prefix.service -P ActiveState -P SubState").split()
+        assert state in (["failed", "failed"], ["activating", "auto-restart"]), state
 
     def hook_runs():
         return int(router.succeed("journalctl -u router-prefix --no-pager | grep -c 'router-prefix: current' || true").strip())

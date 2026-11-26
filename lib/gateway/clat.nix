@@ -18,6 +18,7 @@
   cfg = config.clanServices.gateway.clat;
   names = import ./names.nix;
   inherit (names.clat) host inside netns instance;
+  sandbox = import ./sandbox.nix;
   followScript = pkgs.writeText "clat-follow.py" (builtins.readFile ./clat-follow.py);
   followConfig = pkgs.writeText "clat-follow.json" (builtins.toJSON {
     inherit (cfg) beacons;
@@ -70,7 +71,7 @@ in {
     mtu = mkOption {
       type = types.ints.positive;
       default = 1480;
-      description = "MTU of the IPv4 default route: an IPv4 packet grows by 20 bytes when it becomes IPv6.";
+      description = "MTU of the IPv4 default route: an IPv4 packet grows by 20 bytes when it becomes IPv6, so the uplink's MTU less 20 (services/nat-gateway sets it).";
     };
   };
 
@@ -161,9 +162,12 @@ in {
           pkgs.gnugrep
           pkgs.python3
         ];
+        # G8: a failure at boot is tried again; the script is idempotent
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
+          Restart = "on-failure";
+          RestartSec = 5;
         };
         script = ''
           modprobe jool_siit
@@ -187,21 +191,30 @@ in {
         '';
       };
 
+      # G1 (specs/gateway.md §17): `wants`, not `requires`. The CLAT unit
+      # is a oneshot that every IfState apply restarts; with `requires`
+      # one failed restart stopped the follower for good ("dependency
+      # failed" is no failure that `Restart` covers). The follower waits
+      # by itself while there is no CLAT instance.
       ${names.clat.follow} = {
         description = "CLAT follower: pool6 on a live gateway (specs/gateway.md G23)";
         wantedBy = ["multi-user.target"];
         after = ["${names.clat.jool}.service"];
-        requires = ["${names.clat.jool}.service"];
+        wants = ["${names.clat.jool}.service"];
         path = [
           pkgs.iproute2
           pkgs.jool-cli
           pkgs.dig
         ];
-        serviceConfig = {
-          ExecStart = "${lib.getExe pkgs.python3} -u ${followScript} ${followConfig}";
-          Restart = "always";
-          RestartSec = 1;
-        };
+        # G14: root for `ip netns exec`, little else
+        serviceConfig =
+          sandbox
+          // {
+            ExecStart = "${lib.getExe pkgs.python3} -u ${followScript} ${followConfig}";
+            Restart = "always";
+            RestartSec = 1;
+            CapabilityBoundingSet = ["CAP_NET_ADMIN" "CAP_SYS_ADMIN"];
+          };
         unitConfig.StartLimitIntervalSec = 0;
       };
     };

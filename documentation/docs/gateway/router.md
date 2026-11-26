@@ -74,10 +74,24 @@ Your home box is both. Since 2026-11-25 the service is built for it.
   uplink (two identical mini PCs, both `enp2s0`), Cilium would attach
   to the zone port and pass traffic by the router's firewall. The build
   refuses this and names the port; rename one of the two in netif.
-- Three checks stop a broken setup before it is deployed: a zone is one
+- Four checks stop a broken setup before it is deployed: a zone is one
   port (use a bridge for several), a zone port does not accept router
-  advertisements (`ra = false`), and the router's own address is in the
-  lower half of the zone's IPv4 range (the upper half is handed out).
+  advertisements (`ra = false`), the router's own address is in the
+  lower half of the zone's IPv4 range (the upper half is handed out),
+  and a public Service pinhole (`servicePrefix.expose`) is inside the
+  stable Service /64.
+- **The WAN cannot pretend to be inside.** A packet from the WAN whose
+  source is one of the router's own networks (a zone's range, the
+  stable Service /64, the delegated prefix), a loopback or a multicast
+  address is dropped and counted (`WAN spoofed source`).
+- **A zone keeps its DHCPv4 leases when another zone is added.** Each
+  zone's subnet id in kea comes from its name, not its place in the
+  list.
+- **The prefix hook tries again** when a run fails (a LAN port not
+  there yet at boot), every 10 s. Its two tables load one at a time,
+  so a missing port does not stop the Service rewrite. When the hook
+  goes (the router or its last advertised zone is removed), its tables
+  go with it.
 
 Before this change the router switched the NixOS firewall off and
 dropped everything it did not know. On a node that silently removed the

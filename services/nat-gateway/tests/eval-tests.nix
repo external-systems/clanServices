@@ -146,10 +146,10 @@ in {
         host = lib.hasInfix ''iifname "jool0" meta nfproto ipv4 counter reject with icmp type host-prohibited comment "nat64-host"'' (table gw1);
         masquerade = lib.hasInfix ''oifname { "eth1" } masquerade'' (table gw1);
         # a full meter refuses a source it holds no entry for
-        full = lib.hasInfix ''ip6 saddr @default ct state new ip6 saddr != @flows_default counter drop comment "nat64-flows-default-full"'' (table gw1) && lib.hasInfix ''comment "nat64-packets-trusted-full"'' (table gw1);
+        full = lib.hasInfix ''ip6 saddr @default ct state new ip6 saddr & ffff:ffff:ffff:ffff:: != @flows_default counter drop comment "nat64-flows-default-full"'' (table gw1) && lib.hasInfix ''comment "nat64-packets-trusted-full"'' (table gw1);
         beacon = lib.hasInfix ''comment "beacon-undeclared"'' (table gw1);
         defaultRate = lib.hasInfix "limit rate over 50/second burst 200 packets" (table gw1);
-        trustedRate = lib.hasInfix "limit rate over 1000/second burst 4000 packets" (table gw1);
+        trustedRate = lib.hasInfix "limit rate over 200/second burst 4000 packets" (table gw1);
         override = lib.hasInfix "limit rate over 5/second burst 200 packets" (table gw2);
         trustedSet = lib.hasInfix "elements = { 2001:db8:d::c1a7, 2001:db8:d::/64 }" (table gw1);
       };
@@ -284,6 +284,216 @@ in {
         instances.nat64.roles.gateway.machines.gw1.settings.uplinkZone = "isp";
       }) "gw1") "no netif link in zone 'isp'";
       expected = true;
+    };
+  };
+
+  # Round G11 (specs/gateway.md §17)
+  g11 = {
+    # G1, G8: the follower outlives a failed start of the CLAT unit, and
+    # the Jool units try again
+    test_unitsRetry = {
+      expr = {
+        followerRequires = node.systemd.services.clat-follow.requires;
+        followerWants = lib.elem "clat.service" node.systemd.services.clat-follow.wants;
+        followerAfter = lib.elem "clat.service" node.systemd.services.clat-follow.after;
+        clat = {inherit (node.systemd.services.clat.serviceConfig) Restart RestartSec;};
+        jool = {inherit (gw1.systemd.services.nat64-jool.serviceConfig) Restart RestartSec;};
+      };
+      expected = {
+        followerRequires = [];
+        followerWants = true;
+        followerAfter = true;
+        clat = {
+          Restart = "on-failure";
+          RestartSec = 5;
+        };
+        jool = {
+          Restart = "on-failure";
+          RestartSec = 5;
+        };
+      };
+    };
+    # G3: pool4 is reconciled at every start, not only at the instance's
+    test_pool4Reconciled = let
+      script = gw1.systemd.services.nat64-jool.script;
+      at = needle: lib.stringLength (builtins.head (lib.splitString needle script));
+    in {
+      expr = {
+        reads = lib.hasInfix "jool pool4 display" script;
+        # the check runs after the block that makes the instance
+        outside = at "pool4 display" > at "jool instance add default";
+      };
+      expected = {
+        reads = true;
+        outside = true;
+      };
+    };
+    # G4: one source cannot fill one pool4 address within Jool's UDP
+    # timeout (300 s) with the trusted defaults
+    test_trustedBound = let
+      inherit (gw1.clanServices.gateway.nat64.limits.trusted) newFlows newFlowsBurst;
+    in {
+      expr = {
+        inherit newFlows newFlowsBurst;
+        fits = newFlowsBurst + newFlows * 300 <= 64435;
+      };
+      expected = {
+        newFlows = 200;
+        newFlowsBurst = 4000;
+        fits = true;
+      };
+    };
+    # G5: the meters hold one entry per /64, not per address
+    test_meterPer64 = {
+      expr = {
+        update = lib.hasInfix "update @flows_trusted { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate over" (table gw1);
+        full = lib.hasInfix "ip6 saddr & ffff:ffff:ffff:ffff:: != @flows_trusted counter drop" (table gw1);
+        perAddress = lib.hasInfix "{ ip6 saddr limit rate" (table gw1);
+        clientUpdate = lib.hasInfix "update @packets_c1 { ip6 saddr & ffff:ffff:ffff:ffff:: limit" (table (machine (with' {
+          instances.nat64.roles.client.machines.node.settings.limits.packets = 9;
+        }) "gw1"));
+      };
+      expected = {
+        update = true;
+        full = true;
+        perAddress = false;
+        clientUpdate = true;
+      };
+    };
+    # G6: a CLAT address inside a declared prefix (laptop: its CLAT in
+    # its own /64) loads: the source sets merge overlapping intervals
+    test_sourceInsidePrefix = {
+      expr = {
+        merged = lib.length (lib.filter (lib.hasInfix "flags interval; auto-merge;") (lib.splitString "\n" (table gw1)));
+        trustedSet = lib.hasInfix "elements = { 2001:db8:d::c1a7, 2001:db8:d::/64 }" (table gw1);
+      };
+      expected = {
+        merged = 3;
+        trustedSet = true;
+      };
+    };
+    # G6: a client with its own limit shares no source with another client
+    test_customOverlapsTier = {
+      expr = failedAssertion (machine (with' {
+        instances.nat64.roles.client.machines.node.settings = {
+          limits.newFlows = 7;
+          sources = ["2001:db8:d::/64"];
+        };
+      }) "gw1") "overlap";
+      expected = true;
+    };
+    # G9: what a gateway's settings must hold
+    test_samePool6 = {
+      expr = failedAssertion (machine (with' {
+        instances.nat64.roles.gateway.machines.gw2.settings.pool6 = "2001:db8:a1:0:64::/96";
+      }) "gw1") "the same pool6";
+      expected = true;
+    };
+    test_addressInPool6 = {
+      expr = failedAssertion (machine (with' {
+        instances.nat64.roles.gateway.machines.gw1.settings.address = "2001:db8:a1:0:64::1";
+      }) "gw1") "inside its pool6";
+      expected = true;
+    };
+    test_addressNotOnMachine = {
+      expr = failedAssertion (machine (with' {
+        instances.nat64.roles.gateway.machines.gw1.settings.address = "2001:db8:c::99";
+      }) "gw1") "not a static address";
+      expected = true;
+    };
+    test_addressOtherSpelling = {
+      expr = clean (machine (with' {
+        instances.nat64.roles.gateway.machines.gw1.settings.address = "2001:db8:c:0:0::1";
+      }) "gw1");
+      expected = true;
+    };
+    test_badPool6 = {
+      expr = map (pool6:
+        failedAssertion (machine (with' {
+          instances.nat64.roles.gateway.machines.gw1.settings.pool6 = pool6;
+        }) "gw1") "pool6") ["2001:db8:a1::1/96" "fe80::/96" "2001:db8:a1::/64" "not-an-address/96"];
+      expected = [true true true true];
+    };
+    test_privateTarget = {
+      expr = failedAssertion (machine (with' {
+        instances.nat64.roles.gateway.machines.gw1.settings.health.targets = ["1.1.1.1" "8.8.8.8" "192.168.1.1"];
+      }) "gw1") "192.168.1.1";
+      expected = true;
+    };
+    test_duplicateClat = {
+      expr = failedAssertion (machine (with' {
+        instances.nat64.roles.client.machines.laptop.settings.clat.address = "2001:db8:c:0::c1a7";
+      }) "gw1") "the same clat.address";
+      expected = true;
+    };
+    # G11: the health check's numbers are settings of the service
+    test_healthSettings = let
+      eval = with' {
+        instances.nat64.roles.gateway.settings.health = {
+          quorum = 3;
+          down = 20;
+          up = 90;
+        };
+      };
+    in {
+      expr = {
+        inherit ((machine eval "gw1").clanServices.gateway.nat64.health) quorum down up;
+        defaults = {inherit (gw1.clanServices.gateway.nat64.health) quorum down up;};
+      };
+      expected = {
+        quorum = 3;
+        down = 20;
+        up = 90;
+        defaults = {
+          quorum = 2;
+          down = 30;
+          up = 120;
+        };
+      };
+    };
+    # G12: the CLAT route's MTU follows the uplink: 20 bytes less
+    test_clatMtu = {
+      expr = {
+        default = node.clanServices.gateway.clat.mtu;
+        uplink =
+          (machine (with' {
+            instances.uplink.roles.default.machines.node.settings.links.wan.mtu = 1400;
+          }) "node").clanServices.gateway.clat.mtu;
+        set =
+          (machine (with' {
+            instances.nat64.roles.client.machines.node.settings.clat.mtu = 1300;
+          }) "node").clanServices.gateway.clat.mtu;
+      };
+      expected = {
+        default = 1480;
+        uplink = 1380;
+        set = 1300;
+      };
+    };
+    # G14: the long-running helpers are sandboxed
+    test_sandboxed = let
+      hardened = config: unit: {
+        inherit (config.systemd.services.${unit}.serviceConfig) NoNewPrivileges ProtectSystem ProtectHome CapabilityBoundingSet;
+      };
+    in {
+      expr = {
+        health = hardened gw1 "nat64-health";
+        follow = hardened node "clat-follow";
+      };
+      expected = {
+        health = {
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          CapabilityBoundingSet = ["CAP_NET_ADMIN" "CAP_NET_RAW" "CAP_SYS_ADMIN"];
+        };
+        follow = {
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          CapabilityBoundingSet = ["CAP_NET_ADMIN" "CAP_SYS_ADMIN"];
+        };
+      };
     };
   };
 

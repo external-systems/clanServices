@@ -15,6 +15,12 @@
 #   - It converges on what is loaded, not on a file diff: each table
 #     carries its generation, corerad's is recorded after the restart was
 #     queued. A run that failed half way is repaired by the next.
+#   - Each table loads in a transaction of its own (round G11): a LAN
+#     link that is not there yet fails `router_src` (its netdev chain
+#     names the links), not the service rewrite. The run then fails and
+#     systemd runs it again (`Restart=on-failure`).
+#   - The WAN never brings a source inside a delegated prefix
+#     (`router_svc`, chain `wan`).
 #   - systemd drops a path event that fires while the hook runs, so the
 #     hook reads the file again before it exits and repeats until it has
 #     handled what is there.
@@ -176,6 +182,10 @@ def handle(text):
             "    type nat hook prerouting priority dstnat;",
             f"    {rule}",
             "  }",
+            "  chain wan {",
+            "    type filter hook prerouting priority raw;",
+            f'    iifname {WAN} ip6 saddr @delegated counter drop comment "WAN spoofed source"',
+            "  }",
             "  chain egress {",
             "    type filter hook forward priority filter - 10;",
             f'    iifname {LANS} oifname {WAN} meta nfproto ipv6 ct direction original ip6 saddr != @delegated counter reject with icmpv6 policy-fail comment "egress source, forward"',
@@ -196,24 +206,33 @@ def handle(text):
             "  }",
         ]),
     }
-    generation = hashlib.sha256(json.dumps(bodies, sort_keys=True).encode()).hexdigest()[:16]
-    replaced = False
+    replaced, failed = [], []
     for name in TABLES:
-        loaded = subprocess.run(["nft", "list", "table", *name.split()], capture_output=True, text=True)
-        replaced = replaced or loaded.returncode != 0 or f'comment "generation {generation}"' not in loaded.stdout
-    if replaced:
-        # one transaction: the tables are never half there
-        tables = "".join(f'table {name}\ndelete table {name}\ntable {name} {{\n  comment "generation {generation}"\n{bodies[name]}\n}}\n' for name in TABLES)
-        subprocess.run(["nft", "-f", "-"], input=tables.encode(), check=True)
+        generation = hashlib.sha256(bodies[name].encode()).hexdigest()[:16]
+        loaded = subprocess.run(["nft", "list", "table", *name.split()], capture_output=True, text=True, timeout=30)
+        if loaded.returncode == 0 and f'comment "generation {generation}"' in loaded.stdout:
+            continue
+        # one transaction per table: a table is never half there
+        table = f'table {name}\ndelete table {name}\ntable {name} {{\n  comment "generation {generation}"\n{bodies[name]}\n}}\n'
+        done = subprocess.run(["nft", "-f", "-"], input=table.encode(), capture_output=True, timeout=30)
+        if done.returncode == 0:
+            replaced.append(name)
+        else:
+            failed.append(name)
+            print(f"router-prefix: table {name} did not load: {done.stderr.decode().strip()}", flush=True)
+
+    if failed:
+        # corerad waits for the run that loads every table, as before
+        sys.exit(f"router-prefix: tables {failed} did not load; systemd runs the hook again")
 
     digest = hashlib.sha256(conf.encode()).hexdigest()
     restarted = read(APPLIED) != digest
     if restarted:
         # --no-block: corerad is ordered after this unit, so waiting for
         # its restart from inside this unit never returns
-        subprocess.run(["systemctl", "--no-block", "try-restart", "corerad.service"], check=True)
+        subprocess.run(["systemctl", "--no-block", "try-restart", "corerad.service"], check=True, timeout=30)
         write(APPLIED, digest)
-    print(f"router-prefix: current {current}, retired {sorted(state['retired'])}, service {public}, corerad {'restarted' if restarted else 'unchanged'}, delegated {prefixes}, table {'replaced' if replaced else 'unchanged'}", flush=True)
+    print(f"router-prefix: current {current}, retired {sorted(state['retired'])}, service {public}, corerad {'restarted' if restarted else 'unchanged'}, delegated {prefixes}, table {'replaced' if replaced else 'unchanged'}{' ' + ', '.join(replaced) if replaced else ''}", flush=True)
 
 
 for _ in range(100):

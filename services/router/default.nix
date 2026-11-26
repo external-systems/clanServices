@@ -204,6 +204,36 @@ in {
         wan = builtins.head wanLinks;
         assigned = (netif.links.${wan} or {prefixDelegation.assign = [];}).prefixDelegation.assign;
         withoutLength = address: builtins.head (lib.splitString "/" address);
+        # The network of an address with its length, IPv6 printed short
+        # (specs/gateway.md §17: the WAN's spoofed-source rule).
+        network = address: let
+          p = c.parse address;
+          length = lib.last (lib.splitString "/" address);
+          hex = map (group: lib.toLower (lib.toHexString group)) p.start;
+          zeros = i:
+            if i < 8 && builtins.elemAt p.start i == 0
+            then 1 + zeros (i + 1)
+            else 0;
+          best =
+            lib.foldl' (a: b:
+              if b.length > a.length
+              then b
+              else a) {
+              start = 0;
+              length = 0;
+            } (lib.genList (i: {
+                start = i;
+                length = zeros i;
+              })
+              8);
+          v6 =
+            if best.length < 2
+            then lib.concatStringsSep ":" hex
+            else lib.concatStringsSep ":" (lib.take best.start hex) + "::" + lib.concatStringsSep ":" (lib.drop (best.start + best.length) hex);
+        in
+          if p.family == 4
+          then "${c.v4ToString p.start}/${length}"
+          else "${v6}/${length}";
         resolve = name: zone: let
           links = netif.zones.${name} or [];
           first = builtins.head links;
@@ -217,6 +247,7 @@ in {
         in {
           interfaces = links;
           inherit (zone) internet allowTo ssh hostPorts;
+          prefixes = map network (builtins.filter (lib.hasInfix "/") addresses);
           subnet =
             if ids == []
             then null
