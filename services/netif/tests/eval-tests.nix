@@ -460,6 +460,65 @@
       ];
     }
     baseInventory);
+  # Round G11 (specs/netif.md N25): the guard's script and its steps
+  # around ifstate.service.
+  guardText = machineConfig: machineConfig.clanServices.netif.guard.script.text;
+  hasStep = name: steps: lib.any (step: lib.hasInfix name (toString step)) (lib.toList steps);
+  # A bridge over one member, and a segment default gateway, DHCP and
+  # DNS that only the bridge may take.
+  memberSiteEdge = kamOf (
+    mkEvaled (
+      lib.recursiveUpdate baseInventory {
+        # the bridge owns the IPv4 default (N21)
+        instances.home-net.roles.default.machines.kamrui-h1.settings.links.dock.defaultRoute.ipv4 = false;
+        instances.vm-net = {
+          module.name = "netif";
+          module.input = "self";
+          roles.default.machines.kamrui-h1.settings = {
+            gateway.ipv4 = "10.70.0.1";
+            nameservers = ["10.70.0.53"];
+            dhcp.ipv6 = true;
+            defaultRoute.ipv6 = false;
+            links = {
+              uplink0.interface = "enp9s0";
+              br0 = {
+                bridge.members = ["uplink0"];
+                static.ipv4 = ["10.70.0.2/24"];
+              };
+            };
+          };
+        };
+      }
+    )
+  );
+  # A bad address in any address option fails at evaluation.
+  badValueRejected = settings:
+    !(builtins.tryEval (
+      let
+        machine = kamOf (mkEvaled (lib.recursiveUpdate baseInventory {instances.home-net.roles.default.machines.kamrui-h1.settings = settings;}));
+      in
+        builtins.deepSeq [machine.networking.ifstate.settings machine.clanServices.netif.links] null
+    )).success;
+  badTargetRejected = target:
+    !(builtins.tryEval (
+      builtins.deepSeq (kamOf (withKamrui {clanServices.netif.guard.targets = [target];} baseInventory)).clanServices.netif.guard.targets null
+    )).success;
+  # Rule 11 (N13): the deploy target on a tunnel address in another
+  # spelling than the interface's.
+  tunnelTargetKam = spelling:
+    kamOf (withKamrui {
+        clan.core.networking.targetHost = lib.mkForce "root@[${spelling}]:22";
+        networking.ifstate.settings.interfaces.wg7 = {
+          addresses = ["2001:db8:77::10/64"];
+          link = {
+            kind = "wireguard";
+            state = "up";
+          };
+          wireguard.listen_port = 51877;
+        };
+        clanServices.networking.owners.suite.interfaces = ["^wg7$"];
+      }
+      baseInventory);
   floatingKam = kamOf (withKamrui {clanServices.networking.owners.failover.addresses = ["192.0.2.96/28"];} baseInventory);
   dockerKam = kamOf (withKamrui {virtualisation.docker.enable = true;} baseInventory);
   podmanKam = kamOf (withKamrui {virtualisation.podman.enable = true;} baseInventory);
@@ -808,10 +867,11 @@ in {
       expected = {
         include = true;
         bridges.brup = ["up0"];
-        pre = 3;
+        # udev settle, the guard's step before an apply (N25), the RA metric, the guest ports
+        pre = 4;
         none = {
           include = false;
-          pre = 2;
+          pre = 3;
         };
       };
     };
@@ -868,6 +928,137 @@ in {
         firewallStep = true;
         noFirewallStep = false;
       };
+    };
+    # Round G11: a second guard run after a rollback records nothing; a
+    # link that held a default must hold one again; a DHCP link made
+    # static gets a client with the kept configuration; the fault outside
+    # the machine re-applies the new configuration; a failed apply still
+    # runs the guard; targets are shell words.
+    test_guardRollbackHardening = {
+      expr = let
+        text = guardText kam;
+        unit = kam.systemd.services.ifstate.serviceConfig;
+      in {
+        marker = lib.hasInfix ''"$(cat "$run/rolled-back" 2> /dev/null || true)" = "$this"'' text;
+        markerWritten = lib.hasInfix ''echo "$this" > "$run/rolled-back"'' text;
+        defaultsRecorded = lib.hasInfix ''own_defaults > "$state/last-good-defaults.new"'' text;
+        dhcpWaits = lib.hasInfix "dhcp_defaults=(enp4s0)" text;
+        mayHoldDefault = lib.hasInfix "may6=(enp4s0)" text;
+        transientClient = lib.hasInfix ''start_client "$name"'' text;
+        outside = lib.hasInfix "the fault is outside this machine" text;
+        resetFirst = lib.hasInfix "netif-guard-before-apply" (toString (builtins.head unit.ExecStartPre));
+        applyingNamed = lib.hasInfix ''> "$run/applying"'' (builtins.head unit.ExecStartPre).text;
+        notYetApplied = lib.hasInfix ''"$(cat "$run/applying" 2> /dev/null || true)" != "$config"'' text;
+        resetClearsMarker = lib.hasInfix ''rm -f "$run/rolled-back"'' (builtins.head unit.ExecStartPre).text;
+        afterFailure = hasStep "netif-guard-after-failure" unit.ExecStopPost;
+      };
+      expected = {
+        marker = true;
+        markerWritten = true;
+        defaultsRecorded = true;
+        dhcpWaits = true;
+        mayHoldDefault = true;
+        transientClient = true;
+        outside = true;
+        resetFirst = true;
+        applyingNamed = true;
+        notYetApplied = true;
+        resetClearsMarker = true;
+        afterFailure = true;
+      };
+    };
+    # An apply starts the DHCP clients of the links that are there only.
+    test_dhcpcdStartedForPresentLinks = {
+      expr = lib.any (step: lib.hasInfix ''if [ -e "/sys/class/net/$interface" ]'' (step.text or "")) kam.systemd.services.ifstate.serviceConfig.ExecStartPost;
+      expected = true;
+    };
+    test_guardTargetsAreShellWords = {
+      expr = lib.hasInfix "extra=('tcp|192.0.2.10||22')" (guardText guardTargetKam);
+      expected = true;
+    };
+    test_badAddressesRejected = {
+      expr = {
+        gatewayWithLength = badValueRejected {links.eth.gateway.ipv4 = "192.168.10.1/24";};
+        staticWithoutLength = badValueRejected {links.eth.static.ipv4 = ["192.168.10.10"];};
+        v6InV4 = badValueRejected {links.eth.static.ipv4 = ["2001:db8::1/64"];};
+        lengthTooLong = badValueRejected {links.eth.static.ipv6 = ["2001:db8:10::10/129"];};
+        nameserverName = badValueRejected {links.eth.nameservers = ["dns.example"];};
+        routeDestination = badValueRejected {
+          links.eth.routes = [{destination = "10.20.0.0";}];
+        };
+        mtu = badValueRejected {links.eth.mtu = 70000;};
+        siteGateway = badValueRejected {gateway.ipv6 = "2001:db8::1/64";};
+        targetWithPort = badTargetRejected {address = "192.0.2.10:22";};
+        targetInterface = badTargetRejected {
+          address = "192.0.2.10";
+          interface = "eth0 eth1";
+        };
+        # the inventory as it is still evaluates
+        good = badValueRejected {links.eth.gateway.ipv4 = "192.168.10.1";};
+      };
+      expected = {
+        gatewayWithLength = true;
+        staticWithoutLength = true;
+        v6InV4 = true;
+        lengthTooLong = true;
+        nameserverName = true;
+        routeDestination = true;
+        mtu = true;
+        siteGateway = true;
+        targetWithPort = true;
+        targetInterface = true;
+        good = false;
+      };
+    };
+    # A bridge member takes none of the segment defaults: one default
+    # route, on the bridge; no route and no DHCP client on the member.
+    test_memberInheritsNoAddressing = {
+      expr = {
+        defaults = map (r: r.dev) (builtins.filter (r: r.to == "0.0.0.0/0") memberSiteEdge.networking.ifstate.settings.routing.routes);
+        memberRoutes = builtins.filter (r: r.dev == "enp9s0") memberSiteEdge.networking.ifstate.settings.routing.routes;
+        memberClient = memberSiteEdge.systemd.services ? netif-dhcpcd-enp9s0;
+        bridgeClient = memberSiteEdge.systemd.services ? netif-dhcpcd-br0;
+      };
+      expected = {
+        defaults = ["br0"];
+        memberRoutes = [];
+        memberClient = false;
+        bridgeClient = true;
+      };
+    };
+    test_normalizeIpv6 = {
+      expr = map ip.normalizeIpv6 [
+        "2001:0db8::1"
+        "2001:DB8:0:0::1"
+        "::ffff:192.0.2.1"
+        "::FFFF:c000:0201"
+        "fe80::1%eth0"
+        "1:::2"
+        "1::2::3"
+        "2001:db8::1/64"
+      ];
+      expected = [
+        "2001:db8:0:0:0:0:0:1"
+        "2001:db8:0:0:0:0:0:1"
+        "0:0:0:0:0:ffff:c000:201"
+        "0:0:0:0:0:ffff:c000:201"
+        "fe80:0:0:0:0:0:0:1"
+        null
+        null
+        null
+      ];
+    };
+    test_targetHostOnTunnelInAnySpelling = {
+      expr = map (spelling: failedAssertion (tunnelTargetKam spelling) "resolves to a fabric, transfer, or tunnel address") [
+        "2001:db8:77::10"
+        "2001:0db8:0077:0000::0010"
+        "2001:db8:77::11"
+      ];
+      expected = [
+        true
+        true
+        false
+      ];
     };
     test_matchMacCleanInventory = {
       expr = failedAssertion macEdge "netif";
@@ -1143,7 +1334,7 @@ in {
       expected = {
         units = ["netif-dhcpcd-enp4s0"];
         bindsTo = ["sys-subsystem-net-devices-enp4s0.device"];
-        wantedBy = ["multi-user.target"];
+        wantedBy = [];
         Restart = "on-failure";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
