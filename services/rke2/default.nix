@@ -649,20 +649,11 @@
       agentTokenPath =
         config.clan.core.vars.generators."rancher-agent-token-${instanceName}".files.agent-token.path;
 
-      # --- HAProxy healthcheck + stats material (vars) -------------
+      # --- HAProxy healthcheck material (vars) ---------------------
       # The rancher-haproxy-<instance> shared generator renders the
       # kube-apiserver healthcheck client cert (signed by the PKI's
-      # client CA) and the stats-page password hash (eval-consumed via
-      # getPublicValue).
+      # client CA). The stats page is read-only on loopback (K15).
       haproxyHealthcheckFiles = config.clan.core.vars.generators."rancher-haproxy-${instanceName}".files;
-      haproxyStatsPasswordHash = lib.trim (
-        clanLib.getPublicValue {
-          generator = "rancher-haproxy-${instanceName}";
-          file = "password-hash-haproxy";
-          flake = config.clan.core.settings.directory;
-          default = throw "rke2/${instanceName}: no haproxy stats password hash; run 'clan vars generate' (generator rancher-haproxy-${instanceName})";
-        }
-      );
 
       haproxyConfig = kube.render.mkHaproxyConfig {
         inherit
@@ -675,7 +666,6 @@
         backends = haproxyBackends;
         caCrtPath = haproxyHealthcheckFiles."kubeapi-ca.crt".path;
         clientPemPath = haproxyHealthcheckFiles."kubeapi-client.pem".path;
-        statsPasswordHash = haproxyStatsPasswordHash;
         healthCheckSni = kubeapiAddr;
       };
 
@@ -700,7 +690,9 @@
           "rke2-snapshot-validation-webhook"
         ];
 
-      baseServerConfig =
+      # The keys the service renders; configOverrides may not set them
+      # (K14, kube.assertions.mkConfigOverrideAssertions).
+      ownedServerConfig =
         {
           token-file = serverTokenPath;
           agent-token-file = agentTokenPath;
@@ -740,13 +732,9 @@
         }
         // lib.optionalAttrs (settings.profile != null && settings.profile != "cis") {
           inherit (settings) profile;
-        }
-        // settings.configOverrides
-        // lib.optionalAttrs (disabledAddons != [] || settings.configOverrides ? disable) {
-          disable = (settings.configOverrides.disable or []) ++ disabledAddons;
         };
 
-      baseAgentConfig =
+      ownedAgentConfig =
         {
           server = joinUrl;
           token-file = agentTokenPath;
@@ -754,8 +742,16 @@
         }
         // lib.optionalAttrs (settings.profile != null && settings.profile != "cis") {
           inherit (settings) profile;
-        }
-        // settings.configOverrides;
+        };
+
+      baseServerConfig =
+        ownedServerConfig
+        // settings.configOverrides
+        // lib.optionalAttrs (disabledAddons != [] || settings.configOverrides ? disable) {
+          disable = (settings.configOverrides.disable or []) ++ disabledAddons;
+        };
+
+      baseAgentConfig = ownedAgentConfig // settings.configOverrides;
 
       cleanConfig = lib.filterAttrs (_: v: v != null) (
         {
@@ -871,6 +867,7 @@
                 instanceName
                 roleMembers
                 settings
+                resolvedCidrs
                 ;
               transportFacts =
                 if fabricEnabled
@@ -916,6 +913,19 @@
               inherit instanceName roleMembers;
               transportFacts = allTransportFacts;
             })
+            ++ kube.assertions.mkConfigOverrideAssertions {
+              inherit instanceName;
+              distro = "rke2";
+              overrides = settings.configOverrides;
+              # `profile` has its typed option
+              ownedKeys =
+                ["profile"]
+                ++ builtins.attrNames (
+                  if isServer
+                  then ownedServerConfig
+                  else ownedAgentConfig
+                );
+            }
             ++ [
               {
                 assertion = settings.coredns.helmValues == {};
@@ -923,14 +933,21 @@
               }
             ];
 
+          warnings = kube.assertions.mkClusterWarnings {inherit instanceName roleMembers;};
+
+          # K1: a machine gets only the secrets its role reads. An agent
+          # joins with the agent token; the server token is a server's.
           clan.core.vars.generators = lib.mkMerge (
             [
-              (kube.vars.mkTokenGenerators {inherit pkgs instanceName;})
+              (kube.vars.mkAgentTokenGenerator {inherit pkgs instanceName;})
               (kube.vars.mkHaproxyGenerator {inherit pkgs instanceName;})
-              # D60: the mesh group CA (shared across the group) and the
-              # per-cluster apiserver leaf set (SANs = the published
-              # endpoints). Defined on every member; share = true keeps
-              # one generation per group/instance.
+            ]
+            # D60: the mesh group CA (shared across the group) and the
+            # per-cluster apiserver leaf set (SANs = the published
+            # endpoints), on the clusterInit server only: its secrets
+            # oneshot is the one reader. share = true keeps one
+            # generation per group/instance.
+            ++ lib.optionals isInit [
               (kube.vars.mkMeshCaGenerator {
                 inherit pkgs;
                 group = meshGroup;
@@ -942,6 +959,7 @@
               })
             ]
             ++ lib.optionals isServer [
+              (kube.vars.mkServerTokenGenerator {inherit pkgs instanceName;})
               (kube.vars.mkPkiGenerator {inherit pkgs instanceName;})
               (kube.vars.mkAdminKubeconfigGenerator {
                 inherit pkgs instanceName;
@@ -1041,25 +1059,31 @@
                 map (iface: ''iifname "${iface}" accept'') transportInterfaces
                 ++ ["meta mark and 0x0f00 == 0x0200 accept"]
               );
-              trustedInterfaces =
-                [
-                  "cilium_host"
-                  "cilium_net"
-                ]
-                ++ transportInterfaces;
-              extraInputRules = let
-                interfaceGuard =
-                  if transportInterfaces != []
-                  then "iifname { ${lib.concatStringsSep ", " (map (i: ''"${i}"'') transportInterfaces)} } "
-                  else "";
-              in ''
-                # Pod traffic: pod->apiserver flows (ClusterIP DNAT'd to
-                # the node endpoint on 6443) re-enter the input hook on a
-                # cilium_*/lxc* veth — without this accept every in-cluster
-                # API client crash-loops.
-                iifname { "cilium*", "lxc*" } accept
-                ${interfaceGuard}tcp dport { 6443, 9345, ${toString haproxyKubeapiPort}, ${toString haproxySupervisorPort}, 10250, 2379, 2380, 2381 } accept
-              '';
+              # The fabric links are not trusted here: routed-fabric owns
+              # their trust (firewall.trust), and the cluster opens only
+              # its own ports, by source (K2, lib/kube-cluster/firewall.nix).
+              # A pod's API traffic (ClusterIP translated to a server's
+              # 6443) arrives with its pod source.
+              trustedInterfaces = [
+                "cilium_host"
+                "cilium_net"
+              ];
+              extraInputRules = kube.render.mkInputRules {
+                inherit transportInterfaces isServer;
+                inherit (resolvedCidrs) podCIDRv4 podCIDRv6;
+                members = map (m: {inherit (m) role;} // memberAddr m.machineName) roleMembers;
+                # the API, the LBs, the kubelet, Cilium's health port
+                clusterPorts =
+                  lib.optional isServer 6443
+                  ++ [
+                    haproxyKubeapiPort
+                    haproxySupervisorPort
+                    10250
+                    4240
+                  ];
+                # the supervisor: joins through the members' HAProxy
+                memberOnlyPorts = lib.optional isServer 9345;
+              };
               extraForwardRules = ''
                 iifname { "cilium*", "lxc*" } accept
                 oifname { "cilium*", "lxc*" } accept
@@ -1116,6 +1140,7 @@
             namePrefix = "rke2-${instanceName}";
             beforeUnit = "rke2-server.service";
             etcdDir = "/var/lib/rancher/rke2/server/db/etcd";
+            overrideFile = "/var/lib/rancher/rke2/server/allow-new-cluster-${instanceName}";
             port = 6443;
             peers = map (
               m: let
@@ -1123,7 +1148,7 @@
               in
                 if addr.ipv4 != null
                 then addr.ipv4
-                else "[${addr.ipv6}]"
+                else addr.ipv6
             ) (builtins.filter (m: m.machineName != machine.name) serverMembers);
           }
         ))

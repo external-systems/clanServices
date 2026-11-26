@@ -8,17 +8,23 @@
 # Zero user input — `clan vars generate` derives everything.
 #
 # Role placement is the distro service's decision:
-#   - tokens + haproxy material: EVERY node (agents join/serve through
-#     their local haproxy; the healthcheck client cert deploys to all);
-#   - PKI, admin kubeconfig: servers only (the CA keys never leave the
-#     control plane).
+#   - agent token + haproxy material: EVERY node (agents join/serve
+#     through their local haproxy; the healthcheck client cert deploys
+#     to all);
+#   - server token, PKI, admin kubeconfig: servers only (the server
+#     token joins the control plane; the CA keys never leave it);
+#   - ClusterMesh CA + leaf set: the clusterInit server only (its
+#     secrets oneshot is the one reader).
 #
 # Naming is distro-neutral: rancher-<what>-<instance>. The PKI layout the
 # certificates are synced INTO differs per distro (rke2 vs k3s tls dirs) —
 # that is nixos.mkPkiSync's parameter, not the generator's.
 {lib}: {
-  # Join tokens: plain random secrets, one per role.
-  mkTokenGenerators = {
+  # Join tokens: plain random secrets, one per role. The server token
+  # joins the control plane (etcd, every CA through the distro's
+  # bootstrap), so it is defined on servers only; agents join with the
+  # agent token.
+  mkServerTokenGenerator = {
     pkgs,
     instanceName,
   }: {
@@ -30,6 +36,12 @@
         openssl rand -hex 16 > $out/server-token
       '';
     };
+  };
+
+  mkAgentTokenGenerator = {
+    pkgs,
+    instanceName,
+  }: {
     "rancher-agent-token-${instanceName}" = {
       share = true;
       files.agent-token = {};
@@ -170,9 +182,7 @@
   #                         the PKI's CLIENT ca (any authenticated user may
   #                         GET /readyz via system:public-info-viewer).
   #                         Secret — deployed 0400 owner haproxy.
-  #   password-hash-haproxy = the stats-page password hash (public,
-  #                         eval-consumed via getPublicValue to render the
-  #                         userlist).
+  # The stats page is read-only on loopback, so it has no password.
   mkHaproxyGenerator = {
     pkgs,
     instanceName,
@@ -190,10 +200,6 @@
           group = "haproxy";
           mode = "0400";
           restartUnits = ["haproxy.service"];
-        };
-        "password-hash-haproxy" = {
-          secret = false;
-          deploy = false;
         };
       };
       runtimeInputs = with pkgs; [
@@ -225,8 +231,6 @@
           -extfile "$WORK_DIR/ext.cnf" \
           -out "$WORK_DIR/haproxy.crt"
         cat "$WORK_DIR/haproxy.crt" "$WORK_DIR/haproxy.key" > "$out/kubeapi-client.pem"
-        PASSWORD=$(openssl rand -hex 16)
-        echo -n "$PASSWORD" | openssl passwd -6 -stdin > "$out/password-hash-haproxy"
       '';
     };
   };
@@ -244,7 +248,8 @@
   # set is a public validation input — membership/placement changes re-run
   # `clan vars generate` before advertise. CA/cert material never reaches
   # exports, helm, or the Nix store: only the CA key stays deploy = false;
-  # the clusterInit node's secrets-apply oneshot reads leaf runtime paths.
+  # the clusterInit node's secrets-apply oneshot reads leaf runtime paths,
+  # so the distro services define both generators on that node only.
   mkMeshCaGenerator = {
     pkgs,
     group,

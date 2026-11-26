@@ -11,21 +11,34 @@
 # and making the admin kubeconfig / haproxy healthcheck certs verifiable
 # cluster-wide. A path unit re-syncs when the CA material changes (vars
 # regeneration).
-_: {
-  # The first-server guard (specs/gateway.md §16.3): a `clusterInit`
-  # server whose etcd directory is gone (a reinstall, a lost disk) would
-  # start a second cluster with the same CAs, and the other nodes'
-  # HAProxy would accept it. Before the server starts without data, the
-  # guard asks every other server's API for half a minute (the fabric
-  # needs that long after a boot). Any answer: refuse to start.
+{lib, ...}: {
+  # The first-server guard (specs/gateway.md §16.3, SPEC.md §6.10): a
+  # `clusterInit` server whose etcd directory is gone (a reinstall, a lost
+  # disk) would start a second cluster with the same CAs, and the other
+  # nodes' HAProxy would accept it. Before the server starts without
+  # data, the guard dials every other server's API port, after IfState
+  # and FRR (the peers are fabric addresses):
+  #   - a connection (anything listens): a cluster is alive -> refuse;
+  #   - "Connection refused" from every peer: reachable, no cluster ->
+  #     start;
+  #   - anything else (timeout, no route): unknown -> keep trying until
+  #     the deadline, then refuse.
+  # It fails closed: a first server whose peers stay unreachable does not
+  # start. The operator who knows no cluster is alive creates
+  # `overrideFile` and restarts the server; the guard deletes the file
+  # when it lets the server start, so a later data loss is checked again.
   mkInitGuard = {
     pkgs,
     namePrefix,
     beforeUnit,
     etcdDir,
-    # the other servers' API hosts, bracketed when IPv6
+    # the other servers' API addresses (plain, IPv6 without brackets)
     peers,
     port ? 6443,
+    # created by the operator to allow a start without the check
+    overrideFile,
+    # seconds to wait for every peer to answer
+    waitSeconds ? 300,
   }: let
     unitName = "${namePrefix}-init-guard";
   in {
@@ -33,25 +46,58 @@ _: {
       description = "Refuse to start a second cluster on a first server without data";
       before = [beforeUnit];
       requiredBy = [beforeUnit];
-      after = ["network-online.target"];
+      # the peers are fabric addresses: IfState and FRR come first
+      after = [
+        "network-online.target"
+        "ifstate.service"
+        "frr.service"
+      ];
       wants = ["network-online.target"];
+      # the suites override these in a drop-in to run the guard beside
+      # a live cluster
+      environment = {
+        INIT_GUARD_ETCD_DIR = etcdDir;
+        INIT_GUARD_PORT = toString port;
+        INIT_GUARD_PEERS = lib.concatStringsSep " " peers;
+        INIT_GUARD_OVERRIDE = overrideFile;
+        INIT_GUARD_WAIT = toString waitSeconds;
+      };
       serviceConfig = {
         Type = "oneshot";
+        TimeoutStartSec = "infinity";
         ExecStart = pkgs.writeShellScript unitName ''
           set -u
-          if [ -d "${etcdDir}" ]; then
+          export LC_ALL=C
+          if [ -d "$INIT_GUARD_ETCD_DIR" ]; then
             exit 0
           fi
-          tries=0
-          while [ "$tries" -lt 10 ]; do
-            for peer in ${pkgs.lib.escapeShellArgs peers}; do
-              code=$(${pkgs.curl}/bin/curl -ks -o /dev/null -w '%{http_code}' --max-time 2 "https://$peer:${toString port}/readyz" || true)
-              if [ -n "$code" ] && [ "$code" != 000 ]; then
-                echo "${unitName}: this machine is the clusterInit server and has no etcd data, but the server at $peer answers. Starting would create a second cluster. Move 'clusterInit' to a server that has the data, so this one joins it." >&2
+          if [ -e "$INIT_GUARD_OVERRIDE" ]; then
+            echo "${unitName}: $INIT_GUARD_OVERRIDE exists: starting a new cluster without the check" >&2
+            rm -f "$INIT_GUARD_OVERRIDE"
+            exit 0
+          fi
+          deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + INIT_GUARD_WAIT ))
+          while :; do
+            unknown=""
+            for peer in $INIT_GUARD_PEERS; do
+              err=$(${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$peer" "$INIT_GUARD_PORT" 2>&1)
+              rc=$?
+              if [ "$rc" -eq 0 ]; then
+                echo "${unitName}: this machine is the clusterInit server and has no etcd data, but the server at $peer answers on port $INIT_GUARD_PORT. Starting would create a second cluster. Move 'clusterInit' to a server that has the data, so this one joins it." >&2
                 exit 1
               fi
+              case "$err" in
+                *"Connection refused"*) ;;
+                *) unknown="$unknown $peer" ;;
+              esac
             done
-            tries=$((tries + 1))
+            if [ -z "$unknown" ]; then
+              exit 0
+            fi
+            if [ "$(${pkgs.coreutils}/bin/date +%s)" -ge "$deadline" ]; then
+              echo "${unitName}: this machine is the clusterInit server and has no etcd data, and these servers did not answer for $INIT_GUARD_WAIT s:$unknown. A cluster may be alive behind them. If no cluster is alive, create $INIT_GUARD_OVERRIDE and restart ${beforeUnit}." >&2
+              exit 1
+            fi
             ${pkgs.coreutils}/bin/sleep 3
           done
         '';

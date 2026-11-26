@@ -119,4 +119,10 @@ read the section of a component before changing code that touches it.
   held transport address, so its line count is the ports in use; `jool
   stats display --all --csv` has `JSTAT_BIB_ENTRIES` and
   `JSTAT_SESSIONS` (`nat-gateway`, `NAT_GATEWAY_POOL4_OK`).
+- k3s and RKE2 embedded etcd: the metrics port 2381 listens on loopback
+  only; a peer that dials a server's node address on 2381 gets
+  "connection refused" while the server runs. A k3s or RKE2 agent writes
+  no kubeconfig of its own (`/etc/rancher/<distro>/<distro>.yaml` exists on
+  servers only). Suites `<distro>-ha` (the init guard phases) and
+  `<distro>-clustermesh`, round G11.
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).

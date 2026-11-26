@@ -8,7 +8,7 @@
 #     <instance>-fabric pool by explicit lbipam.cilium.io/ips projection,
 #     class io.cilium/bgp-control-plane, ETP Local (D60). Cilium 1.20.3's
 #     apiserver control-plane listener is IPv4-only; the data plane is dual-stack,
-#   - the apiserver Deployment: replicas = min(3, eligible voters) = 2,
+#   - the apiserver Deployment: replicas = min(3, eligible nodes) = 2 (placement all),
 #     REQUIRED hostname anti-affinity + nodeSelector, rolling update
 #     maxSurge=0 / maxUnavailable=1,
 #   - the clustermesh-apiserver TLS secrets come from the clan vars mesh
@@ -36,7 +36,22 @@
     if k3s
     then "k3s"
     else "rke2-server";
+  # beta and delta are agents (SPEC.md §6.12: two servers are refused)
+  agentUnit =
+    if k3s
+    then "k3s"
+    else "rke2-agent";
   marker = lib.toUpper distro;
+  # One server and one agent per cluster (SPEC.md §6.12: two servers are
+  # refused); the mesh apiserver runs on both nodes.
+  clusterSettings = id: {
+    network.fabric = {
+      service = "routed-fabric";
+      instance = "mesh";
+    };
+    cilium.id = id;
+    mesh.placement = "all";
+  };
   # k3s-only FRR debug line in fail_dump.
   frrDump = lib.optionalString k3s "\n        \"vtysh -c 'show bgp neighbors ::1' >&2 || true\",";
 in {
@@ -137,17 +152,12 @@ in {
           module.name = distro;
           module.input = "self";
           roles.server = {
-            settings = {
-              network.fabric = {
-                service = "routed-fabric";
-                instance = "mesh";
-              };
-              cilium.id = 1;
-            };
-            machines = {
-              alpha.settings.clusterInit = true;
-              beta.settings.clusterInit = false;
-            };
+            settings = clusterSettings 1;
+            machines.alpha.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 1;
+            machines.beta = {};
           };
         };
 
@@ -155,17 +165,12 @@ in {
           module.name = distro;
           module.input = "self";
           roles.server = {
-            settings = {
-              network.fabric = {
-                service = "routed-fabric";
-                instance = "mesh";
-              };
-              cilium.id = 2;
-            };
-            machines = {
-              gamma.settings.clusterInit = true;
-              delta.settings.clusterInit = false;
-            };
+            settings = clusterSettings 2;
+            machines.gamma.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 2;
+            machines.delta = {};
           };
         };
       };
@@ -245,7 +250,7 @@ in {
             for m in [alpha, beta, gamma, delta]:
                 m.wait_until_succeeds("systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null", timeout=120)
                 m.wait_for_unit("haproxy.service", timeout=240)
-                m.wait_for_unit("${runtimeUnit}.service", timeout=600)
+                m.wait_for_unit(("${agentUnit}" if m.name in ("beta", "delta") else "${runtimeUnit}") + ".service", timeout=600)
 
         with subtest("bootstrap bundles and mesh secrets applied"):
             # Both bootstrap bundles applied (each cluster's clusterInit node).
@@ -279,6 +284,16 @@ in {
                 timeout=300,
             )
 
+        # The agents have no kubeconfig of their own: the test gives them
+        # their cluster's admin kubeconfig (it dials the local HAProxy), so
+        # kubectl and the cilium CLI run on every node.
+        with subtest("the agents get their cluster's admin kubeconfig"):
+            import base64
+            for server, agent in [(alpha, beta), (gamma, delta)]:
+                cfg = base64.b64encode(server.succeed("cat /etc/rancher/${distro}/admin-kubeconfig").encode()).decode()
+                agent.succeed(f"mkdir -p /etc/rancher/${distro} && echo {cfg} | base64 -d > /etc/rancher/${distro}/${distro}.yaml")
+                agent.succeed("kubectl get --raw /readyz | grep ok >/dev/null")
+
         with subtest("Cilium healthy with BGP config, advertisements and peers"):
             # Cilium healthy on both clusters, with every node's local-router
             # configuration and pod/VIP advertisements present.
@@ -291,7 +306,7 @@ in {
             for m in [alpha, beta, gamma, delta]:
                 m.wait_until_succeeds("test $(cilium bgp peers | grep -c established) -eq 2", timeout=180)
 
-        with subtest("apiserver placement: 2 replicas, one per voter"):
+        with subtest("apiserver placement: 2 replicas, one per node"):
             # --- apiserver placement (D60) ------------------------------------
             for m in [alpha, gamma]:
                 m.wait_until_succeeds(
@@ -302,7 +317,7 @@ in {
                 "kubectl get deployment -n kube-system clustermesh-apiserver -o jsonpath='{.spec.replicas}'"
             ).strip()
             assert replicas_a == "2", f"${clusterA} apiserver replicas: {replicas_a!r}"
-            # One pod per voter node (required anti-affinity + nodeSelector).
+            # One pod per node (required anti-affinity + nodeSelector).
             alpha.succeed(
                 "kubectl get pod -n kube-system -l k8s-app=clustermesh-apiserver -o jsonpath='{.items[*].spec.nodeName}' | tr ' ' '\\n' | sort | uniq -c | grep '^ *1 alpha$' >/dev/null"
             )

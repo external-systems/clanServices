@@ -91,8 +91,10 @@ transport addresses (both families):
 - The supervisor backend's check probes the real API port (`check port 6443`)
   as the anti-deadlock signal: a joining server's supervisor is L4-up but
   cannot serve joins until its local apiserver is ready.
-- Stats page on `:8404` (password hash from the `rancher-haproxy-<instance>`
-  var, rendered at eval).
+- The checks also verify that the certificate names the kubeapi FQDN
+  (`verifyhost`).
+- A read-only stats page on loopback (`127.0.0.1:8404`, `[::1]:8404`), with
+  no password; the admin path is `/run/haproxy/haproxy.sock`.
 
 ## Vars bootstrap (zero user input)
 
@@ -104,10 +106,14 @@ transport addresses (both families):
   plus a path unit watching for regeneration) installs the CA material into
   `/var/lib/rancher/rke2/server/tls` before `rke2-server` starts — rke2 adopts
   the custom CAs instead of generating its own.
-- `rancher-server-token-<instance>` / `rancher-agent-token-<instance>` — join
-  tokens.
+- `rancher-server-token-<instance>` (servers only) /
+  `rancher-agent-token-<instance>` (every node) — join tokens. An agent joins
+  with the agent token and never holds the server token.
+- `rancher-clustermesh-ca-<group>` / `rancher-clustermesh-<instance>`
+  (the `clusterInit` server only) — the ClusterMesh CA and leaf set; the
+  secrets oneshot there is their one reader.
 - `rancher-haproxy-<instance>` (every node) — the `/readyz` healthcheck client
-  cert + CA chain + stats password hash.
+  cert + CA chain.
 - `rancher-admin-kubeconfig-<instance>` (servers only) — an operator client
   cert (CN=admin, O=system:masters) signed by the vars client CA; server URL
   is the kubeapi FQDN on the LB port. Linked to
@@ -132,8 +138,23 @@ and `node-interface.nix`): `cilium`, `pools`, `bootstrap.apply`,
 the `packages.*` airgap escape hatches. The rke2 service adds:
 
 - `profile` — `"cis"` enables CIS hardening; other values are written to
-  `config.yaml`.
-- `configOverrides` — extra keys merged into `/etc/rancher/rke2/config.yaml`.
+  `config.yaml`. The default is `null`: CIS by default is planned (D25).
+- `configOverrides` — extra keys merged into `/etc/rancher/rke2/config.yaml`
+  (for example `kubelet-arg`). A key the service renders (and `profile`), or
+  a token, is an eval error: an override would replace it silently, and a
+  token would land in the Nix store.
+
+## The first-server guard
+
+`rke2-<instance>-init-guard` runs before `rke2-server.service` on the
+`clusterInit` server whose etcd directory is missing. It dials the other
+servers' API port after IfState and FRR: a connection means a cluster is
+alive, and the server does not start; "connection refused" from every
+server means no cluster; a timeout or no route is unknown, and after 300 s
+the guard refuses. To start a new cluster anyway (the other servers are not
+up yet, or the cluster is rebuilt from scratch), create
+`/var/lib/rancher/rke2/server/allow-new-cluster-<instance>` and restart
+`rke2-server.service`; the guard deletes the file when it lets rke2 start.
 
 ## Airgap
 

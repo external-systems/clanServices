@@ -1,5 +1,7 @@
 # <distro>-single: one clusterInit server on the routed fabric, a lone
-# spine (routed-fabric, FRR, Cilium native routing).
+# spine (routed-fabric, FRR, Cilium native routing), and `outside`, a host
+# on the same LAN that is no cluster member: it reaches no cluster port
+# (SPEC.md §6.12).
 # Shared by the k3s and rke2 suites; every distro difference is a `k3s`
 # branch below.
 {
@@ -55,7 +57,11 @@ in {
     inventory = {
       meta.domain = "test.clan";
 
-      machines.alpha = {};
+      machines = {
+        alpha = {};
+        # no cluster member: the negative firewall probe
+        outside = {};
+      };
 
       instances = {
         underlay = {
@@ -106,6 +112,19 @@ in {
         };
       };
     };
+  };
+
+  # A host on alpha's LAN that is not a cluster member (the test driver's
+  # own address on eth1), with a route to alpha's node address.
+  nodes.outside = {pkgs, ...}: {
+    networking.interfaces.eth1.ipv4.routes = [
+      {
+        address = "192.168.77.1";
+        prefixLength = 32;
+        via = "192.168.1.1";
+      }
+    ];
+    environment.systemPackages = [pkgs.netcat];
   };
 
   nodes.alpha = {pkgs, ...}: let
@@ -284,6 +303,26 @@ in {
                     f"kubectl exec -n ${distro}-probe api-probe -- nc -z -w 3 {host} {port}",
                     timeout=60,
                 )
+
+        # SPEC.md §6.12: a pod is a source like any other. It reaches the
+        # cluster ports, not every port of its node.
+        with subtest("a pod reaches no host port outside the cluster set"):
+            alpha.succeed("systemd-run --unit k2-listener socat TCP-LISTEN:9999,fork,reuseaddr SYSTEM:true")
+            alpha.wait_until_succeeds("socat -u /dev/null TCP:192.168.77.1:9999", timeout=30)
+            alpha.fail("kubectl exec -n ${distro}-probe api-probe -- nc -z -w 3 192.168.77.1 9999")
+            alpha.succeed("systemctl stop k2-listener")
+
+        # SPEC.md §6.12: no cluster port answers a host that is no member,
+        # on the node address or the LAN address (the path itself works).
+        with subtest("an outside host reaches no cluster port"):
+            outside.wait_until_succeeds("ping -c1 -W2 192.168.77.1", timeout=120)
+            for addr in ["192.168.77.1", "192.168.1.1"]:
+                for port in [6443, 10250, 2379, 2380, ${
+      if k3s
+      then "7443"
+      else "7443, 8443, 9345"
+    }]:
+                    outside.fail(f"nc -z -w 3 {addr} {port}")
 
         # Cilium health (kube-proxy replacement is enabled).
         with subtest("Cilium healthy"):

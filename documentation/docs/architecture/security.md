@@ -2,19 +2,30 @@
 
 ## Hardened by default
 
-The `rke2` service defaults to `profile: cis` (D25): Pod Security Admission
-`restricted` cluster-wide (except `kube-system`), `protect-kernel-defaults`,
-a dedicated etcd user/group, and CIS sysctls — the host prerequisites are
-rendered by the NixOS module. Opt out explicitly with
-`security.cis = false`. Tenants get a namespace-exemption runbook. k3s and
+The plan (D25, not yet the default): the `rke2` service defaults to
+`profile: cis` — Pod Security Admission `restricted` cluster-wide (except
+`kube-system`), `protect-kernel-defaults`, a dedicated etcd user/group, and
+CIS sysctls — with a namespace-exemption runbook for tenants, and k3s and
 the upstream `kubernetes` distro get equivalent PSA defaults where the
-distro supports them (there is no CIS profile off RKE2).
+distro supports them. Today `profile = "cis"` is opt-in (default `null`)
+and no suite runs it. Both distros encrypt Secrets at rest in etcd (rke2 by
+default, k3s with `secrets-encryption: true`).
 
 The firewall contract (SPEC.md §6.12): the API listens on the transport
 only, public ports open only where a Service exposes them, mesh and BGP
 traffic is restricted to expected peers, and mirror Services are reachable
-only from GitOps namespaces (D30). VM tests assert positive connectivity
-*and* negative exposure.
+only from GitOps namespaces (D30). The cluster ports open by source: the
+API, the HAProxy LB ports, the kubelet and Cilium's health port to the
+members' node addresses and the cluster's pod CIDRs, etcd to the servers
+only; on a fabric only on the fabric links and the local pod links. A pod
+reaches no other port of its node, and the cluster services never trust a
+fabric link. VM tests assert positive connectivity *and* negative exposure
+(`<distro>-single`: an outside host reaches no cluster port, a pod no
+other host port).
+
+A machine holds only the secrets its role reads: an agent has the agent
+token and the HAProxy health-check certificate, never the server token or
+the ClusterMesh keys (`<distro>-join`).
 
 ## Secrets planes (D35)
 

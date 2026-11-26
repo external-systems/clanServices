@@ -83,8 +83,10 @@ transport addresses (both families):
   server CA and presents a vars-issued client cert. A server lists itself plain
   and the remote servers `backup`; agents list all servers plain.
   `option allbackups` routes around dead backends.
-- Stats page on `:8404` (password hash from the
-  `rancher-haproxy-<instance>` var, rendered at eval).
+- The check also verifies that the certificate names the kubeapi FQDN
+  (`verifyhost`).
+- A read-only stats page on loopback (`127.0.0.1:8404`, `[::1]:8404`), with
+  no password; the admin path is `/run/haproxy/haproxy.sock`.
 
 ## Vars bootstrap and CA lifecycle
 
@@ -95,10 +97,14 @@ transport addresses (both families):
   material into `/var/lib/rancher/k3s/server/tls` before the first `k3s.service`
   start. It does not overwrite an initialized TLS tree and has no path watcher.
   Joining servers receive the cluster CA through k3s's normal bootstrap flow.
-- `rancher-server-token-<instance>` / `rancher-agent-token-<instance>` — join
-  tokens.
+- `rancher-server-token-<instance>` (servers only) /
+  `rancher-agent-token-<instance>` (every node) — join tokens. An agent joins
+  with the agent token and never holds the server token.
+- `rancher-clustermesh-ca-<group>` / `rancher-clustermesh-<instance>`
+  (the `clusterInit` server only) — the ClusterMesh CA and leaf set; the
+  secrets oneshot there is their one reader.
 - `rancher-haproxy-<instance>` (every node) — the `/readyz` healthcheck client
-  cert + CA chain + stats password hash.
+  cert + CA chain.
 - `rancher-admin-kubeconfig-<instance>` (servers only) — an operator client cert
   (CN=admin, O=system:masters) signed by the vars client CA; server URL is the
   kubeapi FQDN on the LB port. Linked to
@@ -153,8 +159,23 @@ Most cluster-wide settings live in `lib/kube-cluster` (`cluster-interface.nix`
 and `node-interface.nix`): `cilium`, `pools`, `bootstrap.apply`,
 `distroDefaults`, `coredns.rewrites`, and
 the `packages.*` airgap escape hatches. The k3s service adds `configOverrides`,
-extra keys merged into `/etc/rancher/k3s/config.yaml`. There is no rke2
-`profile = "cis"` equivalent.
+extra keys merged into `/etc/rancher/k3s/config.yaml` (for example
+`kubelet-arg`). A key the service renders, or a token, is an eval error: an
+override would replace it silently, and a token would land in the Nix store.
+There is no rke2 `profile = "cis"` equivalent. Servers run with
+`secrets-encryption: true` (Secrets encrypted at rest in etcd).
+
+## The first-server guard
+
+`k3s-<instance>-init-guard` runs before `k3s.service` on the `clusterInit`
+server whose etcd directory is missing. It dials the other servers' API
+port after IfState and FRR: a connection means a cluster is alive, and
+the server does not start; "connection refused" from every server means
+no cluster; a timeout or no route is unknown, and after 300 s the guard
+refuses. To start a new cluster anyway (the other servers are not up yet,
+or the cluster is rebuilt from scratch), create
+`/var/lib/rancher/k3s/server/allow-new-cluster-<instance>` and restart
+`k3s.service`; the guard deletes the file when it lets k3s start.
 
 ## Airgap
 

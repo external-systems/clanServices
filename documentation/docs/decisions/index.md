@@ -168,7 +168,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D22 | revised (r16, 2026-10-25) | Private member DNS zones deferred to day-2 (external-dns); MVP serves routes only |
 | D23 | active | Upstream kubeadm distro Reserved |
 | D24 | active | CNCF in-cluster posture; host FRR/WireGuard/HAProxy exempt |
-| D25 | active | RKE2 CIS hardening default |
+| D25 | planned | RKE2 CIS hardening default (`profile = "cis"` is opt-in today) |
 | D26 | revised | Kubenix two-layer rendering, zero IFD |
 | D27 | revised | Rancher helm-controller off except distro defaults |
 | D28 | REVOKED | No clan-installed Flux |

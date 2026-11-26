@@ -16,8 +16,12 @@
 # (end-to-end TLS to the apiserver): `check` ENABLES checks (check-ssl alone
 # does not imply it), `check ssl` would wrap the DATA path in haproxy's own
 # TLS and break clients. The check verifies the serving chain with the PKI's
-# server CA and presents the healthcheck client cert (any authenticated user
-# may GET /readyz).
+# server CA, checks that the certificate names the kubeapi FQDN
+# (`verifyhost`), and presents the healthcheck client cert (any
+# authenticated user may GET /readyz).
+#
+# The stats page is read-only and listens on loopback only: it shows the
+# backends and changes nothing, so it needs no password.
 #
 # When enabled, the supervisor backend checks /readyz THROUGH the real API
 # port (check port <kubeapiPort>) — the anti-deadlock: a JOINING server's
@@ -46,8 +50,7 @@
     # Deployed vars paths for the TLS healthchecks.
     caCrtPath,
     clientPemPath,
-    # sha512-crypt hash for the stats page (public var value, eval-time).
-    statsPasswordHash,
+    # The read-only stats page, on loopback.
     statsPort ? 8404,
     # SNI the healthcheck presents; must be a serving-cert SAN (the
     # kubeapi FQDN).
@@ -63,7 +66,7 @@
           + "    server ${b.name}-6 [${b.ipv6}]:${toString port}${backup}"
       )
       backends;
-    checkArgs = "check check-ssl verify required ca-file ${caCrtPath} crt ${clientPemPath} sni str(${healthCheckSni}) inter 5s fall 3 rise 2 fastinter 1s downinter 10s on-marked-down shutdown-sessions";
+    checkArgs = "check check-ssl verify required verifyhost ${healthCheckSni} ca-file ${caCrtPath} crt ${clientPemPath} sni str(${healthCheckSni}) inter 5s fall 3 rise 2 fastinter 1s downinter 10s on-marked-down shutdown-sessions";
     supervisorConfig = lib.optionalString enableSupervisor ''
       # HAProxy 3.3 forbids a frontend and backend sharing a name — the
       # supervisor LB gets distinct names (the kubeapi pair already
@@ -90,7 +93,7 @@
           # the supervisor itself does not serve /readyz.
           option httpchk GET /readyz
           http-check expect status 200
-          default-server check check-ssl port ${toString kubeapiPort} verify required ca-file ${caCrtPath} crt ${clientPemPath} sni str(${healthCheckSni}) inter 5s fall 3 rise 2 fastinter 1s downinter 10s on-marked-down shutdown-sessions
+          default-server check check-ssl port ${toString kubeapiPort} verify required verifyhost ${healthCheckSni} ca-file ${caCrtPath} crt ${clientPemPath} sni str(${healthCheckSni}) inter 5s fall 3 rise 2 fastinter 1s downinter 10s on-marked-down shutdown-sessions
       ${serverLines supervisorPort}
     '';
   in ''
@@ -111,18 +114,13 @@
         # upgraded connection: not cut after a minute
         timeout tunnel  1h
 
-    userlist stats_users
-        user admin password ${statsPasswordHash}
-
     listen stats
         mode http
-        bind ${nodeIPv4}:${toString statsPort}
-        bind [${nodeIPv6}]:${toString statsPort}
+        bind 127.0.0.1:${toString statsPort}
+        bind [::1]:${toString statsPort}
         stats enable
         stats uri /stats
         stats refresh 60s
-        http-request auth unless { http_auth(stats_users) }
-        stats admin if { http_auth(stats_users) }
 
     frontend ${safeName}_kubeapi
         bind ${nodeIPv4}:${toString lbKubeapiPort}

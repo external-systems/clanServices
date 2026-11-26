@@ -68,16 +68,6 @@
       };
     };
 
-    kubelet = {
-      extraArgs = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        description = ''
-          Extra kubelet command-line flags for this machine.
-        '';
-      };
-    };
-
     # Extra blocks for this machine's auto-rendered node-named
     # CiliumLoadBalancerIPPool (D8 per-machine scope: the join-address
     # /32+/128 pair is always included; these are the declared
