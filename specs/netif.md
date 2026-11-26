@@ -1862,6 +1862,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
       its `ExecStart` fails; its `ExecStopPost` restarts the guard then.
       The guard checks, and records nothing (the apply was not clean),
       and rolls back when the gateways are silent.
+    - **A rollback with a namespace.** `ifstatecli apply` runs `mount`
+      for a network namespace; the guard's script had no `mount` on its
+      path, so the rollback of a configuration with one (a CLAT
+      namespace) failed (`netif-v6only`, first run of round G11). The
+      guard carries util-linux now.
     - **Targets** reach the script as shell words, and every address
       option is typed, so a gateway written with a prefix length fails
       at evaluation.

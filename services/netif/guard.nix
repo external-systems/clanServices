@@ -112,6 +112,9 @@
       pkgs.ndisc6
       pkgs.netcat
       pkgs.systemd
+      # ifstatecli mounts a namespace's /run/netns entry: without mount a
+      # rollback of a configuration with a namespace fails
+      pkgs.util-linux
     ];
     text = ''
       mode=$1
@@ -314,6 +317,7 @@
       previous_dhcp=$(readlink "$state/last-good-dhcpcd" 2> /dev/null || true)
       rolled=0
       links_rolled=0
+      tried=0
       # The DHCP clients go back to the configuration that passed, for
       # as long as this generation runs.
       reset_dhcpcd
@@ -347,6 +351,7 @@
         else
           echo "netif-guard: could not add the running ignore lists; applying $previous as it is" >&2
         fi
+        tried=1
         if ${ifstatecli} --config "$rollback" apply >&2; then
           rolled=1
           links_rolled=1
@@ -363,11 +368,9 @@
       done
 
       if [ "$rolled" = 0 ]; then
-        if [ -z "$previous" ]; then
-          echo "netif-guard: there is no earlier network configuration to roll back to; the failed one stays applied (specs/netif.md N25)" >&2
-        else
-          echo "netif-guard: the last configuration that passed is this one; nothing to roll back to (specs/netif.md N25)" >&2
-        fi
+        [ "$tried" = 0 ] || exit 1
+        # none, or the last one that passed is this one
+        echo "netif-guard: there is no earlier network configuration to roll back to; the failed one stays applied (specs/netif.md N25)" >&2
         exit 1
       fi
       echo "$this" > "$run/rolled-back"

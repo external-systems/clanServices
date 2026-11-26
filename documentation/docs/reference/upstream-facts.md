@@ -95,6 +95,11 @@ read the section of a component before changing code that touches it.
   dhcpcd unit runs a new IfState apply; `systemctl restart
   --job-mode=ignore-requirements` does not (`netif-dhcp`,
   `NETIF_DHCP_GUARD_KEPT_OK`).
+- IfState 2.5.1 `ifstatecli apply` runs `mount` for a configuration
+  with a network namespace (`FileNotFoundError: 'mount'` without it);
+  the NixOS unit puts `/run/wrappers` on its path, and netif's guard
+  carries util-linux for its rollback (`netif-v6only`,
+  `NETIF_V6ONLY_GUARD_OK`).
 - IfState 2.5.1 ignores routes of `proto dhcp` (16) and `proto ra` (9)
   and dynamic addresses by default. `ifstatecli check` prints `ok`,
   `= <value>` or `orphan` for unchanged objects and exits 0 either
