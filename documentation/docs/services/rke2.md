@@ -44,7 +44,7 @@ library. Transport facts arrive **only** through the generic
 fabric service names (D58). See [Architecture](../architecture/overview.md).
 
 The entire day-1 in-cluster surface is delivered as one kubenix-rendered
-bootstrap bundle, applied once via server-side apply on the `clusterInit`
+bootstrap bundle, applied at boot and on each deploy that changes it via server-side apply on the `clusterInit`
 machine (D40) — nothing is written to RKE2's watched manifests dir.
 
 ## Status

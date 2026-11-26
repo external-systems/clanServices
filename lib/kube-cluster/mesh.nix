@@ -467,11 +467,43 @@ in rec {
     };
   };
 
+  # Base64 of an ASCII string (pure Nix; the peer Secrets below render as
+  # `data`, K5).
+  toBase64 = str: let
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    bytes = map lib.strings.charToInt (lib.stringToCharacters str);
+    len = builtins.length bytes;
+    byteAt = i:
+      if i < len
+      then builtins.elemAt bytes i
+      else 0;
+    char = n: builtins.substring n 1 alphabet;
+    group = g: let
+      i = g * 3;
+      n = byteAt i * 65536 + byteAt (i + 1) * 256 + byteAt (i + 2);
+      left = len - i;
+    in
+      char (n / 262144)
+      + char (lib.mod (n / 4096) 64)
+      + (
+        if left > 1
+        then char (lib.mod (n / 64) 64)
+        else "="
+      )
+      + (
+        if left > 2
+        then char (lib.mod n 64)
+        else "="
+      );
+  in
+    lib.concatStrings (lib.genList group ((len + 2) / 3));
+
   # The peer remote configs: one key per peered cluster in BOTH the agent's
   # cilium-clustermesh secret and the kvstoremesh's cilium-kvstoremesh
   # secret. These secrets carry endpoint config ONLY (no key material — the
   # mTLS client cert projects from clustermesh-apiserver-remote-cert), so
-  # they render into the bundle.
+  # they render into the bundle. `data`, not `stringData`: under SSA a key
+  # that leaves `stringData` stays in the Secret (K5).
   peerSecrets = {
     manifestLabels,
     peerConfigs,
@@ -481,10 +513,10 @@ in rec {
         namespace = "kube-system";
         labels = manifestLabels;
       };
-      stringData = lib.listToAttrs (
+      data = lib.listToAttrs (
         map (p: {
           inherit (p) name;
-          value = remoteClusterConfig {inherit (p) endpoints;};
+          value = toBase64 (remoteClusterConfig {inherit (p) endpoints;});
         })
         peerConfigs
       );
@@ -494,10 +526,10 @@ in rec {
         namespace = "kube-system";
         labels = manifestLabels;
       };
-      stringData = lib.listToAttrs (
+      data = lib.listToAttrs (
         map (p: {
           inherit (p) name;
-          value = remoteClusterConfig {inherit (p) endpoints;};
+          value = toBase64 (remoteClusterConfig {inherit (p) endpoints;});
         })
         peerConfigs
       );

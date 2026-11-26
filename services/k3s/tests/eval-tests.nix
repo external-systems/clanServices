@@ -786,7 +786,9 @@ in {
         u.serviceConfig.Type
         == "oneshot"
         && u.serviceConfig.Restart == "on-failure"
-        && u.unitConfig.StartLimitIntervalSec == 0
+        # D40 (G11): bounded retries; a changed deployed bundle re-runs it
+        && u.unitConfig.StartLimitBurst == 12
+        && u.restartTriggers == [alphaTransport.environment.etc."clan-bootstrap/k3s/bundle.yaml".source]
         && u.after == ["k3s.service"];
       noManifests = alphaTransport.services.k3s.manifests == {};
       noCharts = alphaTransport.services.k3s.charts == {};
@@ -1530,7 +1532,9 @@ in {
       lbipam = fakeApiserverSvc.metadata.annotations."lbipam.cilium.io/ips";
       users = fakeUsers;
       peersKeyPresent = fakeClustermeshSecret != null;
-      peersEndpoints = fakeClustermeshSecret.stringData."k3s-b" or null;
+      # K5: `data` (base64), never `stringData`
+      peersEndpoints = fakeClustermeshSecret.data."k3s-b" or null;
+      peersStringData = fakeClustermeshSecret ? stringData;
       clustermeshEnable = fakeCiliumConfigData."clustermesh-enable";
     };
     expected = {
@@ -1549,7 +1553,9 @@ in {
       lbipam = "172.16.1.79";
       users = "users:\n- name: remote-k3s-b\n  role: remote\n";
       peersKeyPresent = true;
-      peersEndpoints = "endpoints:\n- https://172.16.2.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      # base64 of "endpoints:\n- https://172.16.2.79:2379\n…" (coreutils base64)
+      peersEndpoints = "ZW5kcG9pbnRzOgotIGh0dHBzOi8vMTcyLjE2LjIuNzk6MjM3OQp0cnVzdGVkLWNhLWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQtY2EuY3J0CmtleS1maWxlOiAvdmFyL2xpYi9jaWxpdW0vY2x1c3Rlcm1lc2gvY29tbW9uLWV0Y2QtY2xpZW50LmtleQpjZXJ0LWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQuY3J0";
+      peersStringData = false;
       clustermeshEnable = "true";
     };
   };
@@ -1566,11 +1572,11 @@ in {
           null
           objs).data."users.yaml";
     in {
-      endpoints = secret.stringData."k3s-a" or null;
+      endpoints = secret.data."k3s-a" or null;
       inherit users;
     };
     expected = {
-      endpoints = "endpoints:\n- https://172.16.1.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      endpoints = "ZW5kcG9pbnRzOgotIGh0dHBzOi8vMTcyLjE2LjEuNzk6MjM3OQp0cnVzdGVkLWNhLWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQtY2EuY3J0CmtleS1maWxlOiAvdmFyL2xpYi9jaWxpdW0vY2x1c3Rlcm1lc2gvY29tbW9uLWV0Y2QtY2xpZW50LmtleQpjZXJ0LWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQuY3J0";
       users = "users:\n- name: remote-k3s-a\n  role: remote\n";
     };
   };

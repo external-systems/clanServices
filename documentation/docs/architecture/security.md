@@ -67,13 +67,20 @@ documented risk decision.
 CA rotation is staged (staging directory + `rotate-ca`): rotating to the
 same root can be non-disruptive; rotating to a new root is disruptive —
 tokens, kubeconfigs, and restarts. Service-account signing keys are
-append/retain. RKE2 PKI sync is non-destructive; k3s uses init-only seeding
-plus native replication.
+append/retain. RKE2 PKI sync is non-destructive: it installs the vars CAs
+before a server's first start only. A later, different set is staged in
+`/var/lib/rancher/rke2/server/tls-staged` for
+`rke2 certificate rotate-ca --path=…`, never copied into the live TLS
+directory: rke2 refuses to start on a CA set newer than its datastore.
+k3s uses init-only seeding plus native replication.
 
-Client-identity certs — the `gitops-hub` identities (D43) and the read-only
-credential (D38) — are 365-day vars-signed certificates: regenerate via vars
-plus a secret-sync re-apply; clusters are untouched because the CA is
-unchanged.
+Client-identity certs — the `gitops-hub` identities (D43), the read-only
+credential (D38) and the admin kubeconfig (`system:masters`) — are 365-day
+vars-signed certificates: regenerate via vars (plus a secret-sync re-apply
+where one exists); clusters are untouched because the CA is unchanged. The
+HAProxy health-check certificate, the ClusterMesh leaves and the CAs keep
+long lives: each sits on every node and would expire everywhere on one day.
+Every certificate serial is random.
 
 Deleting an instance from the inventory does **not** garbage-collect a
 cluster. Cordon/drain, Node deletion, etcd member removal, mesh cleanup, and

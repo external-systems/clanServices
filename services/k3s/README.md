@@ -106,7 +106,8 @@ transport addresses (both families):
 - `rancher-haproxy-<instance>` (every node) — the `/readyz` healthcheck client
   cert + CA chain.
 - `rancher-admin-kubeconfig-<instance>` (servers only) — an operator client cert
-  (CN=admin, O=system:masters) signed by the vars client CA; server URL is the
+  (CN=admin, O=system:masters, 365 days, random serial; renew with
+  `clan vars generate --regenerate` on a branch) signed by the vars client CA; server URL is the
   kubeapi FQDN on the LB port. Linked to
   `/etc/rancher/k3s/admin-kubeconfig` on servers. k3s's native kubeconfig remains
   at `/etc/rancher/k3s/k3s.yaml`.
@@ -121,7 +122,7 @@ The service disables Flannel, k3s's network-policy controller, kube-proxy,
 and (in the minimal base) the helm-controller. Cilium — plus the
 `CiliumPodIPPool`, LB pools, and the clan CoreDNS serving `cluster.local`
 (D46) — is
-delivered by the kubenix bootstrap bundle, applied once via server-side
+delivered by the kubenix bootstrap bundle, applied at boot and on each deploy that changes it via server-side
 apply by a systemd oneshot on the `clusterInit` node (D40); nothing is
 written to the k3s manifests dir. The bundle imports the artifact flake's
 committed Cilium manifest and merges per-cluster variation (cluster
@@ -201,7 +202,8 @@ vm-test k3s-data-plane --remote --quiet
 ```
 
 - `k3s-single` — one server: initial PKI seed, haproxy LB, admin kubeconfig
-  through the LB, Cilium health, ClusterIP round-trip, CoreDNS (default +
+  through the LB, certificate lifetimes and random serials, a changed bundle
+  re-applied and pruned without a server restart, Cilium health, ClusterIP round-trip, CoreDNS (default +
   rewrite), a workload pod, and an etcd write/read smoke.
 - `k3s-join` — one server + one agent. The agent joins through its LOCAL haproxy,
   both nodes become Ready with mesh InternalIPs, and Cilium is healthy on both.

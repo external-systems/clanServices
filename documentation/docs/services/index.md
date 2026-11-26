@@ -32,8 +32,8 @@ renderers, vars generators, assertions) lives once in the private shared
 library `lib/kube-cluster/`. A fix in shared behavior lands once, not twice.
 
 The cluster services deliver the Bootstrap and Data-plane contracts and
-nothing else in-cluster: one kubenix-rendered bootstrap bundle applied once
-via server-side apply. The default is a uniform minimal base across distros;
+nothing else in-cluster: one kubenix-rendered bootstrap bundle applied at boot and on each
+deploy that changes it via server-side apply. The default is a uniform minimal base across distros;
 `distroDefaults` restores stock components through the distro itself. Both
 distros consume **only** the generic `node_transport` export for transport —
 never branching on service names (D58).

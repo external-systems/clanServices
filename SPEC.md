@@ -1244,12 +1244,28 @@ unless noted) — revoked entries keep one-line reasons for history.
   two contracts (D44).
 - **D40 Cilium lifecycle: rendered bootstrap bundle → GitOps adoption.**
   The whole day-1 in-cluster surface is ONE kubenix-rendered bundle per
-  cluster (D26 layers), applied ONCE at first boot by a systemd oneshot
-  on the `clusterInit` node: wait for apiserver health, then
-  `kubectl apply --server-side --field-manager=clan-bootstrap`. Never
-  the distro manifests dir (nothing host-resident to track or redeploy);
-  idempotent (SSA no-op when state matches); `bootstrap.apply = false`
-  removes the unit on day 2. Handoff: the identical set is published to
+  cluster (D26 layers), applied by a systemd oneshot on the
+  `clusterInit` node: wait for apiserver health, then
+  `kubectl apply --server-side --force-conflicts
+  --field-manager=clan-bootstrap`. Never the distro manifests dir
+  (nothing host-resident to track or redeploy); idempotent (SSA no-op
+  when state matches); `bootstrap.apply = false` removes the unit on
+  day 2. (REVISED round G11, K4/K5.) The unit runs at every start of the
+  server and again on every deploy that changes the deployed bundle
+  file (`restartTriggers`), without restarting the server; a regenerated
+  ClusterMesh leaf re-runs the mesh secrets unit (`restartUnits`). It
+  applies the non-CR documents first, waits (bounded) until the CRDs of
+  the CR documents are `Established`, then applies the CRs. While
+  `bootstrap.apply` is true clan owns the bundle, so after a successful
+  apply it prunes: it deletes an object only when it carries
+  `clan.lol/cluster=<instance>`, has a `clan-bootstrap` managed-fields
+  entry, and is no longer in the bundle. A hand-made object, or one
+  another manager owns alone, is never pruned; after the GitOps handoff
+  (`bootstrap.apply = false`, D43) nothing is pruned because the unit is
+  gone. Retries are bounded and grow (10 s up to 2 min, at most 12 starts
+  an hour); then the unit stays `failed`, visible in `systemctl --failed`.
+  Peer Secrets render as `data`, so SSA removes a key that left the
+  bundle. Handoff: the identical set is published to
   the GitOps repo; Flux Kustomization (prune on) or Argo CD adopts it.
   First reconcile is a no-op BY CONSTRUCTION (identical bytes, one Nix
   source). Evidence (2026-10-22 research): Flux prune garbage-collects
@@ -2779,7 +2795,11 @@ at rest in etcd on both distros (rke2 by default, k3s
 `secrets-encryption: true`). Everything else — Sealed
 Secrets keys included — is day-2 GitOps custody. Public certs readable
 as public values; private material referenced by deployed paths only.
-RKE2 PKI sync non-destructive; k3s init-only seed + native replication.
+RKE2 PKI sync non-destructive: it installs the vars CAs before a
+server's first start only; a later, different set is staged in
+`<tls>-staged` for `rke2 certificate rotate-ca`, never copied into the
+live TLS dir (round G11, K10: a copied set makes the next start fatal,
+"newer than datastore"); k3s init-only seed + native replication.
 Airgap-ready default; one explicit opt-out switch; overrides = complete
 replacement sets or additive lists.
 
@@ -2789,8 +2809,15 @@ Leaf certs: upstream 365-day, renew at startup; manual via
 rotation: staged dir + `rotate-ca`; same-root can be non-disruptive; new
 root disruptive (tokens, kubeconfigs, restarts). Service-account signing
 key: append/retain. Client-identity certs (`gitops-hub` D43, read-only
-D38): 365-day, regenerate via vars + secret-sync, clusters untouched
-(same CA). Cert bootstrap/rotation runbooks + scripts ship in
+D38, and the admin kubeconfig, a `system:masters` identity): 365-day,
+regenerate via vars (+ secret-sync where one exists), clusters untouched
+(same CA). The admin kubeconfig: the owner runs `clan vars generate
+--regenerate --generator rancher-admin-kubeconfig-<instance>` on a branch
+and deploys the servers (round G11, K10). The HAProxy health-check
+certificate, the ClusterMesh leaves and the CAs keep long lives (3650
+days, CAs 3700/7300): each sits on every node or peer and expires there
+on one day, so a short life is an outage of its own. Every serial is
+random. Cert bootstrap/rotation runbooks + scripts ship in
 documentation. No blanket 100-year leaf default. Inventory deletion ≠
 cluster GC: cordon/drain, Node deletion, etcd member removal, mesh
 cleanup, hub kubeconfig/CRB removal = documented runbooks. Disruptive
@@ -2817,7 +2844,8 @@ start. Suite `<distro>-ha`.
 bundled, deployed day-2; hermetic fake-CCM VM test. Every clan-rendered
 manifest labeled (managed-by, instance, component, config-hash; never in
 selectors). Rendering = kubenix (D26); delivery = bootstrap bundle SSA
-once (D40); Rancher helm-controller disabled by default (D42). Day-2
+on boot and on every deploy that changes it, pruning only its own
+labelled objects (D40); Rancher helm-controller disabled by default (D42). Day-2
 GitOps owns all lifecycle post-bootstrap; base upgrades preserve
 operator CRDs.
 

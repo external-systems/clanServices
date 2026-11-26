@@ -30,8 +30,10 @@ matrices in your GitOps repos.
   `nix flake update org-pkgs` lock refresh (then `sync-locks` in the same
   commit), not parallel packaging edits (D62, D66).
 - **Cilium upgrades after handoff.** pkgs bump → rebuild → republish →
-  GitOps applies (D40). The bootstrap apply itself is a one-time event; post
-  adoption your GitOps owns the bundle's lifecycle, and a publish-freshness
+  GitOps applies (D40). Before the handoff the bootstrap unit re-applies the
+  bundle on every deploy that changes it and prunes its own objects that
+  left it; post adoption (`bootstrap.apply = false`) your GitOps owns the
+  bundle's lifecycle, and a publish-freshness
   CI gate keeps the published manifests equal to a fresh render.
 - **Day-2 component upgrades.** Entirely your GitOps repos' concern — pin,
   review, roll out.

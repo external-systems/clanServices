@@ -774,7 +774,9 @@ in {
         u.serviceConfig.Type
         == "oneshot"
         && u.serviceConfig.Restart == "on-failure"
-        && u.unitConfig.StartLimitIntervalSec == 0
+        # D40 (G11): bounded retries; a changed deployed bundle re-runs it
+        && u.unitConfig.StartLimitBurst == 12
+        && u.restartTriggers == [alphaTransport.environment.etc."clan-bootstrap/rke2/bundle.yaml".source]
         && u.after == ["rke2-server.service"];
       noManifests = alphaTransport.services.rke2.manifests == {};
       agentNoBundle = !(gammaTransport.environment.etc ? "clan-bootstrap/rke2/bundle.yaml");
@@ -941,12 +943,13 @@ in {
     expr = {
       serverHas = alphaTransport.systemd.services ? rke2-rke2-pki-sync-tls;
       agentHas = gammaTransport.systemd.services ? rke2-rke2-pki-sync-tls;
+      # K10: no path unit copies a regenerated CA into a running server
       serverPath = alphaTransport.systemd.paths ? rke2-rke2-pki-sync-tls;
     };
     expected = {
       serverHas = true;
       agentHas = false;
-      serverPath = true;
+      serverPath = false;
     };
   };
 
@@ -1505,7 +1508,9 @@ in {
       lbipam = fakeApiserverSvc.metadata.annotations."lbipam.cilium.io/ips";
       users = fakeUsers;
       peersKeyPresent = fakeClustermeshSecret != null;
-      peersEndpoints = fakeClustermeshSecret.stringData."rke2-b" or null;
+      # K5: `data` (base64), never `stringData`
+      peersEndpoints = fakeClustermeshSecret.data."rke2-b" or null;
+      peersStringData = fakeClustermeshSecret ? stringData;
       clustermeshEnable = fakeCiliumConfigData."clustermesh-enable";
     };
     expected = {
@@ -1524,7 +1529,9 @@ in {
       lbipam = "172.16.1.79";
       users = "users:\n- name: remote-rke2-b\n  role: remote\n";
       peersKeyPresent = true;
-      peersEndpoints = "endpoints:\n- https://172.16.2.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      # base64 of "endpoints:\n- https://172.16.2.79:2379\n…" (coreutils base64)
+      peersEndpoints = "ZW5kcG9pbnRzOgotIGh0dHBzOi8vMTcyLjE2LjIuNzk6MjM3OQp0cnVzdGVkLWNhLWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQtY2EuY3J0CmtleS1maWxlOiAvdmFyL2xpYi9jaWxpdW0vY2x1c3Rlcm1lc2gvY29tbW9uLWV0Y2QtY2xpZW50LmtleQpjZXJ0LWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQuY3J0";
+      peersStringData = false;
       clustermeshEnable = "true";
     };
   };
@@ -1540,11 +1547,11 @@ in {
           null
           objs).data."users.yaml";
     in {
-      endpoints = secret.stringData."rke2-a" or null;
+      endpoints = secret.data."rke2-a" or null;
       inherit users;
     };
     expected = {
-      endpoints = "endpoints:\n- https://172.16.1.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      endpoints = "ZW5kcG9pbnRzOgotIGh0dHBzOi8vMTcyLjE2LjEuNzk6MjM3OQp0cnVzdGVkLWNhLWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQtY2EuY3J0CmtleS1maWxlOiAvdmFyL2xpYi9jaWxpdW0vY2x1c3Rlcm1lc2gvY29tbW9uLWV0Y2QtY2xpZW50LmtleQpjZXJ0LWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQuY3J0";
       users = "users:\n- name: remote-rke2-a\n  role: remote\n";
     };
   };

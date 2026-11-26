@@ -1,13 +1,14 @@
 # The bootstrap-apply oneshot (D40). Renders the bundle into a clan-owned
 # etc path (NEVER the distro's watched manifests dir — §6.12) and a systemd
 # oneshot on the clusterInit node that waits for local apiserver health and
-# applies the bundle once via SSA. SSA is a no-op when the cluster state
-# already matches, so re-running (boots, retries) is safe.
+# applies the bundle via SSA at every server start and on every deploy that
+# changes it, then prunes the labelled objects it applied before that the
+# bundle no longer has (D40, revised round G11). SSA is a no-op when the
+# cluster state already matches, so re-running (boots, retries) is safe.
 #
-# Retry note: the Cilium CRDs are created by the cilium operator at runtime
-# (the chart ships no crds/ dir), so the pool/pod-pool CRs fail their first
-# apply pass; kubectl still applies everything else and exits non-zero, and
-# Restart=on-failure re-runs until the whole bundle sticks.
+# The Cilium CRDs are created by the cilium operator at runtime (the chart
+# ships no crds/ dir): the unit applies the non-CR documents, waits until
+# the CRDs are Established, then applies the custom resources.
 {lib}: {
   # The digest-alias oneshot (D26/D40 airgap). The bundle references every
   # image digest-pinned (repo:tag@digest — the artifact invariant), but
@@ -92,6 +93,9 @@
 
   mkBootstrapApply = {
     pkgs,
+    # the node's NixOS config: the unit re-runs when the DEPLOYED bundle
+    # file changes, whatever put it there (restartTriggers below)
+    config,
     instanceName,
     # unit name prefix, e.g. "k3s" -> k3s-<instance>-bootstrap-apply
     namePrefix,
@@ -104,26 +108,51 @@
     bundle,
   }: let
     unitName = "${namePrefix}-${instanceName}-bootstrap-apply";
+    etcName = "clan-bootstrap/${instanceName}/bundle.yaml";
     kubectl = "${pkgs.kubectl}/bin/kubectl";
+    jq = "${pkgs.jq}/bin/jq";
+    sleep = "${pkgs.coreutils}/bin/sleep";
+    apply = "${kubectl} apply --server-side --force-conflicts --field-manager=clan-bootstrap";
+    selector = "clan.lol/cluster=${instanceName}";
+    # jq: a document's API group ("" for the core group)
+    groupOf = ''(.apiVersion | split("/") | if length == 1 then "" else .[0] end)'';
+    # jq: a custom resource is a document of a non-builtin group (dotted,
+    # not *.k8s.io); its CRD must be Established before it applies
+    isCr = ''(${groupOf} | contains(".") and (endswith("k8s.io") | not))'';
+    # jq: group, kind, namespace and name of an object, joined by "|"
+    # (never tabs: `read` collapses empty tab fields such as the core
+    # group's "", and no Kubernetes name holds a "|")
+    identity = ''[${groupOf}, .kind, (.metadata.namespace // ""), .metadata.name] | join("|")'';
   in {
-    environment.etc."clan-bootstrap/${instanceName}/bundle.yaml".source = bundle;
+    environment.etc.${etcName}.source = bundle;
 
     systemd.services."${unitName}" = {
-      description = "Apply the ${instanceName} kubenix bootstrap bundle (SSA, idempotent)";
+      description = "Apply the ${instanceName} kubenix bootstrap bundle (SSA, idempotent, prunes its own objects)";
       wantedBy = ["multi-user.target"];
       after = [serverUnit];
       requires = [serverUnit];
-      # oneshot retries: never give up because of rate limiting — the
-      # bundle must land for the cluster to be functional.
-      unitConfig.StartLimitIntervalSec = 0;
+      # D40 (K4): a deploy that changes the deployed bundle re-runs the
+      # apply; the server keeps running.
+      restartTriggers = [config.environment.etc.${etcName}.source];
+      # D40 (K5): bounded, growing retries (10 s up to 2 min, at most 12
+      # starts an hour), then the unit stays failed and visible.
+      unitConfig = {
+        StartLimitIntervalSec = 3600;
+        StartLimitBurst = 12;
+      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         Restart = "on-failure";
         RestartSec = 10;
+        RestartSteps = 5;
+        RestartMaxDelaySec = 120;
         ExecStart = pkgs.writeShellScript unitName ''
           set -euo pipefail
           export KUBECONFIG="${kubeconfigPath}"
+          bundle=/etc/${etcName}
+          work=$(${pkgs.coreutils}/bin/mktemp -d)
+          trap '${pkgs.coreutils}/bin/rm -rf "$work"' EXIT
           # Wait for the LOCAL apiserver (the distro kubeconfig points at
           # loopback, not the per-node haproxy LB).
           i=0
@@ -132,11 +161,63 @@
               break
             fi
             i=$((i + 1))
-            ${pkgs.coreutils}/bin/sleep 5
+            ${sleep} 5
           done
           ${kubectl} get --raw=/readyz >/dev/null
-          ${kubectl} apply --server-side --field-manager=clan-bootstrap \
-            -f /etc/clan-bootstrap/${instanceName}/bundle.yaml
+
+          ${pkgs.yq-go}/bin/yq eval-all -o=json '[.] | map(select(. != null))' "$bundle" > "$work/all.json"
+          ${jq} '{apiVersion: "v1", kind: "List", items: [.[] | select(${isCr} | not)]}' "$work/all.json" > "$work/base.json"
+          ${jq} '{apiVersion: "v1", kind: "List", items: [.[] | select(${isCr})]}' "$work/all.json" > "$work/crs.json"
+
+          # 1. Everything but the custom resources.
+          ${apply} -f "$work/base.json"
+
+          # 2. The Cilium operator creates its CRDs at runtime (the chart
+          # ships no crds/ dir): wait until each CR's CRD is Established.
+          crds=$(${jq} -r '[.items[] | ((.kind | ascii_downcase | if endswith("y") then .[:-1] + "ies" else . + "s" end) + "." + ${groupOf})] | unique | .[]' "$work/crs.json")
+          deadline=$((SECONDS + 900))
+          for crd in $crds; do
+            until ${kubectl} wait --for=condition=Established --timeout=10s "crd/$crd" >/dev/null 2>&1; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "${unitName}: CRD $crd is not Established after 15 minutes" >&2
+                exit 1
+              fi
+              ${sleep} 5
+            done
+          done
+
+          # 3. The custom resources.
+          if [ "$(${jq} '.items | length' "$work/crs.json")" -gt 0 ]; then
+            ${apply} -f "$work/crs.json"
+          fi
+
+          # 4. Prune (D40): delete what this unit applied before and the
+          # bundle no longer has. Only objects labelled ${selector} that
+          # carry a clan-bootstrap managed-fields entry; a document
+          # without a namespace keeps its name in every namespace.
+          ${jq} -r '.[] | ${identity}' "$work/all.json" | ${pkgs.coreutils}/bin/sort -u > "$work/keep"
+          # an unavailable aggregated API makes discovery partial, not empty
+          if ! ${kubectl} api-resources --verbs=list,delete -o name > "$work/resources"; then
+            echo "${unitName}: API discovery is partial; pruning the listed resources only" >&2
+          fi
+          while read -r resource; do
+            if ! ${kubectl} get "$resource" -A -l '${selector}' --show-managed-fields -o json > "$work/listed.json" 2>/dev/null; then
+              echo "${unitName}: cannot list $resource; not pruned" >&2
+              continue
+            fi
+            ${jq} -r --arg r "$resource" '.items[] | select(any(.metadata.managedFields[]?; .manager == "clan-bootstrap")) | (${identity}) + "|" + $r' "$work/listed.json"
+          done < "$work/resources" | while IFS="|" read -r group kind ns name resource; do
+            if ${pkgs.gnugrep}/bin/grep -Fxq "$group|$kind|$ns|$name" "$work/keep" \
+              || ${pkgs.gnugrep}/bin/grep -Fxq "$group|$kind||$name" "$work/keep"; then
+              continue
+            fi
+            echo "${unitName}: pruning $resource $ns/$name (no longer in the bundle)"
+            if [ -n "$ns" ]; then
+              ${kubectl} delete "$resource" -n "$ns" "$name" --ignore-not-found --wait=false
+            else
+              ${kubectl} delete "$resource" "$name" --ignore-not-found --wait=false
+            fi
+          done
         '';
       };
     };
@@ -169,19 +250,36 @@
   }: let
     unitName = "${namePrefix}-${instanceName}-clustermesh-secrets";
     kubectl = "${pkgs.kubectl}/bin/kubectl";
-    b64 = path: "$(${pkgs.coreutils}/bin/base64 -w0 ${path})";
+    jq = "${pkgs.jq}/bin/jq";
+    leaves = [
+      "server"
+      "admin"
+      "remote"
+      "local"
+    ];
+    # K8: jq reads the files itself (--rawfile) and encodes them, so no
+    # key material ever reaches a command line (/proc/<pid>/cmdline is
+    # world-readable).
     secret = name: cert: ''
       test -s ${files."ca.crt".path}
       test -s ${files."${cert}.crt".path}
       test -s ${files."${cert}.key".path}
-      printf '%s\n' "$(${pkgs.jq}/bin/jq -n \
+      ${jq} -n \
         --arg name "${name}" \
-        --arg ca "${b64 files."ca.crt".path}" \
-        --arg crt "${b64 files."${cert}.crt".path}" \
-        --arg key "${b64 files."${cert}.key".path}" \
-        '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:"kube-system"},type:"kubernetes.io/tls",data:{"ca.crt":$ca,"tls.crt":$crt,"tls.key":$key}}')"
+        --rawfile ca ${files."ca.crt".path} \
+        --rawfile crt ${files."${cert}.crt".path} \
+        --rawfile key ${files."${cert}.key".path} \
+        '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:"kube-system"},type:"kubernetes.io/tls",data:{"ca.crt":($ca|@base64),"tls.crt":($crt|@base64),"tls.key":($key|@base64)}}'
     '';
   in {
+    # D40 (K4): a regenerated leaf key re-runs this unit on deploy (the
+    # public certificates are store paths in the script, so a new one
+    # changes the unit itself). Set here, on the clusterInit node that
+    # has the unit, not in the shared generator.
+    clan.core.vars.generators."rancher-clustermesh-${instanceName}".files = lib.genAttrs (map (l: "${l}.key") leaves) (_: {
+      restartUnits = ["${unitName}.service"];
+    });
+
     systemd.services."${unitName}" = {
       description = "Apply the ${instanceName} ClusterMesh apiserver TLS secrets (clan vars material, idempotent)";
       wantedBy = ["multi-user.target"];
@@ -208,28 +306,31 @@
             ${pkgs.coreutils}/bin/sleep 5
           done
           ${kubectl} get --raw=/readyz >/dev/null
-          versions() {
-            ${kubectl} get secret -n kube-system clustermesh-apiserver-server-cert clustermesh-apiserver-admin-cert clustermesh-apiserver-remote-cert clustermesh-apiserver-local-cert -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.resourceVersion} {end}' 2>/dev/null || true
-          }
-          before=$(versions)
           {
             ${secret "clustermesh-apiserver-server-cert" "server"}
             ${secret "clustermesh-apiserver-admin-cert" "admin"}
             ${secret "clustermesh-apiserver-remote-cert" "remote"}
             ${secret "clustermesh-apiserver-local-cert" "local"}
-          } | ${pkgs.jq}/bin/jq -s '{apiVersion:"v1",kind:"List",items:.}' \
+          } | ${jq} -s '{apiVersion:"v1",kind:"List",items:.}' \
             | ${kubectl} apply --server-side --field-manager=clan-clustermesh -f -
           # The chart-generated Secret objects are absent from the bundle,
           # so apiserver pods start only after this unit supplies their
-          # mounts. Restart to make the vars-issued certificates the
-          # unequivocal live identity, but only when the apply changed a
-          # Secret: this unit runs at every start of the server, and a
-          # restart drops every mesh peer's session (specs/gateway.md
-          # §16.3). Then prove readiness before peering.
-          if [ "$before" != "$(versions)" ]; then
-            ${kubectl} rollout restart deployment/clustermesh-apiserver -n kube-system
+          # mounts. The pods must run the vars-issued certificates, so the
+          # pod template carries the digest of the public certificates:
+          # a new set changes the template, which rolls the pods. Only a
+          # change rolls (a rollout drops every mesh peer's session,
+          # specs/gateway.md §16.3), and a run that died after the apply
+          # still rolls next time, because the digest is the state (K8).
+          digest=$(${pkgs.coreutils}/bin/cat ${
+            lib.concatMapStringsSep " " (l: files."${l}.crt".path) leaves
+          } ${files."ca.crt".path} | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -c1-32)
+          current=$(${kubectl} get deployment/clustermesh-apiserver -n kube-system \
+            -o jsonpath='{.spec.template.metadata.annotations.clan\.lol/mesh-secrets}')
+          if [ "$current" != "$digest" ]; then
+            ${kubectl} patch deployment/clustermesh-apiserver -n kube-system --type=merge \
+              -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"clan.lol/mesh-secrets\":\"$digest\"}}}}}"
           else
-            echo "${unitName}: the ClusterMesh secrets are unchanged; no restart"
+            echo "${unitName}: the ClusterMesh certificates are unchanged; no rollout"
           fi
           ${kubectl} rollout status deployment/clustermesh-apiserver -n kube-system --timeout=300s
         '';

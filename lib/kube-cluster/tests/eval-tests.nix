@@ -1509,6 +1509,68 @@ in {
     };
   };
 
+  # K10: the admin identity (system:masters) lives 365 days; the HAProxy
+  # health check, the CAs and the mesh leaves keep long lives (one expiry
+  # on every node at once is an outage of its own); every serial is
+  # random (no fixed 1/3, no sequential serial file).
+  test_certificateValidityAndSerials = let
+    fakePkgs = {
+      openssl = fakePackage;
+      coreutils = fakePackage;
+      gawk = fakePackage;
+    };
+    scripts = {
+      pki =
+        (kube.vars.mkPkiGenerator {
+          pkgs = fakePkgs;
+          inherit instanceName;
+        })."rancher-pki-${instanceName}".script;
+      haproxy =
+        (kube.vars.mkHaproxyGenerator {
+          pkgs = fakePkgs;
+          inherit instanceName;
+        })."rancher-haproxy-${instanceName}".script;
+      admin =
+        (kube.vars.mkAdminKubeconfigGenerator {
+          pkgs = fakePkgs;
+          inherit instanceName;
+          server = "https://kubeapi-test.example.org:7443";
+        })."rancher-admin-kubeconfig-${instanceName}".script;
+      mesh = meshCertGen."rancher-clustermesh-test".script;
+      meshCa = meshCaGen."rancher-clustermesh-ca-clan".script;
+    };
+    days = script: map builtins.head (builtins.filter builtins.isList (builtins.split "-days ([0-9]+)" script));
+  in {
+    expr = {
+      days = lib.mapAttrs (_: days) scripts;
+      # a command line with a fixed serial or a sequential serial file
+      fixedSerial = lib.filterAttrs (_: s:
+        builtins.any (
+          l: builtins.match " *-set_serial [0-9].*" l != null || builtins.match " *-CAcreateserial.*" l != null
+        ) (lib.splitString "\n" s))
+      scripts;
+      randomSerial = lib.mapAttrs (_: s: lib.hasInfix "-set_serial \"0x$(openssl rand -hex 16)\"" s || lib.hasInfix "rand_serial = yes" s) scripts;
+    };
+    expected = {
+      days = {
+        pki = ["7300" "3700" "3700"];
+        haproxy = ["3650"];
+        admin = ["365"];
+        # one per leaf: server, remote, local, admin
+        mesh = ["3650" "3650" "3650" "3650"];
+        meshCa = ["3650"];
+      };
+      fixedSerial = {};
+      randomSerial = {
+        pki = true;
+        haproxy = true;
+        admin = true;
+        mesh = true;
+        meshCa = true;
+      };
+    };
+  };
+
   test_haproxyConfigRender = {
     expr = let
       cfg = kube.render.mkHaproxyConfig {
@@ -1570,7 +1632,9 @@ in {
     expr = let
       frag = kube.nixos.mkPkiSync {
         pkgs = {
+          inherit lib;
           coreutils = "/nix/store/fake-coreutils";
+          diffutils = "/nix/store/fake-diffutils";
           writeShellScript = name: text: "script:${name}:${text}";
         };
         pkiGenerator.files = {
@@ -1592,22 +1656,28 @@ in {
       };
       unit = frag.systemd.services."rke2-test-pki-sync-tls";
     in {
-      pathUnit = frag.systemd.paths."rke2-test-pki-sync-tls".pathConfig.PathChanged;
+      # K10: no path unit copies a changed CA into a running server
+      pathUnits = frag.systemd.paths or {};
       inherit (unit) before requiredBy;
       # a missing secret fails the unit (specs/gateway.md §16.3 item 12)
       asserted = unit.unitConfig.AssertPathExists;
       skippable = unit.unitConfig ? ConditionPathExists;
       syncsTlsDir = lib.hasInfix "TLS_DIR=\"/var/lib/rancher/rke2/server/tls\"" unit.serviceConfig.ExecStart;
-      syncsEtcdCas = lib.hasInfix "$TLS_DIR/etcd/peer-ca.crt" unit.serviceConfig.ExecStart;
+      syncsEtcdCas = lib.hasInfix "/etcd/peer-ca.crt" unit.serviceConfig.ExecStart;
+      # a live set is never overwritten: only the first start copies
+      copiesOnlyWithoutLiveSet = lib.hasInfix "if [ ! -e \"$TLS_DIR/server-ca.crt\" ]; then" unit.serviceConfig.ExecStart;
+      stagesChangedSet = lib.hasInfix "STAGED_DIR=\"/var/lib/rancher/rke2/server/tls-staged\"" unit.serviceConfig.ExecStart;
     };
     expected = {
-      pathUnit = ["/run/secrets/shared/rancher-pki-test/server-ca.key"];
+      pathUnits = {};
       before = ["rke2-server.service"];
       requiredBy = ["rke2-server.service"];
       asserted = "/run/secrets/shared/rancher-pki-test/server-ca.key";
       skippable = false;
       syncsTlsDir = true;
       syncsEtcdCas = true;
+      copiesOnlyWithoutLiveSet = true;
+      stagesChangedSet = true;
     };
   };
 
@@ -2133,15 +2203,21 @@ in {
     };
   };
 
-  # The bootstrap-apply oneshot (D40): etc path + SSA apply + retry.
+  # The bootstrap-apply oneshot (D40, revised G11): etc path, SSA apply,
+  # re-run on a changed bundle, CRDs before CRs, bounded retry, prune.
   test_bootstrapApplyFragment = {
     expr = let
       frag = kube.mkBootstrapApply {
         pkgs = {
           kubectl = "/nix/store/fake-kubectl";
           coreutils = "/nix/store/fake-coreutils";
+          jq = "/nix/store/fake-jq";
+          yq-go = "/nix/store/fake-yq";
+          gnugrep = "/nix/store/fake-gnugrep";
           writeShellScript = name: text: "script:${name}:${text}";
         };
+        # the deployed file, as a specialisation or a deploy changes it
+        config.environment.etc."clan-bootstrap/test/bundle.yaml".source = "/nix/store/deployed-bundle.yaml";
         inherit instanceName;
         namePrefix = "k3s";
         serverUnit = "k3s.service";
@@ -2149,24 +2225,82 @@ in {
         bundle = "/nix/store/fake-bundle.yaml";
       };
       unit = frag.systemd.services."k3s-test-bootstrap-apply";
+      script = unit.serviceConfig.ExecStart;
+      has = s: lib.hasInfix s script;
+      pos = s: lib.stringLength (builtins.head (lib.splitString s script));
     in {
-      etcPath = frag.environment.etc ? "clan-bootstrap/test/bundle.yaml";
-      inherit (unit) after requires;
-      inherit (unit.serviceConfig) Type RemainAfterExit Restart;
-      noStartLimit = unit.unitConfig.StartLimitIntervalSec == 0;
-      ssaApply = lib.hasInfix "kubectl apply --server-side --field-manager=clan-bootstrap" unit.serviceConfig.ExecStart;
-      waitsReadyz = lib.hasInfix "get --raw=/readyz" unit.serviceConfig.ExecStart;
+      etcSource = frag.environment.etc."clan-bootstrap/test/bundle.yaml".source;
+      inherit (unit) after requires restartTriggers;
+      inherit (unit.serviceConfig) Type RemainAfterExit Restart RestartSec RestartMaxDelaySec;
+      inherit (unit.unitConfig) StartLimitIntervalSec StartLimitBurst;
+      ssaApply = has "kubectl apply --server-side --force-conflicts --field-manager=clan-bootstrap";
+      waitsReadyz = has "get --raw=/readyz";
+      waitsEstablished = has "wait --for=condition=Established";
+      crdsBeforeCrs = pos "condition=Established" < pos ''-f "$work/crs.json"'' && pos ''-f "$work/base.json"'' < pos "condition=Established";
+      boundedCrdWait = has "SECONDS + 900";
+      prunesBySelector = has "-l 'clan.lol/cluster=test'";
+      # kubectl hides managedFields unless asked (k3s-single, G11)
+      prunesOwnObjectsOnly = has ''.manager == "clan-bootstrap"'' && has "--show-managed-fields";
+      prunesAfterApply = pos ''-f "$work/crs.json"'' < pos "api-resources";
     };
     expected = {
-      etcPath = true;
+      etcSource = "/nix/store/fake-bundle.yaml";
       after = ["k3s.service"];
       requires = ["k3s.service"];
+      restartTriggers = ["/nix/store/deployed-bundle.yaml"];
       Type = "oneshot";
       RemainAfterExit = true;
       Restart = "on-failure";
-      noStartLimit = true;
+      RestartSec = 10;
+      RestartMaxDelaySec = 120;
+      StartLimitIntervalSec = 3600;
+      StartLimitBurst = 12;
       ssaApply = true;
       waitsReadyz = true;
+      waitsEstablished = true;
+      crdsBeforeCrs = true;
+      boundedCrdWait = true;
+      prunesBySelector = true;
+      prunesOwnObjectsOnly = true;
+      prunesAfterApply = true;
+    };
+  };
+
+  # The ClusterMesh secrets oneshot (K4, K8): a regenerated leaf key
+  # restarts it, key material never reaches a command line, and the
+  # rollout decision is persistent state (a pod-template digest).
+  test_clustermeshSecretsFragment = {
+    expr = let
+      files =
+        lib.genAttrs ["ca.crt" "server.crt" "server.key" "admin.crt" "admin.key" "remote.crt" "remote.key" "local.crt" "local.key"]
+        (f: {path = "/run/secrets/rancher-clustermesh-test/${f}";});
+      frag = kube.mkClustermeshSecretsApply {
+        pkgs = {
+          kubectl = "/nix/store/fake-kubectl";
+          coreutils = "/nix/store/fake-coreutils";
+          jq = "/nix/store/fake-jq";
+          writeShellScript = name: text: "script:${name}:${text}";
+        };
+        inherit instanceName files;
+        namePrefix = "k3s";
+        bootstrapUnit = "k3s-test-bootstrap-apply.service";
+        serverUnit = "k3s.service";
+        kubeconfigPath = "/etc/rancher/k3s/k3s.yaml";
+      };
+      script = frag.systemd.services."k3s-test-clustermesh-secrets".serviceConfig.ExecStart;
+    in {
+      restartUnits = lib.mapAttrs (_: f: f.restartUnits) frag.clan.core.vars.generators."rancher-clustermesh-test".files;
+      keyViaRawfile = lib.hasInfix "--rawfile key /run/secrets/rancher-clustermesh-test/server.key" script;
+      noKeyOnCmdline = !(lib.hasInfix "base64 -w0" script) && !(lib.hasInfix "--arg key" script);
+      digestState = lib.hasInfix "clan.lol/mesh-secrets" script;
+      noBlindRestart = !(lib.hasInfix "rollout restart" script);
+    };
+    expected = {
+      restartUnits = lib.genAttrs ["server.key" "admin.key" "remote.key" "local.key"] (_: ["k3s-test-clustermesh-secrets.service"]);
+      keyViaRawfile = true;
+      noKeyOnCmdline = true;
+      digestState = true;
+      noBlindRestart = true;
     };
   };
 
