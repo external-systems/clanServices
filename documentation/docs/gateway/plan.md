@@ -1,8 +1,9 @@
 # Plan and probes
 
-No service is built yet. The design was decided on 2026-11-20 and is
-written down first. Probes answered the open questions; their results
-are below and in `specs/gateway.md` §10.
+The design was decided on 2026-11-20 and written down first. Probes
+answered the open questions; their results are below and in
+`specs/gateway.md` §10. **Since 2026-11-24 both services exist** (a
+first cut): `nat-gateway` and `router`, see the build order below.
 
 Since 2026-11-21 every probe is a real test suite that checks its
 result on every run:
@@ -11,8 +12,10 @@ result on every run:
 |---|---|
 | `gateway-wan` | MAC override and VLAN 0 on the WAN port |
 | `netif-v6only` | a machine with no IPv4: names, IPv4 literals, path MTU, reboot |
-| `gateway-nat64` | two NAT gateways, failover, the CLAT's health check |
-| `gateway-router` | zones, DNS, advertisements, a prefix change, public Service addresses |
+| `router` | the service: zones, DNS, advertisements, a prefix change, public Service addresses (replaced `gateway-router` on 2026-11-24) |
+| `nat-gateway` | the service: two gateways, two client tiers, the allowlist, the limits, the health beacon |
+| `nat-gateway-failover` | the same machines under loss, flaps, dead targets, dead gateways, deploys and reboots |
+| `router-kube` | a router that is also a k3s node: both firewalls, zones, NAT, pods |
 | `gateway-dual-wan` | two WANs with DHCP, failover and back |
 | `k3s-v6only`, `rke2-v6only` | a cluster on IPv6-only machines |
 | `k3s-clat`, `rke2-clat`, `k3s-clat-mapped` | pod IPv4 through the node's CLAT, native routing (D72) |
@@ -62,13 +65,13 @@ Found on the way:
 
 ## Build order
 
-| Step | What | Done when |
-|---|---|---|
-| S1 | netif: MAC override, IPv6-only machines | `netif-v6only` passes |
-| S2 | the `router` service: one WAN, dual-stack, zones, DNS, metrics | `netif-router` passes |
-| S3 | router options: private prefix, IPv6-mostly | `router-ipv6-mostly` passes |
-| S4 | the `nat-gateway` service with two gateways | `nat-gateway` passes |
-| S5 | clusters on IPv6-only machines | a suite per distribution passes |
+| Step | What | Done when | State (2026-11-24) |
+|---|---|---|---|
+| S1 | netif: MAC override, IPv6-only machines | `netif-v6only` passes | done |
+| S2 | the `router` service: one WAN, dual-stack, zones, DNS, metrics | `router` passes | built; metrics on localhost only |
+| S3 | router options: private prefix, IPv6-mostly | `router-ipv6-mostly` passes | frozen |
+| S4 | the `nat-gateway` service with two gateways | `nat-gateway` passes | built |
+| S5 | clusters on IPv6-only machines | a suite per distribution passes | built: `k3s-clat`, `rke2-clat` run on the service, Cilium devices rendered (D71) |
 | S6 | a second WAN on one router | `router-dual-wan` passes |
 | S7 | two routers with two carriers | design review first |
 | S8 | the service prefix: public Service addresses behind a router | `router-service-prefix` passes |

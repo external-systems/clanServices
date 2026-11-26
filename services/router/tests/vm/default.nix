@@ -1,6 +1,7 @@
-# The router's building blocks as a regression suite (specs/gateway.md
-# §10.2, §10.3, §10.7; decisions G8, G10, G11, G14, G15, G20, G22;
-# specs/netif.md N16, N39).
+# router: the `router` service on the topology of the fixture suite
+# gateway-router (specs/gateway.md §10.2, §10.3, §10.7; decisions G8,
+# G10, G11, G14, G15, G20, G22; specs/netif.md N16, N39). The same
+# proofs on the code a machine runs (§5, §14.1 point 1).
 #
 #   isp ── vlan 1 ── router ── vlan 2 ── client   (zone home, netif)
 #                       │          └──── laptop   (zone home, NetworkManager)
@@ -8,9 +9,9 @@
 #                                                  for a cluster node)
 #
 # netif renders the router's links (WAN DHCPv4, DHCPv6 and a delegated
-# prefix; a /64 of it on each zone). Everything else is the fixture that
-# stands in for `services/router`: nftables zones and NAT44, kea,
-# corerad, CoreDNS and the prefix hook.
+# prefix; a /64 of it on each zone). The router service renders the
+# rest from netif's facts: nftables zones and NAT44, kea, corerad,
+# CoreDNS and the prefix hook. The suite adds test seams to the hook.
 #
 # It pins:
 #   - G15: corerad advertises the delegated /64, the ULA /64, RDNSS,
@@ -37,7 +38,7 @@
   ...
 }: let
   ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-  echo = import ./echo.nix;
+  echo = import ../../../../lib/gateway/tests/vm/echo.nix;
 
   # The router's WAN NIC: the driver gives node N on vlan V the MAC
   # 52:54:00:12:0V:0N, and the nodes sort as client, isp, laptop, node,
@@ -112,7 +113,7 @@
     };
   };
 in {
-  name = "gateway-router";
+  name = "router";
 
   clan = {
     directory = ./.;
@@ -190,39 +191,45 @@ in {
             };
           };
         };
+        edge = {
+          module.name = "router";
+          module.input = "self";
+          roles.router.machines.router.settings = {
+            zones = {
+              home = {};
+              servers = {};
+            };
+            domain = "home.test";
+            pref64 = "64:ff9b::/96";
+            dns.upstream = ["192.0.2.1"];
+            servicePrefix = {
+              subnet = subnets.service;
+              stable = "fd00:10:5::/64";
+              expose = [
+                {
+                  address = "fd00:10:5::80";
+                  protocol = "tcp";
+                  ports = [80];
+                }
+              ];
+            };
+          };
+        };
       };
     };
   };
 
   nodes = {
-    router = {
-      pkgs,
-      config,
-      ...
-    }: let
-      inherit (config.clanServices.netif) zones;
-      set = names: "{ ${lib.concatMapStringsSep ", " (n: ''"${n}"'') names} }";
-      wan = set zones.wan;
-      lans = set (zones.home ++ zones.servers);
+    # The router is the service. What stays here is the suite's: the
+    # test seams of the hook (its `nft` and `systemctl` wait or fail on
+    # request), a blocklist of 300 000 names, and the eval-time half of
+    # "the subnet ids fit the delegation".
+    router = {pkgs, ...}: let
       blocklist = pkgs.runCommand "blocklist-300k" {} ''
         seq 1 300000 | sed 's/.*/0.0.0.0 ad&.block.test/' > $out
       '';
-      # The resolver address of each zone: advertised as RDNSS (and, for
-      # home, by DHCPv4), bound by CoreDNS, and reachable from that zone
-      # only.
-      zoneDns = {
-        home = {
-          v4 = "192.168.10.1";
-          v6 = "fd00:10:1::1";
-        };
-        servers = {
-          v4 = "192.168.20.1";
-          v6 = "fd00:10:2::1";
-        };
-      };
-      # Test seams for the prefix hook: its `nft` and `systemctl`. Each
-      # waits while /run/router-test/hold-<name> exists and fails while
-      # /run/router-test/fail-<name> exists; otherwise it is the tool.
+      # Each waits while /run/router-test/hold-<name> exists and fails
+      # while /run/router-test/fail-<name> exists; otherwise it is the tool.
       fault = name: package:
         pkgs.writeShellScriptBin name ''
           if [ -e /run/router-test/hold-${name} ]; then
@@ -235,200 +242,6 @@ in {
           fi
           exec ${lib.getExe' package name} "$@"
         '';
-      # The prefix hook (specs/gateway.md G22). netif writes the delegated
-      # prefixes to /run/netif/pd/<wan>; a path unit runs this on a change.
-      #   - The file is a set. The current prefix stays current while it
-      #     is listed; otherwise the first listed one is. A prefix that
-      #     was current and is no longer listed is retired: advertised as
-      #     deprecated for 2 h. No file: no delegation, so the current
-      #     prefix is retired and the service rule goes.
-      #   - Its own nftables tables hold the service rewrite (G20) and
-      #     the set of delegated prefixes: IPv6 from a LAN zone to the WAN
-      #     with another source is rejected, not forwarded to die. The
-      #     reject is on the LAN links' ingress (`netdev router_src`): it
-      #     answers on the link the packet came from. An error sent from
-      #     the forward hook is routed by its destination, and the router
-      #     has no route to a prefix that is no longer delegated: in the
-      #     first run that error left through the WAN. The forward hook
-      #     (`inet router_svc`) keeps a rule for what the ingress lets
-      #     pass: a new connection from the stable service prefix.
-      #   - It converges on what is loaded, not on a file diff: each table
-      #     carries its generation, corerad's is recorded after the
-      #     restart was queued. A run that failed half way is repaired by
-      #     the next.
-      #   - systemd drops a path event that fires while the hook runs, so
-      #     the hook reads the file again before it exits and repeats
-      #     until it has handled what is there.
-      # A subnet id that does not fit the delegation gets nothing: no
-      # retired prefix, no rule.
-      prefixHook = pkgs.writers.writePython3 "router-prefix" {flakeIgnore = ["E501"];} ''
-        import hashlib
-        import ipaddress
-        import json
-        import os
-        import subprocess
-        import sys
-        import time
-
-        PD = "/run/netif/pd/eth1"
-        STATE = "/var/lib/router/prefix.json"
-        CONF = "/run/router/corerad.toml"
-        APPLIED = "/run/router/corerad.applied"
-        ZONES = {"eth2": (${toString subnets.home}, "${zoneDns.home.v6}"), "eth3": (${toString subnets.servers}, "${zoneDns.servers.v6}")}
-        SERVICE_SUBNET = ${toString subnets.service}
-        STABLE = "fd00:10:5::/64"
-        LANS = '${lans}'
-        WAN = '${wan}'
-        TABLES = ["inet router_svc", "netdev router_src"]
-        RETIRED_FOR = 7200
-
-
-        def subnet(prefix, number):
-            """The /64 with that subnet id, or None: the delegation has no room for it."""
-            network = ipaddress.ip_network(prefix)
-            if network.prefixlen > 64 or number >= 2 ** (64 - network.prefixlen):
-                return None
-            return str(ipaddress.ip_network((int(network.network_address) + (number << 64), 64)))
-
-
-        def read(path):
-            try:
-                with open(path) as handle:
-                    return handle.read()
-            except OSError:
-                return None
-
-
-        def write(path, text):
-            """Replace the file: whole and on disk, or not at all."""
-            with open(path + ".tmp", "w") as handle:
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.rename(path + ".tmp", path)
-            directory = os.open(os.path.dirname(path), os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-
-
-        def load_state():
-            """The state on disk. A lost, empty or damaged file is no state."""
-            text = read(STATE)
-            try:
-                state = json.loads(text or "")
-                current, retired = state["current"], state["retired"]
-                if current is not None:
-                    current = str(ipaddress.IPv6Network(str(current) if isinstance(current, str) else ""))
-                retired = {str(ipaddress.IPv6Network(prefix if isinstance(prefix, str) else "")): float(since) for prefix, since in retired.items()}
-                return {"current": current, "retired": retired}
-            except (ValueError, KeyError, TypeError, AttributeError) as error:
-                if text is not None:
-                    print(f"router-prefix: the state file is unusable ({type(error).__name__}), starting without")
-                return {"current": None, "retired": {}}
-
-
-        def delegated(text):
-            """The prefixes in netif's file, in its order; anything else is skipped."""
-            found = []
-            for word in (text or "").split():
-                try:
-                    prefix = str(ipaddress.IPv6Network(word))
-                except ValueError:
-                    continue
-                if prefix not in found:
-                    found.append(prefix)
-            return found
-
-
-        def handle(text):
-            prefixes = delegated(text)
-            state = load_state()
-            now = time.time()
-            current = state["current"] if state["current"] in prefixes else (prefixes[0] if prefixes else None)
-            if state["current"] and state["current"] != current:
-                state["retired"][state["current"]] = now
-            state["current"] = current
-            state["retired"] = {prefix: since for prefix, since in state["retired"].items() if prefix not in prefixes and now - since < RETIRED_FOR}
-            # the intent first: a run that dies below is finished by the next
-            wanted = json.dumps(state, sort_keys=True)
-            if read(STATE) != wanted:
-                write(STATE, wanted)
-
-            out = ["[debug]", 'address = "[::1]:9430"', "prometheus = true", ""]
-            for name, (number, dns) in ZONES.items():
-                out += [
-                    "[[interfaces]]", f'name = "{name}"', "advertise = true",
-                    "  [[interfaces.prefix]]", '  prefix = "::/64"',
-                    '  preferred_lifetime = "45m"', '  valid_lifetime = "90m"',
-                ]
-                for old in [subnet(prefix, number) for prefix in sorted(state["retired"])]:
-                    if old:
-                        out += [
-                            "  [[interfaces.prefix]]", f'  prefix = "{old}"',
-                            "  deprecated = true", '  preferred_lifetime = "1s"', '  valid_lifetime = "2h"',
-                        ]
-                out += [
-                    "  [[interfaces.rdnss]]", f'  servers = ["{dns}"]',
-                    "  [[interfaces.dnssl]]", '  domain_names = ["home.test"]',
-                    "  [[interfaces.pref64]]", '  prefix = "64:ff9b::/96"', "",
-                ]
-            conf = "\n".join(out)
-            if read(CONF) != conf:
-                write(CONF, conf)
-
-            public = subnet(current, SERVICE_SUBNET) if current else None
-            rule = f"dnat ip6 prefix to ip6 daddr map {{ {public} : {STABLE} }}" if public else ""
-            elements = f"elements = {{ {', '.join(prefixes)} }}" if prefixes else ""
-            delegated_set = f"  set delegated {{ type ipv6_addr; flags interval; auto-merge; {elements} }}"
-            bodies = {
-                "inet router_svc": "\n".join([
-                    delegated_set,
-                    "  chain prerouting {",
-                    "    type nat hook prerouting priority dstnat;",
-                    f"    {rule}",
-                    "  }",
-                    "  chain egress {",
-                    "    type filter hook forward priority filter - 10;",
-                    f'    iifname {LANS} oifname {WAN} meta nfproto ipv6 ct direction original ip6 saddr != @delegated counter reject with icmpv6 policy-fail comment "egress source, forward"',
-                    "  }",
-                ]),
-                "netdev router_src": "\n".join([
-                    delegated_set,
-                    "  chain lan {",
-                    f"    type filter hook ingress devices = {LANS} priority filter;",
-                    f'    meta protocol ip6 ip6 saddr != @delegated ip6 saddr != {{ ::, fe80::/10, {STABLE} }} fib daddr oifname {WAN} counter reject with icmpv6 policy-fail comment "egress source"',
-                    "  }",
-                ]),
-            }
-            generation = hashlib.sha256(json.dumps(bodies, sort_keys=True).encode()).hexdigest()[:16]
-            replaced = False
-            for name in TABLES:
-                loaded = subprocess.run(["nft", "list", "table", *name.split()], capture_output=True, text=True)
-                replaced = replaced or loaded.returncode != 0 or f'comment "generation {generation}"' not in loaded.stdout
-            if replaced:
-                # one transaction: the tables are never half there
-                tables = "".join(f'table {name}\ndelete table {name}\ntable {name} {{\n  comment "generation {generation}"\n{bodies[name]}\n}}\n' for name in TABLES)
-                subprocess.run(["nft", "-f", "-"], input=tables.encode(), check=True)
-
-            digest = hashlib.sha256(conf.encode()).hexdigest()
-            restarted = read(APPLIED) != digest
-            if restarted:
-                # --no-block: corerad is ordered after this unit, so waiting
-                # for its restart from inside this unit never returns
-                subprocess.run(["systemctl", "--no-block", "try-restart", "corerad.service"], check=True)
-                write(APPLIED, digest)
-            print(f"router-prefix: current {current}, retired {sorted(state['retired'])}, service {public}, corerad {'restarted' if restarted else 'unchanged'}, delegated {prefixes}, table {'replaced' if replaced else 'unchanged'}", flush=True)
-
-
-        for _ in range(100):
-            seen = read(PD)
-            handle(seen)
-            if read(PD) == seen:
-                sys.exit(0)
-        sys.exit("router-prefix: the prefix file keeps changing")
-      '';
       faults = pkgs.symlinkJoin {
         name = "router-prefix-faults";
         paths = [
@@ -446,165 +259,27 @@ in {
           3
         ];
       };
-      clan._networkFacts.forwarding = true;
-      # The evaluation-time half of "the zones fit the delegation"; the
-      # hook is the run-time half.
       assertions = [
         {
           assertion = fits delegations.first.length;
-          message = "gateway-router: a subnet id of the router does not fit the /${toString delegations.first.length} it asks for (specs/gateway.md G22)";
+          message = "router: a subnet id of the router does not fit the /${toString delegations.first.length} it asks for (specs/gateway.md G22)";
         }
         {
           assertion = !(fits delegations.single.length);
-          message = "gateway-router: the /64 phase needs a subnet id that does not fit a /64";
+          message = "router: the /64 phase needs a subnet id that does not fit a /64";
         }
       ];
-      boot.kernel.sysctl = {
-        "net.ipv4.conf.all.forwarding" = 1;
-        "net.ipv6.conf.all.forwarding" = 1;
-        "net.ipv6.ip_nonlocal_bind" = 1;
-      };
-      environment = {
-        systemPackages = [
-          pkgs.jq
-          pkgs.conntrack-tools
-          pkgs.tcpdump
-          pkgs.curl
-          pkgs.dig
-          pkgs.coredns
-        ];
-        etc."blocklist".source = blocklist;
-      };
-      networking = {
-        firewall.enable = false;
-        nftables = {
-          enable = true;
-          tables.router = {
-            family = "inet";
-            content = ''
-              chain postrouting {
-                type nat hook postrouting priority srcnat;
-                oifname ${wan} meta nfproto ipv4 masquerade
-              }
-              chain input {
-                type filter hook input priority filter; policy drop;
-                iifname "lo" accept
-                ct state established,related accept
-                meta l4proto { icmp, ipv6-icmp } accept
-                iifname ${wan} udp dport { 68, 546 } accept
-                iifname ${lans} udp dport 67 accept
-                ${lib.concatMapStrings (zone: ''
-                iifname ${set zones.${zone}} ip daddr ${zoneDns.${zone}.v4} meta l4proto { tcp, udp } th dport 53 accept comment "DNS, zone ${zone}"
-                iifname ${set zones.${zone}} ip6 daddr ${zoneDns.${zone}.v6} meta l4proto { tcp, udp } th dport 53 accept comment "DNS, zone ${zone}"
-              '') (lib.attrNames zoneDns)}
-                counter comment "input dropped"
-              }
-              chain forward {
-                type filter hook forward priority filter; policy drop;
-                ct state established,related accept
-                ct state invalid drop
-                iifname ${lans} oifname ${wan} accept comment "internet"
-                ip6 daddr fd00:10:5::80 tcp dport 80 accept comment "service pinhole"
-                counter comment "forward dropped"
-              }
-            '';
-          };
-        };
-      };
-      services = {
-        kea.dhcp4 = {
-          enable = true;
-          settings = {
-            interfaces-config = {
-              interfaces = ["eth2"];
-              service-sockets-max-retries = 30;
-              service-sockets-retry-wait-time = 1000;
-            };
-            lease-database = {
-              type = "memfile";
-              persist = false;
-            };
-            subnet4 = [
-              {
-                id = 1;
-                subnet = "192.168.10.0/24";
-                interface = "eth2";
-                pools = [{pool = "192.168.10.100 - 192.168.10.150";}];
-                option-data = [
-                  {
-                    name = "routers";
-                    data = "192.168.10.1";
-                  }
-                  {
-                    name = "domain-name-servers";
-                    data = "192.168.10.1";
-                  }
-                ];
-              }
-            ];
-          };
-        };
-        corerad = {
-          enable = true;
-          # written by the prefix hook: a retired prefix is listed there
-          configFile = "/run/router/corerad.toml";
-        };
-        coredns = {
-          enable = true;
-          config = ''
-            . {
-              bind ${lib.concatMapStringsSep " " (zone: "${zone.v4} ${zone.v6}") (lib.attrValues zoneDns)}
-              hosts /etc/blocklist {
-                fallthrough
-              }
-              forward . 192.0.2.1
-              prometheus [::1]:9153
-              errors
-            }
-          '';
-        };
-      };
+      environment.systemPackages = [
+        pkgs.jq
+        pkgs.tcpdump
+        pkgs.curl
+        pkgs.coredns
+      ];
+      clanServices.gateway.router.dns.blocklist = lib.mkForce blocklist;
       systemd = {
-        tmpfiles.rules = [
-          "d /run/router 0755 root root -"
-          "d /var/lib/router 0755 root root -"
-          "d /run/router-test 0755 root root -"
-        ];
-        paths.router-prefix = {
-          wantedBy = ["multi-user.target"];
-          pathConfig.PathChanged = "/run/netif/pd/eth1";
-        };
-        services = {
-          coredns.after = ["ifstate.service"];
-          corerad = {
-            after = [
-              "ifstate.service"
-              "router-prefix.service"
-            ];
-            wants = ["router-prefix.service"];
-            # The hook restarts corerad once per change. With the default
-            # limit the sixth restart within 10 s is refused and corerad
-            # stays down ("start-limit-hit"): no advertisements at all.
-            unitConfig.StartLimitIntervalSec = 0;
-          };
-          router-prefix = {
-            wantedBy = ["multi-user.target"];
-            after = [
-              "nftables.service"
-              "systemd-tmpfiles-setup.service"
-            ];
-            # nft and systemctl, behind the test seams
-            path = [faults];
-            # Every change of the file must get its run: no start limit
-            # (the default refuses the sixth start within 10 s, and the
-            # path unit then fails with it).
-            unitConfig.StartLimitIntervalSec = 0;
-            serviceConfig = {
-              Type = "oneshot";
-              ExecStart = prefixHook;
-            };
-          };
-        };
+        tmpfiles.rules = ["d /run/router-test 0755 root root -"];
+        # the hook's nft and systemctl, behind the test seams
+        services.router-prefix.path = lib.mkBefore [faults];
       };
     };
 
@@ -1020,6 +695,10 @@ in {
         assert status == 9 and "timed out" in out, f"{label}: {server}: expected a timeout, got {status}: {out}"
         assert dropped >= 1, f"{label}: {server}: the input drop counter did not move"
 
+    def router_addresses(link):
+        """The router's global IPv6 addresses on `link`."""
+        return {info["local"] for entry in json.loads(router.succeed(f"ip -j -6 addr show dev {link} scope global")) for info in entry.get("addr_info", []) if "local" in info}
+
     def service_checks(label, block, full=True, home=True):
         """G20 on the service prefix of `block` (subnet id f)."""
         base = f"{block}:f::"
@@ -1033,8 +712,10 @@ in {
         # the host part is kept: <public>::80 became <stable>::80
         router.succeed(f"conntrack -L -f ipv6 2>/dev/null | grep 'src={ISP} dst={base}80 .*src={STABLE} dst={ISP} ' >/dev/null")
         if home:
+            # §14.3: a LAN zone reaches the service through the hairpin
+            # rewrite, so the node sees the router's address on its link
             answer = client.succeed(f"curl -sS --max-time 5 'http://[{base}80]/'").strip()
-            assert answer.startswith(f"{block}:1:"), f"{label}: the home zone reached the service as {answer}"
+            assert answer in router_addresses("eth3"), f"{label}: the home zone reached the service as {answer}"
         if not full:
             return
         size, seconds = isp.succeed(f"curl -s --max-time 20 -o /dev/null -w '%{{size_download}} %{{time_total}}' 'http://[{base}80]/big'").split()
@@ -1087,7 +768,7 @@ in {
             router.succeed(f"ip -6 route show proto dhcp | grep '^unreachable {FIRST}::/60 dev lo' >/dev/null")
             router.succeed(f"ip -6 route show proto dhcp | grep '^{FIRST}:1::/64 dev eth2' >/dev/null")
             router.succeed(f"ip -6 route show proto dhcp | grep '^{FIRST}:2::/64 dev eth3' >/dev/null")
-            print("GATEWAY_ROUTER_LINKS_OK")
+            print("ROUTER_LINKS_OK")
 
         with subtest("G15: corerad advertises the delegated /64, the ULA, RDNSS, DNSSL and PREF64"):
             for machine, zone in [(client, 1), (laptop, 1), (node, 2)]:
@@ -1119,7 +800,7 @@ in {
             # netif clients take DNS from DHCP, not from RDNSS (specs/netif.md N39)
             dns = client.succeed("resolvectl dns eth1")
             assert "192.168.10.1" in dns and "fd00:10:1::1" not in dns, dns
-            print("GATEWAY_ROUTER_RA_OK")
+            print("ROUTER_RA_OK")
 
         with subtest("G15: stopping corerad withdraws the default route, a start brings it back"):
             router.succeed("systemctl stop corerad.service")
@@ -1198,12 +879,13 @@ in {
         with subtest("G20: a service /64 of the delegated prefix rewritten to a stable ULA /64"):
             service_routes()
             service_checks("first prefix", FIRST)
-            # Report only: the servers zone calls the public service address.
-            # The one host of that zone is the service itself, so this is the
-            # hairpin of a host to its own service.
+            # §14.3: the hairpin. The servers zone calls the public service
+            # address; its one host is the service itself. The router
+            # rewrites the source, so the reply comes back through it.
             status, out, took = timed(node, f"curl -sS --max-time 3 'http://[{FIRST}:f::80]/'")
             print(f"FINDING hairpin: the servers zone to the public service address: curl rc={status} after {took}s: {out}")
-            observe("hairpin: the router's connection entries", router, f"conntrack -L -f ipv6 2>/dev/null | grep 'dst={FIRST}:f::80 '")
+            assert status == 0 and out.strip() in router_addresses("eth3"), (status, out)
+            router.succeed("nft list chain inet router_svc hairpin | grep -E 'counter packets [1-9]' >/dev/null")
 
         with subtest("an IfState apply on the router proposes no change and changes nothing"):
             rules = router.succeed("nft -s list ruleset")
@@ -1219,12 +901,13 @@ in {
         with subtest("nftables: one table per owner; a restart of one owner leaves the other tables byte-equal"):
             tables = sorted(router.succeed("nft -j list tables | jq -r '.nftables[] | select(.table) | .table | .family + \" \" + .name'").splitlines())
             print(f"FINDING nftables tables on the router: {tables}; 'inet router' is nftables.service's (zones, NAT44, pinholes), 'inet router_svc' (the service rewrite) and 'netdev router_src' (the egress source filter) are the prefix hook's")
-            assert tables == ["inet router", "inet router_svc", "netdev router_src"], tables
+            # G25: the NixOS firewall stays on beside the router's table
+            assert tables == ["inet nixos-fw", "inet router", "inet router_svc", "netdev router_src"], tables
             # a third owner, as Cilium or a dual-WAN steering unit would be
             router.succeed("printf 'table inet foreign { chain forward { type filter hook forward priority 10; counter comment \"another owner\"; }; }\\n' | nft -f -")
 
             def snapshot():
-                return {name: router.succeed(f"nft -s list table {name}") for name in ["inet router", "inet router_svc", "netdev router_src", "inet foreign"]}
+                return {name: router.succeed(f"nft -s list table {name}") for name in ["inet nixos-fw", "inet router", "inet router_svc", "netdev router_src", "inet foreign"]}
 
             before = snapshot()
             assert "dnat ip6 prefix" in before["inet router_svc"] and "another owner" in before["inet foreign"] and "egress source" in before["netdev router_src"], before
@@ -1442,7 +1125,7 @@ in {
             # service rule goes, nothing leaves for the internet over IPv6.
             pd_write()
             wait_hook(None, [first, renumber, wide], [])
-            assert "dnat" not in router.succeed("nft list table inet router_svc")
+            assert "dnat ip6 prefix" not in router.succeed("nft list table inet router_svc")
             assert "current None" in hook_lines()[-1] and "service None" in hook_lines()[-1], hook_lines()[-1]
             wait_advertised("no delegation", None, [FIRST, RENUMBER, WIDE])
             egress_refused("no delegation", client, address(client, f"{RENUMBER}:1:"), RENUMBER)
@@ -1459,7 +1142,7 @@ in {
             router.succeed("systemctl is-active corerad.service")
             assert router.succeed("systemctl show corerad.service -P StartLimitIntervalUSec").strip() == "0"
             service_checks("the delegation is back", RENUMBER, full=False)
-            print("GATEWAY_ROUTER_HOOK_OK")
+            print("ROUTER_HOOK_OK")
 
         with subtest("G22: the prefix changes while the router is off; the hook's state is on disk; the boot is not held up"):
             router.shutdown()
@@ -1501,12 +1184,16 @@ in {
             assert router.succeed("ip -6 route show proto dhcp").strip().startswith(f"unreachable {SINGLE}::/64 dev lo"), "dhcpcd left a route into a zone"
             lines = hook_lines()
             assert f"current {SINGLE}::/64, retired ['{FIRST}::/60', '{RENUMBER}::/60', '{WIDE}::/56'], service None, corerad restarted" in lines[-1], lines
-            assert "dnat" not in router.succeed("nft list table inet router_svc")
+            assert "dnat ip6 prefix" not in router.succeed("nft list table inet router_svc")
             assert router.succeed("systemctl show router-prefix.service -P Result").strip() == "success"
             router.succeed("systemctl is-active corerad.service")
             refused(f"the service address of the retired {FIRST}", isp, f"http://[{FIRST}:f::80]/")
-            # IPv4 and the ULA are untouched
-            assert client.succeed("curl -sS --max-time 5 http://192.0.2.1/").strip() == f"::ffff:{wan_v4}"
+            # IPv4 and the ULA are untouched. A wait, not one try: the ISP's
+            # switch to another delegation restarts its own IfState, and a
+            # request in that moment failed at once (seen once, 2026-11-24:
+            # "failed to connect after 1 ms"; the first run passed)
+            answer = client.wait_until_succeeds("curl -sS --max-time 5 http://192.0.2.1/", timeout=30).strip()
+            assert answer == f"::ffff:{wan_v4}", answer
             client.succeed("ip -6 -o addr show dev eth1 scope global -deprecated | grep 'fd00:10:1:' >/dev/null")
 
         with subtest("G22: after the /64 a /60 again: the zones and the service come back"):
@@ -1596,6 +1283,6 @@ in {
             observe("what the ISP received from the router, per source block", isp, "nft list table inet watch")
             assert isp_saw("ula") == ula_leaks, f"the ISP saw {isp_saw('ula') - ula_leaks} more packets from a ULA"
 
-        print("GATEWAY_ROUTER_OK")
+        print("ROUTER_OK")
   '';
 }

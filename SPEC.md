@@ -4,6 +4,88 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 57 (2026-11-25): the review's findings are fixed**
+(`specs/gateway.md` round G10, §16.3; owner: "apply all fixes").
+- **Graceful restart.** The Cilium session: `gracefulRestart` in the
+  `CiliumBGPPeerConfig`, 120 s. The fabric sessions: `bgp
+  graceful-restart preserve-fw-state`, restart and stale-path time
+  60 s, `select-defer-time 0`; zebra keeps its routes over a restart
+  (`-r -K120`). Fabric neighbors carry `bfd
+  check-control-plane-failure`, so a peer whose BFD fails is dropped
+  at once. Suite `k3s-frr-failure` (`FRR_CILIUM_RESTART_OK`,
+  `FRR_DEAD_NODE_OK`).
+- **D63 amended: `site` has no default** (`null`). The `site` timer
+  profile needs the same site named on both ends; every other pair
+  gets `wan`. Eval test `test_stabilityProfilesAndRecovery`.
+- **The Cilium session's route limit warns** (`maximum-prefix 4096
+  warning-only`); fabric and upstream limits still restart after ten
+  minutes. **What a leaf imports is tagged `no-export`.**
+- **A `clusterInit` server without etcd data does not start beside a
+  live cluster** (unit `<distro>-<instance>-init-guard`: 10 probes of
+  every other server's API, 3 s apart).
+- **A changed `cilium-config` rolls the agents** (pod-template
+  annotation `clan.lol/cilium-config-hash`, `maxUnavailable: 1`).
+  `clustermesh-apiserver` is restarted only when a ClusterMesh secret
+  changed. `operator.replicas` is 2 for two or more members.
+- **The PKI install asserts its secret** (`AssertPathExists`).
+  HAProxy: `timeout tunnel 1h`.
+- **A static IPv4 underlay inside 10.0.0.0/8 and outside the
+  cluster's ranges is an eval error** (`underlayViolations`; Cilium's
+  `ipv4NativeRoutingCIDR` is 10.0.0.0/8).
+- **`timers connect 10`** beside `timers delayopen 5`: FRR 10.7.1
+  aborts bgpd when both end together (`upstream-facts.md`).
+- Eval test `test_g10Hardening` (k3s, rke2). All 48 suites passed
+  (`specs/gateway.md` §16.5).
+- Header range D1–D72 (unchanged).
+
+**Round 56 (2026-11-25): D71 covers a router that is a node; a
+hardening review** (`specs/gateway.md` round G9, G25, §16).
+- A `router` exports its WAN zone (`router`, new export interface;
+  k3s and rke2 take it as an input). On a cluster member that is a
+  router the WAN link joins `devices`, for the reason a gateway's
+  uplink does. Suite `router-kube`.
+- **Every member's default-route link joins `devices`** (netif
+  `gatewayInMain`; never a VPN zone's link). Found by `router-kube`:
+  a pod on a plain dual-stack node left with its pod address, because
+  Cilium masquerades on a `devices` link only. Eval test
+  `test_d71DefaultRouteLink` (k3s, rke2). The other cluster suites
+  render the same list as before (their derivations are unchanged).
+- The review read `routed-fabric`, `lib/kube-cluster`, k3s, rke2 and
+  netif. Nothing in them changed in this round. Its findings are
+  ranked in `specs/gateway.md` §16.3 and wait for the owner; the first
+  three concern stability: no BGP graceful restart between Cilium and
+  FRR, a restart of FRR that withdraws a manager's fabric address, and
+  LAN timers between members that never set `site`.
+- Header range D1–D72 (unchanged).
+
+**Round 55 (2026-11-24): D71 covers a gateway that is a node**
+(`specs/gateway.md` round G8, §14.5 point 5).
+- A `nat-gateway` gateway exports its uplink zone (`nat_gateway`,
+  `gateway = true`). On a cluster member that is a gateway, every link
+  of that zone joins `devices`: its public IPv4 is there, and Cilium
+  masquerades pod IPv4 only on a `devices` link. Eval test
+  `test_d71GatewayUplink` (k3s, rke2); suite `nat-gateway-kube`.
+- A gateway is never a client, so it runs no CLAT.
+
+**Round 54 (2026-11-24): D71 implemented; the gateway services exist**
+(`specs/gateway.md` round G7).
+- **D71 implemented:** k3s and rke2 render Cilium `devices` as the
+  union, over the members, of the transport's links, each
+  `nat-gateway` client's CLAT link and the links of its uplink zone
+  that carry no IPv4 (`lib/kube-cluster/devices.nix`, from the `netif`
+  and `nat_gateway` exports; both services now take those exports as
+  inputs). A VPN link is refused at eval. Eval tests
+  `test_d71RenderedDevices`, `test_d71VpnLinkRefused`,
+  `test_d71NoVpnByDefault`, `test_clusterMembersTrusted` (k3s, rke2).
+- **`<distro>-clat` runs on the services:** netif renders every link,
+  `nat-gateway` the gateway and each node's CLAT, and nothing sets
+  `devices` by hand (it renders `<fabric link> <fabric loopback> clat0
+  eth1`). The nodes use a plain IPv6 resolver (no DNS64). The
+  `-mapped` suite keeps its fixtures, unchanged (`suite-compare`).
+- New services `nat-gateway` and `router`; their contract and status
+  is `specs/gateway.md`.
+- Header range D1–D72 (unchanged).
+
 **Round 53 (2026-11-23): native routing only (D72 implemented).**
 Cilium tunnel mode and `wireguard-mesh` are gone. The last `main`
 commit with them is tag `tunnel-mode-final`.
@@ -1791,7 +1873,8 @@ unless noted) — revoked entries keep one-line reasons for history.
 
   Each fabric adjacency has a symmetric timer profile: `site` = BFD 300 ms
   x3, `wan` = BFD 1000 ms x5 plus BGP keepalive/hold 10/30 seconds. Equal
-  `settings.site` values default to `site`; different sites default to
+  non-null `settings.site` values default to `site`; every other pair,
+  and a member that names no site (the default, round 57), defaults to
   `wan`; an explicit per-adjacency profile overrides the default and two
   conflicting overrides are eval errors. Border upstream sessions always
   use `wan`. Both fabric ends and upstreams render FRR 10.7
@@ -1802,7 +1885,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   hold-down. DelayOpen is fixed, not exponential flap damping; FRR route
   dampening is not substituted because upstream discourages it and its
   dual-stack coverage is incomplete. Periodic-flap behavior belongs to the
-  phase-6 WAN soak. Every rendered `maximum-prefix 4096` uses `restart 10`.
+  phase-6 WAN soak. Every rendered `maximum-prefix 4096` uses `restart 10`,
+  but for the Cilium session, which uses `warning-only` (round 57).
   Every profiled neighbor also renders plain `bfd`; site profile defaults
   stay implicit and `use-underlays-nexthop-weight` is explicit, matching FRR
   running-config serialization. A no-op FRR reload therefore has an empty
@@ -2075,18 +2159,31 @@ unless noted) — revoked entries keep one-line reasons for history.
     CoreDNS and its placement.
 
 - **D71 The kube services render Cilium's `devices` from netif facts.**
-  *(owner, 2026-11-23; planned)* Amends D58, where `devices` derive
-  from the transport only. Full rules: `specs/gateway.md` §14.2.
+  *(owner, 2026-11-23; implemented round 54)* Amends D58, where
+  `devices` derive from the transport only. Full rules:
+  `specs/gateway.md` §14.2.
   - Per node: the transport link(s), the CLAT link where a CLAT runs
-    (G5), the underlay link(s) where the underlay has no IPv4.
+    (G5), the underlay link(s) where the underlay has no IPv4, and on
+    a `nat-gateway` gateway the links of its uplink zone (round 55),
+    and on a `router` its WAN link (round 56; `specs/gateway.md` G25).
+    On every node: the link that owns its default route (round 56).
   - Names come from netif's zones (N10), so a mixed fleet works:
     `eno1`, `enp0s1`, `wlp2s0` in one cluster.
   - A VPN link (`tailscale0` and the like) is never in `devices`; an
     eval assertion refuses it.
-  - Open, settled first by one suite: one cluster-wide list (the union
-    of exact names), a `CiliumNodeConfig` per node, or wildcards with
-    an exclusion.
-  - Hand-set `cilium.helmValues.devices` in suites goes away.
+  - Settled (round 54): one cluster-wide list, the union of exact
+    names, as the transport's links already were. Rejected for now: a
+    `CiliumNodeConfig` per node, wildcards.
+  - Built in `lib/kube-cluster/devices.nix`; the CLAT link comes from a
+    member's `nat_gateway` export, the IPv6-only underlay from its
+    `netif` export (links of the client's uplink zone with no static
+    IPv4 and no DHCPv4). A VPN link (zone `vpn` or `tailnet`, or a name
+    starting `tailscale`, `wt`, `nb-`, `zt`, `tun`) fails eval, also
+    when set in `cilium.helmValues.devices`.
+  - Hand-set `cilium.helmValues.devices` is gone from `<distro>-clat`.
+    `k3s-clat-mapped` keeps it: it proves the alternative in which the
+    CLAT link is not a device. `<distro>-data-plane` still adds `eth1`
+    by hand for its foreign router's VIP ingress (allowed: a superset).
 
 - **D72 Native routing only; Cilium tunnel mode and `wireguard-mesh`
   are removed.** *(owner, 2026-11-23; implemented round 53)* Revokes D58's tunnel
@@ -2364,12 +2461,14 @@ endpoints on one adjacency must share an address family; hostname endpoints
 generate an eval warning instead of impure DNS resolution. Source-return
 tables have an explicit per-adjacency pin, avoid all kernel/Cilium owners
 and netif/source-return collisions, and use independent unique rule
-priorities below 32766. `settings.site` selects the default timer profile:
-equal sites use `site` (BFD 300 ms x3), different sites use `wan` (BFD
-1000 ms x5 and BGP 10/30 seconds), and
+priorities below 32766. `settings.site` (default `null`) selects the default timer profile:
+two ends that name the same site use `site` (BFD 300 ms x3), every
+other pair uses `wan` (BFD 1000 ms x5 and BGP 10/30 seconds), and
 `adjacencies.<remote>.timerProfile` overrides either. Upstreams use `wan`.
-Both ends and upstreams use a five-second fixed DelayOpen hold-down; all
-maximum-prefix limits restart after ten minutes. No-op reloads preserve
+Both ends and upstreams use a five-second fixed DelayOpen hold-down;
+fabric and upstream maximum-prefix limits restart after ten minutes, the
+Cilium session's only warns. Fabric sessions use BGP graceful restart
+(60 s) with BFD as the authority on a dead peer (round 57). No-op reloads preserve
 peer uptimes and the immediate RIB (D63).
 
 ```nix

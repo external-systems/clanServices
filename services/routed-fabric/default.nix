@@ -111,9 +111,10 @@
         description = "Member-uniform IPv4 transfer allocation pool recorded by the shared prefix generator.";
       };
       site = lib.mkOption {
-        type = lib.types.str;
-        default = "default";
-        description = "Failure-domain site label; equal sites default to site timers and different sites to wan timers.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "home";
+        description = "Failure-domain site label. Two members that name the same site get the fast `site` timers between them (one LAN). Every other pair, and every member that names none, gets the `wan` timers: fast timers over the internet drop a healthy peer on a second of jitter (specs/gateway.md §16.3 point 3).";
       };
       port = lib.mkOption {
         type = lib.types.port;
@@ -717,7 +718,7 @@
         then localOverride.timerProfile
         else if (remoteOverride.timerProfile or null) != null
         then remoteOverride.timerProfile
-        else if ownSettings.site == remoteSettings.site
+        else if ownSettings.site != null && ownSettings.site == remoteSettings.site
         then "site"
         else "wan";
       timerOverrideConflict =
@@ -813,6 +814,7 @@
       remote = remoteAddress;
       remoteAsn = asnOf remoteName;
       nextHopSelf = ownRole == "spine";
+      leaf = ownRole == "leaf";
       inherit (ownSettings) maximumPaths;
     };
 
@@ -1754,6 +1756,13 @@
         services.frr = {
           bgpd.enable = true;
           bfdd.enable = true;
+          # specs/gateway.md §16.3 point 2: zebra leaves its routes in
+          # the kernel when it stops and sweeps what nobody claimed
+          # again 120 s after it is back
+          zebra.extraOptions = [
+            "-r"
+            "-K120"
+          ];
           config = frrConfig;
         };
         systemd.services.frr.after = ["ifstate.service"];

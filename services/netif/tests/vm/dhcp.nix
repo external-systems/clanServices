@@ -369,7 +369,7 @@ in {
 
         with subtest("versions"):
             print_versions(router, ["kernel", "ifstate", "dhcpcd", "nftables"])
-            print("VERSION router dhcpcd unit:", router.succeed("systemctl show -p ExecStart --value netif-dhcpcd-eth1.service | grep -o 'dhcpcd-[0-9][0-9.]*' | head -n1").strip())
+            print("VERSION router dhcpcd unit:", router.succeed("grep -o 'dhcpcd-[0-9][0-9.]*' $(systemctl show -p ExecStart --value netif-dhcpcd-eth1.service | grep -o '/nix/store/[^ ;]*netif-dhcpcd-eth1' | head -n1) | head -n1").strip())
             print_versions(isp, ["kernel", "ifstate", "kea"])
 
         with subtest("leases: DHCPv4, DHCPv6 and the RA default"):
@@ -390,7 +390,7 @@ in {
             router.succeed("systemctl is-active netif-dhcpcd-eth1.service")
             router.fail("systemctl cat netif-dhcpcd-eth2.service")
             router.succeed("test \"$(pgrep -c dhcpcd)\" = 1")
-            router.succeed("systemctl show -p ExecStart netif-dhcpcd-eth1.service | grep 'dhcpcd-10\\.[5-9]' >/dev/null")
+            router.succeed("grep 'dhcpcd-10\\.[5-9]' $(systemctl show -p ExecStart --value netif-dhcpcd-eth1.service | grep -o '/nix/store/[^ ;]*netif-dhcpcd-eth1' | head -n1) >/dev/null")
             router.succeed("grep -x noipv6rs /etc/netif/dhcpcd/eth1.conf && grep -x noipv4ll /etc/netif/dhcpcd/eth1.conf")
             # no stock dhcpcd hook ran: resolv.conf is resolved's stub
             router.succeed("readlink -f /etc/resolv.conf | grep systemd/resolve >/dev/null")

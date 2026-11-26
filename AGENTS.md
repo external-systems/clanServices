@@ -12,7 +12,9 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
 
 - `services/<name>/` — public clanServices (`rke2`, `k3s`, `netif`,
   `modes` (network modes per machine, `specs/netif.md` N24; mechanism in
-  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65)).
+  `lib/modes.nix`), `routed-fabric`, `remote-builder` (D65),
+  `nat-gateway` and `router` (`specs/gateway.md`; mechanism in
+  `lib/gateway/`)).
   `routed-fabric` is the only transport: `wireguard-mesh` and Cilium
   tunnel mode were removed (SPEC.md D72; the last commit with them is
   tag `tunnel-mode-final`). The obsolete `fleet-routing`,
@@ -20,13 +22,19 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   BIRD-specific VM fixtures were deleted in the round-17 cleanup;
   their former ghost failures no longer block eval gates. No archives.
   Auto-discovered via `flake-module.nix`; no central registration list.
-- `lib/gateway/` — the future private implementation of `router` and
-  `nat-gateway` (`specs/gateway.md` G1). No service code yet. It holds
-  VM suites on fixtures (`tests/vm/*.nix`, registered in its
-  `flake-module.nix`) that pin the proven mechanisms: Jool NAT64 and
-  CLAT, the router's building blocks, dual WAN, IPv6-only hosts and
-  clusters. A new design question starts as a probe (a throwaway suite
-  that prints `FINDING` lines) and ends as assertions in a real suite.
+- `lib/gateway/` — the private implementation of `nat-gateway` and
+  `router` (`specs/gateway.md` G1): NixOS modules under
+  `clanServices.gateway.*` (`nat64.nix`, `clat.nix`, `router.nix`), their
+  Python helpers (health check, CLAT follower, prefix hook) and the
+  fixed names (`names.nix`). One translator, one CLAT and one router per
+  machine; the services assert it. It also holds the fixture suites
+  (`tests/vm/*.nix`, registered in its `flake-module.nix`): dual WAN
+  (frozen), the WAN link, IPv6-only hosts and clusters behind a
+  provider's NAT64 and DNS64, `<distro>-clat` and `nat-gateway-kube`,
+  which run on the services (`k3s-clat-mapped` keeps its fixtures). Our
+  own DNS64 is removed (`specs/gateway.md` §14.5 point 1). A new design
+  question starts as a probe (a throwaway suite that prints `FINDING`
+  lines) and ends as assertions in a real suite.
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
   (interfaces, renderers, vars, assertions). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
@@ -49,7 +57,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `observe`, `print_versions`, `seconds_until`, `holds_for`,
   `state_dump_on_failure`; use them in new suites).
   Each service, and `lib/gateway`, registers its suites in its
-  `flake-module.nix` (45 in all; `vm-test --list` counts them)
+  `flake-module.nix` (48 in all; `vm-test --list` counts them)
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
@@ -69,10 +77,14 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   ownership registry. It supersedes SPEC.md D50/D53/D61 where they
   conflict; its human pages are `documentation/docs/netif/`. Edit them
   together.
-- `specs/gateway.md` — the contract and status authority for the planned
+- `specs/gateway.md` — the contract and status authority for the
   `router` and `nat-gateway` services and `lib/gateway/` (decisions
-  G…, probes PR…, slices S…). No service is implemented yet; the
-  mechanisms are pinned by suites on fixtures (its §5).
+  G…, probes PR…, slices S…). Both services exist; their suites and
+  the fixture suites that remain are its §5. Its §16 is the hardening
+  review of round G9: what was fixed, and a ranked list of findings in
+  the other services that wait for the owner. A router judges its own
+  links only and the NixOS firewall stays on (G25): never set
+  `networking.firewall.enable = false` in a service.
   Its human pages are `documentation/docs/gateway/`. Edit them together.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision

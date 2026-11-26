@@ -145,6 +145,19 @@
               print("NETIF_POD_NETWORK_OK")
 
           with subtest("under a live cluster a reapply changes nothing and keeps Cilium's and the fabric's objects (N6, N14)"):
+              # The cluster must be done starting first: the ClusterMesh
+              # apiserver's VIP is announced when its rollout ends, at the
+              # end of alpha's boot, and a route that arrives during the
+              # comparison is not the apply's doing.
+              for node in nodes:
+                  node.wait_for_unit("multi-user.target")
+              for node in nodes:
+                  node.wait_until_succeeds(
+                      "a=$(ip -4 route show table all; ip -6 route show table all | grep -v ' expires '); sleep 5; "
+                      "b=$(ip -4 route show table all; ip -6 route show table all | grep -v ' expires '); "
+                      'test "$a" = "$b"',
+                      timeout=120,
+                  )
               for node in nodes:
                   links, netns = foreign_objects(node)
                   for name in [adjacency[node.name], "${loopback}", "cilium_host", "cilium_net", "lxc_health"]:
@@ -250,6 +263,9 @@ in {
           module.name = "routed-fabric";
           module.input = "self";
           roles = {
+            # one LAN: the fast timers (the default between sites is `wan`)
+            spine.settings.site = "lab";
+            leaf.settings.site = "lab";
             spine.machines.alpha.settings = {
               ipv4 = "192.168.77.1";
               ipv6 = "fd00:77::1";

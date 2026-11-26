@@ -143,6 +143,12 @@
     # A member's node addresses: the node_transport export when
     # configured, else the explicit per-machine network.ipv4/ipv6
     # settings.
+    # SPEC.md D71: the CLAT link and the IPv6-only underlay links of every
+    # member, from the netif and nat_gateway exports (lib/kube-cluster/devices.nix).
+    extraDevices = kube.devices.extra {
+      inherit clanLib exports members;
+    };
+
     memberAddr = name:
       if allTransportFacts.${name} != null
       then {
@@ -534,6 +540,7 @@
       # (post-merge validated in mkCiliumValues).
       ciliumProfile = kube.render.mkCiliumValues {
         inherit settings instanceName;
+        memberCount = builtins.length members;
         transportFacts = {
           # Devices cover EVERY cluster member's datapath interfaces
           # (one cilium-config serves all nodes, §6.4/D51); the MTU is
@@ -544,8 +551,9 @@
             then
               lib.unique (
                 lib.concatMap (p: p.interfaces) (lib.filter (p: p != null) (lib.attrValues allTransportFacts))
+                ++ extraDevices
               )
-            else ["eth0"];
+            else ["eth0"] ++ extraDevices;
           directRoutingDevice =
             if ownTransport != null
             then ownTransport.directRoutingDevice
@@ -841,6 +849,23 @@
                 then "an etcd voter of a cluster with other machines"
                 else null;
             }
+            ++ map (message: {
+              assertion = false;
+              message = "rke2/${instanceName}: Cilium devices: ${message}";
+            }) (
+              kube.devices.vpnViolations {
+                inherit clanLib exports members;
+                devices = lib.splitString " " (ciliumProfile.devices or "");
+              }
+              ++ kube.devices.routerViolations {
+                inherit clanLib exports members;
+                devices = lib.splitString " " (ciliumProfile.devices or "");
+              }
+              ++ kube.devices.underlayViolations {
+                inherit clanLib exports members;
+                nativeRoutingCidr = "10.0.0.0/8";
+              }
+            )
             ++ (kube.assertions.mkClusterAssertions {
               inherit
                 instanceName
@@ -1083,6 +1108,26 @@
 
         # The bootstrap bundle + apply oneshot on the clusterInit node
         # only (D40). bootstrap.apply = false is the day-2 off-ramp.
+        # specs/gateway.md §16.3: a first server without data never
+        # starts beside a cluster that is alive
+        (lib.mkIf (modeActive && isInit) (
+          kube.nixos.mkInitGuard {
+            inherit pkgs;
+            namePrefix = "rke2-${instanceName}";
+            beforeUnit = "rke2-server.service";
+            etcdDir = "/var/lib/rancher/rke2/server/db/etcd";
+            port = 6443;
+            peers = map (
+              m: let
+                addr = memberAddr m.machineName;
+              in
+                if addr.ipv4 != null
+                then addr.ipv4
+                else "[${addr.ipv6}]"
+            ) (builtins.filter (m: m.machineName != machine.name) serverMembers);
+          }
+        ))
+
         (lib.mkIf (modeActive && isInit && settings.bootstrap.apply) (
           kube.mkBootstrapApply {
             inherit pkgs instanceName;
@@ -1135,7 +1180,14 @@ in {
     exports = {
       # D58: the transport is consumed through the GENERIC node_transport
       # schemaVersion 2 export only — never provider-specific exports.
-      inputs = ["node_transport"];
+      inputs = [
+        "node_transport"
+        # D71: the CLAT link and the IPv6-only underlay of each member
+        "netif"
+        "nat_gateway"
+        # D71: the WAN of a member that is a router
+        "router"
+      ];
       out = ["kube_cluster"];
     };
   };

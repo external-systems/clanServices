@@ -193,6 +193,15 @@ in rec {
     "apps"."v1".DaemonSet."cilium".spec.template.spec.initContainers.clean-cilium-state.env = kprEnv;
     "apps"."v1".Deployment."cilium-operator".spec.template.spec.containers.cilium-operator.env = kprEnv;
     "apps"."v1".Deployment."cilium-operator".spec.replicas = lib.mkForce profile.operator.replicas;
+    # A changed cilium-config reaches the agents: the hash on the pod
+    # template rolls them, one node at a time (specs/gateway.md §16.3).
+    # The datapath forwards while an agent restarts, and FRR keeps the
+    # node's routes (graceful restart).
+    "apps"."v1".DaemonSet."cilium".spec.template.metadata.annotations."clan.lol/cilium-config-hash" = builtins.hashString "sha256" (builtins.toJSON cmData);
+    "apps"."v1".DaemonSet."cilium".spec.updateStrategy = lib.mkForce {
+      type = "RollingUpdate";
+      rollingUpdate.maxUnavailable = 1;
+    };
   };
 
   # Helm-values keys the layer-2 translation supports (the full profile

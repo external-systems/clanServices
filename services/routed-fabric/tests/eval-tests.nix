@@ -760,6 +760,13 @@
     instances.fleet.roles.spine.machines.spine-b.settings.site = "texas";
   };
   wanEval = mkEvaled wanInventory;
+  # both spines name one site: the fast timers between them
+  sameSiteEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.site = "home";
+      instances.fleet.roles.spine.machines.spine-b.settings.site = "home";
+    }
+  );
   timerOverrideEval = mkEvaled (
     lib.recursiveUpdate wanInventory {
       instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.spine-b.timerProfile = "site";
@@ -1049,14 +1056,26 @@ in {
       expr = let
         wanConfig = wanEval.config.nixosConfigurations.spine-a.config.services.frr.config;
         borderConfig = borderSpine.services.frr.config;
+        sameSite = sameSiteEval.config.nixosConfigurations.spine-a.config.services.frr.config;
       in {
         siteBfd = lib.hasInfix "profile site" spine.services.frr.config;
-        siteTimers = lib.hasInfix "timers 3 9" spine.services.frr.config;
+        # specs/gateway.md §16.3 point 3: no site named means the wan
+        # timers; the site timers need both ends to name the same site
+        siteTimers = lib.hasInfix "timers 3 9" sameSite && lib.hasInfix "bfd profile site" sameSite;
+        unsetIsWan = !(lib.hasInfix "timers 3 9" spine.services.frr.config) && lib.hasInfix "timers 10 30" spine.services.frr.config;
+        # point 2: graceful restart on the fabric, BFD still authoritative
+        gracefulRestart = lib.hasInfix "bgp graceful-restart preserve-fw-state" spine.services.frr.config && lib.hasInfix "bfd check-control-plane-failure" spine.services.frr.config;
+        zebra = spine.services.frr.zebra.extraOptions;
+        # point 9: a leaf marks what it learns NO_EXPORT, a spine does not
+        leafNoExport = lib.hasInfix "set community no-export additive" configs.client.config.services.frr.config;
+        spineExports = !(lib.hasInfix "no-export" spine.services.frr.config);
         siteDefaultsImplicit = !(lib.hasInfix "receive-interval 300" spine.services.frr.config);
         plainBfd = lib.hasInfix " bfd\n" spine.services.frr.config;
         wanBfd = lib.hasInfix "bfd profile wan" wanConfig;
         wanTimers = lib.hasInfix "timers 10 30" wanConfig;
         delayOpen = lib.hasInfix "timers delayopen 5" wanConfig;
+        # FRR 10.7.1 aborts when ConnectRetry expires during DelayOpen
+        connectOutlastsDelayOpen = lib.hasInfix "timers connect 10" wanConfig && !(lib.hasInfix "timers connect 5" wanConfig);
         prefixRestart = lib.hasInfix "maximum-prefix 4096 restart 10" wanConfig;
         upstreamWan = lib.hasInfix "neighbor 203.0.113.1 bfd profile wan" borderConfig;
         upstreamPlainBfd = lib.hasInfix "neighbor 203.0.113.1 bfd\n" borderConfig;
@@ -1066,11 +1085,17 @@ in {
       expected = {
         siteBfd = true;
         siteTimers = true;
+        unsetIsWan = true;
+        gracefulRestart = true;
+        zebra = ["-r" "-K120"];
+        leafNoExport = true;
+        spineExports = true;
         siteDefaultsImplicit = true;
         plainBfd = true;
         wanBfd = true;
         wanTimers = true;
         delayOpen = true;
+        connectOutlastsDelayOpen = true;
         prefixRestart = true;
         upstreamWan = true;
         upstreamPlainBfd = true;
@@ -1316,6 +1341,10 @@ in {
         vipPolicy = lib.hasInfix "172.16.1.0/24 ge 32 le 32" node.services.frr.config;
         secondClusterPeer = lib.hasInfix "neighbor ::1 remote-as 4200000002" evaled.config.nixosConfigurations.spine-b.config.services.frr.config;
         secondClusterPods = lib.hasInfix "10.3.0.0/16 ge 24 le 24" node.services.frr.config;
+        # specs/gateway.md §16.3 item 8: past the limit the session stays
+        routeLimitWarns =
+          lib.hasInfix "neighbor ::1 maximum-prefix 4096 warning-only" node.services.frr.config
+          && !(lib.hasInfix "neighbor ::1 maximum-prefix 4096 restart" node.services.frr.config);
       };
       expected = {
         peer = true;
@@ -1326,6 +1355,7 @@ in {
         vipPolicy = true;
         secondClusterPeer = true;
         secondClusterPods = true;
+        routeLimitWarns = true;
       };
     };
   };

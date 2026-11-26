@@ -56,6 +56,9 @@ in {
           module.name = "routed-fabric";
           module.input = "self";
           roles = {
+            # one LAN: the fast timers (the default between sites is `wan`)
+            spine.settings.site = "lab";
+            leaf.settings.site = "lab";
             spine.machines.gw.settings.endpointSources = [
               {
                 service = "clan-core/internet";

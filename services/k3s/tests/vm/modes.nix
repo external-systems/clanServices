@@ -81,6 +81,9 @@ in {
           module.name = "routed-fabric";
           module.input = "self";
           roles = {
+            # one LAN: the fast timers (the default between sites is `wan`)
+            spine.settings.site = "lab";
+            leaf.settings.site = "lab";
             # a spine is in every mode of its machine (N4)
             spine.machines.gw.settings = {
               ipv4 = "192.168.77.2";

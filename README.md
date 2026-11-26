@@ -20,6 +20,10 @@ Services may still be proposed upstream to `clan-community` as focused, reviewab
   settings, and dependency-free network facts; the native Cilium transport
 - [remote-builder](services/remote-builder/README.md): a Nix remote builder
   served over `ssh-ng`, with pinned host keys for its clients (D65)
+- [nat-gateway](services/nat-gateway/README.md): IPv4 reach for IPv6-only
+  machines: Jool NAT64 gateways and a CLAT on every client (`specs/gateway.md`)
+- [router](services/router/README.md): the edge of a LAN with one WAN: zones,
+  NAT44, DHCPv4, router advertisements, a resolver per zone (`specs/gateway.md`)
 - [kube-cluster](lib/kube-cluster/README.md): private distro-neutral implementation shared by k3s and RKE2
 
 [SPEC.md](SPEC.md) is the canonical architecture, status, and delivery record — a single dense

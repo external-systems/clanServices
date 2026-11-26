@@ -208,6 +208,10 @@
             ${pkgs.coreutils}/bin/sleep 5
           done
           ${kubectl} get --raw=/readyz >/dev/null
+          versions() {
+            ${kubectl} get secret -n kube-system clustermesh-apiserver-server-cert clustermesh-apiserver-admin-cert clustermesh-apiserver-remote-cert clustermesh-apiserver-local-cert -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.resourceVersion} {end}' 2>/dev/null || true
+          }
+          before=$(versions)
           {
             ${secret "clustermesh-apiserver-server-cert" "server"}
             ${secret "clustermesh-apiserver-admin-cert" "admin"}
@@ -217,9 +221,16 @@
             | ${kubectl} apply --server-side --field-manager=clan-clustermesh -f -
           # The chart-generated Secret objects are absent from the bundle,
           # so apiserver pods start only after this unit supplies their
-          # mounts. Restart once to make the vars-issued certificates the
-          # unequivocal live identity, then prove readiness before peering.
-          ${kubectl} rollout restart deployment/clustermesh-apiserver -n kube-system
+          # mounts. Restart to make the vars-issued certificates the
+          # unequivocal live identity, but only when the apply changed a
+          # Secret: this unit runs at every start of the server, and a
+          # restart drops every mesh peer's session (specs/gateway.md
+          # §16.3). Then prove readiness before peering.
+          if [ "$before" != "$(versions)" ]; then
+            ${kubectl} rollout restart deployment/clustermesh-apiserver -n kube-system
+          else
+            echo "${unitName}: the ClusterMesh secrets are unchanged; no restart"
+          fi
           ${kubectl} rollout status deployment/clustermesh-apiserver -n kube-system --timeout=300s
         '';
       };

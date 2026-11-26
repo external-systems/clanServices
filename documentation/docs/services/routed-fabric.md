@@ -141,15 +141,23 @@ comm -23 \
 Interface names, FRR symbols, and per-adjacency link-local addresses remain
 hash-derived by design; they are names, not clan-vars allocations.
 
-D63 makes convergence deliberately stable. Equal `settings.site` values use
-the `site` profile (BFD 300 ms x3); different sites use `wan` (BFD 1000 ms
-x5 plus BGP keepalive/hold 10/30 seconds). Set
+D63 makes convergence deliberately stable. `settings.site` is unset by
+default. Two members that name the same site use the `site` profile (BFD
+300 ms x3); every other pair uses `wan` (BFD 1000 ms x5 plus BGP
+keepalive/hold 10/30 seconds). Set `site` only on machines that share a
+LAN or a data centre. Set
 `adjacencies.<remote>.timerProfile = "site" | "wan"` to override the
 default; conflicting two-sided overrides fail eval. Border upstreams always
 use `wan`. Both ends and upstreams use a five-second FRR DelayOpen fixed
 hold-down before a recovered session establishes; this is not exponential
-flap damping. Every maximum-prefix limit restarts the session after ten
-minutes. Plain `bfd` accompanies each profile, site defaults stay implicit,
+flap damping. A maximum-prefix limit restarts a fabric or upstream session
+after ten minutes; on the local Cilium session it only warns.
+
+Sessions use BGP graceful restart: a restart of FRR or of the Cilium agent
+keeps the routes (60 s on the fabric, 120 s for Cilium), and the kernel
+keeps forwarding. BFD still decides that a peer is dead, so a crashed
+node's routes go within seconds. A leaf tags what it learns `no-export`,
+so it never passes routes on. Plain `bfd` accompanies each profile, site defaults stay implicit,
 and `use-underlays-nexthop-weight` is explicit, so an unchanged reload has
 an empty dry-run diff and preserves peer uptimes and the immediate RIB.
 TCP 179 and UDP 3784/4784 are opened only on fabric WireGuard interfaces and

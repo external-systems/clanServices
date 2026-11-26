@@ -43,6 +43,7 @@ _: {
             {"Plan and probes" = "gateway/plan.md";}
             {Retrospective = "gateway/retrospective.md";}
             {"Review (devil's advocate)" = "gateway/review.md";}
+            {"Hardening review" = "gateway/hardening.md";}
           ];
         }
         {Decisions = [{"Decision record" = "decisions/index.md";}];}

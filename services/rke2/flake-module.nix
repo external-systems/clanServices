@@ -25,6 +25,7 @@ in rec {
         clanLib
         module
         inputs
+        self
         ;
       inherit (clan) exportInterfaces;
     };

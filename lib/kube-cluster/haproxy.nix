@@ -107,6 +107,9 @@
         timeout connect 5s
         timeout client  1m
         timeout server  1m
+        # an idle `kubectl exec`, `logs -f` or port-forward is one
+        # upgraded connection: not cut after a minute
+        timeout tunnel  1h
 
     userlist stats_users
         user admin password ${statsPasswordHash}

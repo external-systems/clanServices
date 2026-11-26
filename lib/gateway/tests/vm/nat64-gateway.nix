@@ -1,4 +1,5 @@
-# A NAT64 gateway for VM suites, built as specs/gateway.md G2 says: Jool in
+# A provider's NAT64 gateway for VM suites (netif-v6only,
+# <distro>-v6only, k3s-clat-mapped), built as specs/gateway.md G2 says: Jool in
 # a namespace of its own that IfState declares, an allowlist in a table of
 # its own (`inet nat64`) that runs before the NixOS firewall, and a
 # masquerade to the public IPv4 address.
@@ -7,7 +8,10 @@
 # ICMPv6 message before `extraForwardRules`, so an allowlist there lets an
 # undeclared source ping (and tunnel) through the translator.
 #
-# eth1 faces the IPv6 clients, eth2 the IPv4 internet.
+# eth1 faces the IPv6 clients, eth2 the IPv4 internet. `corefile` is the
+# provider's DNS64 (`v6only-host.nix`): a provider network may offer one.
+# Our own DNS64 is removed (specs/gateway.md §14.5 point 1); the services
+# never run one.
 {
   base,
   pool,
@@ -17,13 +21,6 @@
   outside,
   routes ? [],
   corefile ? null,
-  # Health target (specs/gateway.md §12.2): an address inside `pool`
-  # (the /96 plus an IPv4 address upstream). The gateway pings it through
-  # its own translator. Only while it answers does the gateway serve
-  # `ipv4only.arpa` and run its DNS64 listener at all, so a client's
-  # resolver and CLAT follower need no internet target of their own. The
-  # Corefile reads the records with `hosts /run/nat64-health/ipv4only.hosts`.
-  healthTarget ? null,
 }: {
   pkgs,
   config,
@@ -166,70 +163,7 @@
     config = corefile;
   };
   systemd.services = {
-    coredns = lib.mkIf (corefile != null) (lib.mkMerge [
-      {after = ["ifstate.service"];}
-      # With a health target the health check owns the listener: it starts
-      # CoreDNS when the target answers and stops it when it is silent,
-      # and CoreDNS stops with the health check (BindsTo), so a gateway
-      # whose check is gone does not look healthy. CoreDNS itself is no
-      # help there: `hosts` keeps the records of a file that disappeared.
-      (lib.mkIf (healthTarget != null) {
-        wantedBy = lib.mkForce [];
-        bindsTo = ["nat64-health.service"];
-        after = ["nat64-health.service"];
-      })
-    ]);
-    # Three failed pings in a row withdraw `ipv4only.arpa` and close the
-    # DNS64 listener; one answer restores both. The ping leaves the host,
-    # passes the translator and the IPv4 forward path and masquerade; it
-    # does not pass the IPv6 forward path (it is the host's own output).
-    #
-    # Closing the listener means stopping CoreDNS: the kernel then answers
-    # a UDP query with ICMPv6 port unreachable and a TCP SYN with a reset,
-    # so a client's systemd-resolved changes server on its first query
-    # instead of waiting for a timeout, and it holds no nftables state
-    # that a restart of nftables.service would lose.
-    nat64-health = lib.mkIf (healthTarget != null) {
-      wantedBy = ["multi-user.target"];
-      after = ["jool-netns.service"];
-      path = [
-        pkgs.iputils
-        pkgs.coreutils
-        config.systemd.package
-      ];
-      serviceConfig = {
-        Restart = "always";
-        RuntimeDirectory = "nat64-health";
-      };
-      script = ''
-        file=/run/nat64-health/ipv4only.hosts
-        fails=0
-        state=unknown
-        : >"$file"
-        while :; do
-          if ping -c1 -W1 ${healthTarget} >/dev/null 2>&1; then
-            fails=0
-            if [ "$state" != up ]${lib.optionalString (corefile != null) " || ! systemctl is-active --quiet coredns.service"}; then
-              printf '192.0.0.170 ipv4only.arpa\n192.0.0.171 ipv4only.arpa\n' >"$file.new"
-              mv "$file.new" "$file"
-              ${lib.optionalString (corefile != null) "systemctl start coredns.service"}
-              state=up
-              echo "nat64-health: ${healthTarget} answers, ipv4only.arpa served, DNS64 open"
-            fi
-          else
-            fails=$((fails + 1))
-            if [ "$fails" -ge 3 ] && [ "$state" != down ]; then
-              : >"$file.new"
-              mv "$file.new" "$file"
-              ${lib.optionalString (corefile != null) "systemctl stop coredns.service"}
-              state=down
-              echo "nat64-health: ${healthTarget} is silent, ipv4only.arpa withdrawn, DNS64 closed"
-            fi
-          fi
-          sleep 1
-        done
-      '';
-    };
+    coredns = lib.mkIf (corefile != null) {after = ["ifstate.service"];};
     # Idempotent: an IfState apply restarts it (Requires), and the
     # instance is still there.
     jool-netns = {

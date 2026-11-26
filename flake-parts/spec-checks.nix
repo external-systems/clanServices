@@ -36,7 +36,7 @@
     # Jool is an out-of-tree kernel module and the only translator of
     # the NAT64 gateways and the CLATs (specs/gateway.md G2, G23). This
     # fails at evaluation when nixpkgs marks it broken or unavailable
-    # for a kernel the fleet may run; the `gateway-nat64` suite proves it
+    # for a kernel the fleet may run; the `nat-gateway` suite proves it
     # loads and translates.
     checks.jool-available = let
       kernels = {

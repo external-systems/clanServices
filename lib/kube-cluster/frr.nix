@@ -78,6 +78,9 @@
     prefixList,
     family,
     nextHop ? null,
+    # a leaf never passes on what it learned from the fabric: NO_EXPORT
+    # keeps the route off every other (eBGP) session
+    noExport ? false,
   }: ''
     route-map ${name} permit 10
      match ${
@@ -93,9 +96,14 @@
         else "ipv6 next-hop global"
       } ${nextHop}"
     }
+    ${lib.optionalString noExport " set community no-export additive"}
     exit
   '';
 
+  # `timers connect` (10) outlasts `timers delayopen` (5): FRR 10.7.1
+  # aborts when ConnectRetry expires while DelayOpen runs
+  # (bgp_fsm.c bgp_connect_timer, "assertion (!connection->t_read)";
+  # upstream-facts.md). Equal timers made that a race at every connect.
   mkNeighbor = {
     adjacency,
     localAsn,
@@ -153,11 +161,13 @@
       name = rmIn4;
       prefixList = in4;
       family = 4;
+      noExport = adjacency.leaf or false;
     }}
     ${mkRouteMap {
       name = rmIn6;
       prefixList = in6;
       family = 6;
+      noExport = adjacency.leaf or false;
     }}
     ${mkRouteMap {
       name = rmOut4;
@@ -174,15 +184,17 @@
      neighbor ${adjacency.remote.ipv4} description ${adjacency.key}
      neighbor ${adjacency.remote.ipv4} bfd
      neighbor ${adjacency.remote.ipv4} bfd profile ${adjacency.timerProfile}
+     neighbor ${adjacency.remote.ipv4} bfd check-control-plane-failure
      neighbor ${adjacency.remote.ipv4} timers ${bgpTimers}
-     neighbor ${adjacency.remote.ipv4} timers connect 5
+     neighbor ${adjacency.remote.ipv4} timers connect 10
      neighbor ${adjacency.remote.ipv4} timers delayopen 5
      neighbor ${adjacency.remote.ipv6} remote-as ${toString adjacency.remoteAsn}
      neighbor ${adjacency.remote.ipv6} description ${adjacency.key}
      neighbor ${adjacency.remote.ipv6} bfd
      neighbor ${adjacency.remote.ipv6} bfd profile ${adjacency.timerProfile}
+     neighbor ${adjacency.remote.ipv6} bfd check-control-plane-failure
      neighbor ${adjacency.remote.ipv6} timers ${bgpTimers}
-     neighbor ${adjacency.remote.ipv6} timers connect 5
+     neighbor ${adjacency.remote.ipv6} timers connect 10
      neighbor ${adjacency.remote.ipv6} timers delayopen 5
     ${mkAf {
       family = 4;
@@ -265,13 +277,13 @@
       neighbor ::1 activate
       neighbor ::1 route-map ${rmIn4} in
       neighbor ::1 route-map ${rmOut4} out
-      neighbor ::1 maximum-prefix 4096 restart 10
+      neighbor ::1 maximum-prefix 4096 warning-only
      exit-address-family
      address-family ipv6 unicast
       neighbor ::1 activate
       neighbor ::1 route-map ${rmIn6} in
       neighbor ::1 route-map ${rmOut6} out
-      neighbor ::1 maximum-prefix 4096 restart 10
+      neighbor ::1 maximum-prefix 4096 warning-only
      exit-address-family
   '';
 in rec {
@@ -339,7 +351,7 @@ in rec {
              neighbor ${peer.address} bfd
              neighbor ${peer.address} bfd profile wan
              neighbor ${peer.address} timers 10 30
-             neighbor ${peer.address} timers connect 5
+             neighbor ${peer.address} timers connect 10
              neighbor ${peer.address} timers delayopen 5
              address-family ipv${suffix} unicast
               neighbor ${peer.address} activate
@@ -365,6 +377,11 @@ in rec {
       }
     );
 
+  # Graceful restart (specs/gateway.md §16.3 point 2): a restart of bgpd
+  # alone keeps this node's routes at its peers (they hold them as stale
+  # for restart-time) and in its own kernel (zebra -r -K, set by
+  # routed-fabric). BFD still ends a session at once when the node
+  # itself is gone (`check-control-plane-failure` on each neighbor).
   mkConfig = {
     routerId,
     sourceAddresses,
@@ -401,6 +418,11 @@ in rec {
     ipv6 protocol bgp route-map rf_source6
     router bgp ${toString localAsn}
      bgp router-id ${routerId}
+     bgp graceful-restart
+     bgp graceful-restart preserve-fw-state
+     bgp graceful-restart restart-time 60
+     bgp graceful-restart stalepath-time 60
+     bgp graceful-restart select-defer-time 0
      no bgp default ipv4-unicast
      bgp ebgp-requires-policy
      bgp bestpath as-path multipath-relax

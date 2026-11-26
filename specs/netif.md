@@ -11,6 +11,12 @@ SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round G10 (2026-11-25): **the guard's rollback is whole** (N25;
+`specs/gateway.md` §16.3 item 11). It restores dhcpcd's configurations
+beside the IfState file and keeps the running generation's ignore
+lists. `clanServices.netif.links` is a public read-only option (N10).
+Suite `netif-guard` (`NETIF_GUARD_OWNERS_OK`).
+
 Round G0 (2026-11-20): **the router moves into this repo; docs only.**
 The owner decided that the router and a NAT gateway are clanServices
 here (`services/router`, `services/nat-gateway`), governed by
@@ -1089,6 +1095,17 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
       N17). *(implemented, round P3b-4; eval tests `test_zoneSeam`,
       `test_zoneNameChecked`)* Phase P5 builds `services/router`
       on it (`specs/gateway.md` §7, slice S2).
+    - **Consumers (round G7, 2026-11-24):** `services/router` reads
+      `zones`, the read-only `clanServices.netif.links.<interface>`
+      (public since round G10)
+      (the router's static addresses in a zone, the WAN link's
+      `prefixDelegation.assign` for each zone's subnet id) and
+      `/run/netif/pd/<wan>`. `services/nat-gateway` reads `zones` (the
+      gateway's uplink, the client's proxy NDP links) and the `netif`
+      export (a client's static uplink addresses for the gateways'
+      allowlist). k3s and rke2 read the `netif` export (SPEC.md D71:
+      the IPv6-only underlay links in Cilium's `devices`). None of them
+      declares a link (`specs/gateway.md` invariant 1).
   - **NAT is never netif's (N20).** The home router's NAT lives in the
     router service. A NAT gateway for other machines (U9, U13) is the
     separate clanService `nat-gateway`, built on the same seam
@@ -1738,7 +1755,19 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
       that store path and registers it as a garbage-collector root. The
       state survives reboots.
     - **Rolled back.** On failure it runs
-      `ifstatecli --config <last-good> apply` and exits non-zero. The
+      `ifstatecli --config <rollback> apply` and exits non-zero.
+      `<rollback>` is the last-good configuration with the running
+      generation's `parameters.ignore` lists added
+      (`/run/netif-guard/rollback.yaml`), so the rollback does not
+      delete a link another service of the running generation owns
+      (round G10; `NETIF_GUARD_OWNERS_OK`).
+    - **dhcpcd too** (round G10). The guard also records the
+      generation's dhcpcd configurations (`last-good-dhcpcd`). On a
+      rollback it copies them to `/run/netif-guard/dhcpcd/<link>.conf`
+      and restarts the dhcpcd units, whose start prefers a kept file
+      while `/run/netif-guard/generation` names the running
+      generation. A change of a DHCP client setting alone is rolled
+      back the same way. The
       unit fails, and `switch-to-configuration` exits 4, so the deploy
       reports the failure.
   - **After a rollback** the kernel has the last-good network, while

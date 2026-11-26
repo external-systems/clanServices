@@ -2,9 +2,9 @@
 # IPv4 egress from a two-node cluster whose NICs carry only IPv6.
 #
 #   alpha, beta (Cilium; NIC IPv6 only; a CLAT each) ── vlan 1 ── gw (Jool
-#   NAT64 in a namespace, DNS64) ── vlan 2 ── server4 (IPv4 only)
-#   server6 (IPv6 only, on vlan 1): the IPv6 internet, and the machine
-#   outside the cluster
+#   NAT64 in a namespace) ── vlan 2 ── server4 (IPv4 only)
+#   server6 (IPv6 only, on vlan 1): the IPv6 internet, the nodes' plain
+#   resolver, and the machine outside the cluster
 #
 # The <distro>-data-plane topology: routed-fabric, FRR, per-pair
 # WireGuard, Cilium native routing (SPEC.md D72).
@@ -25,11 +25,11 @@
 #     suites: the transport's own devices) pod IPv6 egress fails, the
 #     pod's own address reaches the wire, and cluster DNS cannot reach
 #     the node's resolver;
-#   - the nodes have one nameserver, the gateway's DNS64, over IPv6 (G5).
-#     A node fetches an IPv4-only name through DNS64 and NAT64, 2 MB: the
-#     path of an image pull. A pod resolves that name through cluster
-#     DNS and fetches it by name, by the synthesized address and by the
-#     IPv4 literal;
+#   - the nodes have one nameserver, a plain IPv6 resolver (no DNS64,
+#     specs/gateway.md §14.5 point 1). A node fetches an IPv4-only name
+#     through its CLAT and NAT64, 2 MB: the path of an image pull. A pod
+#     resolves that name through cluster DNS and fetches it by name and
+#     by the IPv4 literal;
 #   - a NodePort answers on the node addresses, never on the NIC address;
 #   - a pod on each node: a page, 2 MB down and up, ping, cluster DNS;
 #     the pod network between the nodes in both families; a ClusterIP
@@ -49,6 +49,12 @@
   # Cilium's own masquerade covers it. true: the CLAT link stays out of
   # Cilium's devices and the test maps the pod pool statelessly.
   mapped ? false,
+  # true: the services do it (specs/gateway.md §14.1 point 1). netif
+  # renders every link, `nat-gateway` the gateway and each node's CLAT,
+  # and k3s/rke2 render Cilium's `devices` (SPEC.md D71). false: the
+  # fixtures of this file (the `-mapped` suite). Both use a plain IPv6
+  # resolver (no DNS64, specs/gateway.md §14.5 point 1).
+  service ? false,
 }: {
   lib,
   nodes,
@@ -58,7 +64,13 @@
   ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   base = import ../../../ifstate.nix {inherit ifstateOverlay;};
   echo = import ./echo.nix;
-  plain = import ../../../kube-cluster/tests/vm/data-plane.nix {inherit inputs distro;} {inherit lib nodes;};
+  plain = import ../../../kube-cluster/tests/vm/data-plane.nix {
+    inherit inputs distro;
+    underlay =
+      if service
+      then "netif"
+      else "fixture";
+  } {inherit lib nodes;};
   nic = "eth1";
   # The underlay NIC is a Cilium device in the decided design. The
   # `-mapped` suites run on the transport's own devices, without it.
@@ -72,12 +84,36 @@
       ++ lib.optional (!mapped) "clat0"
     );
   };
-  body = lib.recursiveUpdate plain {
-    clan.inventory.instances.${distro}.roles = lib.genAttrs ["server" "agent"] (role: {
-      settings = withDevices plain.clan.inventory.instances.${distro}.roles.${role}.settings;
-    });
-  };
+  # D71: with the services nothing is hand-set; the data-plane topology's
+  # own `devices` (the fabric plus eth1) goes too.
+  dropDevices = settings:
+    settings
+    // {
+      cilium =
+        settings.cilium
+        // {
+          helmValues = removeAttrs settings.cilium.helmValues ["devices"];
+        };
+    };
+  roleSettings = lib.genAttrs ["server" "agent"] (role: let
+    settings = plain.clan.inventory.instances.${distro}.roles.${role}.settings;
+  in {
+    settings =
+      if service
+      then dropDevices settings
+      else lib.recursiveUpdate settings (withDevices settings);
+  });
+  body =
+    lib.recursiveUpdateUntil (
+      path: _: _:
+        lib.elem path (map (role: ["clan" "inventory" "instances" distro "roles" role "settings"]) ["server" "agent"])
+    )
+    plain {
+      clan.inventory.instances.${distro}.roles = roleSettings;
+    };
   suiteName = "${distro}-clat" + lib.optionalString mapped "-mapped";
+  # the nodes' resolver: a plain IPv6 resolver on server6
+  resolver = server6Addr;
   python = value:
     if value
     then "True"
@@ -92,8 +128,8 @@
     then "k3s"
     else "rke2-agent";
   pool = "2001:db8:64:0:64::/96";
-  # the gateway's inside address: the NAT64 next hop and the DNS64
-  dns64 = "2001:db8:1::64";
+  # the gateway's inside address: the NAT64 next hop and its beacon
+  gwInside = "2001:db8:1::64";
   server6Addr = "2001:db8:1::66";
   members = {
     alpha = 1;
@@ -102,7 +138,11 @@
   underlay = n: "2001:db8:1::${toString n}";
   # the prefix routed to node n, as a cloud routes a /64 to a server
   routed = n: "2001:db8:a${toString n}";
-  clatAddr = n: "${routed n}::c1a7";
+  # service: an address of the node's own /64, answered for by proxy NDP
+  clatAddr = n:
+    if service
+    then "2001:db8:1::c1a${toString n}"
+    else "${routed n}::c1a7";
   podMap = n: "${routed n}::a:0:0/112";
 
   phys = addresses: {
@@ -113,11 +153,7 @@
     };
   };
 
-  clatNode = name: n: {
-    pkgs,
-    config,
-    ...
-  }: let
+  clatNode = name: n: {pkgs, ...}: let
     busyboxImage = pkgs.dockerTools.pullImage {
       imageName = "busybox";
       imageDigest = "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662";
@@ -125,11 +161,7 @@
       finalImageTag = "1.36.1";
     };
   in {
-    imports = [body.nodes.${name}];
-    boot = {
-      extraModulePackages = [config.boot.kernelPackages.jool];
-      kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
-    };
+    imports = [body.nodes.${name}] ++ lib.optional (!service) (fixtureClat n);
     environment.systemPackages = [
       pkgs.jool-cli
       pkgs.curl
@@ -139,9 +171,6 @@
       pkgs.cilium-cli
       pkgs.bpftools
     ];
-    # G5: an IPv6-only machine has IPv6 nameservers only. The fixture's
-    # IPv4 nameserver goes; the gateway's DNS64 is the only one.
-    networking.nameservers = lib.mkForce [dns64];
     services.${distro}.images = [busyboxImage];
     # a listener on the node itself: it answers with the source address
     # it saw, so the test can tell whether pod to node was masqueraded
@@ -153,6 +182,22 @@
     systemd.tmpfiles.rules = lib.optionals (!k3s) [
       "L+ /var/lib/rancher/rke2/agent/images/${builtins.unsafeDiscardStringContext (baseNameOf busyboxImage)} - - - - ${busyboxImage}"
     ];
+  };
+
+  # The fixture CLAT of the `-mapped` suite: Jool SIIT in a namespace
+  # that IfState declares, by hand.
+  fixtureClat = n: {
+    config,
+    pkgs,
+    ...
+  }: {
+    boot = {
+      extraModulePackages = [config.boot.kernelPackages.jool];
+      kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
+    };
+    # G5: an IPv6-only machine has IPv6 nameservers only. The fixture's
+    # IPv4 nameserver goes; the plain resolver is the only one.
+    networking.nameservers = lib.mkForce [resolver];
     networking.ifstate.settings = {
       interfaces = {
         eth1.addresses = lib.mkForce ["${underlay n}/64"];
@@ -234,6 +279,99 @@
     };
   };
 
+  # --- the services (service = true) ---
+  # Names the test script uses, the same text as before for the fixture.
+  gwJool =
+    if service
+    then "nat64-jool.service"
+    else "jool-netns.service";
+  # the beacon (service); the fixture gateway runs no DNS
+  gwUnits = [gwJool] ++ lib.optional service "nat64-beacon.service";
+  gwLink =
+    if service
+    then "jool0"
+    else "j0";
+  # Jool's private IPv4 address in its namespace
+  gwPool4 =
+    if service
+    then "192.0.0.2"
+    else "10.64.0.2";
+
+  serviceInstances = {
+    links = {
+      module.name = "netif";
+      module.input = "self";
+      roles.default.machines =
+        lib.mapAttrs (_: n: {
+          settings.links.uplink = {
+            interface = nic;
+            zone = "wan";
+            static.ipv6 = ["${underlay n}/64"];
+            nameservers = [resolver];
+            # the gateway's /64 is routed to it, as a provider routes one
+            routes = [
+              {
+                destination = "2001:db8:64::/64";
+                gateway = "2001:db8:1::64";
+              }
+            ];
+            ra = false;
+          };
+        })
+        members
+        // {
+          gw.settings.links = {
+            inside = {
+              interface = "eth1";
+              zone = "inside";
+              static.ipv6 = ["${gwInside}/64"];
+              ra = false;
+            };
+            # an IPv4 default route, as a real gateway has: without one
+            # the kernel drops a private destination before the firewall
+            wan = {
+              interface = "eth2";
+              zone = "wan";
+              static.ipv4 = ["198.51.100.1/24"];
+              gateway.ipv4 = "198.51.100.80";
+              ra = false;
+            };
+          };
+        };
+    };
+    nat64 = {
+      module.name = "nat-gateway";
+      module.input = "self";
+      roles = {
+        gateway.machines.gw.settings = {
+          pool6 = pool;
+          address = gwInside;
+          health.targets = [
+            "198.51.100.80"
+            "198.51.100.90"
+            "198.51.100.91"
+          ];
+        };
+        client.machines = lib.mapAttrs (_: n: {settings.clat.address = clatAddr n;}) members;
+      };
+    };
+  };
+  serviceGateway = {pkgs, ...}: {
+    virtualisation = {
+      cores = 1;
+      memorySize = 1024;
+      vlans = [
+        1
+        2
+      ];
+    };
+    environment.systemPackages = [
+      pkgs.tcpdump
+      pkgs.conntrack-tools
+      pkgs.curl
+    ];
+  };
+
   v6Endpoints = lib.mapAttrs (_: n: {settings.endpoint = underlay n;}) members;
   v6Upstream = {
     settings.border.upstreamPeers = [
@@ -253,52 +391,44 @@ in
         server4 = {};
         server6 = {};
       };
-      instances = {
-        underlay.roles.default.machines = lib.mapAttrs (_: n: {settings.host = underlay n;}) members;
-        mesh.roles = {
-          spine.machines.alpha = lib.recursiveUpdate v6Endpoints.alpha v6Upstream;
-          leaf.machines.beta = lib.recursiveUpdate v6Endpoints.beta v6Upstream;
+      instances =
+        lib.optionalAttrs service serviceInstances
+        // {
+          underlay.roles.default.machines = lib.mapAttrs (_: n: {settings.host = underlay n;}) members;
+          mesh.roles = {
+            spine.machines.alpha = lib.recursiveUpdate v6Endpoints.alpha v6Upstream;
+            leaf.machines.beta = lib.recursiveUpdate v6Endpoints.beta v6Upstream;
+          };
         };
-      };
     };
 
     nodes =
       lib.mapAttrs clatNode members
       // {
-        gw = import ./nat64-gateway.nix {
-          inherit base pool;
-          allow = "{ 2001:db8:1::/64, 2001:db8:a0::/44 }";
-          inside = ["${dns64}/64"];
-          # web.test has an A record only, six.test an AAAA record only
-          corefile = ''
-            . {
-              bind ${dns64}
-              hosts {
-                198.51.100.80 web.test
-                ${server6Addr} six.test
-              }
-              dns64 {
-                prefix ${pool}
-              }
-              errors
-            }
-          '';
-          outside = ["198.51.100.1/24"];
-          # an IPv4 default route, as a real gateway has: without one the
-          # kernel drops a private destination before the firewall sees it
-          routes =
-            [
-              {
-                to = "0.0.0.0/0";
-                via = "198.51.100.80";
-              }
-            ]
-            ++ lib.mapAttrsToList (_: n: {
-              to = "${routed n}::/64";
-              via = underlay n;
-            })
-            members;
-        };
+        gw =
+          if service
+          then serviceGateway
+          else
+            import ./nat64-gateway.nix {
+              inherit base pool;
+              allow = "{ 2001:db8:1::/64, 2001:db8:a0::/44 }";
+              inside = ["${gwInside}/64"];
+              outside = ["198.51.100.1/24"];
+              # an IPv4 default route, as a real gateway has: without one the
+              # kernel drops a private destination before the firewall sees it
+              routes =
+                [
+                  {
+                    to = "0.0.0.0/0";
+                    via = "198.51.100.80";
+                  }
+                ]
+                ++ lib.mapAttrsToList (_: n: {
+                  to = "${routed n}::/64";
+                  via = underlay n;
+                })
+                members;
+            };
 
         server4 = {pkgs, ...}: {
           imports = [base];
@@ -309,7 +439,9 @@ in
           };
           networking = {
             firewall.enable = false;
-            ifstate.settings.interfaces.eth1 = phys ["198.51.100.80/24"];
+            # with the services, two more addresses: the gateway's
+            # three health targets (§14.3)
+            ifstate.settings.interfaces.eth1 = phys (["198.51.100.80/24"] ++ lib.optionals service ["198.51.100.90/32" "198.51.100.91/32"]);
           };
           systemd.services.echo = {
             wantedBy = ["multi-user.target"];
@@ -339,6 +471,21 @@ in
             wantedBy = ["multi-user.target"];
             serviceConfig.ExecStart = "${lib.getExe pkgs.python3} ${echo pkgs [80]}";
           };
+          # the nodes' plain IPv6 resolver (no DNS64)
+          boot.kernel.sysctl."net.ipv6.ip_nonlocal_bind" = 1;
+          services.coredns = {
+            enable = true;
+            config = ''
+              . {
+                bind ${server6Addr}
+                hosts {
+                  198.51.100.80 web.test
+                  ${server6Addr} six.test
+                }
+                errors
+              }
+            '';
+          };
         };
       };
 
@@ -357,9 +504,9 @@ in
       NODES = {"alpha": alpha, "beta": beta}
       UNITS = {"alpha": "${serverUnit}", "beta": "${agentUnit}"}
       NIC6 = {"alpha": "${underlay 1}", "beta": "${underlay 2}"}
-      DNS64 = "${dns64}"
+      RESOLVER = "${resolver}"
       SERVER6 = "${server6Addr}"
-      # an A record only, an AAAA record only (the gateway's DNS64)
+      # an A record only, an AAAA record only (the plain resolver)
       NAME4 = "web.test"
       NAME6 = "six.test"
       NODEPORT = 30080
@@ -374,8 +521,6 @@ in
       CLAT6 = {"alpha": "${clatAddr 1}", "beta": "${clatAddr 2}"}
       MAPS = {"alpha": "${podMap 1}", "beta": "${podMap 2}"}
       SERVER4 = "198.51.100.80"
-      # the IPv4 server as the DNS64 synthesizes it
-      SYNTH = ipaddress.ip_network("${pool}")[int(ipaddress.ip_address(SERVER4))]
       PUBLIC4 = "198.51.100.1"
       CLAT4 = "192.0.0.1"
       IFSTATE_OK = "systemctl show -p Result --value ifstate.service | grep '^success$' >/dev/null"
@@ -502,10 +647,10 @@ in
 
 
       def assert_nameservers(node, when):
-          """G5: the node's only nameserver is the gateway's DNS64, over IPv6."""
+          """G5: the node's only nameserver is the plain resolver, over IPv6."""
           machine = NODES[node]
           upstream = [line.split()[1] for line in machine.succeed("cat /run/systemd/resolve/resolv.conf").splitlines() if line.startswith("nameserver")]
-          assert upstream == [DNS64], f"{node}: {when}: the resolver's upstream nameservers: {upstream}"
+          assert upstream == [RESOLVER], f"{node}: {when}: the resolver's upstream nameservers: {upstream}"
           # what a program on the node reads: the local stub of systemd-resolved
           stub = [line.split()[1] for line in machine.succeed("cat /etc/resolv.conf").splitlines() if line.startswith("nameserver")]
           assert all(address(entry).is_loopback for entry in stub), f"{node}: {when}: /etc/resolv.conf: {stub}"
@@ -513,22 +658,23 @@ in
           for line in machine.succeed("resolvectl dns").splitlines():
               listed += [found for token in line.partition(":")[2].split() for found in addresses_in(token.split("%")[0].split("#")[0])]
           print(f"FINDING {node}: {when}: nameservers: upstream {upstream}, /etc/resolv.conf {stub}, resolvectl {[str(entry) for entry in listed]}")
-          assert listed and set(listed) == {address(DNS64)}, f"{node}: {when}: resolvectl lists {listed}"
+          assert listed and set(listed) == {address(RESOLVER)}, f"{node}: {when}: resolvectl lists {listed}"
 
 
       def host_names(node, when):
-          """The node resolves an IPv4-only name at the DNS64 and fetches it
-          over IPv6 through the NAT64, 2 MB: the path an image pull takes."""
+          """The node resolves an IPv4-only name at its plain resolver and
+          fetches it through its own CLAT, 2 MB: the path an image pull takes."""
           machine = NODES[node]
           capture_start(gw, "eth1", "inside")
-          seen = machine.wait_until_succeeds(f"curl -6 -s --max-time 10 http://{NAME4}/", timeout=60)
+          seen = machine.wait_until_succeeds(f"curl -s --max-time 10 http://{NAME4}/", timeout=60)
           assert address(seen) == address(PUBLIC4), f"{node}: {when}: the IPv4 server saw {seen!r}"
-          at_gateway = capture_stop(gw, "inside", NIC6[node])
-          assert at_gateway["IP6"] == {address(NIC6[node])}, f"{node}: {when}: sources at the gateway: {at_gateway['IP6']}, expected {NIC6[node]}"
-          remote, size = machine.succeed(f"curl -6 -s --max-time 30 -o /dev/null -w '%{{remote_ip}} %{{size_download}}' http://{NAME4}/big").split()
-          assert address(remote) == SYNTH and size == "2000000", f"{node}: {when}: 2 MB by name: {size} bytes from {remote}"
-          default = machine.succeed(f"curl -s --max-time 10 -o /dev/null -w '%{{remote_ip}}' http://{NAME4}/").strip()
-          print(f"FINDING {node}: {when}: with no family forced, the node fetched {NAME4} from {default}")
+          at_gateway = capture_stop(gw, "inside", CLAT6[node])
+          assert at_gateway["IP6"] == {address(CLAT6[node])}, f"{node}: {when}: sources at the gateway: {at_gateway['IP6']}, expected {CLAT6[node]}"
+          remote, size = machine.succeed(f"curl -s --max-time 30 -o /dev/null -w '%{{remote_ip}} %{{size_download}}' http://{NAME4}/big").split()
+          assert address(remote) == address(SERVER4) and size == "2000000", f"{node}: {when}: 2 MB by name: {size} bytes from {remote}"
+          # a name with an AAAA record goes straight over IPv6
+          seen = machine.succeed(f"curl -s --max-time 10 http://{NAME6}/").strip()
+          assert address(seen) == address(NIC6[node]), f"{node}: {when}: the IPv6 server saw {seen!r} for {NAME6}"
 
 
       def capture_start(machine, link, tag, expression="tcp dst port 80", options=""):
@@ -609,34 +755,25 @@ in
 
       def pod_names(node, when):
           """External names from the pod on `node`: cluster DNS forwards to
-          the node's resolver, the gateway's DNS64."""
-          status, answer = pod_exec(node, f"nslookup -type=aaaa {NAME4}", timeout=60)
+          the node's plain IPv6 resolver (only with the NIC in Cilium's
+          devices); an IPv4-only name goes through the CLAT."""
+          status, answer = pod_exec(node, f"nslookup -type=a {NAME4}", timeout=60)
           found = addresses_in(answer)
-          print(f"FINDING {node}: {when}: the pod asked cluster DNS for the AAAA of {NAME4}: rc={status}\n{answer}")
+          print(f"FINDING {node}: {when}: the pod asked cluster DNS for the A record of {NAME4}: rc={status}\n{answer}")
           if not NIC_DEVICE:
               # FINDING: cluster DNS is a pod. Its queries to the node's
               # IPv6 nameserver leave with a pod address and get no answer.
-              assert SYNTH not in found, f"{node}: {when}: cluster DNS reached the DNS64 without the NIC in Cilium's devices:\n{answer}"
+              assert address(SERVER4) not in found, f"{node}: {when}: cluster DNS reached the resolver without the NIC in Cilium's devices:\n{answer}"
               status, out = pod_exec(node, f"wget -T 5 -qO- http://{NAME4}/", timeout=60)
               assert status != 0, f"{node}: {when}: the pod fetched {NAME4} without the NIC in Cilium's devices: {out}"
               return
-          assert status == 0 and SYNTH in found, f"{node}: {when}: no synthesized AAAA for {NAME4}:\n{answer}"
-          # by the synthesized address: pod IPv6, masqueraded to the NIC
-          # address, straight to the NAT64 (no CLAT)
-          capture_start(gw, "eth1", "inside")
-          out = pod_succeed(node, f"wget -T 8 -qO- http://[{SYNTH}]/")
-          assert address(out.splitlines()[-1]) == address(PUBLIC4), f"{node}: {when}: the IPv4 server saw {out!r}"
-          at_gateway = capture_stop(gw, "inside", NIC6[node])
-          assert at_gateway["IP6"] == {address(NIC6[node])}, f"{node}: {when}: sources at the gateway: {at_gateway['IP6']}, expected {NIC6[node]}"
-          # by name: the pod's resolver picks the family
+          assert status == 0 and address(SERVER4) in found, f"{node}: {when}: no A record for {NAME4}:\n{answer}"
+          source = expected_sources(node)[1]
           capture_start(gw, "eth1", "inside")
           out = pod_succeed(node, f"wget -T 8 -qO- http://{NAME4}/")
           assert address(out.splitlines()[-1]) == address(PUBLIC4), f"{node}: {when}: the IPv4 server saw {out!r}"
-          at_gateway = capture_stop(gw, "inside", "")
-          paths = {str(address(NIC6[node])): "IPv6 and the DNS64 address", str(address(expected_sources(node)[1])): "IPv4 and the CLAT"}
-          taken = sorted(paths.get(str(source), f"unexpected source {source}") for source in at_gateway["IP6"])
-          print(f"FINDING {node}: {when}: the pod fetched {NAME4} by name over: {taken}")
-          assert taken and all(not path.startswith("unexpected") for path in taken), f"{node}: {when}: {taken}"
+          at_gateway = capture_stop(gw, "inside", str(source))
+          assert at_gateway["IP6"] == {address(source)}, f"{node}: {when}: sources at the gateway: {at_gateway['IP6']}, expected {source}"
           out = pod_succeed(node, f"wget -T 8 -qO- http://{NAME6}/")
           assert address(out.splitlines()[-1]) == address(NIC6[node]), f"{node}: {when}: the IPv6 server saw {out!r} for {NAME6}"
 
@@ -821,8 +958,8 @@ in
 
           # every translated packet to a private IPv4 destination, from the
           # first one on: who sent what the gateway refuses
-          gw.wait_for_unit("jool-netns.service", timeout=300)
-          capture_start(gw, "j0", "private", expression="ip and not dst host 10.64.0.2 and '(dst net 10.0.0.0/8 or dst net 100.64.0.0/10 or dst net 169.254.0.0/16 or dst net 172.16.0.0/12 or dst net 192.168.0.0/16)'", options="-Q in")
+          gw.wait_for_unit("${gwJool}", timeout=300)
+          capture_start(gw, "${gwLink}", "private", expression="ip and not dst host ${gwPool4} and '(dst net 10.0.0.0/8 or dst net 100.64.0.0/10 or dst net 169.254.0.0/16 or dst net 172.16.0.0/12 or dst net 192.168.0.0/16)'", options="-Q in")
 
           with subtest("versions"):
               for machine in [gw, server4]:
@@ -834,9 +971,11 @@ in
               print_versions(gw, ["kernel", "ifstate", "jool", "nftables"])
 
           with subtest("the gateway and the IPv4 server are up"):
-              gw.wait_for_unit("jool-netns.service", timeout=60)
-              gw.wait_for_unit("coredns.service", timeout=60)
-              print_versions(gw, ["coredns"])
+              # the beacon starts only after 120 clean health rounds
+              # (specs/gateway.md §14.5 point 4): no job is queued before
+              for unit in ${builtins.toJSON gwUnits}:
+                  gw.wait_until_succeeds(f"systemctl is-active {unit} >/dev/null", timeout=300)
+              print_versions(server6, ["coredns"])
               for server in [server4, server6]:
                   server.wait_until_succeeds("ss -tln | grep ':80 ' >/dev/null", timeout=60)
 
@@ -849,7 +988,7 @@ in
                   assert len(mappings) == 1 and CLAT4 in mappings[0], f"{name}: the CLAT has more than its host mapping: {mappings}"
               print("CLAT_HOST_OK")
 
-          with subtest("each node has one nameserver, the gateway's DNS64 over IPv6, and fetches an IPv4-only name through NAT64, 2 MB (G5; the path of an image pull)"):
+          with subtest("each node has one nameserver, a plain IPv6 resolver, and fetches an IPv4-only name through its CLAT, 2 MB (G5, §14.5 point 1; the path of an image pull)"):
               for name in NODES:
                   assert_nameservers(name, "before the cluster")
                   observe(f"{name}: resolvectl status", NODES[name], "resolvectl status | head -n 12")
@@ -942,7 +1081,7 @@ in
               print("CLAT_POD_V6_EGRESS_OK")
 
           with subtest(
-              "pods resolve external names through cluster DNS and the DNS64, and fetch an IPv4-only name by name and by its synthesized address"
+              "pods resolve external names through cluster DNS and the node's resolver, and fetch an IPv4-only name by name through the CLAT"
               if NIC_DEVICE
               else "without the NIC in Cilium's devices, cluster DNS cannot reach the node's IPv6 nameserver"
           ):
@@ -1049,11 +1188,17 @@ in
               # a BGP route. Until the fabric has converged, a node's packet
               # to another node's IPv4 address (the agent's to the API server
               # at 192.168.77.1:6443) takes the IPv4 default route into the
-              # CLAT and reaches the gateway, which refuses it. Seen: 1 and 2
-              # packets.
+              # CLAT and reaches the gateway, which refuses it. Seen: 1 to 4
+              # packets with k3s; 16 within 3.1 s with rke2 (2026-11-24: the
+              # agent's SYN retries to 6443 and 9345). Bounded by the window,
+              # not the count: the retries depend on the agent.
               targets = {match.group(1) for line in strays if (match := re.search(r" > (\S+)\.\d+: ", line)) is not None}
               node_v4s = {ip for found in node_ips.values() for ip in found if ":" not in ip}
-              assert targets <= node_v4s and refused <= 10, f"stray packets to private IPv4 addresses that are not node addresses, or too many: {strays}"
+              assert targets <= node_v4s, f"stray packets to private IPv4 addresses that are not node addresses: {strays}"
+              stamps = [sum(float(part) * 60 ** index for index, part in enumerate(reversed(line.split()[0].split(":")))) for line in strays]
+              window = round(max(stamps) - min(stamps), 1) if stamps else 0.0
+              print(f"FINDING the stray packets spanned {window} s")
+              assert window <= 20, f"stray packets to node addresses for {window} s, longer than the fabric takes to converge: {strays}"
               for name, machine in NODES.items():
                   for private in ["172.20.0.1", "192.168.1.254"]:
                       observe(f"{name}: route to {private}", machine, f"ip route get {private}")

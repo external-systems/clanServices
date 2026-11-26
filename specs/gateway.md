@@ -6,7 +6,7 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G23`, so they never collide
+pages together.** Decisions are numbered `G1`–`G25`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
 `specs/netif.md` §2 (U3, U13–U18).
 
@@ -86,6 +86,78 @@ D72, round 53). Cilium tunnel mode and `wireguard-mesh` are gone.
 - `<distro>-v6only` reuses `join`, which now runs on the fabric.
 - §12.3 (the two modes) and the mesh rows of §10.11 are history.
 
+Round G7 (2026-11-24): **the services, first cut** (§14.1 point 1).
+Code now exists; each mechanism below runs as service code in a suite.
+- `lib/gateway/` holds the modules (`nat64.nix`, `clat.nix`,
+  `router.nix`, options `clanServices.gateway.*`), their helpers
+  (`nat64-health.py`, `clat-follow.py`, `router-prefix.py`) and the
+  fixed names (`names.nix`).
+- `services/nat-gateway` (roles `gateway`, `client`; G1–G6, G23, G24)
+  and its suite `nat-gateway` (§5). No DNS64 (§14.1 point 3).
+- **G24, new, proposed (for the owner):** the health beacon. With DNS64
+  frozen nothing answered `ipv4only.arpa`, and G23's follower had no
+  signal. A gateway now serves that one name and nothing else.
+- §14.1 point 4 is built: the tiers and their default numbers.
+- SPEC.md D71 is built: k3s and rke2 render Cilium `devices` from the
+  netif and `nat_gateway` exports, and §14.2's open question is
+  answered: one cluster-wide union (candidate 1).
+- `<distro>-clat` runs on the services (netif, `nat-gateway`, the
+  rendered `devices`, a plain IPv6 resolver); `k3s-clat-mapped` keeps
+  its fixtures and is unchanged (`suite-compare`: same).
+- `services/router` (role `router`; G8, G11, G14, G15, G20, G22) with
+  one WAN, and its suite `router`, ported from `gateway-router`. It also
+  builds §14.3's hairpin rewrite of G20.
+- What each suite showed is in §5 and §15.
+
+Round G8 (2026-11-24): **owner decisions on PR #38** (§14.5). Locked:
+the CLAT is the only path and our DNS64 is removed; G24 accepted;
+stability over fast failover (hysteresis on both sides); limit
+overrides per gateway, per client and per instance; a gateway may be a
+Kubernetes node and is never a client; no metrics yet (G18 later, the
+path kept open); the home box is `router` and a node, no gateway yet.
+
+Round G9 (2026-11-25): **hardening review of PR #38 and of the
+networking and cluster services** (§16). Three reviewers read the
+existing services, one the gateway code; every finding below was
+checked against the code.
+- **The owner answered round G8's questions:** windows, not "in a row"
+  ("if that is most stable"); the stray-packet check bounds a time
+  window; the `nat-gateway` suite is split.
+- **G25, new: a router shares its machine.** The largest gap: the
+  router turned the NixOS firewall off and dropped by policy whatever
+  it did not know, so on the owner's home box (router and node,
+  §14.5 point 7) the cluster's and the fabric's rules were void and
+  their traffic was dropped. No suite combined them. Now the router's
+  table judges its own links only; suite `router-kube`.
+- **Three fixes in `nat-gateway`:** the translator was a way into the
+  gateway's own IPv4 ports (`nat64-host`); the follower took any /96 a
+  beacon named (now only that gateway's own); a `pool6` or CLAT
+  address that changed in the configuration was never applied, and one
+  written in another spelling failed the unit (now reconciled, compared
+  as addresses).
+- **Router assertions:** one link per zone, no router advertisements
+  accepted on a zone link, the router's own address outside the DHCPv4
+  pool; the prefix hook runs after IfState.
+- **Suites:** `nat-gateway` is split into `nat-gateway` (function) and
+  `nat-gateway-failover` (§14.5 point 4); new `router-kube`.
+- **Not fixed, for the owner:** §16.3 ranks what the review found in
+  `routed-fabric`, the cluster services and netif.
+
+Round G10 (2026-11-25): **the sixteen findings of §16.3 are fixed.**
+The owner: "yes to all 3 ... please apply all fixes"; nothing is
+deployed, so no change is breaking (AGENTS.md rule 10).
+- **Accepted:** G25 and the default-route rule of SPEC.md D71.
+- **Stability first (§16.3 items 1 to 3):** BGP graceful restart on
+  the Cilium session and on the fabric sessions; `site` has no
+  default, and the fast timers need the same site named on both ends.
+  Suite `k3s-frr-failure` gained three phases.
+- **Items 4 to 16** are fixed in `lib/kube-cluster`, `routed-fabric`,
+  netif, the router and `nat-gateway` (§16.3, SPEC.md round 57,
+  `specs/netif.md` N25).
+- **G25 amended:** the router takes `unzoned.source` from the
+  machine's fabric export; the option is an override.
+- Evidence: §16.5.
+
 
 
 As in `specs/netif.md` §0: *(planned)*, *(probe-verified)*,
@@ -139,7 +211,8 @@ any code (AGENTS.md rule 3).
     advertisements.
   - `services/nat-gateway`: IPv4 reach for clan machines that have none.
     Roles `gateway` (1-n machines) and `client`. Clan configures the
-    clients.
+    clients. A machine is never both (§14.5 point 5); a gateway may be
+    a Kubernetes node.
   - `lib/gateway/`: the private shared implementation (NAT44, NAT64,
     SIIT, CoreDNS rendering, firewall, metrics). Not a clan service
     (as `lib/kube-cluster/`).
@@ -898,6 +971,12 @@ any code (AGENTS.md rule 3).
       every gateway closes its DNS while translation still works: no
       name resolves (asserted). The CLAT stays put and its flows live.
       Targets must be several and differ per gateway (§13.2).
+  - **Amended in round G8 (§14.5 point 4):** the follower moves after
+    60 s without an answer from its gateway's beacon (was 8 checks), and
+    the gateway's check uses windows: withdrawn when 30 of the last 60
+    rounds are bad, back after 120 clean rounds (was 3 failures down, 1
+    answer up). The fixture suite `gateway-nat64` that measured the old
+    numbers is removed with our DNS64.
   - **The follower keeps no state** (round G4). Jool's `pool6` is the
     truth, read every round. It moves only to a nameserver that names
     a valid /96; when none answers it stays. A CLAT instance that is
@@ -913,6 +992,110 @@ any code (AGENTS.md rule 3).
     proposal: set `lowest-ipv6-mtu` to the real IPv6 path MTU.
   *(planned; suite-verified on fixtures: `gateway-nat64`,
   `GATEWAY_NAT64_OK`; `netif-v6only`)*
+
+- **G24 The health beacon** (proposed round G7, 2026-11-24; accepted
+  by the owner in round G8, §14.5 point 2). G23's follower asks each gateway's DNS for
+  `ipv4only.arpa`. §14.1 point 3 froze DNS64, and with it the only
+  thing that answered. Without a signal a CLAT cannot follow a live
+  gateway: a design gap, not a choice.
+  - Each gateway runs a beacon: a CoreDNS bound to the gateway's
+    address that serves the zone `ipv4only.arpa` only, with the two
+    RFC 7050 addresses inside the gateway's own /96 (written by the
+    health check; no synthesis, no `dns64` plugin). Any other name gets
+    REFUSED; it forwards nothing, so it is no resolver.
+  - The health check owns it, as G23 says for the DNS64 listener: it
+    starts the beacon while the translator answers and stops it when
+    every target fails (§14.3); the beacon is bound to the check
+    (`BindsTo`).
+  - Only declared clients reach it (port 53, UDP and TCP, in the
+    gateway's own table, `beacon-undeclared`).
+  - Clients use plain resolvers for names; the beacon is asked only by
+    the follower.
+  - Rejected: the follower pinging a target through each gateway's /96
+    (the client would need internet targets of its own, G23 moved that
+    check to the gateway); a route that follows gateway health (the
+    fabric; G4 keeps the host path off it).
+  - **An answer is proof only for the gateway's own /96** (round G9).
+    The follower knows each gateway's /96 from the inventory. A beacon
+    that names another prefix (forged on the path, or misconfigured) is
+    treated as no answer and logged once: the CLAT is never moved to a
+    prefix the inventory does not know.
+  *(implemented: `nat-gateway`, `NAT_GATEWAY_OK`,
+  `NAT_GATEWAY_FOREIGN_PREFIX_OK`)*
+
+- **G25 A router shares its machine: ownership by link** (round G9,
+  2026-11-25; found by the review, §16). The owner's home box is a
+  router and a Kubernetes node (§14.5 point 7). The first cut's router
+  set `networking.firewall.enable = false` and had `policy drop` on
+  input and forward for the whole machine. Every other service opens
+  its ports through the NixOS firewall (netif N19, `routed-fabric`,
+  k3s, rke2): on a router those rules were void, and the router's
+  table dropped the fabric's WireGuard and BGP, the API, and every
+  forwarded pod packet.
+  - **A router link** is the WAN link or a zone's link. **An unzoned
+    link** is every other link of the machine: a fabric's WireGuard
+    links, Cilium's links, a VPN.
+  - **The router's table judges a packet only when it enters or leaves
+    through a router link.** Input from an unzoned link, and forwarding
+    between two unzoned links, is not the router's: it accepts, and the
+    machine's own firewall decides.
+  - **The NixOS firewall stays on** (an eval assertion). On a router
+    link a packet must pass both. The router gives the NixOS firewall
+    what its own table accepts there (the resolver and DHCPv4 ports per
+    zone link); reverse path filtering stays off by default, because
+    the prefix hook answers a wrong source with an error (G22) and a
+    filter would drop it in silence.
+  - **Crossing between the two sides is named, default deny:**
+    - unzoned links always reach the WAN;
+    - `unzoned.zones`: the zones that exchange flows with unzoned
+      links (a zone that reaches the cluster's pods and services), **in
+      both directions**. Found by `router-kube`: Cilium sends a local
+      pod's packets straight out of the zone's link, past netfilter.
+      Connection tracking then sees one direction only and calls the
+      other invalid, so the first design (a direction per rule) let the
+      SYN in and dropped the client's next packet. The rule for packets
+      from the zone is therefore stateless and stands before the
+      tracking rules. A flow from the zone is also **masqueraded**
+      behind the router's address on the unzoned link: the fabric's
+      WireGuard accepts cluster sources only (a LAN client's SYN to a
+      pod on another node was dropped there), and the answer then
+      returns through the router's stack. Pods see the router as the
+      source, not the client. The source is the machine's fabric address, read
+      from its `node_transport` export (round G10; the fabric's
+      links hold transfer addresses a peer does not accept as a source:
+      a plain masquerade chose the LAN address, and the peer dropped
+      it). `unzoned.source.ipv4`/`.ipv6` override it. No fabric and no
+      override: the outgoing link's address. For a zone that is not named, the router drops
+      what the zone sends towards unzoned links: no connection forms,
+      but it cannot stop a single packet from a pod on the router
+      itself into the zone. A Cilium network policy narrows either;
+    - `zones.<zone>.hostPorts` (default off): the zone may reach the
+      ports the machine opens to everyone
+      (`networking.firewall.allowedTCPPorts` and the like), such as the
+      fabric's WireGuard ports. For a zone that holds other nodes;
+    - `wanPorts.tcp`, `wanPorts.udp` (default empty): ports of the
+      router itself that the WAN may reach. Invariant 3 holds until the
+      owner names a port (22 for deploys over the WAN; a WireGuard port
+      towards a remote site).
+  - **SPEC.md D71:** the router exports its WAN zone (`router`); on a
+    cluster member that is a router the WAN link joins Cilium's
+    `devices`, so its pods are masqueraded there (the same reason as a
+    gateway's uplink, §14.5 point 5). A node behind the router gets
+    the link of its default route into `devices` (round G9, §16.2).
+  - **A zone link is never a Cilium device** (eval assertion in k3s
+    and rke2, `routerViolations`). `devices` is one list of names for
+    the whole cluster (§14.2), so a zone link of the router whose name
+    another member's uplink also has would get Cilium attached, and
+    Cilium would pass that zone's traffic by the router's firewall in
+    both directions. Evaluation refuses it and says which name; the
+    owner gives one of the two links another name. A `CiliumNodeConfig`
+    per node (§14.2, candidate 2) would lift the limit.
+  - Not covered: a BGP peer inside a zone (the fabric opens such a
+    peer with a rule of its own, not with a port everyone may reach);
+    a router that is also a `nat-gateway` gateway (both set the
+    forward filter; the rules are rendered, no suite).
+  *(implemented: `router`, `ROUTER_OK`; `router-kube`,
+  `ROUTER_KUBE_OK`)*
 
 ## 3. Invariants (target)
 
@@ -952,12 +1135,15 @@ any code (AGENTS.md rule 3).
   |---|---|---|
   | `gateway-wan` | netif N43 (MAC override), N44 (VLAN 0) | `GATEWAY_WAN_OK` |
   | `netif-v6only` | netif N45; G4 and G23 from a host's side; path MTU through both translators | `NETIF_V6ONLY_OK` |
-  | `gateway-nat64` | G2, G3, G4, G6, G23: two gateways, a client with a CLAT, an outsider; failover, hysteresis, the health check | `GATEWAY_NAT64_OK` |
-  | `gateway-router` | G8, G10, G11, G14, G15, G20, G22; netif N16: zones, advertisements, the prefix hook, the service prefix | `GATEWAY_ROUTER_OK` |
+  | `router` (round G7; replaced `gateway-router`, same script) | the `router` service: G8, G10, G11, G14, G15, G20, G22, §14.3's hairpin; netif N16: zones, advertisements, the prefix hook, the service prefix | `ROUTER_OK` |
+  | `nat-gateway` (round G7; split in round G9) | the `nat-gateway` service, what it does: G2–G6, G24, §14.1 point 4, a client's own limit, nftables ownership, an IfState apply; since round G9 the gateway's own IPv4 ports closed to the translator, a changed `pool6` or CLAT address reconciled, a beacon that names a foreign /96 ignored | `NAT_GATEWAY_OK` |
+  | `nat-gateway-failover` (round G9; the second half of the same file) | G6, G23, §14.3, §14.5 point 4: the timings (withdrawn after 30 s, back after 120 s, a move after 60 s), 30 % and 80 % loss, flapping targets and upstream, dead targets and gateways, a deploy that resumes the health state, reboots | `NAT_GATEWAY_FAILOVER_OK` |
+  | `router-kube` (round G9) | G25: a router that is a k3s node. Both firewalls loaded; the cluster up through them; D71 puts the WAN in `devices`; NAT44 for a LAN client, a node and pods; default deny between zones, from the WAN and towards pods; DHCPv4 and DNS through both firewalls; no NodePort on the WAN | `ROUTER_KUBE_OK` |
+  | `nat-gateway-kube` (round G8) | §14.5 point 5: a gateway that is a k3s node; D71 puts its uplink in `devices`; Cilium's eBPF masquerade and the gateway's nftables masquerade share one public IPv4; the allowlist on a Cilium node; no NodePort on the public IPv4 | `NAT_GATEWAY_KUBE_OK` |
   | `gateway-dual-wan` | G16; netif N21: two DHCPv4 WANs, failover without a route change | `GATEWAY_DUAL_WAN_OK` |
   | `k3s-v6only`, `rke2-v6only` | SPEC.md D67: the `join` contract on IPv6-only NICs | `<DISTRO>_V6ONLY_OK` |
-  | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric | `<DISTRO>_CLAT_OK` |
-  | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative | `K3S_CLAT_MAPPED_OK` |
+  | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric; since round G7 on the services (netif, `nat-gateway`, D71's rendered `devices`, a plain resolver) | `<DISTRO>_CLAT_OK` |
+  | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative; since round G8 with a plain resolver (no DNS64) | `K3S_CLAT_MAPPED_OK` |
 
 - A suite asserts a bound with margin (about three times the measured
   sample), never the sample. It prints the measured value.
@@ -2102,8 +2288,21 @@ owner.
      egress policy), day-2.
    - The tier is still a source address, not a credential (G4): a
      spoofer of a trusted source gets the higher limit. Accepted.
-   - The numbers are settings; the defaults are chosen in the next
-     session and written here.
+   - The numbers are settings. **Defaults (round G7):**
+
+     | Tier | New flows per source | Packets per source |
+     |---|---|---|
+     | `default` | 50/s, burst 200 | 20 000/s, burst 40 000 |
+     | `trusted` | 1 000/s, burst 4 000 | 200 000/s, burst 400 000 |
+
+     A source is one address (/128). The limits count only what a
+     client sends towards the translator; replies are not limited.
+     20 000 packets a second is about 240 Mbit/s of 1 500 byte packets.
+   - **Built (round G7):** one meter per tier and kind in `inet nat64`
+     (`nat64-flows-<tier>`, `nat64-packets-<tier>`). The gateway learns
+     the kube members from the `kube_cluster` exports. Asserted in
+     `nat-gateway`: a `default` client loses SYNs and datagrams above
+     its limit, a `trusted` one loses none.
 5. **The kube services render Cilium's `devices`** (point 10; SPEC.md
    D71). See 14.2.
 
@@ -2124,9 +2323,26 @@ owner.
 - **Never a VPN link.** A link of a VPN zone (`tailscale0`, any
   Headscale or WireGuard client link that is not the transport) is
   never in `devices`. An eval assertion refuses it.
-- **Open, to settle first in the next session (one suite):**
-  `devices` is one cluster-wide Helm value, and the names differ per
-  node. Candidates, in order:
+- **Answered (round G7): candidate 1, the union.** The transport's links
+  already differ per node and were already one union; Cilium attaches to
+  the names a node has. `<distro>-clat` runs the rendered list
+  (`<fabric link> <fabric loopback> clat0 eth1`) and asserts Cilium on
+  `clat0` and `eth1` of each node. Built in `lib/kube-cluster/devices.nix`:
+  - the CLAT link of a member that is a `nat-gateway` client (its
+    `nat_gateway` export);
+  - the links of that client's uplink zone that carry no IPv4 (its
+    `netif` export: no static IPv4, no DHCPv4);
+  - an eval assertion refuses a VPN link: a netif link in zone `vpn` or
+    `tailnet`, or a name starting `tailscale`, `wt`, `nb-`, `zt`, `tun`.
+  - round G8: every link of a gateway's uplink zone; round G9: a
+    router's WAN link, and **the link that owns any member's default
+    route** (netif `gatewayInMain`, N21; never a VPN zone's link). The
+    first cut covered only a node without IPv4; a pod on a dual-stack
+    node needs the same (§16.2).
+  - Not yet proven: two nodes with different underlay names in one
+    cluster (eval tests only: `test_d71RenderedDevices`).
+- Was open: `devices` is one cluster-wide Helm value, and the names
+  differ per node. Candidates, in order:
   1. the union of every member's exact names in the one list, if
      Cilium skips a named link that does not exist on a node;
   2. a `CiliumNodeConfig` per node with that node's exact names;
@@ -2184,3 +2400,374 @@ Decided 2026-11-23: native routing only (SPEC.md D72).
 removed; the last commit with them is tag `tunnel-mode-final`. The
 `<distro>-clat-mesh*` suites went with them; `<distro>-clat` (the
 former `-clat-fabric`) is the CLAT proof.
+
+### 14.5 Owner decisions, round G8 (2026-11-24)
+
+Locked, as §14.1. They answer the open questions of round G7.
+
+1. **The CLAT is the only IPv4 path. Our DNS64 is removed** (amends
+   §14.1 point 3: from frozen to removed).
+   - The `gateway-nat64` suite goes; the fixture
+     `nat64-gateway.nix` loses its health check and beacon, and
+     `k3s-clat-mapped` resolves at a plain resolver like the others.
+   - Kept: the **provider's** DNS64 in `netif-v6only` and
+     `<distro>-v6only` (`v6only-host.nix`). It is not ours: it proves
+     netif on a provider network that offers DNS64.
+   - git keeps the old design (the commit before round G8).
+2. **G24 (the beacon) is accepted.**
+3. **Limits: the round G7 defaults stay; every number can be
+   overridden** at three levels, the most specific wins:
+   - the instance: `roles.gateway.settings.limits` (clan's role
+     settings apply to every gateway of the instance);
+   - one gateway: `roles.gateway.machines.<m>.settings.limits`;
+   - one client: `roles.client.machines.<m>.settings.limits` (any of
+     the four numbers; the rest come from the client's tier on each
+     gateway). A client with an override gets meters of its own.
+4. **Stability over fast failover** (sharpens §14.3). A healthy
+   gateway never looks sick, and a sick one never looks healthy, given
+   time to settle. The price is failover in about a minute and a half,
+   not seconds.
+   - **Gateway:** one round a second. A round is good when two or more
+     targets answer (all of them when fewer than two are set). The
+     beacon is withdrawn when **30 of the last 60 rounds** are bad (a
+     dead upstream: after 30 s), and comes back only when **the last
+     120 rounds** hold at most 5 % bad ones (a clean recovery: after
+     120 s). So one lucky ping does not bring a sick gateway back, and
+     one dead target does not take a healthy one down.
+     - Windows, not "in a row" (found while building it): at 80 % loss
+       one lucky round in ten reset a count "in a row", so a lossy
+       gateway never went down. Simulated: down after 30 to 36 s at
+       80 % loss and never back; no change in 50 min at 30 % loss, with
+       one dead target, or with one target flapping every 5 s; a
+       gateway whose whole upstream flaps every 5 s goes down and stays
+       down.
+   - A restart of the health check alone (a deploy) keeps the state
+     it had, if it was written less than 60 s before; a reboot starts
+     from cold (120 good rounds).
+   - **Client:** the follower moves only when its gateway's beacon has
+     not answered for **60 s**, and only to a gateway whose beacon
+     answers. It never moves back on its own. **No hold after a move**
+     (the owner, 2026-11-24): a hold could pin a client to a gateway
+     that died within it; the gateway's 120 good rounds already keep a
+     flapping gateway from attracting clients.
+   - Suite cases: 80 % loss on a gateway's upstream, and a target that
+     flaps every 5 s; neither may cause a client move or a beacon
+     return while sick.
+5. **A gateway may be a Kubernetes node; a gateway is never a client**
+   (amends G1: a machine is not both).
+   - A gateway has its own IPv4: its pods leave through Cilium's
+     masquerade to that IPv4 and need no CLAT.
+   - Required first: Jool's private IPv4 moves out of `10.0.0.0/8`
+     (Cilium's native-routing CIDR and the pod pools) to `192.0.0.0/30`
+     (RFC 7335's host-local range, the one a CLAT uses; a gateway is
+     never a client, so they never meet; `192.0.0.8/29` is no choice:
+     `.9` and `.10` are global anycast addresses), and a suite
+     `nat-gateway-kube`: a gateway that is a cluster node, pods on it
+     sending IPv4 through Cilium's eBPF masquerade while clients send
+     through the gateway's nftables masquerade on the same uplink;
+     every flow completes.
+6. **No metrics yet** (G18 stays planned). The path stays open: rule
+   comments are stable names, and the health check writes its state
+   to a file an exporter can read later.
+7. **The home box** (the owner's ISP edge, SFP+ WAN, ECMP into the
+   cluster): `router` and a Kubernetes node; **no `nat-gateway` role
+   for now**. Its LAN is dual-stack through NAT44, so no LAN machine is
+   a client.
+
+## 15. Service evidence (round G7, 2026-11-24, euc-hel-0)
+
+The first runs of the services. Each line is one run: a sample, not a
+flakiness measure (§12.4).
+
+### 15.1 `nat-gateway` (`NAT_GATEWAY_OK`, passed, 608 s)
+
+- Every phase of `gateway-nat64` that is not DNS64 passes on the
+  service: the allowlist for every protocol (ping 2, TCP 3, UDP 1,
+  beacon 1 and 2 packets counted per gateway), the namespaced Jool seen
+  by the forward chain and conntrack, the two negative proofs, the
+  follower's address arithmetic, the CLAT on both clients, path MTU
+  (1420 through NAT64, 1400 through the CLAT), nftables ownership, an
+  IfState apply, 30 % loss for 40 s without a move, an idle flow of
+  40 s, a crash that stalls a flow without a reset, a gateway back
+  without state.
+- **Rate limits (§14.1 point 4):** a `default` client (gw2 lowered to
+  5 new flows/s, burst 10) got 20 of 40 simultaneous connections
+  through, 75 SYNs dropped; a `trusted` client got 40 of 40. 2000
+  datagrams/s for 3 s against 500/s, burst 1000: 3481 of 5981 dropped
+  for `default`, none for `trusted`.
+- **Beacon and health (G24, §14.3):** one target of three dead: the
+  gateway stayed healthy for 15 s. All of a gateway's targets dead:
+  beacon withdrawn after 3.9 s, an IPv4 literal through the other
+  gateway after 15.4 s; back 0.6 s after the targets returned. The
+  translator removed: withdrawn after 3.4 s, the CLATs moved. Both
+  gateways' targets dead: both withdrew, the follower stayed 20 s and a
+  CLAT flow got 20 echoes in 20 s. Health check stopped: beacon closed
+  at once; killed: restarted, beacon back.
+- Failover: an IPv4 literal through the live gateway 14.2 s after a
+  crash; a CLAT remade on the dead gateway's /96 corrected after 12.3 s.
+- A gateway and a client reboot; everything comes back and no unit
+  failed.
+
+### 15.2 `k3s-clat` (`K3S_CLAT_OK`, passed, 613 s)
+
+- The cluster on IPv6-only NICs behind the service, with nothing
+  hand-set: each agent masquerades on `[eth1, clat0, <fabric link>,
+  <fabric loopback>]`, the rendered D71 list. Cilium attached to `clat0`
+  0.2 to 0.3 s after it was asked.
+- Nodes resolve at a plain IPv6 resolver; an IPv4-only name goes
+  through the CLAT (2 MB), a name with an AAAA record goes direct. Pods
+  resolve through cluster DNS and the node's resolver (only with the
+  NIC in `devices`) and reach IPv4 by name through the CLAT.
+- Every other phase of the fixture version passes: NodePorts (D69),
+  ClusterIP, the private-destination refusal, an IfState apply, the
+  CLAT link remade under load, both nodes rebooted.
+- The gateway trusted both members by itself (`kube_cluster` exports).
+
+### 15.2b `rke2-clat` (`RKE2_CLAT_OK`, passed, 1133 s)
+
+- The same body as `k3s-clat` on rke2: the rendered list
+  `[eth1, clat0, <fabric link>, <fabric loopback>]` on both nodes, every
+  phase passed.
+
+### 15.3 `router` (`ROUTER_OK`)
+
+- First run (before the hairpin change): passed, 504 s, every phase of
+  `gateway-router` on the service.
+- With §14.3's hairpin rewrite: passed, 346 s. The backend node reached
+  its own public service address in 0.04 s and saw the router's address
+  in its zone (`fd00:10:2::1`); the home zone reaches the service the
+  same way now (it saw its own address before). WAN clients keep their
+  address (asserted: the node saw the ISP's address).
+- Two runs in between failed on the suite, not the service: a helper
+  that did not skip an `ip -j` entry without `local`, and a check that
+  the word `dnat` was gone from the hook's table (the hairpin rule
+  holds `ct status dnat`; the check now looks for the rewrite rule).
+- **Flake seen once:** right after the ISP fixture switched to another
+  delegation (a specialisation switch that restarts its IfState), the
+  home client's IPv4 request failed within 1 ms. The check now waits up
+  to 30 s. The cause on the ISP side is not proven.
+- Not yet tested: a second host in the same zone as the backend (§14.3
+  asks for it; the topology has one host in `servers`).
+
+### 15.4 Round G8 (2026-11-24, euc-hel-0)
+
+- **`nat-gateway`** (`NAT_GATEWAY_OK`, passed, 2 234 s; 37 min of the
+  45 min timeout, the price of the default timings):
+  - Withdrawn 31.9 to 32.4 s after every target or the translator died,
+    34.4 to 37.0 s after 80 % loss began; back 113.4 to 113.9 s after
+    the upstream was clean (never earlier than 120 clean rounds allow).
+  - A client moved 61.7 to 63.4 s after a crash, 93.5 to 94.9 s after
+    its gateway's targets died; it corrected a CLAT made again on the
+    dead gateway's /96 after 62.4 s.
+  - At 80 % loss the gateway stayed withdrawn for 150 s, and while its
+    upstream flapped every 5 s for 140 s; one target flapping for 100 s
+    on the current gateway moved nothing (`NAT_GATEWAY_LOSSY_OK`,
+    `NAT_GATEWAY_FLAPPING_OK`).
+  - The capped client's own meter dropped 3 491 of 5 981 datagrams on
+    gw1 (500/s, burst 1 000); the tiers' meters counted none.
+  - A stopped and restarted health check resumed `up` from its state
+    file; the beacon was back in under 20 s.
+- **`nat-gateway-kube`** (`NAT_GATEWAY_KUBE_OK`, passed, 214 s): alpha
+  is a k3s server and the gateway, beta a k3s agent and its client.
+  - Rendered `devices`: `<fabric link> <fabric loopback> clat0 eth1
+    eth2`; alpha's agent masquerades on `eth1, eth2` and the fabric
+    links (`eth2` holds the public IPv4).
+  - alpha's pod leaves with the public IPv4 by eBPF masquerade; beta's
+    host and pod through beta's CLAT and alpha's NAT64 (Jool sessions
+    from beta's CLAT address).
+  - Two masquerades on one public IPv4: 150 long flows (8 s each) from
+    each of alpha's pod, alpha's host, beta's pod and beta's host at
+    once; all 600 came back, twice. Cilium held 1 796 and 3 094 NAT
+    entries while they were open.
+  - The router (no client) towards alpha's /96: 6 packets dropped and
+    counted (`nat64-undeclared`); its beacon query too.
+  - `nodeport-addresses` holds only the fabric addresses; the NodePort
+    answered beta on 192.168.77.1 and timed out on the public IPv4 from
+    the IPv4 internet.
+  - After a restart of nftables, of `nat64-jool`, and an IfState apply
+    on alpha, all three egress paths still work.
+- **`k3s-clat`** (passed, 735 s), **`rke2-clat`** (passed, 834 s),
+  **`k3s-clat-mapped`** (passed, 290 s, now with a plain resolver).
+  - Before the fabric converges a node's SYNs to the server's fabric
+    address go into its CLAT and the gateway refuses them: 5 packets in
+    2.7 s (k3s), 14 to 16 in 2.9 to 3.1 s (rke2). The suite bounds the
+    window (20 s) and the targets (node addresses only), not the count:
+    the first rke2 run sent 16 against a bound of 10.
+
+## 16. Hardening review (round G9, 2026-11-25)
+
+The owner asked for a devil's advocate review of PR #38 and of the
+networking and cluster services, for two use cases: a cloud cluster of
+three managers of which two or more are gateways, and a home box that
+is a router and a node. Stability comes before fast failover.
+
+### 16.1 Owner answers to round G8
+
+1. **Windows, not "in a row"**: accepted, "if that is most stable".
+   §14.5 point 4 stands as written.
+2. **The stray-packet check bounds a time window** (20 s), not a
+   count: accepted ("build for stability").
+3. **The `nat-gateway` suite is split**: `nat-gateway` and
+   `nat-gateway-failover`, one file, one topology.
+
+### 16.2 Found in PR #38 and fixed
+
+| Found | What it did | Now | Proof |
+|---|---|---|---|
+| The router is the machine's only firewall (G25) | On a router that is a node: the cluster's and the fabric's firewall rules void, their traffic dropped by policy | Ownership by link; the NixOS firewall stays on | `router-kube`; eval `test_ownLinksOnly`, `test_node` |
+| The translator reaches the gateway itself | A declared client that sends to the /96 with the gateway's own IPv4 (Jool's link address or the public one) inside is delivered to the gateway's input, not forwarded: G5's refusal of private destinations never saw it, and the gateway's IPv4 ports were open to it | Rule `nat64-host`: IPv4 that arrives on Jool's link is refused | `nat-gateway`, in `assert_gateway` on both gateways |
+| The follower trusts any answer | A beacon answer names the /96 a CLAT moves to; a forged or wrong answer moved every client's IPv4 to a foreign prefix | G24: only the gateway's own /96 is proof | `NAT_GATEWAY_FOREIGN_PREFIX_OK` |
+| A changed `pool6` is never applied | The unit kept a live instance whatever its prefix; the gateway then failed its own health check until a reboot | The instance is made again when the prefix differs, compared as networks | `NAT_GATEWAY_RECONCILE_OK` |
+| A CLAT address in another spelling fails the unit | The mapping was matched as a string; `2001:db8:c:0::c1a7` never matched, the second `eamt add` failed, at every start | Compared as addresses; a changed address replaces the mapping | `NAT_GATEWAY_RECONCILE_OK` |
+| A zone of two links is half configured | Addresses, DHCPv4 and the resolver came from the first link only | Eval assertion: one link per zone | eval `test_twoLinksInAZone` |
+| A zone link accepts router advertisements | netif's default is `ra = true`; a LAN host could give the router addresses and routes | Eval assertion: `ra = false` on zone links | eval `test_zoneAcceptsRa` |
+| The DHCPv4 pool can hold the router's address | The pool is the upper half; a router at `.254` could be leased | Eval assertion | eval `test_routerInThePool` |
+| The prefix hook may run before IfState | Its netdev chain names the LAN links | Ordered after `ifstate.service` | `router` |
+| A missing other link stops the translator | The Jool units required `ifstate.service`, which also fails when any declared physical link is absent (netif P3a), after it applied the namespaces | `Wants` and `PartOf`: an apply still restarts them, a failed check does not stop them | the gateway suites' IfState phases |
+| A plain node's pods cannot leave (SPEC.md D71) | `devices` held a member's uplink only for a `nat-gateway` client or gateway. On any other node with a default route the pod's packets left with the pod's address. Found by the first run of `router-kube`: beta's pod reached the internet host through the router's NAT44, and the answer came back over the fabric, whose WireGuard refuses a source that is not the cluster's | The link that owns a member's default route joins `devices` (netif `gatewayInMain`) | `router-kube`; eval `test_d71DefaultRouteLink` |
+| One list of device names can attach Cilium to a router's zone link | Two machines with the same link name (identical mini PCs): the router's zone link and another node's uplink. Cilium on the zone link forwards past the router's table | Eval refusal, with the name | eval `test_d71RouterZoneLinkRefused` (k3s, rke2) |
+| A gateway needs a client | An instance of gateways only (three managers, all with a public IPv4) failed evaluation | Allowed: an empty allowlist lets nobody through | eval `test_noClients` |
+
+### 16.3 Found in the existing services, fixed in round G10
+
+Read in the code by the reviewers in round G9. The owner's word came
+on 2026-11-25: fix all sixteen. Ranked by damage to the two use cases.
+
+| # | Found | Now | Proof |
+|---|---|---|---|
+| 1 | No BGP graceful restart between Cilium and FRR: a restart of the agent withdrew the node's pod and service routes everywhere | `gracefulRestart` in the `CiliumBGPPeerConfig` (120 s); FRR `bgp graceful-restart` with `preserve-fw-state` | `k3s-frr-failure`, `FRR_CILIUM_RESTART_OK`; eval `test_g10Hardening` |
+| 2 | A restart of FRR withdrew the node's fabric address, which etcd and the API ride | Graceful restart on the fabric sessions (restart and stale-path time 60 s, `select-defer-time 0`); zebra keeps its routes over a restart (`-r -K120`). `bfd check-control-plane-failure` on fabric neighbors: a peer whose BFD fails is dropped at once, graceful restart or not | `k3s-frr-failure`: routes kept while bgpd is away; `FRR_DEAD_NODE_OK` (a crashed spine's route gone in under 15 s) |
+| 3 | `site` defaulted to `"default"`, so members in different places got the LAN timers | `site` is `null` by default. The `site` profile applies only when both ends name the same site; every other pair gets `wan` | eval `test_stabilityProfilesAndRecovery`; the cluster suites set `site = "lab"` |
+| 4 | A reinstalled `clusterInit` server started a second cluster | Unit `<instance>-init-guard`, before the server: with no etcd data it probes every other server's API (10 tries, 3 s apart) and fails when one answers | eval `test_g10Hardening` (k3s, rke2): the unit and its order. The refusal itself is not run in a suite |
+| 5 | A change of `cilium-config` reached no running agent | The DaemonSet's pod template carries `clan.lol/cilium-config-hash`; a change rolls the agents, `maxUnavailable: 1` | eval `test_g10Hardening` |
+| 6 | The ClusterMesh secrets unit restarted `clustermesh-apiserver` at every run | Restarted only when a secret's `resourceVersion` changed | `<distro>-clustermesh*` |
+| 7 | `operator.replicas = 1` | 2 when the cluster has two or more members | eval `test_g10Hardening`; every multi-node cluster suite boots with it |
+| 8 | `maximum-prefix 4096 restart 10` on the Cilium session dropped it for 10 minutes | `maximum-prefix 4096 warning-only` | eval `test_localCiliumFrr` (routed-fabric) |
+| 9 | A leaf could pass routes on | What a leaf imports is tagged `no-export` | eval `test_stabilityProfilesAndRecovery` |
+| 10 | `ipv4NativeRoutingCIDR` is `10.0.0.0/8`: pods reached a host in another 10/8 network unmasqueraded | Eval refusal (`underlayViolations`): a member's static IPv4 netif address inside 10/8 and outside the cluster's ranges, with the address named. A DHCP address cannot be checked | eval `test_underlayInNativeRoutingRange` (k3s, rke2) |
+| 11 | netif's guard rolled back the IfState file only | `specs/netif.md` N25: dhcpcd's configurations are recorded and restored; the rollback keeps the running generation's ignore lists | `netif-guard`, `NETIF_GUARD_OWNERS_OK` |
+| 12 | The PKI install was skipped when its secret was missing | `AssertPathExists`: the unit fails, and the server with it | eval `test_g10Hardening` |
+| 13 | HAProxy had no `timeout tunnel` | `timeout tunnel 1h` | eval `test_g10Hardening` |
+| 14 | The router read netif's internal option | `clanServices.netif.links` is public (read-only); the router asserts that a zone's delegated subnet is a /64 | eval `test_zoneNotA64` |
+| 15 | Every router boot retired the current prefix for some seconds | The hook's first run after a boot, with no state file and a prefix in use, keeps it for 45 s and runs again then (`router-prefix-recheck`) | `router`, the boot phases |
+| 16 | A full rate-limit meter failed open | After each meter: a new flow whose source is not in the meter's set is dropped and counted (`nat64-*-full`) | eval `full` (nat-gateway); `nat-gateway` |
+
+| 17 | Found by this round's first full run, older than the PR (in a suite log of 2026-11-18): **bgpd aborts** (`bgp_connect_timer(): assertion (!connection->t_read)`, FRR 10.7.1) when a neighbor's ConnectRetry timer expires while DelayOpen runs. Both were 5 s. watchfrr started bgpd again, so suites passed; under load it failed `k3s-clat` once | `timers connect 10` on every neighbor with DelayOpen | eval `test_stabilityProfilesAndRecovery` (`connectOutlastsDelayOpen`); no assertion and no core dump in any log of the last two runs. An argument from the timers and two runs, not a proof |
+
+What these cost:
+
+- The first start of a `clusterInit` server takes up to 30 s longer
+  (the probe).
+- A reinstalled `clusterInit` server does not come up until the owner
+  moves `clusterInit` to a server that has the data. That is the point.
+- Graceful restart hides a session loss for up to 120 s (Cilium) and
+  60 s (fabric). A dead node is still found by BFD.
+
+### 16.4 Evidence (2026-11-25, euc-hel-0)
+
+Each line is one run, a sample (§12.4).
+
+- **`nat-gateway-failover`** (`NAT_GATEWAY_FAILOVER_OK`, passed,
+  2 176 s; the run before, beside other suites, 2 123 s). The timings
+  of round G8 hold: withdrawn 31.6 s after every target or the
+  translator died and 32.6 s after 80 % loss began; back 113.5 to
+  114.4 s after a clean upstream; a client moved 62.9 s after a crash
+  and 92.5 s after its gateway's targets died; a CLAT made again on
+  the dead gateway's /96 corrected after 61.5 s.
+
+- **`router-kube`** (`ROUTER_KUBE_OK`, passed, 326 s): alpha is a k3s
+  server, a fabric spine and the router; beta a k3s agent in zone
+  `servers`; a client in zone `home`; an internet host on the WAN.
+  - Tables on alpha: `inet router`, `inet nixos-fw`, and Cilium's
+    (through iptables-nft). The cluster came up through both.
+  - Rendered `devices`: `<fabric link> <fabric loopback> eth2`. `eth2`
+    is alpha's WAN and beta's uplink; both agents masquerade on it. No
+    zone link of alpha is a device.
+  - The IPv4 internet saw the WAN address from alpha's pod, beta's
+    host, beta's pod, the home client and alpha itself. The IPv6
+    internet saw the home client's and beta's own addresses (routed),
+    and alpha's WAN address and beta's node address for their pods.
+  - Refused: home to servers; the WAN to ports 22, 53, 6443, 10250,
+    2379 on both address families (sshd and the kubelet listen on
+    every address); a zone to 6443, 10250, 2379; a host in zone
+    `servers` (not in `unzoned.zones`) to a pod on either node; the
+    other zone's resolver address; a NodePort on the WAN address.
+  - Allowed: SSH and the zone's own resolver from each zone; DHCPv4 in
+    zone `home`; the home client to a pod on each node.
+  - After a restart of nftables and an IfState apply: the same.
+- **What the earlier runs of `router-kube` found** (each fixed before
+  the next):
+  1. beta's pod could not reach the internet: its packets left with
+     the pod's address through a link that was no Cilium device. Fixed
+     in SPEC.md D71 (the default-route link).
+  2. The home client reached no pod on alpha: Cilium answered straight
+     out of the zone link, conntrack saw no answer and dropped the
+     client's next packets as invalid (12 counted). Fixed: the
+     stateless rule ahead of connection tracking, and the masquerade.
+  3. The home client reached no pod on beta: the fabric's WireGuard
+     dropped a source that is not the cluster's, first the client's own
+     address, then the LAN address a plain masquerade chose. Fixed:
+     `unzoned.source`.
+- **`nat-gateway`** (`NAT_GATEWAY_OK`, passed, 444 s; 2 234 s before
+  the split): on both gateways the translator refused the gateway's
+  own IPv4 addresses (`nat64-host` counted each try). A Jool instance
+  given another pool6 was made again at the next start ("pool6 was
+  2001:db8:ffff::/96 ..."), and not again at the start after. A
+  mapping for another address was replaced. A beacon made to name
+  `2001:db8:bad::/96` was logged once and moved nobody. Limits as in
+  round G8: 20 of 40 simultaneous connections, 3 488 of 5 990
+  datagrams dropped, the capped client's own meter 3 494 of 5 985.
+- **`router`** (`ROUTER_OK`): every phase of round G7 with the NixOS
+  firewall on; the tables are now `inet nixos-fw`, `inet router`,
+  `inet router_svc`, `netdev router_src`. Passed, 378 s.
+- **`k3s-clat`** (passed, 741 s), **`rke2-clat`** (passed, 928 s),
+  **`nat-gateway-kube`** (passed, 255 s).
+- Untouched suites were not run: `k3s-single`, `k3s-join`,
+  `k3s-join-netif`, `k3s-modes`, `k3s-data-plane-netif`, `k3s-v6only`,
+  `k3s-clat-mapped` and `netif-v6only` evaluate to the derivations of
+  the commit before this round.
+
+### 16.5 Evidence, round G10 (2026-11-25, euc-hel-0)
+
+Each line is one run, a sample (§12.4).
+
+- **All 48 suites passed on the final code**, in four `vm-test --all
+  --remote --rebuild` runs joined by `--resume` (a suite ran again
+  whenever its derivation changed). The last run: 29 suites, all
+  passed, none `PASS(!)`.
+- **What the runs found, each fixed before the next:**
+  1. 25 suites did not build: the guard's merge script failed its
+     lint (two long lines). No suite had booted it.
+  2. `netif-dhcp`: two probes read the dhcpcd version from the unit's
+     `ExecStart`, which is now a wrapper script. They read the script.
+     The checks are the same.
+  3. `k3s-clat` failed beside other suites: bgpd on a node aborted
+     (item 17) while the other node rebooted.
+  4. `k3s-join-netif`: "a reapply changes nothing" compared routes
+     while the ClusterMesh apiserver's VIP was still being announced
+     (the end of the first server's boot). The phase now waits until
+     both nodes finished booting and their routes held still for 5 s.
+     Its comparison is unchanged.
+- **`k3s-frr-failure`** (`K3S_FRR_FAILURE_OK`, passed, 229 s):
+  - a spine's bgpd killed: the leaf kept the spine's routes as stale
+    paths (1 IPv4 path counted) and pods kept answering;
+  - the Cilium agent restarted on a node: the other node kept that
+    node's pod route for the 30 s watched (`FRR_CILIUM_RESTART_OK`);
+  - the spine's machine crashed: the leaf dropped its pod route after
+    0.6 s (`FRR_DEAD_NODE_OK`; the limit is 15 s). Graceful restart
+    did not hide a dead node.
+- **`netif-guard`** (`NETIF_GUARD_OK`, passed, 137 s): a rollback kept
+  a link the running generation lists as another owner's
+  (`NETIF_GUARD_OWNERS_OK`).
+- **`router`** (passed, 324 s), with the boot grace of item 15;
+  **`router-kube`** (passed, 302 s), with `unzoned.source` read from
+  the fabric; **`nat-gateway`** (340 s), **`nat-gateway-failover`**
+  (2 099 s), **`nat-gateway-kube`** (203 s), **`k3s-clat`** (653 s),
+  **`rke2-clat`** (788 s).
+- **Not run in a suite:** the init guard's refusal (item 4; the unit
+  and its order are eval-tested, and every cluster suite boots through
+  it), a changed `cilium-config` rolling the agents (item 5), the
+  PKI assertion failing (item 12), a full meter (item 16; the rules
+  are eval-tested and loaded in `nat-gateway`), and the router's
+  boot grace with a prefix that really changed while it was off
+  beyond the `router` suite's existing phases.

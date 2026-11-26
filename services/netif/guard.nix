@@ -49,10 +49,53 @@
   # DHCPv4 links that own the default: their gateway is learned.
   dhcpDefaults = lib.attrNames (lib.filterAttrs (_: l: l.dhcp4 && l.default4) cfg.links);
 
+  yaml = config.environment.etc."ifstate/ifstate.yaml".source;
+  generation = "${yaml}:${toString cfg.dhcpcdConfs}";
+  # The rollback applies the last configuration that passed, with the
+  # ignore lists of the running generation added: what an owner got in
+  # the failed generation (Cilium's links, a fabric's) is still running
+  # and must not be deleted (specs/netif.md N6, N25). YAML tags such as
+  # `!include` pass through unchanged.
+  mergeIgnore = pkgs.writers.writePython3 "netif-guard-merge-ignore" {libraries = [pkgs.python3Packages.pyyaml];} ''
+    import sys
+    import yaml
+
+
+    class Tagged:
+        def __init__(self, tag, value):
+            self.tag, self.value = tag, value
+
+
+    def construct(loader, suffix, node):
+        return Tagged("!" + suffix, loader.construct_scalar(node))
+
+
+    def represent(dumper, item):
+        return dumper.represent_scalar(item.tag, item.value)
+
+
+    yaml.SafeLoader.add_multi_constructor("!", construct)
+    yaml.SafeDumper.add_representer(Tagged, represent)
+
+    previous, running, out = sys.argv[1:4]
+    with open(previous) as file:
+        config = yaml.load(file, Loader=yaml.SafeLoader)
+    with open(running) as file:
+        live = yaml.load(file, Loader=yaml.SafeLoader)
+    ignore = (live.get("parameters") or {}).get("ignore") or {}
+    kept = config.setdefault("parameters", {}).setdefault("ignore", {})
+    for key, entries in ignore.items():
+        have = kept.get(key) or []
+        kept[key] = have + [entry for entry in entries if entry not in have]
+    with open(out, "w") as file:
+        yaml.dump(config, file, Dumper=yaml.SafeDumper)
+  '';
+
   script = pkgs.writeShellApplication {
     name = "netif-guard";
     runtimeInputs = [
       pkgs.coreutils
+      pkgs.diffutils
       pkgs.iproute2
       pkgs.iputils
       pkgs.jq
@@ -63,7 +106,9 @@
     text = ''
       mode=$1
       config=''${2:-}
+      dhcp=''${3:-}
       state=/var/lib/netif/guard
+      run=/run/netif-guard
       deadline=$(( $(date +%s) + ${toString guard.timeout} ))
 
       probe() { # kind address interface port
@@ -134,18 +179,50 @@
       if [ -z "$failed" ]; then
         ln -sfn "$config" "$state/last-good"
         ln -sfn "$config" /nix/var/nix/gcroots/netif-guard-last-good
+        if [ -n "$dhcp" ]; then
+          ln -sfn "$dhcp" "$state/last-good-dhcpcd"
+          ln -sfn "$dhcp" /nix/var/nix/gcroots/netif-guard-last-good-dhcpcd
+        else
+          rm -f "$state/last-good-dhcpcd" /nix/var/nix/gcroots/netif-guard-last-good-dhcpcd
+        fi
+        rm -rf "$run"
         echo "netif-guard: gateways and targets answer; kept $config"
         exit 0
       fi
       echo "netif-guard:''${failed#;}" >&2
       previous=$(readlink "$state/last-good" 2> /dev/null || true)
+      previous_dhcp=$(readlink "$state/last-good-dhcpcd" 2> /dev/null || true)
+      mkdir -p "$run"
+      # The DHCP clients go back to the configuration that passed, for
+      # as long as this generation runs.
+      rm -rf "$run/dhcpcd"
+      if [ -n "$dhcp" ] && [ -n "$previous_dhcp" ] && [ "$previous_dhcp" != "$dhcp" ] && [ -d "$previous_dhcp" ]; then
+        for kept in "$previous_dhcp"/*.conf; do
+          name=$(basename "$kept" .conf)
+          if [ -e "$dhcp/$name.conf" ] && ! cmp -s "$kept" "$dhcp/$name.conf"; then
+            mkdir -p "$run/dhcpcd"
+            ln -sfn "$(readlink -f "$kept")" "$run/dhcpcd/$name.conf"
+            echo ${lib.escapeShellArg generation} > "$run/generation"
+            echo "netif-guard: dhcpcd on $name goes back to the configuration that passed" >&2
+            systemctl restart --no-block "netif-dhcpcd-$name.service"
+          fi
+        done
+      fi
       if [ -n "$previous" ] && [ "$previous" != "$config" ] && [ -e "$previous" ]; then
         echo "netif-guard: re-applying the last network configuration that passed: $previous" >&2
-        if ${ifstatecli} --config "$previous" apply >&2; then
+        rollback=$previous
+        if ${mergeIgnore} "$previous" "$config" "$run/rollback.yaml" >&2; then
+          rollback=$run/rollback.yaml
+        else
+          echo "netif-guard: could not add the running ignore lists; applying $previous as it is" >&2
+        fi
+        if ${ifstatecli} --config "$rollback" apply >&2; then
           echo "netif-guard: rolled back. The running generation still names the failed configuration; deploy a corrected one (specs/netif.md N25)" >&2
         else
           echo "netif-guard: the rollback itself failed; the network is in the state above" >&2
         fi
+      elif [ -d "$run/dhcpcd" ]; then
+        echo "netif-guard: the links are unchanged; only dhcpcd went back. The running generation still names the failed configuration; deploy a corrected one (specs/netif.md N25)" >&2
       else
         echo "netif-guard: there is no earlier network configuration to roll back to; the failed one stays applied (specs/netif.md N25)" >&2
       fi
@@ -206,6 +283,7 @@ in {
   };
 
   config = lib.mkIf (cfg.links != {} && guard.enable && config.clanServices.networking.mode.manager == "ifstate") {
+    clanServices.netif.guardGeneration = generation;
     systemd = {
       tmpfiles.rules = ["d /var/lib/netif/guard 0755 root root -"];
       services = {
@@ -215,13 +293,13 @@ in {
           after = ["ifstate.service"] ++ map (interface: "netif-dhcpcd-${interface}.service") dhcpLinks;
           # a changed network configuration restarts the guard with it, so
           # a deploy waits for the verdict and reports a failure
-          restartTriggers = [config.environment.etc."ifstate/ifstate.yaml".source];
+          restartTriggers = [generation];
           # every apply runs it once; ifstate.service is the limit
           unitConfig.StartLimitIntervalSec = 0;
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            ExecStart = "${lib.getExe script} apply ${config.environment.etc."ifstate/ifstate.yaml".source}";
+            ExecStart = "${lib.getExe script} apply ${yaml} ${toString cfg.dhcpcdConfs}";
           };
         };
         # every apply is followed by a guard run, also a manual restart
