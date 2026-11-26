@@ -1839,6 +1839,12 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
       (`defaultRoute.ipv4/ipv6 = false`) is not waited for: that is how
       to drop a default on purpose. This covers an RA default and an
       IPv6-only host, where zero targets used to pass.
+    - **dhcpcd restarts skip `Wants=`.** A netif dhcpcd unit wants
+      `ifstate.service`, a oneshot that is inactive after its apply, so
+      every plain restart of a dhcpcd unit starts a new apply, whose
+      first step ends the rollback. The guard restarts dhcpcd with
+      `--job-mode=ignore-requirements` (`netif-dhcp`, first run of
+      round G11: a loop of rollbacks).
     - **A DHCP link made static.** When the failed generation runs no
       DHCP client on a link that had one in the last good generation,
       the rollback starts a transient unit,

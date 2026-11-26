@@ -82,6 +82,19 @@ read the section of a component before changing code that touches it.
   it exits; netif's unit flushes dynamic IPv4 addresses after every
   stop (`specs/netif.md` N31). A unit file's `WantedBy=<device>` did
   not start a service in the VM; udev `SYSTEMD_WANTS` does.
+- systemd 262 and `switch-to-configuration`: a unit restarted for its
+  `restartTriggers` (`netif-guard.service`) can start before the
+  oneshot `ifstate.service` that a switch also starts; `After=` orders
+  only jobs that are queued together. netif's guard therefore names the
+  configuration each apply is of (`/run/netif-guard/applying`) and
+  judges nothing else (`netif-guard`, round G11). A oneshot whose
+  `ExecStart` fails skips `ExecStartPost` and runs `ExecStopPost` with
+  `SERVICE_RESULT` other than `success` (`NETIF_GUARD_FAILED_APPLY_OK`).
+  A start or restart of a unit that `Wants=` a oneshot without
+  `RemainAfterExit` starts that oneshot again: a plain restart of a netif
+  dhcpcd unit runs a new IfState apply; `systemctl restart
+  --job-mode=ignore-requirements` does not (`netif-dhcp`,
+  `NETIF_DHCP_GUARD_KEPT_OK`).
 - IfState 2.5.1 ignores routes of `proto dhcp` (16) and `proto ra` (9)
   and dynamic addresses by default. `ifstatecli check` prints `ok`,
   `= <value>` or `orphan` for unchanged objects and exits 0 either

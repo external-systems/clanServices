@@ -328,7 +328,9 @@
               ln -sfn "$(readlink -f "$kept")" "$run/dhcpcd/$name.conf"
               echo ${lib.escapeShellArg generation} > "$run/generation"
               echo "netif-guard: dhcpcd on $name goes back to the configuration that passed" >&2
-              systemctl restart --no-block "netif-dhcpcd-$name.service"
+              # not its Wants=ifstate.service: that would start an apply,
+              # whose first step ends this rollback
+              systemctl restart --no-block --job-mode=ignore-requirements "netif-dhcpcd-$name.service"
               rolled=1
             fi
           else
@@ -416,7 +418,8 @@
     fi
     rm -rf "$run/dhcpcd" "$run/generation"
     if [ "''${#units[@]}" -gt 0 ]; then
-      ${lib.getExe' pkgs.systemd "systemctl"} restart --no-block "''${units[@]}" || true
+      # not their Wants=ifstate.service: that would start another apply
+      ${lib.getExe' pkgs.systemd "systemctl"} restart --no-block --job-mode=ignore-requirements "''${units[@]}" || true
     fi
     exit 0
   '';

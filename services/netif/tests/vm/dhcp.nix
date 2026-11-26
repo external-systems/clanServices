@@ -186,9 +186,6 @@ in {
         ];
       };
       environment.systemPackages = [pkgs.jq];
-      # The lockout guard (N25) also pings an address behind the ISP, which
-      # only the DHCP default route reaches.
-      clanServices.netif.guard.targets = [{address = "203.0.113.1";}];
       specialisation = {
         # Only the DHCP client changes: it drops the router option, so the
         # default route goes. IfState's file stays the same.
@@ -253,7 +250,7 @@ in {
             state = "up";
           };
         };
-        # behind the ISP: client4's guard target
+        # behind the ISP: client4 reaches it only through its default route
         far0 = {
           addresses = ["203.0.113.1/32"];
           link = {
@@ -716,13 +713,14 @@ in {
             status, output = client4_switch("nogateway")
             print(output)
             assert status != 0, "the switch must report the failure"
-            client4_guard_log("no answer from 203.0.113.1 (ping)")
+            client4_guard_log("no IPv4 default route on eth1")
             client4_guard_log("dhcpcd on eth1 goes back to the configuration that passed")
             client4_lease()
             # the unit runs the kept configuration, while this generation runs
             client4.succeed("test -e /run/netif-guard/dhcpcd/eth1.conf")
             client4.wait_until_succeeds("pgrep -af dhcpcd | grep /run/netif-guard/dhcpcd/eth1.conf >/dev/null", timeout=30)
             client4.succeed("ping -c1 -W2 203.0.113.1")
+            client4_guard_log("rolled back. The running generation")
             status, output = client4_switch(None)
             assert status == 0, output
             client4.succeed("test ! -e /run/netif-guard/dhcpcd")
