@@ -1263,7 +1263,7 @@ in {
             assert took is not None, "netif-guard did not fail within 90 s"
             print(f"FINDING netif-guard failed {took} s after the apply (bound 90 s)")
             observe("the guard's verdict", router, "journalctl -b -u netif-guard --no-pager | tail -n 8")
-            router.succeed("journalctl -b -u netif-guard --no-pager | grep 'no DHCP default route on eth1; no answer from 2001:db8:a::1 on eth1' >/dev/null")
+            router.succeed("journalctl -b -u netif-guard --no-pager | grep 'no IPv4 default route on eth1; no answer from 2001:db8:a::1 on eth1' >/dev/null")
             router.succeed("journalctl -b -u netif-guard --no-pager | grep 'there is no earlier network configuration to roll back to' >/dev/null")
             assert snapshot() == before, f"the guard changed rules or routes:\n{before}\n---\n{snapshot()}"
             assert steer_mark() == 2, steer_mark()
@@ -1327,7 +1327,7 @@ in {
             # the last good one, so nothing is rolled back; a new one would
             # be.
             router.wait_until_succeeds("systemctl is-failed netif-guard.service", timeout=90)
-            router.succeed("journalctl -b -u netif-guard --no-pager | grep 'no DHCP default route on eth1; no answer from 2001:db8:a::1 on eth1' >/dev/null")
+            router.succeed("journalctl -b -u netif-guard --no-pager | grep 'no IPv4 default route on eth1; no answer from 2001:db8:a::1 on eth1' >/dev/null")
             failed = router.succeed("systemctl --failed --no-legend --plain | cut -d' ' -f1").split()
             assert failed == ["netif-guard.service"], failed
             on(BACKUP)

@@ -639,7 +639,7 @@ any code (AGENTS.md rule 3).
     - **netif's guard and a dead WAN:** the guard requires a DHCP
       default and a neighbour answer per gateway. With the primary's
       cable out, any IfState apply fails `netif-guard` after its 30 s
-      timeout ("no DHCP default route on eth1"). Traffic stays on the
+      timeout ("no IPv4 default route on eth1"). Traffic stays on the
       backup. The guard stays failed after the cable returns, until
       the next apply. A new configuration deployed during a primary
       outage would be rolled back (asserted for the unchanged

@@ -181,14 +181,15 @@
       # `missing` (1: a default route never came) and `silent` (the
       # targets that did not answer).
       check() {
-        local deadline need family dev target kind address interface port answered
+        local deadline family dev target kind address interface port answered
         local all=()
         failed=""
         missing=0
         silent=()
         deadline=$(( $(date +%s) + timeout ))
-        for need in "''${required[@]}"; do
-          read -r family dev <<< "$need"
+        # a link can be required twice (DHCP and last good): judge it once
+        while read -r family dev <&3; do
+          [ -n "$family" ] || continue
           until has_default "$family" "$dev"; do
             if [ "$(date +%s)" -ge "$deadline" ]; then
               failed="$failed; no IPv$family default route on $dev"
@@ -197,7 +198,7 @@
             fi
             sleep 1
           done
-        done
+        done 3< <(printf '%s\n' "''${required[@]}" | sort -u)
         all=("''${targets[@]}")
         if [ "$gateways" = 1 ]; then
           mapfile -t -O "''${#all[@]}" all < <(
