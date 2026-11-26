@@ -359,6 +359,15 @@ in {
 
         # Real DNS resolution and data-plane traffic through the fake
         # provider's DNS-published external LoadBalancer address.
+        # The agents have no kubeconfig of their own: the test gives them
+        # their cluster's admin kubeconfig (it dials the local HAProxy).
+        with subtest("the agents get their cluster's admin kubeconfig"):
+            import base64
+            for server, agent in [(alpha, beta), (gamma, delta)]:
+                cfg = base64.b64encode(server.succeed("cat /etc/rancher/${distro}/admin-kubeconfig").encode()).decode()
+                agent.succeed(f"mkdir -p /etc/rancher/${distro} && echo {cfg} | base64 -d > ${kubeconfig}")
+                agent.succeed("kubectl get --raw /readyz | grep ok >/dev/null")
+
         with subtest("DNS-published LoadBalancer serves mTLS health"):
             for source in machines:
                 source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")
