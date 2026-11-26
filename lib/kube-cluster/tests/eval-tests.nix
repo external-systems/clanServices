@@ -1373,19 +1373,40 @@ in {
     expected = true;
   };
 
+  # K1: one generator per token, so a distro service gives an agent the
+  # agent token only.
   test_tokenGeneratorNames = {
     expr = let
-      tokens = kube.vars.mkTokenGenerators {
+      args = {
         pkgs = {
           openssl = fakePackage;
         };
         inherit instanceName;
       };
-    in
-      builtins.attrNames tokens;
+    in {
+      server = builtins.attrNames (kube.vars.mkServerTokenGenerator args);
+      agent = builtins.attrNames (kube.vars.mkAgentTokenGenerator args);
+    };
+    expected = {
+      server = ["rancher-server-token-test"];
+      agent = ["rancher-agent-token-test"];
+    };
+  };
+
+  # K15: the haproxy generator has no stats password any more.
+  test_haproxyGeneratorNoStatsPassword = {
+    expr =
+      builtins.attrNames
+      (kube.vars.mkHaproxyGenerator {
+        pkgs = {
+          openssl = fakePackage;
+          coreutils = fakePackage;
+        };
+        inherit instanceName;
+      })."rancher-haproxy-test".files;
     expected = [
-      "rancher-agent-token-test"
-      "rancher-server-token-test"
+      "kubeapi-ca.crt"
+      "kubeapi-client.pem"
     ];
   };
 
@@ -1511,13 +1532,17 @@ in {
         lbKubeapiPort = 7443;
         caCrtPath = "/run/secrets/shared/rancher-haproxy-test/kubeapi-ca.crt";
         clientPemPath = "/run/secrets/shared/rancher-haproxy-test/kubeapi-client.pem";
-        statsPasswordHash = "$6$testhash";
         healthCheckSni = "kubeapi-test.example.org";
       };
     in {
       bindsKubeapiLb = lib.hasInfix "bind 192.168.77.1:7443" cfg;
       bindsSupervisorLb = lib.hasInfix "bind 192.168.77.1:8443" cfg;
-      bindsStats = lib.hasInfix "bind [fd00:77::1]:8404" cfg;
+      # K15: the read-only stats page is on loopback, with no password
+      bindsStats = lib.hasInfix "bind 127.0.0.1:8404" cfg && lib.hasInfix "bind [::1]:8404" cfg;
+      statsNotOnNodeAddress = !(lib.hasInfix "bind [fd00:77::1]:8404" cfg);
+      noStatsPassword = !(lib.hasInfix "userlist" cfg) && !(lib.hasInfix "stats admin" cfg);
+      # K15: the health check names the kubeapi FQDN, on both backends
+      verifyhost = builtins.length (lib.splitString "verify required verifyhost kubeapi-test.example.org ca-file" cfg) == 3;
       backupFlag = lib.hasInfix "server beta-4 192.168.77.2:6443 backup" cfg;
       noBackupOnSelf = !(lib.hasInfix "server alpha-4 192.168.77.1:6443 backup" cfg);
       supervisorTargets9345 = lib.hasInfix "server beta-6 [fd00:77::2]:9345 backup" cfg;
@@ -1529,6 +1554,9 @@ in {
       bindsKubeapiLb = true;
       bindsSupervisorLb = true;
       bindsStats = true;
+      statsNotOnNodeAddress = true;
+      noStatsPassword = true;
+      verifyhost = true;
       backupFlag = true;
       noBackupOnSelf = true;
       supervisorTargets9345 = true;
@@ -3221,6 +3249,319 @@ in {
       sub6 = true;
       v6at = "fd11:1:0:0:0:0:0:53";
       v6carry = "fd11:1:0:0:0:0:1:1";
+    };
+  };
+
+  # --- Round G11 kube hardening -------------------------------------------
+
+  # K6: half-explicit CIDR pairs, pod/service overlap, and pod CIDRs
+  # smaller than Cilium's per-node /24 and /64 are eval errors.
+  test_cidrPairsAndOverlap = let
+    check = network: needle: let
+      settings = evalSettings {inherit network;};
+      resolvedCidrs = kube.render.resolveCidrs {
+        inherit settings;
+        ciliumId = 1;
+      };
+    in
+      failedAssertion (kube.assertions.mkClusterAssertions {
+        inherit instanceName settings resolvedCidrs;
+        roleMembers = oneServer;
+      })
+      needle;
+  in {
+    expr = {
+      podHalf = check {podCIDRv4 = "10.200.0.0/16";} "network.podCIDRv4 and network.podCIDRv6 together";
+      serviceHalf = check {serviceCIDRv6 = "fd10:200::/112";} "network.serviceCIDRv4 and network.serviceCIDRv6 together";
+      overlap = check {
+        podCIDRv4 = "10.200.0.0/16";
+        podCIDRv6 = "fd10:200::/56";
+        serviceCIDRv4 = "10.200.128.0/17";
+        serviceCIDRv6 = "fd10:201::/112";
+      } "pod IPv4 10.200.0.0/16 overlaps service IPv4 10.200.128.0/17";
+      podV4TooSmall = check {
+        podCIDRv4 = "10.200.0.0/25";
+        podCIDRv6 = "fd10:200::/56";
+      } "smaller than the per-node /24";
+      podV6TooSmall = check {
+        podCIDRv4 = "10.200.0.0/16";
+        podCIDRv6 = "fd10:200::/72";
+      } "smaller than the per-node /64";
+      derivedClean = lib.all (item: item.assertion || !(lib.any (n: lib.hasInfix n item.message) ["together" "overlap" "per-node"])) (kube.assertions.mkClusterAssertions {
+        inherit instanceName;
+        settings = baseSettings;
+        roleMembers = oneServer;
+        resolvedCidrs = kube.render.resolveCidrs {
+          settings = baseSettings;
+          ciliumId = 1;
+        };
+      });
+    };
+    expected = {
+      podHalf = true;
+      serviceHalf = true;
+      overlap = true;
+      podV4TooSmall = true;
+      podV6TooSmall = true;
+      derivedClean = true;
+    };
+  };
+
+  # K7: two etcd voters are refused; an even count above two warns.
+  test_evenServerCount = let
+    servers = n:
+      lib.genList (i: {
+        machineName = "s${toString i}";
+        role = "server";
+        settings = {
+          clusterInit = i == 0;
+          network = {
+            ipv4 = "10.0.0.${toString (i + 1)}";
+            ipv6 = "fd00::${toString (i + 1)}";
+          };
+        };
+      })
+      n;
+    refused = n:
+      failedAssertion (kube.assertions.mkClusterAssertions {
+        inherit instanceName;
+        settings = baseSettings;
+        roleMembers = servers n;
+      }) "two servers is refused";
+    warned = n:
+      kube.assertions.mkClusterWarnings {
+        inherit instanceName;
+        roleMembers = servers n;
+      }
+      != [];
+  in {
+    expr = map (n: {
+      inherit n;
+      refused = refused n;
+      warned = warned n;
+    }) [1 2 3 4 5 6];
+    expected = [
+      {
+        n = 1;
+        refused = false;
+        warned = false;
+      }
+      {
+        n = 2;
+        refused = true;
+        warned = false;
+      }
+      {
+        n = 3;
+        refused = false;
+        warned = false;
+      }
+      {
+        n = 4;
+        refused = false;
+        warned = true;
+      }
+      {
+        n = 5;
+        refused = false;
+        warned = false;
+      }
+      {
+        n = 6;
+        refused = false;
+        warned = true;
+      }
+    ];
+  };
+
+  # K11: the instance name is Cilium's cluster-name.
+  test_instanceNameIsCiliumClusterName = {
+    expr =
+      map (
+        name:
+          failedAssertion (kube.assertions.mkClusterAssertions {
+            instanceName = name;
+            settings = baseSettings;
+            roleMembers = oneServer;
+          }) "the instance name is the Cilium cluster name"
+      ) [
+        "k3s"
+        "prod-eu-1"
+        "a2345678901234567890123456789012"
+        "a23456789012345678901234567890123"
+        "Prod"
+        "prod_1"
+        "-prod"
+        "prod-"
+      ];
+    expected = [
+      false
+      false
+      false
+      true
+      true
+      true
+      true
+      true
+    ];
+  };
+
+  # K12: ConfigMap booleans render as "true"/"false", never "1"/"".
+  test_configMapBooleans = {
+    expr =
+      (kube.render.normalizeDoc {
+        apiVersion = "v1";
+        kind = "ConfigMap";
+        metadata.name = "x";
+        data = {
+          on = true;
+          off = false;
+          n = 3;
+          s = "keep";
+        };
+      }).data;
+    expected = {
+      on = "true";
+      off = "false";
+      n = "3";
+      s = "keep";
+    };
+  };
+
+  # K14: configOverrides cannot replace a key the service renders, nor
+  # carry a token.
+  test_configOverrideDenyList = let
+    hits = overrides:
+      failedAssertion (kube.assertions.mkConfigOverrideAssertions {
+        inherit instanceName overrides;
+        distro = "k3s";
+        ownedKeys = [
+          "tls-san"
+          "disable"
+        ];
+      }) "configOverrides may not set";
+  in {
+    expr = {
+      token = hits {token = "secret";};
+      server = hits {server = "https://elsewhere:6443";};
+      clusterCidr = hits {cluster-cidr = "10.9.0.0/16";};
+      owned = hits {tls-san = ["x"];};
+      disableMerged = hits {disable = ["traefik"];};
+      kubeletArg = hits {kubelet-arg = ["max-pods=200"];};
+    };
+    expected = {
+      token = true;
+      server = true;
+      clusterCidr = true;
+      owned = true;
+      disableMerged = false;
+      kubeletArg = false;
+    };
+  };
+
+  # K9: kubelet.extraArgs was declared and read nowhere; configOverrides
+  # `kubelet-arg` is the way.
+  test_noDeadKubeletOption = {
+    expr = (lib.evalModules {modules = [kube.interfaces.node];}).options ? kubelet;
+    expected = false;
+  };
+
+  # K2: the input rules name their sources. Manual: no interface guard;
+  # fabric: fabric links and local pod links only; etcd on servers from
+  # servers only.
+  test_firewallInputRules = let
+    members = [
+      {
+        role = "server";
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+      }
+      {
+        role = "agent";
+        ipv4 = "10.0.0.2";
+        ipv6 = "fd00::2";
+      }
+    ];
+    render = transportInterfaces: isServer:
+      kube.render.mkInputRules {
+        inherit transportInterfaces isServer members;
+        podCIDRv4 = "10.1.0.0/16";
+        podCIDRv6 = "fd10:1::/56";
+        clusterPorts = [
+          6443
+          7443
+        ];
+        memberOnlyPorts = [9345];
+      };
+  in {
+    expr = {
+      manualServer = render [] true;
+      fabricAgent = render ["wg0"] false;
+    };
+    expected = {
+      manualServer = lib.concatStringsSep "\n" [
+        "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443 } accept"
+        "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443 } accept"
+        "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept"
+        "ip6 saddr { fd00::1, fd00::2 } tcp dport { 9345 } accept"
+        "ip saddr { 10.0.0.1 } tcp dport { 2379, 2380, 2381 } accept"
+        "ip6 saddr { fd00::1 } tcp dport { 2379, 2380, 2381 } accept"
+        ""
+      ];
+      fabricAgent = lib.concatStringsSep "\n" [
+        ''iifname { "wg0", "lxc*", "cilium*" } ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443 } accept''
+        ''iifname { "wg0", "lxc*", "cilium*" } ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443 } accept''
+        ''iifname { "wg0", "lxc*", "cilium*" } ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept''
+        ''iifname { "wg0", "lxc*", "cilium*" } ip6 saddr { fd00::1, fd00::2 } tcp dport { 9345 } accept''
+        ""
+      ];
+    };
+  };
+
+  # K3: the init guard waits for the fabric and fails closed; the
+  # override file lets the operator start a new cluster.
+  test_initGuardFailsClosed = let
+    unit =
+      (kube.nixos.mkInitGuard {
+        pkgs = {
+          writeShellScript = name: text: {inherit name text;};
+          coreutils = "/nix/store/fake-coreutils";
+          bash = "/nix/store/fake-bash";
+        };
+        namePrefix = "k3s-test";
+        beforeUnit = "k3s.service";
+        etcdDir = "/var/lib/rancher/k3s/server/db/etcd";
+        peers = [
+          "10.0.0.2"
+          "fd00::3"
+        ];
+        overrideFile = "/var/lib/rancher/k3s/server/allow-new-cluster-test";
+      }).systemd.services.k3s-test-init-guard;
+    script = unit.serviceConfig.ExecStart.text;
+  in {
+    expr = {
+      inherit (unit) after;
+      inherit (unit.environment) INIT_GUARD_ETCD_DIR INIT_GUARD_PORT INIT_GUARD_PEERS INIT_GUARD_OVERRIDE INIT_GUARD_WAIT;
+      refusedMeansNoCluster = lib.hasInfix ''*"Connection refused"*) ;;'' script;
+      unknownKeepsWaiting = lib.hasInfix ''*) unknown="$unknown $peer" ;;'' script;
+      refusesAtDeadline = lib.hasInfix ''-ge "$deadline" ]'' script;
+      overrideConsumed = lib.hasInfix ''rm -f "$INIT_GUARD_OVERRIDE"'' script;
+    };
+    expected = {
+      after = [
+        "network-online.target"
+        "ifstate.service"
+        "frr.service"
+      ];
+      INIT_GUARD_ETCD_DIR = "/var/lib/rancher/k3s/server/db/etcd";
+      INIT_GUARD_PORT = "6443";
+      INIT_GUARD_PEERS = "10.0.0.2 fd00::3";
+      INIT_GUARD_OVERRIDE = "/var/lib/rancher/k3s/server/allow-new-cluster-test";
+      INIT_GUARD_WAIT = "300";
+      refusedMeansNoCluster = true;
+      unknownKeepsWaiting = true;
+      refusesAtDeadline = true;
+      overrideConsumed = true;
     };
   };
 }

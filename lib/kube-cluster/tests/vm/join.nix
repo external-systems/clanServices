@@ -448,6 +448,15 @@ in {
                 timeout=300,
             )
 
+        # --- K1: the agent holds the agent token only -------------------
+        # The server token joins the control plane; it and the ClusterMesh
+        # keys stay off the agent (SPEC.md §6.9).
+        with subtest("the agent holds no server token and no mesh keys"):
+            alpha.succeed("find /run/secrets* -path '*rancher-server-token-${distro}*' -name server-token | grep . >/dev/null")
+            beta.succeed("find /run/secrets* -path '*rancher-agent-token-${distro}*' -name agent-token | grep . >/dev/null")
+            beta.fail("find /run/secrets* -path '*rancher-server-token*' | grep . >/dev/null")
+            beta.fail("find /run/secrets* -path '*rancher-clustermesh*' | grep . >/dev/null")
+
         # --- Both nodes Ready with fabric InternalIPs (dual-stack) -------
         with subtest("both nodes Ready with dual-stack fabric InternalIPs"):
             alpha.wait_until_succeeds(

@@ -697,14 +697,24 @@ in {
   };
 
   test_generatorNamesAgentNoPki = {
-    # Agents get the join tokens, the haproxy healthcheck material, and
-    # the mesh material (CA + apiserver leaf set — SANs are eval-computed),
-    # but NEVER the PKI / admin kubeconfig generators.
+    # K1: an agent gets the agent token and the haproxy healthcheck
+    # material only: never the server token, the mesh material, the PKI
+    # or the admin kubeconfig.
     expr = builtins.attrNames gammaTransport.clan.core.vars.generators;
     expected = [
       "rancher-agent-token-k3s"
-      "rancher-clustermesh-ca-mesh"
-      "rancher-clustermesh-k3s"
+      "rancher-haproxy-k3s"
+      "state-version"
+    ];
+  };
+
+  # K1: a joining server gets the server token, but the mesh material
+  # stays on the clusterInit server (its secrets oneshot is the reader).
+  test_generatorNamesJoiningServer = {
+    expr = builtins.attrNames betaTransport.clan.core.vars.generators;
+    expected = [
+      "rancher-admin-kubeconfig-k3s"
+      "rancher-agent-token-k3s"
       "rancher-haproxy-k3s"
       "rancher-server-token-k3s"
       "state-version"
@@ -898,7 +908,8 @@ in {
       kubeapi = lib.hasInfix "bind 10.42.0.1:7443" alphaHaproxyConfig;
       kubeapi6 = lib.hasInfix "bind [fd10:42::1]:7443" alphaHaproxyConfig;
       supervisorDisabled = !(lib.hasInfix "k3s_supervisor" alphaHaproxyConfig);
-      stats = lib.hasInfix "bind 10.42.0.1:8404" alphaHaproxyConfig;
+      # K15: the stats page is on loopback
+      stats = lib.hasInfix "bind 127.0.0.1:8404" alphaHaproxyConfig;
     };
     expected = {
       kubeapi = true;
@@ -1788,6 +1799,170 @@ in {
         "2001:db8:c::c1a8"
         "2001:db8:c::2"
       ];
+    };
+  };
+
+  # --- Round G11 kube hardening -------------------------------------------
+
+  # K2: manual addresses: the cluster ports from members and pods, etcd
+  # from the servers, no blanket pod accept, no trusted fabric link.
+  test_firewallManualBySource = let
+    rules = alphaExplicit.networking.firewall.extraInputRules;
+  in {
+    expr = {
+      cluster = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443, 10250, 4240 } accept" rules;
+      cluster6 = lib.hasInfix "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443, 10250, 4240 } accept" rules;
+      etcd = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 2379, 2380, 2381 } accept" rules;
+      noBlanketPodAccept = !(lib.hasInfix ''iifname { "cilium*", "lxc*" } accept'' rules);
+      noGuard = !(lib.hasInfix "iifname" rules);
+      trusted = alphaExplicit.networking.firewall.trustedInterfaces;
+    };
+    expected = {
+      cluster = true;
+      cluster6 = true;
+      etcd = true;
+      noBlanketPodAccept = true;
+      noGuard = true;
+      trusted = [
+        "cilium_host"
+        "cilium_net"
+        "lo"
+      ];
+    };
+  };
+
+  # K2: a fabric agent opens no etcd and no API port, only on its fabric
+  # links and local pod links, and does not trust the fabric links.
+  test_firewallFabricAgent = let
+    rules = gammaTransport.networking.firewall.extraInputRules;
+  in {
+    expr = {
+      noEtcd = !(lib.hasInfix "2379" rules);
+      ports = lib.hasInfix "tcp dport { 7443, 10250, 4240 } accept" rules;
+      guard = lib.hasInfix ''iifname { "fk-gamma-1", "fk-gamma-2", "lxc*", "cilium*" } ip saddr'' rules;
+      trusted = gammaTransport.networking.firewall.trustedInterfaces;
+    };
+    expected = {
+      noEtcd = true;
+      ports = true;
+      guard = true;
+      trusted = [
+        "cilium_host"
+        "cilium_net"
+        "lo"
+      ];
+    };
+  };
+
+  # K3: the init guard waits for IfState and FRR, dials the other
+  # servers (plain addresses), and names its override file.
+  test_initGuardWaitsForFabric = let
+    guard = alphaTransport.systemd.services.k3s-k3s-init-guard;
+  in {
+    expr = {
+      afterFabric = lib.all (u: lib.elem u guard.after) [
+        "ifstate.service"
+        "frr.service"
+      ];
+      peers = guard.environment.INIT_GUARD_PEERS;
+      override = guard.environment.INIT_GUARD_OVERRIDE;
+    };
+    expected = {
+      afterFabric = true;
+      peers = "10.42.0.2";
+      override = "/var/lib/rancher/k3s/server/allow-new-cluster-k3s";
+    };
+  };
+
+  # K7: two servers are refused; one is fine.
+  test_twoServersRefused = {
+    expr = {
+      two = failedAssertion alphaExplicit "two servers is refused";
+      one = failedAssertion modesSingle "two servers is refused";
+    };
+    expected = {
+      two = true;
+      one = false;
+    };
+  };
+
+  # K11: the instance name is Cilium's cluster-name (at most 32 chars).
+  test_longInstanceNameRefused = {
+    expr = let
+      bad = mkEvaled {
+        instances.a-cluster-name-that-is-longer-than-32 = {
+          module.name = "k3s";
+          module.input = "self";
+          roles.server = {
+            settings = {
+              network.fabric = null;
+              cilium.id = 1;
+            };
+            machines.alpha.settings = {
+              clusterInit = true;
+              network = {
+                ipv4 = "10.0.0.1";
+                ipv6 = "fd00::1";
+              };
+            };
+          };
+        };
+      };
+    in
+      failedAssertion bad.config.nixosConfigurations.alpha.config "the instance name is the Cilium cluster name";
+    expected = true;
+  };
+
+  # K14: configOverrides cannot carry a token or replace a rendered key.
+  test_configOverridesDenied = let
+    evaled = mkEvaled (
+      lib.recursiveUpdate explicitInventory {
+        instances.k3s.roles.server.settings.configOverrides = {
+          token = "in-the-store";
+          tls-san = ["elsewhere"];
+          kubelet-arg = ["max-pods=200"];
+        };
+      }
+    );
+    alpha = evaled.config.nixosConfigurations.alpha.config;
+  in {
+    expr = {
+      denied = failedAssertion alpha "configOverrides may not set tls-san, token:";
+      allowed = alpha.clan.kubeClusters.k3s.renderedDistroConfig.kubelet-arg;
+    };
+    expected = {
+      denied = true;
+      allowed = ["max-pods=200"];
+    };
+  };
+
+  # K15: the stats page is read-only on loopback; the health check
+  # verifies the kubeapi FQDN.
+  test_haproxyStatsLoopbackVerifyhost = {
+    expr = {
+      loopback = lib.hasInfix "bind 127.0.0.1:8404" alphaHaproxyConfig;
+      noUserlist = !(lib.hasInfix "userlist" alphaHaproxyConfig);
+      verifyhost = lib.hasInfix "verify required verifyhost kubeapi-k3s.clan" alphaHaproxyConfig;
+    };
+    expected = {
+      loopback = true;
+      noUserlist = true;
+      verifyhost = true;
+    };
+  };
+
+  # K9: Secrets are encrypted at rest in etcd on every k3s server (rke2
+  # does it by default).
+  test_secretsEncryption = {
+    expr = {
+      init = alphaRenderedConfig.secrets-encryption;
+      joining = betaTransport.clan.kubeClusters.k3s.renderedDistroConfig.secrets-encryption;
+      agent = gammaTransport.clan.kubeClusters.k3s.renderedDistroConfig ? secrets-encryption;
+    };
+    expected = {
+      init = true;
+      joining = true;
+      agent = false;
     };
   };
 }

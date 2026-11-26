@@ -62,7 +62,10 @@
       instance = "mesh";
     };
     cilium.id = id;
+    # one server and one agent per cluster (two servers are refused,
+    # SPEC.md §6.12): the apiserver runs on both nodes
     mesh = {
+      placement = "all";
       exposure = "external-load-balancer";
       external = {
         loadBalancerClass = "cloud.fake/mesh-lb";
@@ -203,10 +206,11 @@ in {
           module.input = "self";
           roles.server = {
             settings = clusterSettings 1 dnsA;
-            machines = {
-              alpha.settings.clusterInit = true;
-              beta.settings.clusterInit = false;
-            };
+            machines.alpha.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 1 dnsA;
+            machines.beta = {};
           };
         };
         ${clusterB} = {
@@ -214,10 +218,11 @@ in {
           module.input = "self";
           roles.server = {
             settings = clusterSettings 2 dnsB;
-            machines = {
-              gamma.settings.clusterInit = true;
-              delta.settings.clusterInit = false;
-            };
+            machines.gamma.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 2 dnsB;
+            machines.delta = {};
           };
         };
       };

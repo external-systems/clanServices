@@ -6,9 +6,9 @@
 #     transport instance → ONE mesh group (D54), full peering default,
 #   - mesh.exposure = node-port, set explicitly (auto picks the internal
 #     load balancer on the fabric): the Service is type NodePort on the
-#     default 32379 with ETP Local, replicas = the selected voter count (one
+#     default 32379 with ETP Local, replicas = the selected node count (one
 #     pod per node), every selected node's stable address published (D60),
-#   - the apiserver Deployment: replicas = min(3, eligible voters) = 2,
+#   - the apiserver Deployment: replicas = min(3, eligible nodes) = 2 (placement all),
 #     REQUIRED hostname anti-affinity + nodeSelector, rolling update
 #     maxSurge=0 / maxUnavailable=1,
 #   - the clustermesh-apiserver TLS secrets come from the clan vars mesh
@@ -55,7 +55,12 @@
       instance = "mesh";
     };
     cilium.id = id;
-    mesh.exposure = "node-port";
+    # one server and one agent per cluster (two servers are refused,
+    # SPEC.md §6.12): the apiserver runs on both nodes
+    mesh = {
+      exposure = "node-port";
+      placement = "all";
+    };
   };
 in {
   name = "${distro}-clustermesh-nodeport";
@@ -116,10 +121,11 @@ in {
           module.input = "self";
           roles.server = {
             settings = clusterSettings 1;
-            machines = {
-              alpha.settings.clusterInit = true;
-              beta.settings.clusterInit = false;
-            };
+            machines.alpha.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 1;
+            machines.beta = {};
           };
         };
 
@@ -128,10 +134,11 @@ in {
           module.input = "self";
           roles.server = {
             settings = clusterSettings 2;
-            machines = {
-              gamma.settings.clusterInit = true;
-              delta.settings.clusterInit = false;
-            };
+            machines.gamma.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 2;
+            machines.delta = {};
           };
         };
       };
@@ -252,7 +259,7 @@ in {
             for m in [alpha, gamma]:
                 m.succeed("kubectl get configmap -n kube-system cilium-config -o jsonpath='{.data.routing-mode}' | grep -x native >/dev/null")
 
-        with subtest("apiserver placement: 2 replicas, one per voter"):
+        with subtest("apiserver placement: 2 replicas, one per node"):
             # --- apiserver placement (D60) ------------------------------------
             for m in [alpha, gamma]:
                 m.wait_until_succeeds(
@@ -263,7 +270,7 @@ in {
                 "kubectl get deployment -n kube-system clustermesh-apiserver -o jsonpath='{.spec.replicas}'"
             ).strip()
             assert replicas_a == "2", f"${clusterA} apiserver replicas: {replicas_a!r}"
-            # One pod per voter node (required anti-affinity + nodeSelector).
+            # One pod per node (required anti-affinity + nodeSelector).
             alpha.succeed(
                 "kubectl get pod -n kube-system -l k8s-app=clustermesh-apiserver -o jsonpath='{.items[*].spec.nodeName}' | tr ' ' '\\n' | sort | uniq -c | grep '^ *1 alpha$' >/dev/null"
             )

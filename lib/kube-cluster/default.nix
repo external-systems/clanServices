@@ -54,6 +54,7 @@
   bundle = import ./bundle.nix {inherit lib;};
   bootstrap = import ./bootstrap.nix {inherit lib;};
   haproxy = import ./haproxy.nix {inherit lib;};
+  firewall = import ./firewall.nix {inherit lib;};
   nixos = import ./nixos.nix {inherit lib;};
   vars = import ./vars.nix {inherit lib;};
   fleetChecks = import ./fleet-checks.nix {inherit lib;};
@@ -216,15 +217,17 @@ in {
       mkBundle
       mkLBService
       mkCoreDNSResources
+      normalizeDoc
       validateBundle
       unsupportedHelmValues
       ;
     inherit (haproxy) mkHaproxyConfig;
+    inherit (firewall) mkInputRules;
     inherit mkManifestLabels resolvePools;
   };
 
   assertions = {
-    inherit (assertFns) mkClusterAssertions mkPoolAssertions mkBgpAsnAssertions mkHostAsnAssertions;
+    inherit (assertFns) mkClusterAssertions mkClusterWarnings mkConfigOverrideAssertions mkPoolAssertions mkBgpAsnAssertions mkHostAsnAssertions;
   };
 
   # Bootstrap-apply oneshot fragment (D40) + the ClusterMesh secrets-apply

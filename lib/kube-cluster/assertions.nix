@@ -21,8 +21,55 @@ in {
     # every cluster member, name = "<role>/<machine>" (for the parity
     # check across all machines of all roles).
     roleSettings ? [],
+    # the resolved pod/service CIDRs (cilium.nix resolveCidrs), for the
+    # overlap and prefix-length checks; null skips them
+    resolvedCidrs ? null,
   }: let
     serverMembers = lib.filter (m: m.role == "server") roleMembers;
+    serverCount = builtins.length serverMembers;
+
+    # K6: a CIDR family pair is explicit as a whole or derived as a whole
+    # (one explicit family would leave the other null).
+    halfPair = a: b: (a == null) != (b == null);
+    resolvedList = lib.optionals (resolvedCidrs != null) (
+      lib.filter (c: c.cidr != null) [
+        {
+          name = "pod IPv4";
+          cidr = resolvedCidrs.podCIDRv4;
+        }
+        {
+          name = "pod IPv6";
+          cidr = resolvedCidrs.podCIDRv6;
+        }
+        {
+          name = "service IPv4";
+          cidr = resolvedCidrs.serviceCIDRv4;
+        }
+        {
+          name = "service IPv6";
+          cidr = resolvedCidrs.serviceCIDRv6;
+        }
+      ]
+    );
+    cidrOverlaps =
+      lib.concatMap (
+        a:
+          map (b: "${a.name} ${a.cidr} overlaps ${b.name} ${b.cidr}") (
+            lib.filter (b: a.name < b.name && cidr.overlap a.cidr b.cidr) resolvedList
+          )
+      )
+      resolvedList;
+    # Cilium's pod pool hands every node a /24 (IPv4) and a /64 (IPv6)
+    # (bundle.nix mkPodIPPoolResource maskSize), so the pod CIDRs must be
+    # at least that large.
+    podMaskViolations = lib.optionals (resolvedCidrs != null) (
+      lib.optional (
+        resolvedCidrs.podCIDRv4 != null && prefixLen resolvedCidrs.podCIDRv4 > 24
+      ) "pod IPv4 ${resolvedCidrs.podCIDRv4} is smaller than the per-node /24"
+      ++ lib.optional (
+        resolvedCidrs.podCIDRv6 != null && prefixLen resolvedCidrs.podCIDRv6 > 64
+      ) "pod IPv6 ${resolvedCidrs.podCIDRv6} is smaller than the per-node /64"
+    );
     clusterInitMembers = lib.filter (m: m.settings.clusterInit) serverMembers;
 
     memberAddrs =
@@ -104,6 +151,33 @@ in {
     {
       assertion = builtins.length clusterInitMembers == 1;
       message = "kube-cluster/${instanceName}: exactly one server must set clusterInit = true (found ${toString (builtins.length clusterInitMembers)})";
+    }
+    {
+      # K11: the instance name is Cilium's cluster-name
+      assertion = builtins.match "[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?" instanceName != null;
+      message = "kube-cluster/${instanceName}: the instance name is the Cilium cluster name: at most 32 characters, lower-case letters, digits and '-', starting and ending with a letter or digit";
+    }
+    {
+      # K7: two etcd voters need both for quorum, so losing either stops
+      # the cluster: worse than one
+      assertion = serverCount != 2;
+      message = "kube-cluster/${instanceName}: two servers is refused: etcd needs both for quorum, so the loss of either stops the cluster. Use one server or three (make the second machine an agent)";
+    }
+    {
+      assertion = !(halfPair settings.network.podCIDRv4 settings.network.podCIDRv6);
+      message = "kube-cluster/${instanceName}: set network.podCIDRv4 and network.podCIDRv6 together, or neither (both are derived from cilium.id)";
+    }
+    {
+      assertion = !(halfPair settings.network.serviceCIDRv4 settings.network.serviceCIDRv6);
+      message = "kube-cluster/${instanceName}: set network.serviceCIDRv4 and network.serviceCIDRv6 together, or neither (both are derived from cilium.id)";
+    }
+    {
+      assertion = cidrOverlaps == [];
+      message = "kube-cluster/${instanceName}: the pod and service CIDRs must not overlap: ${lib.concatStringsSep "; " cidrOverlaps}";
+    }
+    {
+      assertion = podMaskViolations == [];
+      message = "kube-cluster/${instanceName}: ${lib.concatStringsSep "; " podMaskViolations}";
     }
     {
       assertion =
@@ -202,6 +276,50 @@ in {
             == transport.uniformityKey transportFacts.${builtins.head (builtins.attrNames transportFacts)}
         ) (lib.tail (builtins.attrNames transportFacts));
       message = "kube-cluster/${instanceName}: node_transport profiles differ across members — one transport instance must present ONE uniform route-exchange/capability profile (D58)";
+    }
+  ];
+
+  # K7: an even number of etcd voters above two tolerates no more
+  # failures than one voter less. A list of warning strings.
+  mkClusterWarnings = {
+    instanceName,
+    roleMembers,
+  }: let
+    serverCount = builtins.length (lib.filter (m: m.role == "server") roleMembers);
+  in
+    lib.optional (serverCount > 2 && lib.mod serverCount 2 == 0)
+    "kube-cluster/${instanceName}: ${toString serverCount} servers tolerate the loss of no more servers than ${toString (serverCount - 1)} would; an odd number of servers is the etcd norm";
+
+  # K14: configOverrides merge last into the distro's config.yaml, so a
+  # key the service renders would be replaced silently, and a token would
+  # land in the Nix store. ownedKeys: the keys this service renders for
+  # the machine's role (`disable` is merged, not replaced).
+  mkConfigOverrideAssertions = {
+    instanceName,
+    distro,
+    overrides,
+    ownedKeys,
+  }: let
+    denied = lib.unique (
+      lib.filter (k: k != "disable") ownedKeys
+      ++ [
+        "token"
+        "token-file"
+        "agent-token"
+        "agent-token-file"
+        "server"
+        "cluster-init"
+        "cluster-cidr"
+        "service-cidr"
+        "cluster-dns"
+        "node-ip"
+      ]
+    );
+    hits = lib.filter (k: lib.elem k denied) (builtins.attrNames overrides);
+  in [
+    {
+      assertion = hits == [];
+      message = "${distro}/${instanceName}: configOverrides may not set ${lib.concatStringsSep ", " hits}: the service renders these keys (an override would replace them silently, and a token would land in the Nix store)";
     }
   ];
 

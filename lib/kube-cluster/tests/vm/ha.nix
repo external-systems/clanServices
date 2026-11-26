@@ -411,6 +411,65 @@ in {
             )
             for m in machines:
                 m.wait_until_succeeds("cilium status", timeout=300)
+
+        # --- The first-server guard (SPEC.md §6.10) -------------------------
+        # A drop-in points the guard at an etcd directory that does not
+        # exist, so it decides as on a reinstalled clusterInit server while
+        # the real server keeps running. A shorter deadline keeps the
+        # suite quick.
+        import time
+
+        guard = "${distro}-${distro}-init-guard"
+        override = "/var/lib/rancher/${distro}/server/allow-new-cluster-${distro}"
+
+        def guard_dropin(extra=""):
+            alpha.succeed(
+                f"mkdir -p /run/systemd/system/{guard}.service.d && "
+                f"printf '[Service]\\nEnvironment=INIT_GUARD_ETCD_DIR=/var/lib/no-etcd INIT_GUARD_WAIT=30 {extra}\\n' "
+                f"> /run/systemd/system/{guard}.service.d/test.conf && systemctl daemon-reload"
+            )
+
+        with subtest("init guard: a live cluster answers, the guard refuses"):
+            guard_dropin()
+            alpha.fail(f"systemctl start {guard}")
+            alpha.succeed(f"journalctl -u {guard} --no-pager | grep 'answers on port 6443' >/dev/null")
+
+        with subtest("init guard: peers unreachable, the guard waits and still refuses"):
+            # the fabric toward the API ports is held down: SYNs time out
+            alpha.succeed(
+                "nft add table inet k3hold && "
+                "nft add chain inet k3hold out '{ type filter hook output priority 0; }' && "
+                "nft add rule inet k3hold out ip daddr '{ 192.168.77.2, 192.168.77.3 }' tcp dport 6443 drop"
+            )
+            started = time.monotonic()
+            alpha.fail(f"systemctl start {guard}")
+            waited = time.monotonic() - started
+            assert waited >= 28, f"the guard gave up after {waited:.0f} s, not after its 30 s deadline"
+            alpha.succeed(f"journalctl -u {guard} --no-pager | grep 'did not answer for 30 s: 192.168.77.2 192.168.77.3' >/dev/null")
+            alpha.succeed("nft delete table inet k3hold")
+            # no route at all is "unknown" too, never "no cluster"
+            alpha.succeed("ip route add unreachable 192.168.77.2/32 && ip route add unreachable 192.168.77.3/32")
+            alpha.fail(f"systemctl start {guard}")
+            alpha.succeed("ip route del unreachable 192.168.77.2/32 && ip route del unreachable 192.168.77.3/32")
+
+        with subtest("init guard: reachable peers with no API let the server start"):
+            # 2381 (etcd metrics) is open to servers and listens on
+            # loopback only: every peer refuses the connection
+            guard_dropin("INIT_GUARD_PORT=2381")
+            alpha.succeed(f"systemctl start {guard}")
+
+        with subtest("init guard: the override file allows a start once"):
+            guard_dropin()
+            alpha.succeed(f"touch {override}")
+            alpha.succeed(f"systemctl start {guard}")
+            alpha.fail(f"test -e {override}")
+            alpha.fail(f"systemctl start {guard}")
+
+        with subtest("init guard: back to normal"):
+            alpha.succeed(f"rm -r /run/systemd/system/{guard}.service.d && systemctl daemon-reload")
+            alpha.succeed(f"systemctl start {guard}")
+            # the guard's runs never touched the running server
+            alpha.succeed("systemctl is-active ${serverUnit}.service")
         print("${lib.toUpper distro}_HA_OK")
     except Exception:
         for m in machines:
