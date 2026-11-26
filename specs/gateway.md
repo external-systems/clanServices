@@ -2827,3 +2827,59 @@ What these cost:
 
 ### 17.2 Evidence (2026-11-26, euc-hel-0)
 
+Each line is one run, a sample (§12.4). Every suite ran alone on
+euc-hel-0 with `--rebuild`.
+
+- **`checks.clat-follow`** (`CLAT_FOLLOW_SIM_OK`, static, no VM): 200
+  seeded runs at 10 % loss towards the candidate, the slowest move
+  64.0 s after the gateway went silent. The old script, 40 seeded
+  runs each: median 87 s at 2 % loss, 201 s at 5 %, 1 049 s at 10 %
+  (the slowest at 10 % had not moved after an hour).
+- **`nat-gateway`** (`NAT_GATEWAY_OK`, passed, 536 s):
+  - `NAT_GATEWAY_CLAT_RETRY_OK`: an IfState restart while the CLAT
+    unit could not start; the follower kept its PID, the unit came
+    back by itself (`NRestarts` grew), and the follower then moved a
+    CLAT off a /96 nobody names after 61.1 s.
+  - `NAT_GATEWAY_POOL4_OK`: the health state read 64 436 ports per
+    protocol; with ten UDP ports and twenty flows it read
+    `{"ports": 10, "used": 10, "percent": 100.0}`, logged the 95 %
+    band, and the beacon stayed. A restart made a ten-port pool4 and a
+    flushed pool4 whole again; a third restart left it alone.
+  - The first run failed in this phase: the health check read pool4's
+    port range from the wrong CSV columns (fixed; the columns are in
+    `upstream-facts.md`).
+- **`nat-gateway-failover`** (`NAT_GATEWAY_FAILOVER_OK`, passed,
+  2 223 s): `NAT_GATEWAY_LOSSY_CANDIDATE_OK`: the current gateway's
+  beacon dropped in silence and 10 % loss towards the other: the CLAT
+  moved 67.2 s later, once, and stayed when the old beacon answered
+  again. The timings of round G8 held: a client moved 62.8 s after a
+  crash; withdrawn 32.4 s after the targets died, 31.5 s after the
+  translator went, 36.2 s after 80 % loss began; back 113.6 to
+  114.2 s after a clean upstream. The first run failed one check of
+  the deploy phase: "resumed up" is no longer the journal's last line
+  (the pool4 line follows); the check now reads the first line of
+  that run of the unit.
+- **`router`** (`ROUTER_OK`, passed, 380 s). The first run failed the
+  hook's failure phase: a failed run is now retried by systemd, so
+  the unit waits in `auto-restart` instead of `failed`; the helper
+  accepts both, and corerad's restart still waits for a run that
+  loads every table.
+- **`router-kube`** (passed, 384 s), **`nat-gateway-kube`** (passed,
+  282 s), **`rke2-clat`** (passed, 887 s), **`k3s-clat-mapped`**
+  (passed, 321 s; it shares the changed reboot phase).
+- **`k3s-clat`** (passed, 684 s). Two runs before it failed in
+  "alpha reboots": the pod check's `kubectl exec` into beta's pod got
+  `502 ... failed to find Session for client beta`. Beta's k3s agent
+  had not yet dialled its tunnel to the rebooted server (it waits
+  behind TCP's SYN backoff, up to about 2 min; in the passing run on
+  `main` beside it, beta also sat in one dial for 134 s and connected
+  by luck of timing). Nothing of this round is on that path (the
+  CLAT and the follower were up 2 s into the boot). The phase now
+  waits up to 180 s for `kubectl exec` into each pod before the
+  unchanged pod-network assertion.
+- **Grepped for crashes:** every Python traceback in these logs is a
+  test client's expected timeout (`must fail`, the pool4 exhaustion)
+  or the router suite's injected `systemctl` failure; no bgpd
+  assertion, no core dump.
+- **Not run:** `gateway-dual-wan`, `gateway-wan`, `netif-v6only`,
+  `<distro>-v6only` use none of the changed code.

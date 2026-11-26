@@ -1151,7 +1151,8 @@ in {
             machine.succeed("systemctl start nat64-health.service")
             took = seconds_until(client, names_prefix(gateway), limit=60)
             assert took is not None and took < 20, took
-            machine.succeed("journalctl -b -u nat64-health -o cat --no-pager | tail -n 1 | grep 'resumed up' >/dev/null")
+            # in this run of the unit (its first line; a pool4 line follows since round G11)
+            machine.succeed("journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value nat64-health.service) | grep nat64-health: | sed -n 1p | grep 'resumed up' >/dev/null")
             state = json.loads(machine.succeed("cat /run/nat64-gateway/health.json"))
             print(f"FINDING the health state file: {state}")
             assert state["state"] == "up" and len(state["targets"]) == 3, state

@@ -221,6 +221,10 @@ def handle(text):
             failed.append(name)
             print(f"router-prefix: table {name} did not load: {done.stderr.decode().strip()}", flush=True)
 
+    if failed:
+        # corerad waits for the run that loads every table, as before
+        sys.exit(f"router-prefix: tables {failed} did not load; systemd runs the hook again")
+
     digest = hashlib.sha256(conf.encode()).hexdigest()
     restarted = read(APPLIED) != digest
     if restarted:
@@ -229,8 +233,6 @@ def handle(text):
         subprocess.run(["systemctl", "--no-block", "try-restart", "corerad.service"], check=True, timeout=30)
         write(APPLIED, digest)
     print(f"router-prefix: current {current}, retired {sorted(state['retired'])}, service {public}, corerad {'restarted' if restarted else 'unchanged'}, delegated {prefixes}, table {'replaced' if replaced else 'unchanged'}{' ' + ', '.join(replaced) if replaced else ''}", flush=True)
-    if failed:
-        sys.exit(f"router-prefix: tables {failed} did not load; systemd runs the hook again")
 
 
 for _ in range(100):

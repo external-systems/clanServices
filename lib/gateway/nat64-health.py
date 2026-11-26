@@ -96,10 +96,11 @@ def pool4():
         if ranges is None or held is None:
             return None
         ports = 0
+        # Jool 4.1: Mark,Protocol,Address,Min port,Max port,Iterations,Iterations fixed
         for entry in ranges:
             fields = entry.split(",")
             try:
-                ports += int(fields[-1]) - int(fields[-2]) + 1
+                ports += int(fields[4]) - int(fields[3]) + 1
             except (ValueError, IndexError):
                 continue
         usage[proto] = {"ports": ports, "used": len(held), "percent": round(100 * len(held) / ports, 1) if ports else None}

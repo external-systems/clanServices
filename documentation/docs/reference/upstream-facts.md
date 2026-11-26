@@ -88,4 +88,17 @@ read the section of a component before changing code that touches it.
   way; tests use `tests/ifstate-noop.nix`.
 - A test node that sends RAs must forward IPv6, or Linux hosts drop it
   as default router seconds after first use (`specs/netif.md` §7).
+- nftables 1.1.6: a named set with `flags interval` refuses two
+  elements that overlap (an address inside a prefix) with
+  `conflicting intervals specified`; with `auto-merge` they load as one
+  interval, and an anonymous set merges them by itself. A dynamic set
+  takes `ip6 saddr & ffff:ffff:ffff:ffff::` as its key in `update`
+  and in a lookup (`nft -c` in a user namespace, 2026-11-26;
+  `nat-gateway` loads the rules, specs/gateway.md §17).
+- Jool 4.1.15: `jool pool4 display --csv --no-headers` prints
+  `Mark,Protocol,Address,Min port,Max port,Iterations,Iterations fixed`,
+  one line per range; `jool bib display --csv --no-headers` one line per
+  held transport address, so its line count is the ports in use; `jool
+  stats display --all --csv` has `JSTAT_BIB_ENTRIES` and
+  `JSTAT_SESSIONS` (`nat-gateway`, `NAT_GATEWAY_POOL4_OK`).
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).
