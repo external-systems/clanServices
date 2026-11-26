@@ -446,11 +446,16 @@ in {
             waited = time.monotonic() - started
             assert waited >= 28, f"the guard gave up after {waited:.0f} s, not after its 30 s deadline"
             alpha.succeed(f"journalctl -u {guard} --no-pager | grep 'did not answer for 30 s: 192.168.77.2 192.168.77.3' >/dev/null")
-            alpha.succeed("nft delete table inet k3hold")
-            # no route at all is "unknown" too, never "no cluster"
-            alpha.succeed("ip route add unreachable 192.168.77.2/32 && ip route add unreachable 192.168.77.3/32")
+            alpha.succeed("nft flush chain inet k3hold out")
+            # "no route to host" is unknown too, never "no cluster" (only
+            # the API port: etcd keeps its peers, so the server lives)
+            alpha.succeed(
+                "nft add rule inet k3hold out ip daddr '{ 192.168.77.2, 192.168.77.3 }' tcp dport 6443 "
+                "reject with icmp type host-unreachable"
+            )
             alpha.fail(f"systemctl start {guard}")
-            alpha.succeed("ip route del unreachable 192.168.77.2/32 && ip route del unreachable 192.168.77.3/32")
+            alpha.succeed(f"journalctl -u {guard} --no-pager | grep -c 'did not answer for 30 s' | grep -x 2 >/dev/null")
+            alpha.succeed("nft delete table inet k3hold")
 
         with subtest("init guard: reachable peers with no API let the server start"):
             # 2381 (etcd metrics) is open to servers and listens on
