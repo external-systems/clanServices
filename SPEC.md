@@ -4,6 +4,33 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 58 (2026-11-26): round G11, hardening of the network stack
+under Kubernetes.** A review of `main` (score 72/100) found 50
+defects, most in the recovery paths (rollback, restart, re-apply,
+failover). The owner approved all of them; K13 (k3s/rke2
+de-duplication) and R7 (`externalTransit` probe) are their own PRs.
+Where each contract lives: netif `specs/netif.md` (round G11 summary,
+N25), gateway `specs/gateway.md` §17, kube and fabric below (D25,
+D40, D63, §6.9–§6.12).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| N1–N4, N6, N8 | The lockout guard could record a bad config as last-good, left a rolled-back DHCP link without a client, passed with nothing to check, never re-checked a rollback | Rollback marker; transient dhcpcd on rollback; last-good defaults per family; re-probe and re-apply when the fault is outside; `ExecStopPost` runs the guard after a failed apply | `netif-guard`, `netif-dhcp`, `netif-v6only` |
+| N5, N7, N9, N10 | Members inherited a default route; an absent NIC held `network-online` 90 s; IPv6 spellings compared unequal; addresses were plain strings | Fixed; address option types from `lib/ip.nix` | nix-unit (netif `underlay.*`) |
+| K1 | Server token and mesh keys on every node | Server token on servers, mesh material on the `clusterInit` server only | `<distro>-join` |
+| K2 | Cluster ports open on every interface in manual mode; pods reached every host port | `lib/kube-cluster/firewall.nix`: ports by source (members, pod CIDRs); etcd servers-only | `<distro>-single` (outside host refused) |
+| K3 | Init guard failed open | Ordered after IfState/FRR; refuses unless every peer refuses the connection; override file `/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>` | `<distro>-ha` (five phases) |
+| K4, K5, K8 | Bundle not re-applied on deploy; no prune; endless retry; keys on a command line | D40 revised: re-applied on change, CRDs awaited, labelled prune while `bootstrap.apply`, bounded retry, `data` Secrets, `--rawfile` | `<distro>-single` |
+| K6, K7, K9, K11, K12, K14, K15 | Missing CIDR/voter/name checks; no k3s secrets encryption; dead `kubelet.extraArgs`; `"1"` booleans; overridable rendered keys; dead HAProxy stats admin | Assertions; two servers refused; k3s `secrets-encryption`; D25 marked planned; stats on loopback; `verifyhost` | nix-unit |
+| K10 | 10-year admin certificate, fixed serials, rke2 CA copied into the live TLS dir | Admin 365 days (renew: `clan vars generate --regenerate --generator rancher-admin-kubeconfig-<i>` on a branch); random serials; rke2 stages a new CA set | `<distro>-single`; probe (rke2 refuses CAs newer than its datastore) |
+| R1 | Pod routes did not cross between dedicated spines | One transit set on both ends | nix-unit `spinePair` |
+| R2 | §16.3 said GR covers an FRR restart | GR covers a bgpd restart; a full restart is a race at the peer; a deploy reloads | `k3s-frr-failure` (`FRR_DEPLOY_RELOADS_OK`, `FRR_FULL_RESTART_OK`) |
+| R3–R6, R8–R11 | Restarting route limits; hostname endpoints dropped silently; fabric links trusted; one-sided overrides; duplicated FRR config; open upstream import; hard-coded pod masks | `warning-only`; hostnames an eval error; `trust = false`, forward filter; symmetric overrides; shared prefix-lists; `acceptedPrefixes`, `ttlSecurity`; `podMaskSize*` export | `routed-fabric` (`ROUTED_FABRIC_UNTRUSTED_OK`, `ROUTED_FABRIC_FORWARD_FILTER_OK`), nix-unit |
+| G1–G14 | See `specs/gateway.md` §17 | — | `nat-gateway*`, `router*`, `*-clat` |
+
+K7 changed the clustermesh fixtures to one server and one agent per
+cluster. Evidence of the full run: the PR of this round.
+
 **Round 57 (2026-11-25): the review's findings are fixed**
 (`specs/gateway.md` round G10, §16.3; owner: "apply all fixes").
 - **Graceful restart.** The Cilium session: `gracefulRestart` in the

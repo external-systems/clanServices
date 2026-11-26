@@ -10,7 +10,38 @@ breaks in the two setups you plan to run?**
 Stability counts more than fast failover. The contract version is
 `specs/gateway.md` §16.
 
-## The short answer
+## Round G11 (2026-11-26): the whole network stack
+
+A second review read netif, routed-fabric, k3s, rke2 and the gateway
+services together. It scored `main` 72 of 100 and found 50 defects,
+most of them in what happens *after* something fails: a rollback, a
+restart, a re-apply, a failover. You approved every fix. All are in.
+
+- **Lockout guard (netif).** It could record a bad network as good,
+  leave a DHCP link with no address after a rollback, and pass with
+  nothing to check. Fixed; it now also re-checks a rollback and puts
+  the new network back when the fault is outside the machine.
+- **Secrets by role.** Agents no longer hold the server join token or
+  the ClusterMesh keys.
+- **Ports by source.** The cluster ports answer members and pods only;
+  etcd answers servers only. Fabric links are no longer trusted.
+- **First server fails closed.** A first server that cannot reach its
+  peers does not start a second cluster. To force a start, create
+  `/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>`.
+- **Deploys reach the cluster.** A changed bundle is applied again,
+  removed objects are pruned, and failed applies stop retrying.
+- **Certificates.** The admin kubeconfig now lasts one year; RKE2 no
+  longer copies a new CA into a running cluster (it would not start).
+- **Fabric.** Pod routes cross between dedicated spines; hostname
+  endpoints are refused; a full FRR restart is documented as a race.
+- **Gateways.** The CLAT follower survives a failed restart and moves
+  under packet loss; the port pool is protected and its use is shown.
+
+Out of this round: the k3s/rke2 de-duplication and the
+`externalTransit` probe, each its own PR. Contract tables: SPEC.md
+round 58, `specs/netif.md`, `specs/gateway.md` §17.
+
+## The short answer (round G9/G10)
 
 - **The NAT gateway design held.** Three holes were found and closed.
 - **The router did not fit your home box.** It is rebuilt to share a
