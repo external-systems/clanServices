@@ -6,9 +6,13 @@
 # pkgs ("attribute 'bash' missing").
 inputs:
   org-pkgs:
-    url: github:external-systems/pkgs/7b60ddc809b294a5c73c0d5117f7d553024828fb
+    url: github:external-systems/pkgs/0347d95155ef9fc62c044a62f9587b1c84913f6c
   nixpkgs:
     follows: org-pkgs/nixpkgs
+  # The org shell's git hooks, required in every repo (checks.git-hooks).
+  # devenv reads inputs from this file only.
+  git-hooks:
+    follows: org-pkgs/git-hooks
 imports:
   # The org shell: fmt, check, sync-locks, docs, slides; devenv up serves
   # docs and slides.
