@@ -114,21 +114,15 @@ in {
     };
   };
 
-  # A host on alpha's LAN that is not a cluster member, with a route to
-  # alpha's node address.
+  # A host on alpha's LAN that is not a cluster member (the test driver's
+  # own address on eth1), with a route to alpha's node address.
   nodes.outside = {pkgs, ...}: {
-    imports = [
-      (import ../../../../tests/ifstate-vm.nix {
-        ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
-        addresses = ["192.168.1.9/24"];
-        routes = [
-          {
-            to = "192.168.77.1/32";
-            via = "192.168.1.1";
-            dev = "eth1";
-          }
-        ];
-      })
+    networking.interfaces.eth1.ipv4.routes = [
+      {
+        address = "192.168.77.1";
+        prefixLength = 32;
+        via = "192.168.1.1";
+      }
     ];
     environment.systemPackages = [pkgs.netcat];
   };
