@@ -10,7 +10,38 @@ breaks in the two setups you plan to run?**
 Stability counts more than fast failover. The contract version is
 `specs/gateway.md` §16.
 
-## The short answer
+## Round G11 (2026-11-26): the whole network stack
+
+A second review read netif, routed-fabric, k3s, rke2 and the gateway
+services together. It scored `main` 72 of 100 and found 50 defects,
+most of them in what happens *after* something fails: a rollback, a
+restart, a re-apply, a failover. You approved every fix. All are in.
+
+- **Lockout guard (netif).** It could record a bad network as good,
+  leave a DHCP link with no address after a rollback, and pass with
+  nothing to check. Fixed; it now also re-checks a rollback and puts
+  the new network back when the fault is outside the machine.
+- **Secrets by role.** Agents no longer hold the server join token or
+  the ClusterMesh keys.
+- **Ports by source.** The cluster ports answer members and pods only;
+  etcd answers servers only. Fabric links are no longer trusted.
+- **First server fails closed.** A first server that cannot reach its
+  peers does not start a second cluster. To force a start, create
+  `/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>`.
+- **Deploys reach the cluster.** A changed bundle is applied again,
+  removed objects are pruned, and failed applies stop retrying.
+- **Certificates.** The admin kubeconfig now lasts one year; RKE2 no
+  longer copies a new CA into a running cluster (it would not start).
+- **Fabric.** Pod routes cross between dedicated spines; hostname
+  endpoints are refused; a full FRR restart is documented as a race.
+- **Gateways.** The CLAT follower survives a failed restart and moves
+  under packet loss; the port pool is protected and its use is shown.
+
+Out of this round: the k3s/rke2 de-duplication and the
+`externalTransit` probe, each its own PR. Contract tables: SPEC.md
+round 58, `specs/netif.md`, `specs/gateway.md` §17.
+
+## The short answer (round G9/G10)
 
 - **The NAT gateway design held.** Three holes were found and closed.
 - **The router did not fit your home box.** It is rebuilt to share a
@@ -50,7 +81,7 @@ breaks. Contract: `specs/gateway.md` §16.3 and SPEC.md round 57.
 | # | What was wrong | Now | Proof |
 |---|---|---|---|
 | 1 | A restart of Cilium on a node looked like a dead node: its routes vanished from every other node | BGP graceful restart between Cilium and FRR. The routes stay for up to 120 s while Cilium is away | `k3s-frr-failure` (`FRR_CILIUM_RESTART_OK`) |
-| 2 | A restart of FRR took a manager off the cluster network | Graceful restart on the cluster-network sessions too. The kernel keeps the routes while FRR is away. A node that is really dead is still dropped fast: BFD sees it | `k3s-frr-failure` (`FRR_DEAD_NODE_OK`) |
+| 2 | A restart of FRR took a manager off the cluster network | Graceful restart on the cluster-network sessions too. The kernel keeps the routes while bgpd is away. A node that is really dead is still dropped fast: BFD sees it. Corrected in round G11: this covers bgpd only. A restart of all of FRR may look like a dead node (a race); a deploy only reloads FRR | `k3s-frr-failure` (`FRR_DEAD_NODE_OK`, `FRR_FULL_RESTART_OK`, `FRR_DEPLOY_RELOADS_OK`) |
 | 3 | Members in different places got LAN timers unless you set `site` | `site` is empty by default. Fast timers only when **both ends name the same site**. Everything else gets the slow, safe timers | eval `test_stabilityProfilesAndRecovery` |
 
 !!! note "What this means for you"

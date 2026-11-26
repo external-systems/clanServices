@@ -94,17 +94,33 @@ relayed traffic from a machine that was not a client.
 - A destination inside a private IPv4 range is refused.
 - So is a destination that is the gateway's own IPv4 address: the
   translator is no way into the gateway itself.
-- **A rate limit per client address**, in two tiers:
+- **A rate limit per client /64**, in two tiers:
 
   | Tier | New connections | Packets |
   |---|---|---|
   | `default` | 50 a second, burst 200 | 20 000 a second, burst 40 000 |
-  | `trusted` | 1 000 a second, burst 4 000 | 200 000 a second, burst 400 000 |
+  | `trusted` | 200 a second, burst 4 000 | 200 000 a second, burst 400 000 |
 
   Members of a Kubernetes cluster are `trusted` without a setting. A
-  node's pods share its tier. The limit is on a source address, which
-  is not a credential: a spoofer of a trusted address gets the higher
+  node's pods share its tier. The limit is on a source /64, which is
+  not a credential: a spoofer of a trusted address gets the higher
   limit.
+  - **Why a /64:** a client that owns a /64 could otherwise take a
+    new meter entry for every address, fill the meter, and lock out
+    every other client of its tier. Clients that share a /64 share
+    its limit.
+  - **Why 200 new connections a second:** each gateway has one public
+    IPv4, so about 64 000 ports per protocol. A UDP mapping lives 5
+    minutes. 4 000 at once plus 200 a second for 5 minutes is 64 000:
+    one client cannot fill the pool alone.
+- **A full port pool is visible, not acted on.** The health check
+  reads how many ports Jool holds per protocol every 10 s. It writes
+  the numbers to its state file and logs when a protocol passes 50, 80
+  or 95 %. It does not withdraw the beacon for it: every client would
+  move to the other gateway and fill that one.
+- A client source inside another client's prefix is refused when the
+  two have different limits (a client with its own limit, or the
+  other tier).
 - **Every number can be changed**, the most specific setting wins:
 
   ```nix
@@ -125,8 +141,10 @@ relayed traffic from a machine that was not a client.
   never looks sick, and a sick one never looks healthy, given time to
   settle. Failover takes about a minute and a half.
 - **Each gateway checks itself.** Once a second it pings its targets
-  (three or more, in different networks) through its own translator.
-  A second is good when two targets answer.
+  (three or more public IPv4 addresses, in different networks) through
+  its own translator. A second is good when two targets answer
+  (`health.quorum`; `health.down` and `health.up` set the windows
+  below).
   - It counts as **sick** when half of the last 60 seconds were bad: a
     dead upstream after 30 s, a very lossy one soon after.
   - It counts as **healthy again** only after 120 clean seconds. One
@@ -139,8 +157,12 @@ relayed traffic from a machine that was not a client.
   else; it is not a DNS server for the client.
 - **A client's CLAT follows a live gateway.** A small check asks the
   beacons. When its gateway's beacon has not answered for 60 s, it
-  moves the CLAT to a gateway whose beacon answers. It never moves back
-  on its own. When no beacon answers it stays where it is.
+  moves the CLAT to a gateway whose beacon answered 5 of the last 10
+  rounds, so a little loss towards that gateway does not stop the
+  move. It never moves back on its own. When no beacon answers it stays
+  where it is, and the 60 s keep counting.
+- **The CLAT's route MTU** is the uplink's MTU less 20 (1480 on a
+  1500 link). `clat.mtu` sets it by hand.
 - **A beacon is believed only for its own prefix.** The client knows
   each gateway's prefix from the inventory. An answer that names
   another prefix counts as silence, so a forged answer cannot send a
@@ -174,8 +196,9 @@ which pod sent a packet.
 
 | Suite | What it shows |
 |---|---|
-| `nat-gateway` | two gateways, a `default`, a `trusted` and a client with its own limit, an outsider: translation, the allowlist, the limits, the beacon; the gateway's own IPv4 ports stay closed to clients; a changed prefix or CLAT address is applied; a beacon that names a foreign prefix is ignored |
-| `nat-gateway-failover` | the same machines when something fails: 30 % and 80 % loss, one target dead or flapping, all targets dead, a broken translator, a dead gateway, a deploy, reboots |
+| `nat-gateway` | two gateways, a `default`, a `trusted` and a client with its own limit, an outsider: translation, the allowlist, the limits, the beacon; the gateway's own IPv4 ports stay closed to clients; a changed prefix or CLAT address is applied; a beacon that names a foreign prefix is ignored; a failed CLAT start leaves the follower running; a full port pool is logged, and the next start repairs a broken one |
+| `nat-gateway-failover` | the same machines when something fails: 30 % and 80 % loss, one target dead or flapping, all targets dead, a broken translator, a dead gateway, a silent beacon with 10 % loss towards the other gateway, a deploy, reboots |
+| `checks.clat-follow` | the follower's rule, simulated: a move about 60 s after its gateway went silent at 10 % loss towards the other, none at 4 answers of 10, a silent round does not restart the wait |
 | `nat-gateway-kube` | a gateway that is a k3s node, and a node behind it: pods on both reach IPv4; two masquerades share one public IPv4 under load; no NodePort on the public IPv4 |
 | `k3s-clat`, `rke2-clat` | a two-node cluster on IPv6-only cards behind the service: pods reach IPv4 through the node's CLAT, IPv6 through the card |
 

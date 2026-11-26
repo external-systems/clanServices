@@ -254,8 +254,10 @@ in {
         underlay = {
           module.name = "internet";
           roles.default.machines = {
-            alpha.settings.host = "alpha";
-            beta.settings.host = "beta";
+            # IP literals: a hostname endpoint is an eval error
+            # (routed-fabric R4)
+            alpha.settings.host = "192.168.1.1";
+            beta.settings.host = "192.168.1.2";
           };
         };
 
@@ -447,6 +449,15 @@ in {
                 "echo show stat | socat - UNIX-CONNECT:/run/haproxy/haproxy.sock | grep '^${distro}_api,alpha-4,' | grep ',UP,' >/dev/null",
                 timeout=300,
             )
+
+        # --- K1: the agent holds the agent token only -------------------
+        # The server token joins the control plane; it and the ClusterMesh
+        # keys stay off the agent (SPEC.md §6.9).
+        with subtest("the agent holds no server token and no mesh keys"):
+            alpha.succeed("find /run/secrets* -path '*rancher-server-token-${distro}*' -name server-token | grep . >/dev/null")
+            beta.succeed("find /run/secrets* -path '*rancher-agent-token-${distro}*' -name agent-token | grep . >/dev/null")
+            beta.fail("find /run/secrets* -path '*rancher-server-token*' | grep . >/dev/null")
+            beta.fail("find /run/secrets* -path '*rancher-clustermesh*' | grep . >/dev/null")
 
         # --- Both nodes Ready with fabric InternalIPs (dual-stack) -------
         with subtest("both nodes Ready with dual-stack fabric InternalIPs"):

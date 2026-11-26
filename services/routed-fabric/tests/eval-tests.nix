@@ -7,6 +7,36 @@
   ...
 }: let
   fabric = import ../../../lib/kube-cluster/fabric.nix {inherit lib;};
+  frr = import ../../../lib/kube-cluster/frr.nix {inherit lib;};
+  # The prefix-list entries a route-map of a rendered frr.conf matches
+  # (every `match ... prefix-list` of every entry of the map).
+  policyEntries = conf: routeMap: let
+    lines = lib.splitString "\n" conf;
+    indexed = lib.imap0 (index: line: {inherit index line;}) lines;
+    listNames = map (
+      entry: lib.last (lib.splitString " " (lib.trim (builtins.elemAt lines (entry.index + 1))))
+    ) (builtins.filter (entry: lib.hasPrefix "route-map ${routeMap} permit " entry.line) indexed);
+  in
+    lib.concatMap (
+      name:
+        map (line: lib.concatStringsSep " " (lib.drop 1 (lib.splitString " permit " line))) (
+          builtins.filter (
+            line: (lib.hasPrefix "ip prefix-list ${name} " line || lib.hasPrefix "ipv6 prefix-list ${name} " line) && lib.hasInfix " permit " line
+          )
+          lines
+        )
+    )
+    listNames;
+  # the session policy of one adjacency on one machine
+  sessionPolicy = config: localName: remoteName: let
+    name = frr.symbol (fabric.adjacencyKey "fleet" localName remoteName);
+    conf = config.services.frr.config;
+  in
+    lib.genAttrs ["rin4" "rin6" "rout4" "rout6"] (suffix: policyEntries conf "${name}_${suffix}");
+  aclOf = config: remoteName: let
+    interface = config.clan.networkFacts.fabric.fleet.adjacencies.${remoteName}.interface;
+  in
+    (builtins.head (lib.attrValues config.networking.ifstate.settings.interfaces.${interface}.wireguard.peers)).allowedips;
   ip = import ../../../lib/ip.nix {inherit lib;};
   nodeAsn = machine:
     builtins.fromJSON (
@@ -103,9 +133,14 @@
         ...
       }: let
         second = instanceName == "cluster-b";
+        # R1/R11: one cluster on two single-homed leaves of different
+        # dedicated spines, with a /26 pod block per node
+        split = instanceName == "cluster-split";
         member =
           if second
           then "spine-b"
+          else if split
+          then "isolated-a"
           else "node-a";
       in {
         exports = mkExports {
@@ -122,6 +157,8 @@
                 then "198.18.0.0/16"
                 else if second
                 then "10.3.0.0/16"
+                else if split
+                then "10.5.0.0/16"
                 else "10.1.0.0/16";
               podCIDRv6 =
                 if second
@@ -139,22 +176,36 @@
                 if second
                 then "10.4.0.10"
                 else "10.2.0.10";
+              podMaskSizeV4 =
+                if split
+                then 26
+                else 24;
               fabric = {
                 service = "routed-fabric";
                 instance = "fleet";
               };
             };
-            members.${member} = {
-              role = "server";
-              ipv4 =
-                if second
-                then "192.168.77.2"
-                else "192.168.77.4";
-              ipv6 =
-                if second
-                then "fd77::2"
-                else "fd77::4";
-            };
+            members =
+              lib.optionalAttrs split {
+                isolated-b = {
+                  role = "agent";
+                  ipv4 = "192.168.77.21";
+                  ipv6 = "fd77::21";
+                };
+              }
+              // {
+                ${member} = {
+                  role = "server";
+                  ipv4 =
+                    if second
+                    then "192.168.77.2"
+                    else "192.168.77.4";
+                  ipv6 =
+                    if second
+                    then "fd77::2"
+                    else "fd77::4";
+                };
+              };
             pools.fabric = {
               scope = "cluster-global";
               delivery = "shared-bgp";
@@ -456,6 +507,79 @@
       };
     };
   };
+  # R1: two dedicated (non-Kubernetes) spines, one Kubernetes leaf on
+  # each; the only path between the leaves is the spine pair.
+  splitEval = mkEvaled {
+    instances = {
+      fleet = {
+        module.name = "routed-fabric";
+        module.input = "self";
+        roles = {
+          spine.machines = {
+            spine-a.settings.endpoint = "192.0.2.1";
+            spine-b.settings.endpoint = "192.0.2.2";
+          };
+          leaf.machines = {
+            isolated-a.settings.spines = ["spine-a"];
+            isolated-b.settings.spines = ["spine-b"];
+          };
+        };
+      };
+      cluster-split = {
+        module.name = "k3s";
+        module.input = "self";
+        roles.default.machines.isolated-a = {};
+      };
+    };
+  };
+  splitSpineA = splitEval.config.nixosConfigurations.spine-a.config;
+  splitSpineB = splitEval.config.nixosConfigurations.spine-b.config;
+  # R6: one-sided adjacency overrides
+  overrideEval = settings: mkEvaled (lib.recursiveUpdate baseInventory {instances.fleet.roles = settings;});
+  portConflictEval = overrideEval {
+    leaf.machines.client.settings.adjacencies.spine-a.port = 52820;
+    spine.machines.spine-a.settings.adjacencies.client.port = 52821;
+  };
+  mtuOverrideEval = overrideEval {
+    leaf.machines.client.settings.adjacencies.spine-a.underlayMtu = 1400;
+  };
+  extraAllowedEval = overrideEval {
+    leaf.machines.client.settings.adjacencies.spine-a.extraAllowedIPs = [
+      "10.99.0.0/24"
+      "fd99::/64"
+    ];
+  };
+  maximumPathsEval = overrideEval {
+    spine.machines.spine-a.settings.maximumPaths = 4;
+  };
+  # R5: a trusted fabric beside an externalTransit adjacency
+  trustedBorderEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.firewall.trust = true;
+    }
+  );
+  # R9: an upstream that sends a default route and speaks GTSM
+  upstreamPolicyEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.border.upstreamPeers = [
+        {
+          address = "203.0.113.1";
+          asn = 64500;
+          acceptedPrefixes = ["0.0.0.0/0"];
+          ttlSecurity = true;
+        }
+      ];
+    }
+  );
+  # the route-map a border applies to its upstream in one direction
+  upstreamMap = config: direction: let
+    words = lib.splitString " " (
+      lib.findFirst (
+        line: lib.hasInfix "neighbor 203.0.113.1 route-map" line && lib.hasSuffix " ${direction}" line
+      ) "" (lib.splitString "\n" config.services.frr.config)
+    );
+  in
+    builtins.elemAt words (builtins.length words - 2);
   missingNodeEval = mkEvaledAt ./fixtures-missing-node machineConfigs (pairInventory {});
   missingAdjacencyEval = mkEvaledAt ./fixtures-missing-adj machineConfigs (pairInventory {});
   unequalPoolEval = mkEvaled (pairInventory {
@@ -1076,7 +1200,8 @@ in {
         delayOpen = lib.hasInfix "timers delayopen 5" wanConfig;
         # FRR 10.7.1 aborts when ConnectRetry expires during DelayOpen
         connectOutlastsDelayOpen = lib.hasInfix "timers connect 10" wanConfig && !(lib.hasInfix "timers connect 5" wanConfig);
-        prefixRestart = lib.hasInfix "maximum-prefix 4096 restart 10" wanConfig;
+        # R3: past the limit a fabric session logs and stays up
+        fabricRouteLimitWarns = lib.hasInfix "maximum-prefix 4096 warning-only" wanConfig && !(lib.hasInfix "maximum-prefix 4096 restart" wanConfig);
         upstreamWan = lib.hasInfix "neighbor 203.0.113.1 bfd profile wan" borderConfig;
         upstreamPlainBfd = lib.hasInfix "neighbor 203.0.113.1 bfd\n" borderConfig;
         upstreamTimers = lib.hasInfix "neighbor 203.0.113.1 timers 10 30" borderConfig;
@@ -1096,12 +1221,81 @@ in {
         wanTimers = true;
         delayOpen = true;
         connectOutlastsDelayOpen = true;
-        prefixRestart = true;
+        fabricRouteLimitWarns = true;
         upstreamWan = true;
         upstreamPlainBfd = true;
         upstreamTimers = true;
         upstreamDelayOpen = true;
       };
+    };
+    # R3: a fabric session past its prefix limit warns and stays up;
+    # an upstream session still restarts (an outside peer's flood)
+    test_fabricRouteLimitWarnsOnly = {
+      expr = let
+        fabricLines = builtins.filter (lib.hasInfix "maximum-prefix") (lib.splitString "\n" spine.services.frr.config);
+      in {
+        fabric = lib.all (lib.hasSuffix "maximum-prefix 4096 warning-only") fabricLines;
+        count = builtins.length fabricLines;
+        upstream = lib.hasInfix "neighbor 203.0.113.1 maximum-prefix 4096 restart 10" borderSpine.services.frr.config;
+      };
+      expected = {
+        fabric = true;
+        # four adjacencies, two sessions each, one family each
+        count = 8;
+        upstream = true;
+      };
+    };
+    # R8: maximum-paths once per address family, from the setting
+    test_maximumPathsRenderedOnce = {
+      expr = let
+        count = config: builtins.length (builtins.filter (lib.hasInfix "maximum-paths") (lib.splitString "\n" config.services.frr.config));
+        set = maximumPathsEval.config.nixosConfigurations.spine-a.config;
+      in {
+        default = count spine;
+        set = count set;
+        value = lib.hasInfix "maximum-paths 4" set.services.frr.config && !(lib.hasInfix "maximum-paths 8" set.services.frr.config);
+      };
+      expected = {
+        default = 2;
+        set = 2;
+        value = true;
+      };
+    };
+    # R10: a host set is one prefix-list, shared by every session that
+    # carries it
+    test_sharedHostPrefixList = {
+      expr = builtins.length (
+        builtins.filter (lib.hasInfix "permit 192.168.77.10/32 ge 32 le 32") (lib.splitString "\n" spine.services.frr.config)
+      );
+      # every member's hosts, and the client's own on its session
+      expected = 2;
+    };
+    # R9: an upstream sends nothing in unless its acceptedPrefixes name
+    # it; GTSM where both ends agree
+    test_borderUpstreamPolicy = {
+      expr = let
+        accepting = upstreamPolicyEval.config.nixosConfigurations.spine-a.config;
+        entries = config: direction: policyEntries config.services.frr.config (upstreamMap config direction);
+      in {
+        defaultIn = entries borderSpine "in";
+        out = entries borderSpine "out";
+        acceptedIn = entries accepting "in";
+        gtsm = lib.hasInfix "neighbor 203.0.113.1 ttl-security hops 1" accepting.services.frr.config;
+        noGtsmByDefault = !(lib.hasInfix "ttl-security" borderSpine.services.frr.config);
+      };
+      expected = {
+        # the list's only line is `deny any`
+        defaultIn = [];
+        out = ["172.16.0.0/12 le 32"];
+        acceptedIn = ["0.0.0.0/0"];
+        gtsm = true;
+        noGtsmByDefault = true;
+      };
+    };
+    # R2: a deploy that changes frr.conf reloads FRR; it restarts nothing
+    test_frrDeployReloads = {
+      expr = map (config: config.systemd.services.frr.reloadIfChanged) [spine client node];
+      expected = lib.replicate 3 true;
     };
     test_adjacencyTimerOverride = {
       expr = timerOverrideEval.config.nixosConfigurations.spine-a.config.clan.networkFacts.fabric.fleet.adjacencies.spine-b.timerProfile;
@@ -1436,6 +1630,106 @@ in {
     };
   };
 
+  spinePair = {
+    # R1: dedicated spines pass pod routes between leaves that hang on
+    # different spines; the same set on both ends of the pair
+    test_spinePairCarriesLeafRoutes = {
+      expr = let
+        pods4 = "10.5.0.0/16 ge 26 le 26";
+        pods6 = "fd10:1::/56 ge 64 le 64";
+        onEnd = config: localName: remoteName: let
+          policy = sessionPolicy config localName remoteName;
+          acl = aclOf config remoteName;
+        in {
+          import = builtins.elem pods4 policy.rin4 && builtins.elem pods6 policy.rin6;
+          export = builtins.elem pods4 policy.rout4 && builtins.elem pods6 policy.rout6;
+          acl = builtins.elem "10.5.0.0/16" acl && builtins.elem "fd10:1::/56" acl;
+        };
+      in {
+        spineA = onEnd splitSpineA "spine-a" "spine-b";
+        spineB = onEnd splitSpineB "spine-b" "spine-a";
+        symmetric = (sessionPolicy splitSpineA "spine-a" "spine-b").rin4 == (sessionPolicy splitSpineB "spine-b" "spine-a").rout4;
+      };
+      expected = let
+        end = {
+          import = true;
+          export = true;
+          acl = true;
+        };
+      in {
+        spineA = end;
+        spineB = end;
+        symmetric = true;
+      };
+    };
+    # R11: the pod route length is the cluster's published pod block
+    test_podMaskFromClusterFacts = {
+      expr = {
+        split = builtins.elem "10.5.0.0/16 ge 26 le 26" (sessionPolicy splitSpineA "spine-a" "isolated-a").rin4;
+        default = lib.hasInfix "10.1.0.0/16 ge 24 le 24" node.services.frr.config;
+        bundleDefault = import ../../../lib/kube-cluster/pod-mask.nix;
+      };
+      expected = {
+        split = true;
+        default = true;
+        bundleDefault = {
+          ipv4 = 24;
+          ipv6 = 64;
+        };
+      };
+    };
+  };
+
+  firewall = {
+    # R5: the fabric is no trust zone by default
+    test_fabricLinksUntrustedByDefault = {
+      expr = map (config: builtins.filter (lib.hasPrefix "rf") config.networking.firewall.trustedInterfaces) [spine client node];
+      expected = [[] [] []];
+    };
+    test_trustExcludesExternalTransit = {
+      expr = let
+        config = trustedBorderEval.config.nixosConfigurations.spine-a.config;
+        interfaceOf = remote: config.clan.networkFacts.fabric.fleet.adjacencies.${remote}.interface;
+        trusted = config.networking.firewall.trustedInterfaces;
+      in {
+        transit = builtins.elem (interfaceOf "client") trusted;
+        fabric = builtins.elem (interfaceOf "spine-b") trusted && builtins.elem (interfaceOf "admin") trusted;
+      };
+      expected = {
+        transit = false;
+        fabric = true;
+      };
+    };
+    test_forwardFilter = {
+      expr = let
+        table = config: config.networking.nftables.tables."routed-fabric-fleet".content or null;
+        border = table borderSpine;
+        transit = borderSpine.clan.networkFacts.fabric.fleet.adjacencies.client.interface;
+      in {
+        transitToOwnedOnly = lib.hasInfix ''iifname { "${transit}" } meta nfproto ipv4 ip daddr != @owned4 counter drop'' border;
+        owned = lib.hasInfix "elements = { 172.16.0.0/12 }" border;
+        outsideToInfra = lib.hasInfix "ip daddr @infra4 counter drop" border && lib.hasInfix "ip6 daddr @infra6 counter drop" border;
+        infraHasLoopbacks = lib.hasInfix "192.168.77.10/32" border;
+        # the transit link's other end: the same guard there
+        peer = table borderClient != null;
+        # a spine with no border and no transit link: no table
+        plainSpine = table spine;
+        leaf = table client;
+        transitAccept = lib.hasInfix "routed-fabric transit" spine.networking.firewall.extraForwardRules;
+      };
+      expected = {
+        transitToOwnedOnly = true;
+        owned = true;
+        outsideToInfra = true;
+        infraHasLoopbacks = true;
+        peer = true;
+        plainSpine = null;
+        leaf = null;
+        transitAccept = true;
+      };
+    };
+  };
+
   exports = {
     test_deepEval = {
       expr = builtins.deepSeq evaled.config.exports true;
@@ -1618,18 +1912,69 @@ in {
       expr = failedAssertion afMismatchEval.config.nixosConfigurations.spine-a.config "must share an address family";
       expected = true;
     };
-    test_hostnameEndpointWarns = {
+    test_hostnameEndpointRejected = {
       expr = {
-        warning =
-          lib.any (
-            message: lib.hasInfix "uses a hostname endpoint" message
-          )
-          hostnameEndpointEval.config.nixosConfigurations.spine-a.config.warnings;
+        # the machine with the name and every machine that dials it
+        named = failedAssertion hostnameEndpointEval.config.nixosConfigurations.spine-a.config "uses a hostname";
+        dialer = failedAssertion hostnameEndpointEval.config.nixosConfigurations.client.config "uses a hostname";
+        literalBase = failedAssertion client "uses a hostname";
         literalBaseWarnings = client.warnings;
       };
       expected = {
-        warning = true;
+        named = true;
+        dialer = true;
+        literalBase = false;
         literalBaseWarnings = [];
+      };
+    };
+    test_adjacencyPortOverrideConflictRejected = {
+      expr = map (name: failedAssertion portConflictEval.config.nixosConfigurations.${name}.config "listen on one port") [
+        "client"
+        "spine-a"
+        "spine-b"
+      ];
+      expected = [
+        true
+        true
+        false
+      ];
+    };
+    test_adjacencyMtuOverrideBindsBothEnds = {
+      expr = [
+        mtuOverrideEval.config.nixosConfigurations.client.config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.mtu
+        mtuOverrideEval.config.nixosConfigurations.spine-a.config.clan.networkFacts.fabric.fleet.adjacencies.client.mtu
+      ];
+      expected = lib.replicate 2 (fabric.adjacencyMtu 1400);
+    };
+    test_extraAllowedIPsSymmetric = {
+      expr = let
+        clientConfig = extraAllowedEval.config.nixosConfigurations.client.config;
+        spineConfig = extraAllowedEval.config.nixosConfigurations.spine-a.config;
+        clientPolicy = sessionPolicy clientConfig "client" "spine-a";
+        spinePolicy = sessionPolicy spineConfig "spine-a" "client";
+        has = builtins.elem;
+      in {
+        acl = map (acl: has "10.99.0.0/24" acl && has "fd99::/64" acl) [
+          (aclOf clientConfig "spine-a")
+          (aclOf spineConfig "client")
+        ];
+        policy = map (policy: has "10.99.0.0/24" policy.rin4 && has "10.99.0.0/24" policy.rout4 && has "fd99::/64" policy.rin6 && has "fd99::/64" policy.rout6) [
+          clientPolicy
+          spinePolicy
+        ];
+        # this adjacency only
+        otherAdjacency = has "10.99.0.0/24" (aclOf clientConfig "spine-b");
+      };
+      expected = {
+        acl = [
+          true
+          true
+        ];
+        policy = [
+          true
+          true
+        ];
+        otherAdjacency = false;
       };
     };
     test_conflictingTimerProfilesRejected = {

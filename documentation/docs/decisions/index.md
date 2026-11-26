@@ -168,7 +168,7 @@ D8, D22, D26, D27, D35; D36/D37 superseded by D43.
 | D22 | revised (r16, 2026-10-25) | Private member DNS zones deferred to day-2 (external-dns); MVP serves routes only |
 | D23 | active | Upstream kubeadm distro Reserved |
 | D24 | active | CNCF in-cluster posture; host FRR/WireGuard/HAProxy exempt |
-| D25 | active | RKE2 CIS hardening default |
+| D25 | planned | RKE2 CIS hardening default (`profile = "cis"` is opt-in today) |
 | D26 | revised | Kubenix two-layer rendering, zero IFD |
 | D27 | revised | Rancher helm-controller off except distro defaults |
 | D28 | REVOKED | No clan-installed Flux |
@@ -764,7 +764,7 @@ Round 15 (D53) revises this: `netif` is multi-instance and multi-link, and
 
 ## Round 13 decisions retained
 
-- **D39/D40:** exactly two contracts; one kubenix bundle applied once with
+- **D39/D40:** exactly two contracts; one kubenix bundle applied at boot and on each changing deploy with
   SSA, then adopted by the operator's GitOps tool without a first-reconcile
   diff.
 - **D41/D42:** Node IPAM serves classless Services; servicelb never runs.

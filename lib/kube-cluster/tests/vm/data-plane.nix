@@ -992,7 +992,7 @@ in {
                 timeout=120,
             )
 
-        with subtest("node firewall: the underlay is refused, the fabric is trusted"):
+        with subtest("node firewall: the underlay is refused, the fabric opens the cluster's ports only"):
             # --- Firewall: positive + negative ------------------------------
             # Ported from the tunnel suite (D72): eth1 is a Cilium device
             # here too, so the same refusals must hold on the underlay.
@@ -1003,10 +1003,12 @@ in {
             beta.succeed("systemd-run --unit=probe-listener $(command -v socat) TCP6-LISTEN:9999,fork,reuseaddr EXEC:true")
             beta.wait_until_succeeds("ss -tln | grep ':9999 ' >/dev/null", timeout=30)
             for address in FABRIC["beta"]:
-                # over the fabric: the kubelet and any other port (the
-                # fabric links are trusted interfaces)
-                for port in ["10250", "9999"]:
-                    alpha.succeed(nc(address, port))
+                # over the fabric: the kubelet, and no port the cluster
+                # does not open (routed-fabric R5: the fabric links are
+                # no trusted interfaces)
+                alpha.succeed(nc(address, "10250"))
+                alpha.fail(nc(address, "9999"))
+            beta.succeed(nc("::1", "9999"))
             for address in UNDERLAY["beta"]:
                 # on the underlay: nothing, from the other node or from outside
                 for port in ["10250", "9999", "${apiLbPort}", "81", "83", "80"]:

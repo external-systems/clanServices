@@ -215,6 +215,22 @@ in {
         })
       ];
       virtualisation.vlans = [1];
+      # specs/netif.md N25: a change that drops the IPv6 default. The
+      # CLAT's IPv4 default still answers, so only the guard's record of
+      # the last good defaults catches it.
+      specialisation.nogw6.configuration = {
+        clanServices.netif.links.eth1.gateway6 = lib.mkForce null;
+        networking.ifstate.settings.routing.routes = lib.mkForce [
+          {
+            to = "0.0.0.0/0";
+            via = "192.0.0.2";
+          }
+          {
+            to = "${clatAddress.static}/128";
+            via = "fd00:c1a7::2";
+          }
+        ];
+      };
     };
     slaac = {
       imports = [
@@ -224,6 +240,9 @@ in {
         })
       ];
       virtualisation.vlans = [3];
+      # specs/netif.md N25: a change that takes the RA link down; its
+      # default goes, the CLAT's IPv4 default stays and answers.
+      specialisation.down.configuration.networking.ifstate.settings.interfaces.eth1.link.state = lib.mkForce "down";
     };
 
     provider = {
@@ -580,6 +599,22 @@ in {
             static.succeed("systemctl restart netif-guard.service")
             for machine in hosts:
                 assert_reaches_ipv4(machine, f"{machine.name} after the gateway came back")
+
+        for machine, special, gateway in [(slaac, "down", "proto ra"), (static, "nogw6", "via fe80::1")]:
+            with subtest(f"{machine.name}: N25: a change that loses the IPv6 default is rolled back"):
+                machine.succeed("systemctl restart netif-guard.service")
+                machine.succeed("grep -x '6 eth1' /var/lib/netif/guard/last-good-defaults")
+                kept = machine.succeed("readlink /var/lib/netif/guard/last-good").strip()
+                status, out = machine.execute(f"/run/booted-system/specialisation/{special}/bin/switch-to-configuration test 2>&1")
+                print(out)
+                assert status != 0, f"{machine.name}: the switch to {special} must fail"
+                machine.wait_until_succeeds("journalctl --sync; journalctl -b --no-pager -u netif-guard.service | grep 'no IPv6 default route on eth1' >/dev/null", timeout=30)
+                machine.wait_until_succeeds(f"ip -6 route show default | grep 'dev eth1' | grep '{gateway}' >/dev/null", timeout=60)
+                assert machine.succeed("readlink /var/lib/netif/guard/last-good").strip() == kept
+                status, out = machine.execute("/run/booted-system/bin/switch-to-configuration test 2>&1")
+                assert status == 0, out
+                assert_online(machine, f"{machine.name} after the rollback")
+        print("NETIF_V6ONLY_GUARD_OK")
 
         print("NETIF_V6ONLY_OK")
   '';

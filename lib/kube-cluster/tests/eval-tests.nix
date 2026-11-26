@@ -1373,19 +1373,40 @@ in {
     expected = true;
   };
 
+  # K1: one generator per token, so a distro service gives an agent the
+  # agent token only.
   test_tokenGeneratorNames = {
     expr = let
-      tokens = kube.vars.mkTokenGenerators {
+      args = {
         pkgs = {
           openssl = fakePackage;
         };
         inherit instanceName;
       };
-    in
-      builtins.attrNames tokens;
+    in {
+      server = builtins.attrNames (kube.vars.mkServerTokenGenerator args);
+      agent = builtins.attrNames (kube.vars.mkAgentTokenGenerator args);
+    };
+    expected = {
+      server = ["rancher-server-token-test"];
+      agent = ["rancher-agent-token-test"];
+    };
+  };
+
+  # K15: the haproxy generator has no stats password any more.
+  test_haproxyGeneratorNoStatsPassword = {
+    expr =
+      builtins.attrNames
+      (kube.vars.mkHaproxyGenerator {
+        pkgs = {
+          openssl = fakePackage;
+          coreutils = fakePackage;
+        };
+        inherit instanceName;
+      })."rancher-haproxy-test".files;
     expected = [
-      "rancher-agent-token-test"
-      "rancher-server-token-test"
+      "kubeapi-ca.crt"
+      "kubeapi-client.pem"
     ];
   };
 
@@ -1488,6 +1509,68 @@ in {
     };
   };
 
+  # K10: the admin identity (system:masters) lives 365 days; the HAProxy
+  # health check, the CAs and the mesh leaves keep long lives (one expiry
+  # on every node at once is an outage of its own); every serial is
+  # random (no fixed 1/3, no sequential serial file).
+  test_certificateValidityAndSerials = let
+    fakePkgs = {
+      openssl = fakePackage;
+      coreutils = fakePackage;
+      gawk = fakePackage;
+    };
+    scripts = {
+      pki =
+        (kube.vars.mkPkiGenerator {
+          pkgs = fakePkgs;
+          inherit instanceName;
+        })."rancher-pki-${instanceName}".script;
+      haproxy =
+        (kube.vars.mkHaproxyGenerator {
+          pkgs = fakePkgs;
+          inherit instanceName;
+        })."rancher-haproxy-${instanceName}".script;
+      admin =
+        (kube.vars.mkAdminKubeconfigGenerator {
+          pkgs = fakePkgs;
+          inherit instanceName;
+          server = "https://kubeapi-test.example.org:7443";
+        })."rancher-admin-kubeconfig-${instanceName}".script;
+      mesh = meshCertGen."rancher-clustermesh-test".script;
+      meshCa = meshCaGen."rancher-clustermesh-ca-clan".script;
+    };
+    days = script: map builtins.head (builtins.filter builtins.isList (builtins.split "-days ([0-9]+)" script));
+  in {
+    expr = {
+      days = lib.mapAttrs (_: days) scripts;
+      # a command line with a fixed serial or a sequential serial file
+      fixedSerial = lib.filterAttrs (_: s:
+        builtins.any (
+          l: builtins.match " *-set_serial [0-9].*" l != null || builtins.match " *-CAcreateserial.*" l != null
+        ) (lib.splitString "\n" s))
+      scripts;
+      randomSerial = lib.mapAttrs (_: s: lib.hasInfix "-set_serial \"0x$(openssl rand -hex 16)\"" s || lib.hasInfix "rand_serial = yes" s) scripts;
+    };
+    expected = {
+      days = {
+        pki = ["7300" "3700" "3700"];
+        haproxy = ["3650"];
+        admin = ["365"];
+        # one per leaf: server, remote, local, admin
+        mesh = ["3650" "3650" "3650" "3650"];
+        meshCa = ["3650"];
+      };
+      fixedSerial = {};
+      randomSerial = {
+        pki = true;
+        haproxy = true;
+        admin = true;
+        mesh = true;
+        meshCa = true;
+      };
+    };
+  };
+
   test_haproxyConfigRender = {
     expr = let
       cfg = kube.render.mkHaproxyConfig {
@@ -1511,13 +1594,17 @@ in {
         lbKubeapiPort = 7443;
         caCrtPath = "/run/secrets/shared/rancher-haproxy-test/kubeapi-ca.crt";
         clientPemPath = "/run/secrets/shared/rancher-haproxy-test/kubeapi-client.pem";
-        statsPasswordHash = "$6$testhash";
         healthCheckSni = "kubeapi-test.example.org";
       };
     in {
       bindsKubeapiLb = lib.hasInfix "bind 192.168.77.1:7443" cfg;
       bindsSupervisorLb = lib.hasInfix "bind 192.168.77.1:8443" cfg;
-      bindsStats = lib.hasInfix "bind [fd00:77::1]:8404" cfg;
+      # K15: the read-only stats page is on loopback, with no password
+      bindsStats = lib.hasInfix "bind 127.0.0.1:8404" cfg && lib.hasInfix "bind [::1]:8404" cfg;
+      statsNotOnNodeAddress = !(lib.hasInfix "bind [fd00:77::1]:8404" cfg);
+      noStatsPassword = !(lib.hasInfix "userlist" cfg) && !(lib.hasInfix "stats admin" cfg);
+      # K15: the health check names the kubeapi FQDN, on both backends
+      verifyhost = builtins.length (lib.splitString "verify required verifyhost kubeapi-test.example.org ca-file" cfg) == 3;
       backupFlag = lib.hasInfix "server beta-4 192.168.77.2:6443 backup" cfg;
       noBackupOnSelf = !(lib.hasInfix "server alpha-4 192.168.77.1:6443 backup" cfg);
       supervisorTargets9345 = lib.hasInfix "server beta-6 [fd00:77::2]:9345 backup" cfg;
@@ -1529,6 +1616,9 @@ in {
       bindsKubeapiLb = true;
       bindsSupervisorLb = true;
       bindsStats = true;
+      statsNotOnNodeAddress = true;
+      noStatsPassword = true;
+      verifyhost = true;
       backupFlag = true;
       noBackupOnSelf = true;
       supervisorTargets9345 = true;
@@ -1542,7 +1632,9 @@ in {
     expr = let
       frag = kube.nixos.mkPkiSync {
         pkgs = {
+          inherit lib;
           coreutils = "/nix/store/fake-coreutils";
+          diffutils = "/nix/store/fake-diffutils";
           writeShellScript = name: text: "script:${name}:${text}";
         };
         pkiGenerator.files = {
@@ -1564,22 +1656,28 @@ in {
       };
       unit = frag.systemd.services."rke2-test-pki-sync-tls";
     in {
-      pathUnit = frag.systemd.paths."rke2-test-pki-sync-tls".pathConfig.PathChanged;
+      # K10: no path unit copies a changed CA into a running server
+      pathUnits = frag.systemd.paths or {};
       inherit (unit) before requiredBy;
       # a missing secret fails the unit (specs/gateway.md §16.3 item 12)
       asserted = unit.unitConfig.AssertPathExists;
       skippable = unit.unitConfig ? ConditionPathExists;
       syncsTlsDir = lib.hasInfix "TLS_DIR=\"/var/lib/rancher/rke2/server/tls\"" unit.serviceConfig.ExecStart;
-      syncsEtcdCas = lib.hasInfix "$TLS_DIR/etcd/peer-ca.crt" unit.serviceConfig.ExecStart;
+      syncsEtcdCas = lib.hasInfix "/etcd/peer-ca.crt" unit.serviceConfig.ExecStart;
+      # a live set is never overwritten: only the first start copies
+      copiesOnlyWithoutLiveSet = lib.hasInfix "if [ ! -e \"$TLS_DIR/server-ca.crt\" ]; then" unit.serviceConfig.ExecStart;
+      stagesChangedSet = lib.hasInfix "STAGED_DIR=\"/var/lib/rancher/rke2/server/tls-staged\"" unit.serviceConfig.ExecStart;
     };
     expected = {
-      pathUnit = ["/run/secrets/shared/rancher-pki-test/server-ca.key"];
+      pathUnits = {};
       before = ["rke2-server.service"];
       requiredBy = ["rke2-server.service"];
       asserted = "/run/secrets/shared/rancher-pki-test/server-ca.key";
       skippable = false;
       syncsTlsDir = true;
       syncsEtcdCas = true;
+      copiesOnlyWithoutLiveSet = true;
+      stagesChangedSet = true;
     };
   };
 
@@ -2105,15 +2203,21 @@ in {
     };
   };
 
-  # The bootstrap-apply oneshot (D40): etc path + SSA apply + retry.
+  # The bootstrap-apply oneshot (D40, revised G11): etc path, SSA apply,
+  # re-run on a changed bundle, CRDs before CRs, bounded retry, prune.
   test_bootstrapApplyFragment = {
     expr = let
       frag = kube.mkBootstrapApply {
         pkgs = {
           kubectl = "/nix/store/fake-kubectl";
           coreutils = "/nix/store/fake-coreutils";
+          jq = "/nix/store/fake-jq";
+          yq-go = "/nix/store/fake-yq";
+          gnugrep = "/nix/store/fake-gnugrep";
           writeShellScript = name: text: "script:${name}:${text}";
         };
+        # the deployed file, as a specialisation or a deploy changes it
+        config.environment.etc."clan-bootstrap/test/bundle.yaml".source = "/nix/store/deployed-bundle.yaml";
         inherit instanceName;
         namePrefix = "k3s";
         serverUnit = "k3s.service";
@@ -2121,24 +2225,82 @@ in {
         bundle = "/nix/store/fake-bundle.yaml";
       };
       unit = frag.systemd.services."k3s-test-bootstrap-apply";
+      script = unit.serviceConfig.ExecStart;
+      has = s: lib.hasInfix s script;
+      pos = s: lib.stringLength (builtins.head (lib.splitString s script));
     in {
-      etcPath = frag.environment.etc ? "clan-bootstrap/test/bundle.yaml";
-      inherit (unit) after requires;
-      inherit (unit.serviceConfig) Type RemainAfterExit Restart;
-      noStartLimit = unit.unitConfig.StartLimitIntervalSec == 0;
-      ssaApply = lib.hasInfix "kubectl apply --server-side --field-manager=clan-bootstrap" unit.serviceConfig.ExecStart;
-      waitsReadyz = lib.hasInfix "get --raw=/readyz" unit.serviceConfig.ExecStart;
+      etcSource = frag.environment.etc."clan-bootstrap/test/bundle.yaml".source;
+      inherit (unit) after requires restartTriggers;
+      inherit (unit.serviceConfig) Type RemainAfterExit Restart RestartSec RestartMaxDelaySec;
+      inherit (unit.unitConfig) StartLimitIntervalSec StartLimitBurst;
+      ssaApply = has "kubectl apply --server-side --force-conflicts --field-manager=clan-bootstrap";
+      waitsReadyz = has "get --raw=/readyz";
+      waitsEstablished = has "wait --for=condition=Established";
+      crdsBeforeCrs = pos "condition=Established" < pos ''-f "$work/crs.json"'' && pos ''-f "$work/base.json"'' < pos "condition=Established";
+      boundedCrdWait = has "SECONDS + 900";
+      prunesBySelector = has "-l 'clan.lol/cluster=test'";
+      # kubectl hides managedFields unless asked (k3s-single, G11)
+      prunesOwnObjectsOnly = has ''.manager == "clan-bootstrap"'' && has "--show-managed-fields";
+      prunesAfterApply = pos ''-f "$work/crs.json"'' < pos "api-resources";
     };
     expected = {
-      etcPath = true;
+      etcSource = "/nix/store/fake-bundle.yaml";
       after = ["k3s.service"];
       requires = ["k3s.service"];
+      restartTriggers = ["/nix/store/deployed-bundle.yaml"];
       Type = "oneshot";
       RemainAfterExit = true;
       Restart = "on-failure";
-      noStartLimit = true;
+      RestartSec = 10;
+      RestartMaxDelaySec = 120;
+      StartLimitIntervalSec = 3600;
+      StartLimitBurst = 12;
       ssaApply = true;
       waitsReadyz = true;
+      waitsEstablished = true;
+      crdsBeforeCrs = true;
+      boundedCrdWait = true;
+      prunesBySelector = true;
+      prunesOwnObjectsOnly = true;
+      prunesAfterApply = true;
+    };
+  };
+
+  # The ClusterMesh secrets oneshot (K4, K8): a regenerated leaf key
+  # restarts it, key material never reaches a command line, and the
+  # rollout decision is persistent state (a pod-template digest).
+  test_clustermeshSecretsFragment = {
+    expr = let
+      files =
+        lib.genAttrs ["ca.crt" "server.crt" "server.key" "admin.crt" "admin.key" "remote.crt" "remote.key" "local.crt" "local.key"]
+        (f: {path = "/run/secrets/rancher-clustermesh-test/${f}";});
+      frag = kube.mkClustermeshSecretsApply {
+        pkgs = {
+          kubectl = "/nix/store/fake-kubectl";
+          coreutils = "/nix/store/fake-coreutils";
+          jq = "/nix/store/fake-jq";
+          writeShellScript = name: text: "script:${name}:${text}";
+        };
+        inherit instanceName files;
+        namePrefix = "k3s";
+        bootstrapUnit = "k3s-test-bootstrap-apply.service";
+        serverUnit = "k3s.service";
+        kubeconfigPath = "/etc/rancher/k3s/k3s.yaml";
+      };
+      script = frag.systemd.services."k3s-test-clustermesh-secrets".serviceConfig.ExecStart;
+    in {
+      restartUnits = lib.mapAttrs (_: f: f.restartUnits) frag.clan.core.vars.generators."rancher-clustermesh-test".files;
+      keyViaRawfile = lib.hasInfix "--rawfile key /run/secrets/rancher-clustermesh-test/server.key" script;
+      noKeyOnCmdline = !(lib.hasInfix "base64 -w0" script) && !(lib.hasInfix "--arg key" script);
+      digestState = lib.hasInfix "clan.lol/mesh-secrets" script;
+      noBlindRestart = !(lib.hasInfix "rollout restart" script);
+    };
+    expected = {
+      restartUnits = lib.genAttrs ["server.key" "admin.key" "remote.key" "local.key"] (_: ["k3s-test-clustermesh-secrets.service"]);
+      keyViaRawfile = true;
+      noKeyOnCmdline = true;
+      digestState = true;
+      noBlindRestart = true;
     };
   };
 
@@ -3221,6 +3383,319 @@ in {
       sub6 = true;
       v6at = "fd11:1:0:0:0:0:0:53";
       v6carry = "fd11:1:0:0:0:0:1:1";
+    };
+  };
+
+  # --- Round G11 kube hardening -------------------------------------------
+
+  # K6: half-explicit CIDR pairs, pod/service overlap, and pod CIDRs
+  # smaller than Cilium's per-node /24 and /64 are eval errors.
+  test_cidrPairsAndOverlap = let
+    check = network: needle: let
+      settings = evalSettings {inherit network;};
+      resolvedCidrs = kube.render.resolveCidrs {
+        inherit settings;
+        ciliumId = 1;
+      };
+    in
+      failedAssertion (kube.assertions.mkClusterAssertions {
+        inherit instanceName settings resolvedCidrs;
+        roleMembers = oneServer;
+      })
+      needle;
+  in {
+    expr = {
+      podHalf = check {podCIDRv4 = "10.200.0.0/16";} "network.podCIDRv4 and network.podCIDRv6 together";
+      serviceHalf = check {serviceCIDRv6 = "fd10:200::/112";} "network.serviceCIDRv4 and network.serviceCIDRv6 together";
+      overlap = check {
+        podCIDRv4 = "10.200.0.0/16";
+        podCIDRv6 = "fd10:200::/56";
+        serviceCIDRv4 = "10.200.128.0/17";
+        serviceCIDRv6 = "fd10:201::/112";
+      } "pod IPv4 10.200.0.0/16 overlaps service IPv4 10.200.128.0/17";
+      podV4TooSmall = check {
+        podCIDRv4 = "10.200.0.0/25";
+        podCIDRv6 = "fd10:200::/56";
+      } "smaller than the per-node /24";
+      podV6TooSmall = check {
+        podCIDRv4 = "10.200.0.0/16";
+        podCIDRv6 = "fd10:200::/72";
+      } "smaller than the per-node /64";
+      derivedClean = lib.all (item: item.assertion || !(lib.any (n: lib.hasInfix n item.message) ["together" "overlap" "per-node"])) (kube.assertions.mkClusterAssertions {
+        inherit instanceName;
+        settings = baseSettings;
+        roleMembers = oneServer;
+        resolvedCidrs = kube.render.resolveCidrs {
+          settings = baseSettings;
+          ciliumId = 1;
+        };
+      });
+    };
+    expected = {
+      podHalf = true;
+      serviceHalf = true;
+      overlap = true;
+      podV4TooSmall = true;
+      podV6TooSmall = true;
+      derivedClean = true;
+    };
+  };
+
+  # K7: two etcd voters are refused; an even count above two warns.
+  test_evenServerCount = let
+    servers = n:
+      lib.genList (i: {
+        machineName = "s${toString i}";
+        role = "server";
+        settings = {
+          clusterInit = i == 0;
+          network = {
+            ipv4 = "10.0.0.${toString (i + 1)}";
+            ipv6 = "fd00::${toString (i + 1)}";
+          };
+        };
+      })
+      n;
+    refused = n:
+      failedAssertion (kube.assertions.mkClusterAssertions {
+        inherit instanceName;
+        settings = baseSettings;
+        roleMembers = servers n;
+      }) "two servers is refused";
+    warned = n:
+      kube.assertions.mkClusterWarnings {
+        inherit instanceName;
+        roleMembers = servers n;
+      }
+      != [];
+  in {
+    expr = map (n: {
+      inherit n;
+      refused = refused n;
+      warned = warned n;
+    }) [1 2 3 4 5 6];
+    expected = [
+      {
+        n = 1;
+        refused = false;
+        warned = false;
+      }
+      {
+        n = 2;
+        refused = true;
+        warned = false;
+      }
+      {
+        n = 3;
+        refused = false;
+        warned = false;
+      }
+      {
+        n = 4;
+        refused = false;
+        warned = true;
+      }
+      {
+        n = 5;
+        refused = false;
+        warned = false;
+      }
+      {
+        n = 6;
+        refused = false;
+        warned = true;
+      }
+    ];
+  };
+
+  # K11: the instance name is Cilium's cluster-name.
+  test_instanceNameIsCiliumClusterName = {
+    expr =
+      map (
+        name:
+          failedAssertion (kube.assertions.mkClusterAssertions {
+            instanceName = name;
+            settings = baseSettings;
+            roleMembers = oneServer;
+          }) "the instance name is the Cilium cluster name"
+      ) [
+        "k3s"
+        "prod-eu-1"
+        "a2345678901234567890123456789012"
+        "a23456789012345678901234567890123"
+        "Prod"
+        "prod_1"
+        "-prod"
+        "prod-"
+      ];
+    expected = [
+      false
+      false
+      false
+      true
+      true
+      true
+      true
+      true
+    ];
+  };
+
+  # K12: ConfigMap booleans render as "true"/"false", never "1"/"".
+  test_configMapBooleans = {
+    expr =
+      (kube.render.normalizeDoc {
+        apiVersion = "v1";
+        kind = "ConfigMap";
+        metadata.name = "x";
+        data = {
+          on = true;
+          off = false;
+          n = 3;
+          s = "keep";
+        };
+      }).data;
+    expected = {
+      on = "true";
+      off = "false";
+      n = "3";
+      s = "keep";
+    };
+  };
+
+  # K14: configOverrides cannot replace a key the service renders, nor
+  # carry a token.
+  test_configOverrideDenyList = let
+    hits = overrides:
+      failedAssertion (kube.assertions.mkConfigOverrideAssertions {
+        inherit instanceName overrides;
+        distro = "k3s";
+        ownedKeys = [
+          "tls-san"
+          "disable"
+        ];
+      }) "configOverrides may not set";
+  in {
+    expr = {
+      token = hits {token = "secret";};
+      server = hits {server = "https://elsewhere:6443";};
+      clusterCidr = hits {cluster-cidr = "10.9.0.0/16";};
+      owned = hits {tls-san = ["x"];};
+      disableMerged = hits {disable = ["traefik"];};
+      kubeletArg = hits {kubelet-arg = ["max-pods=200"];};
+    };
+    expected = {
+      token = true;
+      server = true;
+      clusterCidr = true;
+      owned = true;
+      disableMerged = false;
+      kubeletArg = false;
+    };
+  };
+
+  # K9: kubelet.extraArgs was declared and read nowhere; configOverrides
+  # `kubelet-arg` is the way.
+  test_noDeadKubeletOption = {
+    expr = (lib.evalModules {modules = [kube.interfaces.node];}).options ? kubelet;
+    expected = false;
+  };
+
+  # K2: the input rules name their sources. Manual: no interface guard;
+  # fabric: fabric links and local pod links only; etcd on servers from
+  # servers only.
+  test_firewallInputRules = let
+    members = [
+      {
+        role = "server";
+        ipv4 = "10.0.0.1";
+        ipv6 = "fd00::1";
+      }
+      {
+        role = "agent";
+        ipv4 = "10.0.0.2";
+        ipv6 = "fd00::2";
+      }
+    ];
+    render = transportInterfaces: isServer:
+      kube.render.mkInputRules {
+        inherit transportInterfaces isServer members;
+        podCIDRv4 = "10.1.0.0/16";
+        podCIDRv6 = "fd10:1::/56";
+        clusterPorts = [
+          6443
+          7443
+        ];
+        memberOnlyPorts = [9345];
+      };
+  in {
+    expr = {
+      manualServer = render [] true;
+      fabricAgent = render ["wg0"] false;
+    };
+    expected = {
+      manualServer = lib.concatStringsSep "\n" [
+        "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443 } accept"
+        "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443 } accept"
+        "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept"
+        "ip6 saddr { fd00::1, fd00::2 } tcp dport { 9345 } accept"
+        "ip saddr { 10.0.0.1 } tcp dport { 2379, 2380, 2381 } accept"
+        "ip6 saddr { fd00::1 } tcp dport { 2379, 2380, 2381 } accept"
+        ""
+      ];
+      fabricAgent = lib.concatStringsSep "\n" [
+        ''iifname { "wg0", "lxc*", "cilium*" } ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443 } accept''
+        ''iifname { "wg0", "lxc*", "cilium*" } ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443 } accept''
+        ''iifname { "wg0", "lxc*", "cilium*" } ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept''
+        ''iifname { "wg0", "lxc*", "cilium*" } ip6 saddr { fd00::1, fd00::2 } tcp dport { 9345 } accept''
+        ""
+      ];
+    };
+  };
+
+  # K3: the init guard waits for the fabric and fails closed; the
+  # override file lets the operator start a new cluster.
+  test_initGuardFailsClosed = let
+    unit =
+      (kube.nixos.mkInitGuard {
+        pkgs = {
+          writeShellScript = name: text: {inherit name text;};
+          coreutils = "/nix/store/fake-coreutils";
+          bash = "/nix/store/fake-bash";
+        };
+        namePrefix = "k3s-test";
+        beforeUnit = "k3s.service";
+        etcdDir = "/var/lib/rancher/k3s/server/db/etcd";
+        peers = [
+          "10.0.0.2"
+          "fd00::3"
+        ];
+        overrideFile = "/var/lib/rancher/k3s/server/allow-new-cluster-test";
+      }).systemd.services.k3s-test-init-guard;
+    script = unit.serviceConfig.ExecStart.text;
+  in {
+    expr = {
+      inherit (unit) after;
+      inherit (unit.environment) INIT_GUARD_ETCD_DIR INIT_GUARD_PORT INIT_GUARD_PEERS INIT_GUARD_OVERRIDE INIT_GUARD_WAIT;
+      refusedMeansNoCluster = lib.hasInfix ''*"Connection refused"*) ;;'' script;
+      unknownKeepsWaiting = lib.hasInfix ''*) unknown="$unknown $peer" ;;'' script;
+      refusesAtDeadline = lib.hasInfix ''-ge "$deadline" ]'' script;
+      overrideConsumed = lib.hasInfix ''rm -f "$INIT_GUARD_OVERRIDE"'' script;
+    };
+    expected = {
+      after = [
+        "network-online.target"
+        "ifstate.service"
+        "frr.service"
+      ];
+      INIT_GUARD_ETCD_DIR = "/var/lib/rancher/k3s/server/db/etcd";
+      INIT_GUARD_PORT = "6443";
+      INIT_GUARD_PEERS = "10.0.0.2 fd00::3";
+      INIT_GUARD_OVERRIDE = "/var/lib/rancher/k3s/server/allow-new-cluster-test";
+      INIT_GUARD_WAIT = "300";
+      refusedMeansNoCluster = true;
+      unknownKeepsWaiting = true;
+      refusesAtDeadline = true;
+      overrideConsumed = true;
     };
   };
 }

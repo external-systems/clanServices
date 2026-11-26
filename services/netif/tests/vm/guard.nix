@@ -121,6 +121,10 @@ in {
           };
           clanServices.networking.owners.suite.interfaces = ["^owned"];
         };
+        # The gateway's address stays, the path to it breaks: after the
+        # rollback the old network answers again, so a second guard run
+        # would pass if it judged the kernel's state.
+        down.configuration.networking.ifstate.settings.interfaces.eth1.link.state = lib.mkForce "down";
         # A harmless change.
         good.configuration.networking.ifstate.settings = uplink {
           address = "192.168.1.2/24";
@@ -161,6 +165,22 @@ in {
     def switch(name):
         system = "/run/booted-system" + (f"/specialisation/{name}" if name else "")
         return host.execute(f"systemctl reset-failed ifstate.service; {system}/bin/switch-to-configuration test 2>&1")
+
+    def count(pattern):
+        """How often the guard logged `pattern` in this boot."""
+        host.succeed("journalctl --sync")
+        return int(host.succeed(f"journalctl -b -u netif-guard.service --no-pager | grep -c '{pattern}' || true").strip())
+
+    def journal_new(pattern, before):
+        """The guard logged `pattern` again since `count` gave `before`."""
+        host.wait_until_succeeds(
+            f"journalctl --sync; test $(journalctl -b -u netif-guard.service --no-pager | grep -c '{pattern}') -gt {before}",
+            timeout=30,
+        )
+
+    def restart_guard():
+        """A second guard run, as switch-to-configuration or an operator starts it."""
+        return host.execute("systemctl restart netif-guard.service")[0]
 
     def journal(pattern):
         # journald writes behind the unit: sync, and wait. Under load a
@@ -217,6 +237,12 @@ in {
             host.wait_until_succeeds(f"test \"$({invocation})\" != '{before_restart}'", timeout=60)
             assert guard_done() != "success"
             host.succeed("ip -4 addr show eth1 | grep '192.168.1.2/24' >/dev/null")
+            # a second guard run judges nothing: the kernel holds the
+            # rollback, not this generation's configuration
+            still = count("still rolled back")
+            assert restart_guard() != 0
+            journal_new("still rolled back", still)
+            assert last_good() == first
             print("NETIF_GUARD_ROLLBACK_OK")
 
         with subtest("the rollback keeps what the failed generation gave to another owner (N6, N25)"):
@@ -238,6 +264,29 @@ in {
             assert last_good() == first
             print("NETIF_GUARD_OWNERS_OK")
 
+        with subtest("the gateway stays, the path breaks: a second guard run records nothing (N25)"):
+            rolled = count("rolled back. The running generation")
+            status, output = switch("down")
+            print(output)
+            assert status != 0, "the switch must report the failure"
+            journal_new("rolled back. The running generation", rolled)
+            # the rollback brought the link back, and the gateway answers
+            host.succeed("ip link show eth1 | grep 'state UP' >/dev/null")
+            host.succeed("arping -c1 -w2 -I eth1 192.168.1.1")
+            still = count("still rolled back")
+            assert restart_guard() != 0, "a second run must not pass"
+            journal_new("still rolled back", still)
+            assert last_good() == first, "a second run recorded the configuration that was rolled back"
+            host.succeed("test -e /run/netif-guard/rolled-back")
+            # a new apply of the same generation is judged again
+            invocation = "systemctl show -p InvocationID --value netif-guard.service"
+            before_restart = host.succeed(invocation).strip()
+            host.succeed("systemctl restart ifstate.service")
+            host.wait_until_succeeds(f"test \"$({invocation})\" != '{before_restart}'", timeout=60)
+            assert guard_done() != "success"
+            assert last_good() == first
+            print("NETIF_GUARD_SECOND_RUN_OK")
+
         with subtest("a good change is kept and becomes the new last-good"):
             status, output = switch("good")
             print(output)
@@ -252,7 +301,8 @@ in {
             status, output = switch("deaf")
             assert status != 0, output
             journal("no answer from 192.168.1.1 port 81")
-            # the network itself was fine: the last-good configuration is back
+            # the target is silent with the last good configuration too: the
+            # fault is outside, and this generation's network stays
             host.succeed("ip route show default | grep 'via 192.168.1.1' >/dev/null")
             assert last_good() == second
             print("NETIF_GUARD_TARGET_OK")
@@ -266,6 +316,41 @@ in {
             host.succeed("nft list ruleset | grep 8443 >/dev/null")
             host.succeed("journalctl -b -u nftables.service --no-pager | grep 'targets answer after the firewall change' >/dev/null")
             print("NETIF_GUARD_FIREWALL_OK")
+
+        with subtest("an apply that fails still gets a guard run, which records nothing (N25)"):
+            invocation = "systemctl show -p InvocationID --value netif-guard.service"
+            before_restart = host.succeed(invocation).strip()
+            unclean = count("did not apply cleanly")
+            host.succeed(
+                "mkdir -p /run/systemd/system/ifstate.service.d"
+                " && printf '[Service]\\nExecStart=\\nExecStart=/run/current-system/sw/bin/false\\n' > /run/systemd/system/ifstate.service.d/fail.conf"
+                " && systemctl daemon-reload"
+            )
+            try:
+                host.fail("systemctl restart ifstate.service")
+                host.wait_until_succeeds(f"test \"$({invocation})\" != '{before_restart}'", timeout=60)
+                assert guard_done() == "success", result()
+                journal_new("did not apply cleanly", unclean)
+                assert last_good() == first
+            finally:
+                host.succeed("rm -r /run/systemd/system/ifstate.service.d && systemctl daemon-reload && systemctl reset-failed ifstate.service")
+            print("NETIF_GUARD_FAILED_APPLY_OK")
+
+        with subtest("the gateway is down for the old configuration too: the new one stays (N25)"):
+            gw.succeed("ip link set eth1 down")
+            try:
+                outside = count("the fault is outside this machine")
+                status, output = switch("good")
+                print(output)
+                assert status != 0, "the switch must report the failure"
+                journal_new("the fault is outside this machine", outside)
+                host.succeed("ip -4 addr show eth1 | grep '192.168.1.3/24' >/dev/null")
+                host.fail("test -e /run/netif-guard/rolled-back")
+                assert last_good() == first
+            finally:
+                gw.succeed("ip link set eth1 up && systemctl restart ifstate.service")
+            host.wait_until_succeeds("arping -c1 -w2 -I eth1 192.168.1.1", timeout=60)
+            print("NETIF_GUARD_OUTSIDE_OK")
 
         with subtest("no earlier configuration: fail loudly, nothing to roll back to"):
             host.succeed(f"rm {LAST_GOOD}")

@@ -6,11 +6,11 @@ comes from the private library.
 
 ## What is rke2-specific
 
-- **CIS hardening by default (D25).** `profile: cis` (v1.29+) — PSA
-  `restricted` cluster-wide except `kube-system`, protect-kernel-defaults,
-  etcd user/group, CIS sysctls, with host prerequisites rendered by the
-  NixOS module. Opt out explicitly with `security.cis = false`. Tenants get
-  a namespace-exemption runbook.
+- **CIS hardening (D25, planned as the default).** Today `profile = "cis"`
+  is opt-in (the default is `null`); it maps to the nixpkgs `cisHardening`
+  (v1.29+): PSA `restricted` cluster-wide except `kube-system`,
+  protect-kernel-defaults, etcd user/group, CIS sysctls. No suite runs it
+  yet.
 - **Distro-layer exception to the CNCF posture (D24).** rke2 is
   SUSE/Rancher-owned; k3s and the upstream `kubernetes` distro are the
   fully-CNCF paths.
@@ -44,7 +44,7 @@ library. Transport facts arrive **only** through the generic
 fabric service names (D58). See [Architecture](../architecture/overview.md).
 
 The entire day-1 in-cluster surface is delivered as one kubenix-rendered
-bootstrap bundle, applied once via server-side apply on the `clusterInit`
+bootstrap bundle, applied at boot and on each deploy that changes it via server-side apply on the `clusterInit`
 machine (D40) — nothing is written to RKE2's watched manifests dir.
 
 ## Status
@@ -57,6 +57,28 @@ native data-plane, and the native, selective and external ClusterMesh
 suites. Every suite runs on `routed-fabric`: Cilium tunnel mode and
 `wireguard-mesh` were removed (D72, round 53). CIS hardening, the bootstrap bundle, and distro-specific bootstrap
 behavior remain unchanged.
+
+## Hardening (round G11)
+
+- **A machine holds only what its role reads.** An agent gets the agent
+  token, never the server token (which joins the control plane); the
+  ClusterMesh CA and keys stay on the `clusterInit` server.
+- **The cluster ports by source.** The API, the HAProxy LB ports, the
+  kubelet and Cilium's health port answer the members and the cluster's
+  pods; etcd answers the servers only. A pod reaches no other host port,
+  and the service never trusts a fabric link (routed-fabric decides).
+- **The first-server guard fails closed.** A `clusterInit` server with no
+  etcd data waits for IfState and FRR, starts only when every other server
+  refuses the connection, and refuses when one answers or stays silent
+  for 300 s. `/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>`
+  allows one start.
+- **Two servers are refused** (etcd needs both: worse than one); an even
+  count above two warns. Half-explicit CIDR pairs, overlapping pod and
+  service CIDRs, and an instance name that is no Cilium cluster name
+  (32 characters at most) are eval errors. `configOverrides` cannot replace
+  a key the service renders or carry a token.
+- **HAProxy**: the stats page is read-only on loopback; the health check
+  verifies the kubeapi FQDN.
 
 ## Two safety rules (2026-11-21)
 

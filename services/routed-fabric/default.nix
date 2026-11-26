@@ -42,22 +42,22 @@
       port = lib.mkOption {
         type = lib.types.nullOr lib.types.port;
         default = null;
-        description = "Override the allocated UDP port for this adjacency.";
+        description = "Override the allocated UDP port for this adjacency. Both ends use one port: when both set it, the values must match.";
       };
       underlayMtu = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
         default = null;
-        description = "Override the smallest underlay MTU used for this adjacency.";
+        description = "Override the smallest underlay MTU used for this adjacency. Both ends use the smaller of the two ends' overrides.";
       };
       extraAllowedIPs = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
-        description = "Deliberate routed-only prefixes added to this adjacency's ACL and FRR policy.";
+        description = "Deliberate routed-only prefixes this adjacency carries: added on both ends to the WireGuard ACL and to the session's import and export prefix-lists (exact match). The union of both ends' lists.";
       };
       externalTransit = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "Permit external sources with 0/0 crypto ACLs; never installs a main-table default route.";
+        description = "Permit external sources with 0/0 crypto ACLs; never installs a main-table default route. The link is never a trusted interface, and what it forwards into the fabric must go to the border's ownedPrefixes.";
       };
       sourceReturn = lib.mkOption {
         type = lib.types.bool;
@@ -199,6 +199,17 @@
                         type = lib.types.ints.between 1 4294967295;
                         description = "Upstream BGP peer ASN.";
                       };
+                      acceptedPrefixes = lib.mkOption {
+                        type = lib.types.listOf lib.types.str;
+                        default = [];
+                        example = ["0.0.0.0/0"];
+                        description = "Routes this border accepts from the peer, each an FRR prefix-list match (a prefix, optionally with `ge`/`le`). Empty accepts nothing: the session only announces ownedPrefixes.";
+                      };
+                      ttlSecurity = lib.mkOption {
+                        type = lib.types.bool;
+                        default = false;
+                        description = "GTSM (`ttl-security hops 1`, RFC 5082): accept the session only from a directly connected peer. The peer must set it too, else the session never comes up.";
+                      };
                     };
                   }
                 );
@@ -229,8 +240,8 @@
         };
         trust = lib.mkOption {
           type = lib.types.bool;
-          default = true;
-          description = "Trust traffic arriving on routed-fabric WireGuard interfaces.";
+          default = false;
+          description = "Make the fabric's WireGuard links trusted interfaces (every port open to every fabric member and client). Off: a link opens only BGP (179) and BFD, and each service opens its own ports on the links (the kube services open the cluster's). An externalTransit link is never trusted.";
         };
       };
     };
@@ -552,14 +563,22 @@
     in {
       hosts = [];
       vips = lib.unique (lib.concatMap (pool: pool.blocks) (builtins.attrValues pools));
+      # one route per node: the pod block size the cluster publishes
       pods = [
-        facts.network.podCIDRv4
-        facts.network.podCIDRv6
+        {
+          cidr = facts.network.podCIDRv4;
+          mask = facts.network.podMaskSizeV4;
+        }
+        {
+          cidr = facts.network.podCIDRv6;
+          mask = facts.network.podMaskSizeV6;
+        }
       ];
       services = lib.optionals facts.bgp.advertiseClusterIPs [
         facts.network.serviceCIDRv4
         facts.network.serviceCIDRv6
       ];
+      extra = [];
     };
     localClusterRoutes = frr.mergeRoutes (
       map clusterRoutes (builtins.filter (facts: facts.members ? ${machine.name}) clusterList)
@@ -599,7 +618,16 @@
       inherit (accessibleRoutes) vips;
       pods = lib.optionals includePods accessibleRoutes.pods;
       services = lib.optionals includeServices accessibleRoutes.services;
+      extra = [];
     };
+
+    # R1: what a spine<->spine session carries. A spine is the only
+    # path between leaves attached to different spines, so the session
+    # between two spines carries everything any member consumes or
+    # originates. One set for every spine pair, the same on both ends.
+    spineTransitRoutes = frr.mergeRoutes (
+      map consumptionRoutes memberNames ++ map clusterRoutesFor memberNames
+    );
 
     spineNames = lib.sort builtins.lessThan (builtins.attrNames (roles.spine.machines or {}));
     peerNames =
@@ -690,21 +718,39 @@
         else if (remoteOverride.port or null) != null
         then remoteOverride.port
         else allocatedPort;
+      # R6: one port for both ends; two different overrides never meet
+      portOverrideConflict =
+        (localOverride.port or null)
+        != null
+        && (remoteOverride.port or null) != null
+        && localOverride.port != remoteOverride.port;
       remotePort = port;
       endpointHost =
         if (localOverride.endpoint or null) != null
         then localOverride.endpoint
         else endpointOf remoteName;
       endpoint = endpointString endpointHost remotePort;
+      # R6: an override on either end binds both ends (the smaller wins),
+      # so the two ends of one tunnel never differ in MTU
+      mtuOverrides = builtins.filter (mtu: mtu != null) [
+        (localOverride.underlayMtu or null)
+        (remoteOverride.underlayMtu or null)
+      ];
       underlayMtu =
-        if (localOverride.underlayMtu or null) != null
-        then localOverride.underlayMtu
+        if mtuOverrides != []
+        then lib.foldl' lib.min (builtins.head mtuOverrides) mtuOverrides
         else lib.min (underlayMtuOf machine.name) (underlayMtuOf remoteName);
       mtu = fabric.adjacencyMtu underlayMtu;
       externalTransit =
         (localOverride.externalTransit or false) || (remoteOverride.externalTransit or false);
       sourceReturn = localOverride.sourceReturn or false;
-      extraAllowedIPs = localOverride.extraAllowedIPs or [];
+      # R6: both ends carry the union of both ends' extra prefixes
+      extraAllowedIPs = lib.unique ((localOverride.extraAllowedIPs or []) ++ (remoteOverride.extraAllowedIPs or []));
+      extraRoutes =
+        frr.emptyRoutes
+        // {
+          extra = extraAllowedIPs;
+        };
       localEndpointHost = endpointOf machine.name;
       localFamily = endpointFamily localEndpointHost;
       remoteFamily = endpointFamily endpointHost;
@@ -727,9 +773,13 @@
         && (remoteOverride.timerProfile or null) != null
         && localOverride.timerProfile != remoteOverride.timerProfile;
       remoteRole = roleFor roles remoteName;
-      importRoutes =
+      importRoutes = frr.mergeRoutes [
+        importBase
+        extraRoutes
+      ];
+      importBase =
         if ownRole == "spine" && remoteRole == "spine"
-        then consumptionRoutes machine.name
+        then spineTransitRoutes
         else if ownRole == "spine"
         then
           (clusterRoutesFor remoteName)
@@ -742,30 +792,33 @@
             ];
           }
         else consumptionRoutes machine.name;
-      export =
-        if ownRole == "spine"
-        then consumptionRoutes remoteName
-        else localRoutes;
+      export = frr.mergeRoutes [
+        (
+          if ownRole == "spine" && remoteRole == "spine"
+          then spineTransitRoutes
+          else if ownRole == "spine"
+          then consumptionRoutes remoteName
+          else localRoutes
+        )
+        extraRoutes
+      ];
       cryptoRoutes = frr.mergeRoutes [
         importRoutes
         export
-        {
-          hosts =
-            [
+        (frr.emptyRoutes
+          // {
+            hosts = [
               "${remoteAddress.ipv4}/32"
               "${remoteAddress.ipv6}/128"
-            ]
-            ++ extraAllowedIPs;
-          vips = [];
-          pods = [];
-          services = [];
-        }
+            ];
+          })
       ];
       allowedIPs =
         cryptoRoutes.hosts
         ++ cryptoRoutes.vips
-        ++ cryptoRoutes.pods
+        ++ map (pod: pod.cidr) cryptoRoutes.pods
         ++ cryptoRoutes.services
+        ++ cryptoRoutes.extra
         ++ lib.optionals externalTransit [
           "0.0.0.0/0"
           "::/0"
@@ -794,6 +847,7 @@
         generator
         hostnameEndpoint
         key
+        portOverrideConflict
         linkLocal
         mtu
         name
@@ -815,7 +869,10 @@
       remoteAsn = asnOf remoteName;
       nextHopSelf = ownRole == "spine";
       leaf = ownRole == "leaf";
-      inherit (ownSettings) maximumPaths;
+      # R3: the most prefixes this session can carry in one family
+      # that eval can count: every member's host route and one pod
+      # block per Kubernetes node
+      knownPrefixes = lib.length memberNames + lib.length kubernetesMachines;
     };
 
     clusterRoutesFor = name:
@@ -866,6 +923,7 @@
       routerId = ownAddress.ipv4;
       sourceAddresses = ownAddress;
       localAsn = ownAsn;
+      inherit (ownSettings) maximumPaths;
       inherit adjacencies border;
       networks = localRoutes.hosts;
       extraConfig = lib.concatMapStringsSep "\n" (
@@ -910,6 +968,12 @@
     sourceReturns = builtins.filter (adjacency: adjacency.sourceReturn) adjacencies;
     addressFamilyMismatches = builtins.filter (adjacency: adjacency.addressFamilyMismatch) adjacencies;
     hostnameEndpoints = builtins.filter (adjacency: adjacency.hostnameEndpoint) adjacencies;
+    portOverrideConflicts = builtins.filter (adjacency: adjacency.portOverrideConflict) adjacencies;
+    nearRouteLimit = builtins.filter (adjacency: adjacency.knownPrefixes * 5 >= frr.routeLimit * 4) adjacencies;
+    # R5: links that are fabric (the trust zone) and links that carry
+    # external sources (externalTransit: never trusted)
+    transitInterfaces = map (adjacency: adjacency.name) (builtins.filter (adjacency: adjacency.externalTransit) adjacencies);
+    fabricInterfaces = map (adjacency: adjacency.name) (builtins.filter (adjacency: !adjacency.externalTransit) adjacencies);
     timerOverrideConflicts = builtins.filter (adjacency: adjacency.timerOverrideConflict) adjacencies;
     inherit (ownSettings) border;
 
@@ -1204,6 +1268,59 @@
         );
       # Mode scoping (N4): rendered only in the instance's modes.
       modeActive = modeScope.active config ownSettings.modes;
+
+      # R5: the forward filter. Stateless, so ECMP that sends the two
+      # directions of a flow through different spines passes, and in its
+      # own table, so it only ever drops: what the NixOS firewall and
+      # other services accept or refuse stays theirs.
+      #   - an externalTransit link forwards only to the border's
+      #     ownedPrefixes (its crypto ACL is 0/0);
+      #   - a forwarding border sends nothing from outside the fabric to
+      #     the fabric's own addresses: the member loopbacks, the
+      #     transfer prefixes and the ULA /48. Cilium's links are inside.
+      forwarding = ownRole == "spine" || (border != null && border.forwarding);
+      ownedOf = family:
+        builtins.filter (prefix: (family == 6) == lib.hasInfix ":" prefix) (
+          if border != null
+          then border.ownedPrefixes
+          else []
+        );
+      infra = {
+        "4" = lib.unique (builtins.filter (prefix: !(lib.hasInfix ":" prefix)) stableHosts ++ [transfer4PoolRecord]);
+        "6" = lib.unique (builtins.filter (lib.hasInfix ":") stableHosts ++ ["${ulaBase}::/48"]);
+      };
+      quoted = names: "{ ${lib.concatMapStringsSep ", " (name: ''"${name}"'') names} }";
+      nftSet = name: family: elements: ''
+        set ${name} {
+          type ${
+          if family == "4"
+          then "ipv4_addr"
+          else "ipv6_addr"
+        }; flags interval; auto-merge;
+          ${lib.optionalString (elements != []) "elements = { ${lib.concatStringsSep ", " elements} }"}
+        }
+      '';
+      guardBorder = forwarding && border != null && fabricInterfaces != [];
+      guardTransit = transitInterfaces != [];
+      forwardTable = ''
+        ${nftSet "owned4" "4" (ownedOf 4)}
+        ${nftSet "owned6" "6" (ownedOf 6)}
+        ${nftSet "infra4" "4" infra."4"}
+        ${nftSet "infra6" "6" infra."6"}
+        chain forward {
+          type filter hook forward priority filter - 5; policy accept;
+          ${lib.optionalString guardTransit ''
+          iifname ${quoted transitInterfaces} meta nfproto ipv4 ip daddr != @owned4 counter drop comment "externalTransit: to ownedPrefixes only"
+          iifname ${quoted transitInterfaces} meta nfproto ipv6 ip6 daddr != @owned6 counter drop comment "externalTransit: to ownedPrefixes only"
+        ''}
+          ${lib.optionalString guardBorder ''
+          iifname ${quoted fabricInterfaces} accept
+          iifname { "cilium*", "lxc*" } accept
+          oifname ${quoted fabricInterfaces} ip daddr @infra4 counter drop comment "outside to the fabric's own addresses"
+          oifname ${quoted fabricInterfaces} ip6 daddr @infra6 counter drop comment "outside to the fabric's own addresses"
+        ''}
+        }
+      '';
     in {
       imports = [
         ../../lib/kube-cluster/network-facts.nix
@@ -1213,9 +1330,9 @@
       config = modeScope.scope modeActive {
         warnings =
           map (
-            adjacency: "routed-fabric/${instanceName}: adjacency ${adjacency.key} uses a hostname endpoint; eval cannot verify a shared address family without DNS resolution"
+            adjacency: "routed-fabric/${instanceName}: adjacency ${adjacency.key} can carry ${toString adjacency.knownPrefixes} prefixes per family, near the ${toString frr.routeLimit}-prefix warning limit of a fabric session (FRR logs past it; the session stays up)"
           )
-          hostnameEndpoints;
+          nearRouteLimit;
 
         assertions =
           modeScope.assertions {
@@ -1413,6 +1530,21 @@
               message = "routed-fabric/${instanceName}: adjacency endpoints must share an address family when both are IP literals; mismatched ${
                 lib.concatMapStringsSep ", " (adjacency: adjacency.key) addressFamilyMismatches
               }";
+            }
+            {
+              # R4: IfState resolves a WireGuard endpoint name once, at
+              # apply, drops the endpoint when DNS fails then, and never
+              # resolves it again
+              assertion = hostnameEndpoints == [];
+              message = "routed-fabric/${instanceName}: adjacency endpoints must be IP literals; ${
+                lib.concatMapStringsSep ", " (adjacency: adjacency.key) hostnameEndpoints
+              } uses a hostname. IfState resolves a WireGuard endpoint name once, when it applies, drops the endpoint when DNS fails at that moment, and never resolves it again, so after a power cut or a DNS outage the adjacency stays down until someone reapplies. Give the side with a fixed address its IP literal; a side whose address changes (dynamic DNS) sets endpoint = null and dials out to the fixed side.";
+            }
+            {
+              assertion = portOverrideConflicts == [];
+              message = "routed-fabric/${instanceName}: both ends of an adjacency listen on one port; adjacencies.<remote>.port differs on the two ends of ${
+                lib.concatMapStringsSep ", " (adjacency: adjacency.key) portOverrideConflicts
+              }: set it on one end, or the same value on both";
             }
             {
               assertion = timerOverrideConflicts == [];
@@ -1657,13 +1789,13 @@
             );
           _networkFacts = {
             schemaVersion = 2;
-            forwarding = lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) true;
+            forwarding = lib.mkIf forwarding true;
             node.name = machine.name;
             allocationPools."routed-fabric/${instanceName}" = allocationPools;
             fabric.${instanceName} = {
               topology = ownRole;
               inherit (ownSettings) access;
-              forwarding = ownRole == "spine" || (border != null && border.forwarding);
+              inherit forwarding;
               asn = ownAsn;
               inherit (ownAddress) ipv4 ipv6;
               loopback = loopbackName;
@@ -1728,12 +1860,16 @@
               routes = ifstateRoutes;
               rules = ifstateRules;
             };
-            sysctl_conf = lib.mkIf (ownRole == "spine" || (border != null && border.forwarding)) ''
+            sysctl_conf = lib.mkIf forwarding ''
               net.ipv4.ip_forward = 1
               net.ipv6.conf.all.forwarding = 1
             '';
           };
           nftables.enable = true;
+          nftables.tables."routed-fabric-${instanceName}" = lib.mkIf (guardBorder || guardTransit) {
+            family = "inet";
+            content = forwardTable;
+          };
           firewall = {
             allowedUDPPorts = lib.optionals ownSettings.firewall.openPort listenPorts;
             interfaces = lib.listToAttrs (
@@ -1750,7 +1886,12 @@
               adjacencies
             );
             extraInputRules = upstreamFirewallRules;
-            trustedInterfaces = lib.optionals ownSettings.firewall.trust interfaceNames;
+            # rendered only when another service filters forwarding (a
+            # NAT64 gateway on a spine): transit between fabric links
+            extraForwardRules = lib.optionalString (forwarding && fabricInterfaces != []) ''
+              iifname ${quoted fabricInterfaces} oifname ${quoted fabricInterfaces} accept comment "routed-fabric transit"
+            '';
+            trustedInterfaces = lib.optionals ownSettings.firewall.trust fabricInterfaces;
           };
         };
         services.frr = {

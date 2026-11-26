@@ -8,8 +8,10 @@ semantics are distro-specific here.
 
 - **CNCF distro path (D24).** k3s is a CNCF project, so a k3s cluster with
   all defaults is a fully-CNCF cluster.
-- **PSA defaults where supported (D25).** k3s gets equivalent Pod Security
-  Admission defaults; there is no CIS profile off RKE2.
+- **PSA defaults where supported (D25, planned).** k3s is to get equivalent
+  Pod Security Admission defaults; there is no CIS profile off RKE2.
+- **Secrets encrypted at rest** (`secrets-encryption: true` on every
+  server), as rke2 does by default.
 - **Init-only PKI seeding** plus native replication (SPEC.md §6.10).
 - **Minimal base by default (D42).** With `distroDefaults.enable = false`
   (the default) the service disables the distro's packaged components: no
@@ -40,7 +42,7 @@ library. Transport facts arrive **only** through the generic
 fabric service names (D58). See [Architecture](../architecture/overview.md).
 
 The entire day-1 in-cluster surface is delivered as one kubenix-rendered
-bootstrap bundle, applied once via server-side apply on the `clusterInit`
+bootstrap bundle, applied at boot and on each deploy that changes it via server-side apply on the `clusterInit`
 machine (D40) — nothing is written to the k3s manifests dir.
 
 ## Status
@@ -54,6 +56,28 @@ suites. Every suite runs on `routed-fabric`: Cilium tunnel mode and
 `wireguard-mesh` were removed (D72, round 53). The canonical dual-shape remains kamrui-h1: a single-node k3s
 cluster holding the routed-fabric `spine` topology role with
 `access = "admin"` (D33, revised by D52, D56, and renamed D59).
+
+## Hardening (round G11)
+
+- **A machine holds only what its role reads.** An agent gets the agent
+  token, never the server token (which joins the control plane); the
+  ClusterMesh CA and keys stay on the `clusterInit` server.
+- **The cluster ports by source.** The API, the HAProxy LB ports, the
+  kubelet and Cilium's health port answer the members and the cluster's
+  pods; etcd answers the servers only. A pod reaches no other host port,
+  and the service never trusts a fabric link (routed-fabric decides).
+- **The first-server guard fails closed.** A `clusterInit` server with no
+  etcd data waits for IfState and FRR, starts only when every other server
+  refuses the connection, and refuses when one answers or stays silent
+  for 300 s. `/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>`
+  allows one start.
+- **Two servers are refused** (etcd needs both: worse than one); an even
+  count above two warns. Half-explicit CIDR pairs, overlapping pod and
+  service CIDRs, and an instance name that is no Cilium cluster name
+  (32 characters at most) are eval errors. `configOverrides` cannot replace
+  a key the service renders or carry a token.
+- **HAProxy**: the stats page is read-only on loopback; the health check
+  verifies the kubeapi FQDN.
 
 ## Two safety rules (2026-11-21)
 

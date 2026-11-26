@@ -8,17 +8,23 @@
 # Zero user input — `clan vars generate` derives everything.
 #
 # Role placement is the distro service's decision:
-#   - tokens + haproxy material: EVERY node (agents join/serve through
-#     their local haproxy; the healthcheck client cert deploys to all);
-#   - PKI, admin kubeconfig: servers only (the CA keys never leave the
-#     control plane).
+#   - agent token + haproxy material: EVERY node (agents join/serve
+#     through their local haproxy; the healthcheck client cert deploys
+#     to all);
+#   - server token, PKI, admin kubeconfig: servers only (the server
+#     token joins the control plane; the CA keys never leave it);
+#   - ClusterMesh CA + leaf set: the clusterInit server only (its
+#     secrets oneshot is the one reader).
 #
 # Naming is distro-neutral: rancher-<what>-<instance>. The PKI layout the
 # certificates are synced INTO differs per distro (rke2 vs k3s tls dirs) —
 # that is nixos.mkPkiSync's parameter, not the generator's.
 {lib}: {
-  # Join tokens: plain random secrets, one per role.
-  mkTokenGenerators = {
+  # Join tokens: plain random secrets, one per role. The server token
+  # joins the control plane (etcd, every CA through the distro's
+  # bootstrap), so it is defined on servers only; agents join with the
+  # agent token.
+  mkServerTokenGenerator = {
     pkgs,
     instanceName,
   }: {
@@ -30,6 +36,12 @@
         openssl rand -hex 16 > $out/server-token
       '';
     };
+  };
+
+  mkAgentTokenGenerator = {
+    pkgs,
+    instanceName,
+  }: {
     "rancher-agent-token-${instanceName}" = {
       share = true;
       files.agent-token = {};
@@ -98,14 +110,14 @@
         trap 'rm -rf "$WORK_DIR"' EXIT
         mkdir -p "$WORK_DIR/certs"
         touch "$WORK_DIR/index"
-        echo "01" > "$WORK_DIR/serial"
         cat > "$WORK_DIR/ca.cnf" << 'EOF'
         [ca]
         default_ca = ca_default
         [ca_default]
         dir = ./
         database = index
-        serial = serial
+        # K10: a random serial per certificate (no serial file)
+        rand_serial = yes
         new_certs_dir = certs
         default_md = sha256
         policy = policy_anything
@@ -125,6 +137,7 @@
         openssl genrsa -out "$out/service.key" 2048
         openssl genrsa -out "$out/root-ca.key" 4096
         openssl req -x509 -new -nodes -sha256 -days 7300 \
+          -set_serial "0x$(openssl rand -hex 16)" \
           -subj "/CN=${instanceName}-root-ca" \
           -key "$out/root-ca.key" \
           -out "$out/root-ca.pem" \
@@ -170,9 +183,7 @@
   #                         the PKI's CLIENT ca (any authenticated user may
   #                         GET /readyz via system:public-info-viewer).
   #                         Secret — deployed 0400 owner haproxy.
-  #   password-hash-haproxy = the stats-page password hash (public,
-  #                         eval-consumed via getPublicValue to render the
-  #                         userlist).
+  # The stats page is read-only on loopback, so it has no password.
   mkHaproxyGenerator = {
     pkgs,
     instanceName,
@@ -190,10 +201,6 @@
           group = "haproxy";
           mode = "0400";
           restartUnits = ["haproxy.service"];
-        };
-        "password-hash-haproxy" = {
-          secret = false;
-          deploy = false;
         };
       };
       runtimeInputs = with pkgs; [
@@ -214,19 +221,19 @@
           -out "$WORK_DIR/haproxy.csr"
         printf "keyUsage=digitalSignature\nextendedKeyUsage=clientAuth\n" \
           > "$WORK_DIR/ext.cnf"
-        # -set_serial: -CAcreateserial would write next to the read-only
-        # $in CA. Serial 3: 1/2 are taken by the admin/agent client certs
-        # (the leaf client CA's serials must be unique).
+        # A random serial (K10): -CAcreateserial would write next to the
+        # read-only $in CA, and a fixed one repeats across regenerations.
+        # 3650 days on purpose: this certificate is on every node and
+        # expires on one day everywhere, so a short life is an outage of
+        # its own; it is regenerated with the cluster's vars.
         openssl x509 -req -days 3650 \
           -in "$WORK_DIR/haproxy.csr" \
           -CA "$in/rancher-pki-${instanceName}/client-ca.crt" \
           -CAkey "$in/rancher-pki-${instanceName}/client-ca.key" \
-          -set_serial 3 \
+          -set_serial "0x$(openssl rand -hex 16)" \
           -extfile "$WORK_DIR/ext.cnf" \
           -out "$WORK_DIR/haproxy.crt"
         cat "$WORK_DIR/haproxy.crt" "$WORK_DIR/haproxy.key" > "$out/kubeapi-client.pem"
-        PASSWORD=$(openssl rand -hex 16)
-        echo -n "$PASSWORD" | openssl passwd -6 -stdin > "$out/password-hash-haproxy"
       '';
     };
   };
@@ -244,7 +251,8 @@
   # set is a public validation input — membership/placement changes re-run
   # `clan vars generate` before advertise. CA/cert material never reaches
   # exports, helm, or the Nix store: only the CA key stays deploy = false;
-  # the clusterInit node's secrets-apply oneshot reads leaf runtime paths.
+  # the clusterInit node's secrets-apply oneshot reads leaf runtime paths,
+  # so the distro services define both generators on that node only.
   mkMeshCaGenerator = {
     pkgs,
     group,
@@ -265,6 +273,7 @@
       script = ''
         openssl genrsa -out "$out/ca.key" 4096
         openssl req -x509 -new -nodes -sha256 -days 3650 \
+          -set_serial "0x$(openssl rand -hex 16)" \
           -subj "/CN=clustermesh-${group}-ca" \
           -key "$out/ca.key" \
           -out "$out/ca.crt" \
@@ -276,6 +285,9 @@
 
   # The per-cluster leaf set: server (etcd/apiserver serverAuth, the SANs),
   # remote/local/admin (etcd clientAuth CNs — see above).
+  # 3650 days on purpose (K10): every peer holds them, so they expire on
+  # one day across the mesh. A regenerated set re-runs the clusterInit
+  # node's secrets unit on deploy (restartUnits, bootstrap.nix).
   mkMeshCertGenerator = {
     pkgs,
     instanceName,
@@ -359,7 +371,7 @@
               -in "$WORK_DIR/${l.name}.csr" \
               -CA "$in/rancher-clustermesh-ca-${group}/ca.crt" \
               -CAkey "$in/rancher-clustermesh-ca-${group}/ca.key" \
-              -CAcreateserial \
+              -set_serial "0x$(openssl rand -hex 16)" \
               -extfile "$WORK_DIR/${l.name}.ext" \
               -out "$out/${l.name}.crt"
           '')
@@ -402,15 +414,17 @@
           -out "$WORK_DIR/admin.csr"
         printf "keyUsage=digitalSignature\nextendedKeyUsage=clientAuth\n" \
           > "$WORK_DIR/admin-ext.cnf"
-        # -set_serial: -CAcreateserial would write next to the read-only
-        # $in CA. Serial 1 is unique among certs from this leaf client CA
-        # (serial 2 is reserved for a future reduced-RBAC agent
-        # kubeconfig; 3 is the haproxy healthcheck client cert).
-        openssl x509 -req -sha256 -days 3650 \
+        # K10 (SPEC.md §6.10): a system:masters identity lives 365 days.
+        # Renew: `clan vars generate --regenerate --generator
+        # rancher-admin-kubeconfig-${instanceName}` on a branch, then
+        # deploy the servers (same CA: the cluster is untouched).
+        # A random serial: -CAcreateserial would write next to the
+        # read-only $in CA, and a fixed one repeats across renewals.
+        openssl x509 -req -sha256 -days 365 \
           -in "$WORK_DIR/admin.csr" \
           -CA "$in/rancher-pki-${instanceName}/client-ca.crt" \
           -CAkey "$in/rancher-pki-${instanceName}/client-ca.key" \
-          -set_serial 1 \
+          -set_serial "0x$(openssl rand -hex 16)" \
           -extfile "$WORK_DIR/admin-ext.cnf" \
           -out "$WORK_DIR/admin.crt"
         CRT=$(base64 -w0 "$WORK_DIR/admin.crt")

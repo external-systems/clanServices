@@ -20,7 +20,7 @@ with numbered decisions `N1`–`N45`, is
 | Ownership registry | Keeps IfState and NetworkManager away from what other software owns: Tailscale, iwd, Cilium. |
 | Modes | NixOS specialisations. You switch by rebooting and picking an entry in the boot menu. |
 | `modes` service | Names each machine's modes and their network manager (planned). |
-| Lockout guard | Rolls the network back on a headless machine when a change cuts its gateway (planned). |
+| Lockout guard | Rolls the network back on a headless machine when a change cuts its gateway. |
 
 netif owns links and how they are addressed, routed, resolved and
 trusted. It does not do NAT, tunnels, Wi-Fi or cluster networking: see

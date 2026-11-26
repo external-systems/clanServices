@@ -54,6 +54,16 @@
     ifstateOverlay = inputs.org-pkgs.overlays.ifstate;
   };
 in {
+  # specs/gateway.md §17 (G2): the CLAT follower's rule, simulated on
+  # the real script against a fake clock, beacons and Jool. Pure Python
+  # in the build sandbox: no VM.
+  perSystem = {pkgs, ...}: {
+    checks.clat-follow = pkgs.runCommand "clat-follow-sim" {nativeBuildInputs = [pkgs.python3];} ''
+      python3 ${./tests/clat-follow-sim.py} ${./clat-follow.py} | tee $out
+      grep -x CLAT_FOLLOW_SIM_OK $out >/dev/null
+    '';
+  };
+
   clanTests = {
     k3s-v6only = v6only "k3s";
     rke2-v6only = v6only "rke2";

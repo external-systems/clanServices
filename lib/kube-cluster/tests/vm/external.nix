@@ -15,6 +15,11 @@
     if k3s
     then "k3s.service"
     else "rke2-server.service";
+  # beta and delta are agents (SPEC.md §6.12: two servers are refused)
+  agentUnit =
+    if k3s
+    then "k3s.service"
+    else "rke2-agent.service";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
   marker = "${lib.toUpper distro}_CLUSTERMESH_EXTERNAL_OK";
   underlayIp = name: "192.168.1.${
@@ -62,7 +67,10 @@
       instance = "mesh";
     };
     cilium.id = id;
+    # one server and one agent per cluster (two servers are refused,
+    # SPEC.md §6.12): the apiserver runs on both nodes
     mesh = {
+      placement = "all";
       exposure = "external-load-balancer";
       external = {
         loadBalancerClass = "cloud.fake/mesh-lb";
@@ -203,10 +211,11 @@ in {
           module.input = "self";
           roles.server = {
             settings = clusterSettings 1 dnsA;
-            machines = {
-              alpha.settings.clusterInit = true;
-              beta.settings.clusterInit = false;
-            };
+            machines.alpha.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 1 dnsA;
+            machines.beta = {};
           };
         };
         ${clusterB} = {
@@ -214,10 +223,11 @@ in {
           module.input = "self";
           roles.server = {
             settings = clusterSettings 2 dnsB;
-            machines = {
-              gamma.settings.clusterInit = true;
-              delta.settings.clusterInit = false;
-            };
+            machines.gamma.settings.clusterInit = true;
+          };
+          roles.agent = {
+            settings = clusterSettings 2 dnsB;
+            machines.delta = {};
           };
         };
       };
@@ -302,7 +312,7 @@ in {
                     timeout=120,
                 )
                 m.wait_for_unit("haproxy.service", timeout=240)
-                m.wait_for_unit("${runtimeUnit}", timeout=600)
+                m.wait_for_unit("${agentUnit}" if m.name in ("beta", "delta") else "${runtimeUnit}", timeout=600)
 
         with subtest("both clusters bootstrap"):
             for m, cluster in [(alpha, "${clusterA}"), (gamma, "${clusterB}")]:
@@ -349,6 +359,15 @@ in {
 
         # Real DNS resolution and data-plane traffic through the fake
         # provider's DNS-published external LoadBalancer address.
+        # The agents have no kubeconfig of their own: the test gives them
+        # their cluster's admin kubeconfig (it dials the local HAProxy).
+        with subtest("the agents get their cluster's admin kubeconfig"):
+            import base64
+            for server, agent in [(alpha, beta), (gamma, delta)]:
+                cfg = base64.b64encode(server.succeed("cat /etc/rancher/${distro}/admin-kubeconfig").encode()).decode()
+                agent.succeed(f"mkdir -p /etc/rancher/${distro} && echo {cfg} | base64 -d > ${kubeconfig}")
+                agent.succeed("kubectl get --raw /readyz | grep ok >/dev/null")
+
         with subtest("DNS-published LoadBalancer serves mTLS health"):
             for source in machines:
                 source.succeed("kubectl -n kube-system get secret clustermesh-apiserver-admin-cert -o jsonpath='{.data.ca\\.crt}' | base64 -d > /tmp/clustermesh-ca.crt")

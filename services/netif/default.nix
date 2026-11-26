@@ -88,12 +88,18 @@
     lib.mapAttrs (
       logical: link: let
         kind = kinds.${logical};
+        claims = lib.filter (claim: claim.member == logical) memberClaims;
+        # A bond or bridge member inherits no addressing from the segment
+        # defaults: the bond or bridge above it carries the gateway, DHCP
+        # and DNS (round G11; its own are rejected below).
+        inherited = value:
+          if claims == []
+          then value
+          else null;
       in {
         inherit logical kind;
         interface = resolveInterface logical link;
-        memberOf = let
-          claims = lib.filter (claim: claim.member == logical) memberClaims;
-        in
+        memberOf =
           if claims == []
           then null
           else (builtins.head claims).logical;
@@ -108,26 +114,26 @@
         dhcp4 =
           if link.dhcp.ipv4 != null
           then link.dhcp.ipv4
-          else site.dhcp.ipv4;
+          else inherited site.dhcp.ipv4 == true;
         dhcp6 =
           if link.dhcp.ipv6 != null
           then link.dhcp.ipv6
-          else site.dhcp.ipv6;
+          else inherited site.dhcp.ipv6 == true;
         static4 = link.static.ipv4;
         static6 = link.static.ipv6;
         gateway4 =
           if link.gateway.ipv4 != null
           then link.gateway.ipv4
-          else site.gateway.ipv4;
+          else inherited site.gateway.ipv4;
         gateway6 =
           if link.gateway.ipv6 != null
           then link.gateway.ipv6
-          else site.gateway.ipv6;
+          else inherited site.gateway.ipv6;
         inherit (link.gateway) onLink;
         nameservers =
           if link.nameservers != []
           then link.nameservers
-          else site.nameservers;
+          else lib.optionals (claims == []) site.nameservers;
         trust =
           if link.firewall.trust != null
           then link.firewall.trust
@@ -391,12 +397,12 @@
     };
     static = {
       ipv4 = mkOption {
-        type = types.listOf types.str;
+        type = types.listOf ip.types.ipv4Cidr;
         default = [];
         description = "Static IPv4 addresses with prefix length ('192.0.2.10/24').";
       };
       ipv6 = mkOption {
-        type = types.listOf types.str;
+        type = types.listOf ip.types.ipv6Cidr;
         default = [];
         description = "Static IPv6 addresses with prefix length ('2001:db8::10/64').";
       };
@@ -504,7 +510,7 @@
     };
     gateway = {
       ipv4 = mkOption {
-        type = types.nullOr types.str;
+        type = types.nullOr ip.types.ipv4;
         default = null;
         description = ''
           IPv4 default gateway for this link's segment (also rendered as
@@ -513,7 +519,7 @@
         '';
       };
       ipv6 = mkOption {
-        type = types.nullOr types.str;
+        type = types.nullOr ip.types.ipv6;
         default = null;
         description = ''
           IPv6 default gateway for this link's segment (often a
@@ -531,12 +537,12 @@
       };
     };
     mtu = mkOption {
-      type = types.nullOr types.int;
+      type = types.nullOr (types.ints.between 68 65535);
       default = null;
       description = "Per-link MTU; null inherits the segment default.";
     };
     nameservers = mkOption {
-      type = types.listOf types.str;
+      type = types.listOf ip.types.address;
       default = [];
       description = ''
         DNS servers for this link, set on the link in systemd-resolved
@@ -549,12 +555,12 @@
         types.submodule {
           options = {
             destination = mkOption {
-              type = types.str;
+              type = ip.types.cidr;
               description = "Route destination CIDR.";
               example = "10.20.0.0/24";
             };
             gateway = mkOption {
-              type = types.nullOr types.str;
+              type = types.nullOr ip.types.address;
               default = null;
               description = "Route gateway (null for a directly connected route).";
             };
@@ -582,12 +588,12 @@
         example = 300;
       };
       from = mkOption {
-        type = types.listOf types.str;
+        type = types.listOf ip.types.cidr;
         default = [];
         description = "Source CIDRs selecting 'routingPolicy.table' ('ip rule from <cidr> lookup <table>').";
       };
       to = mkOption {
-        type = types.listOf types.str;
+        type = types.listOf ip.types.cidr;
         default = [];
         description = "Destination CIDRs selecting 'routingPolicy.table' (rendered at priority + 50).";
       };
@@ -928,12 +934,12 @@ in {
           '';
         };
         mtu = mkOption {
-          type = types.nullOr types.int;
+          type = types.nullOr (types.ints.between 68 65535);
           default = null;
           description = "Segment-default MTU applied to links that do not set 'mtu'.";
         };
         nameservers = mkOption {
-          type = types.listOf types.str;
+          type = types.listOf ip.types.address;
           default = [];
           description = "Segment-default DNS servers applied to links that do not set 'nameservers'.";
         };
@@ -951,12 +957,12 @@ in {
         };
         gateway = {
           ipv4 = mkOption {
-            type = types.nullOr types.str;
+            type = types.nullOr ip.types.ipv4;
             default = null;
             description = "Segment-default IPv4 gateway applied to links that do not set 'gateway.ipv4'.";
           };
           ipv6 = mkOption {
-            type = types.nullOr types.str;
+            type = types.nullOr ip.types.ipv6;
             default = null;
             description = "Segment-default IPv6 gateway applied to links that do not set 'gateway.ipv6'.";
           };

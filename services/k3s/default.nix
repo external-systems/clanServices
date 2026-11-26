@@ -615,14 +615,6 @@
         config.clan.core.vars.generators."rancher-agent-token-${instanceName}".files.agent-token.path;
 
       haproxyHealthcheckFiles = config.clan.core.vars.generators."rancher-haproxy-${instanceName}".files;
-      haproxyStatsPasswordHash = lib.trim (
-        clanLib.getPublicValue {
-          generator = "rancher-haproxy-${instanceName}";
-          file = "password-hash-haproxy";
-          flake = config.clan.core.settings.directory;
-          default = throw "k3s/${instanceName}: no haproxy stats password hash; run 'clan vars generate' (generator rancher-haproxy-${instanceName})";
-        }
-      );
 
       haproxyConfig = kube.render.mkHaproxyConfig {
         inherit
@@ -636,7 +628,6 @@
         backends = haproxyBackends;
         caCrtPath = haproxyHealthcheckFiles."kubeapi-ca.crt".path;
         clientPemPath = haproxyHealthcheckFiles."kubeapi-client.pem".path;
-        statsPasswordHash = haproxyStatsPasswordHash;
         healthCheckSni = kubeapiAddr;
       };
 
@@ -662,7 +653,9 @@
           "metrics-server"
         ];
 
-      baseServerConfig =
+      # The keys the service renders; configOverrides may not set them
+      # (K14, kube.assertions.mkConfigOverrideAssertions).
+      ownedServerConfig =
         {
           token-file = serverTokenPath;
           agent-token-file = agentTokenPath;
@@ -689,6 +682,8 @@
           disable-kube-proxy = true;
           disable-network-policy = true;
           node-label = computedNodeLabels;
+          # K9: Secrets encrypted at rest in etcd, as rke2 does by default
+          secrets-encryption = true;
         }
         // lib.optionalAttrs (!settings.distroDefaults.enable) {
           disable-helm-controller = true;
@@ -698,20 +693,23 @@
         }
         // lib.optionalAttrs (!isInit) {
           server = joinUrl;
-        }
+        };
+
+      ownedAgentConfig = {
+        server = joinUrl;
+        token-file = agentTokenPath;
+        disable-apiserver-lb = true;
+        node-label = computedNodeLabels;
+      };
+
+      baseServerConfig =
+        ownedServerConfig
         // settings.configOverrides
         // {
           disable = (settings.configOverrides.disable or []) ++ disabledAddons;
         };
 
-      baseAgentConfig =
-        {
-          server = joinUrl;
-          token-file = agentTokenPath;
-          disable-apiserver-lb = true;
-          node-label = computedNodeLabels;
-        }
-        // settings.configOverrides;
+      baseAgentConfig = ownedAgentConfig // settings.configOverrides;
 
       cleanConfig = lib.filterAttrs (_: v: v != null) (
         {
@@ -827,6 +825,7 @@
                 instanceName
                 roleMembers
                 settings
+                resolvedCidrs
                 ;
               transportFacts =
                 if fabricEnabled
@@ -872,6 +871,16 @@
               inherit instanceName roleMembers;
               transportFacts = allTransportFacts;
             })
+            ++ kube.assertions.mkConfigOverrideAssertions {
+              inherit instanceName;
+              distro = "k3s";
+              overrides = settings.configOverrides;
+              ownedKeys = builtins.attrNames (
+                if isServer
+                then ownedServerConfig
+                else ownedAgentConfig
+              );
+            }
             ++ [
               {
                 assertion = settings.coredns.helmValues == {};
@@ -879,14 +888,21 @@
               }
             ];
 
+          warnings = kube.assertions.mkClusterWarnings {inherit instanceName roleMembers;};
+
+          # K1: a machine gets only the secrets its role reads. An agent
+          # joins with the agent token; the server token is a server's.
           clan.core.vars.generators = lib.mkMerge (
             [
-              (kube.vars.mkTokenGenerators {inherit pkgs instanceName;})
+              (kube.vars.mkAgentTokenGenerator {inherit pkgs instanceName;})
               (kube.vars.mkHaproxyGenerator {inherit pkgs instanceName;})
-              # D60: the mesh group CA (shared across the group) and the
-              # per-cluster apiserver leaf set (SANs = the published
-              # endpoints). Defined on every member; share = true keeps
-              # one generation per group/instance.
+            ]
+            # D60: the mesh group CA (shared across the group) and the
+            # per-cluster apiserver leaf set (SANs = the published
+            # endpoints), on the clusterInit server only: its secrets
+            # oneshot is the one reader. share = true keeps one
+            # generation per group/instance.
+            ++ lib.optionals isInit [
               (kube.vars.mkMeshCaGenerator {
                 inherit pkgs;
                 group = meshGroup;
@@ -898,6 +914,7 @@
               })
             ]
             ++ lib.optionals isServer [
+              (kube.vars.mkServerTokenGenerator {inherit pkgs instanceName;})
               (kube.vars.mkAdminKubeconfigGenerator {
                 inherit pkgs instanceName;
                 server = "https://${kubeapiAddr}:${toString haproxyKubeapiPort}";
@@ -979,21 +996,26 @@
                 map (iface: ''iifname "${iface}" accept'') transportInterfaces
                 ++ ["meta mark and 0x0f00 == 0x0200 accept"]
               );
-              trustedInterfaces =
-                [
-                  "cilium_host"
-                  "cilium_net"
-                ]
-                ++ transportInterfaces;
-              extraInputRules = let
-                interfaceGuard =
-                  if transportInterfaces != []
-                  then "iifname { ${lib.concatStringsSep ", " (map (i: ''"${i}"'') transportInterfaces)} } "
-                  else "";
-              in ''
-                iifname { "cilium*", "lxc*" } accept
-                ${interfaceGuard}tcp dport { ${toString kubeapiPort}, ${toString haproxyKubeapiPort}, 10250, 2379, 2380, 2381 } accept
-              '';
+              # The fabric links are not trusted here: routed-fabric owns
+              # their trust (firewall.trust), and the cluster opens only
+              # its own ports, by source (K2, lib/kube-cluster/firewall.nix).
+              trustedInterfaces = [
+                "cilium_host"
+                "cilium_net"
+              ];
+              extraInputRules = kube.render.mkInputRules {
+                inherit transportInterfaces isServer;
+                inherit (resolvedCidrs) podCIDRv4 podCIDRv6;
+                members = map (m: {inherit (m) role;} // memberAddr m.machineName) roleMembers;
+                # the API, the LB, the kubelet, Cilium's health port
+                clusterPorts =
+                  lib.optional isServer kubeapiPort
+                  ++ [
+                    haproxyKubeapiPort
+                    10250
+                    4240
+                  ];
+              };
               extraForwardRules = ''
                 iifname { "cilium*", "lxc*" } accept
                 oifname { "cilium*", "lxc*" } accept
@@ -1084,6 +1106,7 @@
             namePrefix = "k3s-${instanceName}";
             beforeUnit = "k3s.service";
             etcdDir = "/var/lib/rancher/k3s/server/db/etcd";
+            overrideFile = "/var/lib/rancher/k3s/server/allow-new-cluster-${instanceName}";
             port = kubeapiPort;
             peers = map (
               m: let
@@ -1091,14 +1114,14 @@
               in
                 if addr.ipv4 != null
                 then addr.ipv4
-                else "[${addr.ipv6}]"
+                else addr.ipv6
             ) (builtins.filter (m: m.machineName != machine.name) serverMembers);
           }
         ))
 
         (lib.mkIf (modeActive && isInit && settings.bootstrap.apply) (
           kube.mkBootstrapApply {
-            inherit pkgs instanceName;
+            inherit config pkgs instanceName;
             namePrefix = "k3s";
             serverUnit = "k3s.service";
             kubeconfigPath = "/etc/rancher/k3s/k3s.yaml";

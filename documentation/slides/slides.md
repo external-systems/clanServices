@@ -103,7 +103,7 @@ routers. After day one, a GitOps repo of your choice takes over.
 <li>install and join (k3s, rke2)</li>
 <li>cluster PKI and rotation</li>
 <li>per-node HAProxy API HA</li>
-<li>one bundle, applied once</li>
+<li>one bundle, re-applied on change</li>
 </ul>
 </div>
 <div class="level green">
@@ -543,7 +543,7 @@ spokes run no controller at all.
 
 Note:
 The whole day-one in-cluster surface is one kubenix-rendered manifest set
-per cluster, applied once with server-side apply. The GitOps repo then
+per cluster, applied at boot and on each changing deploy with server-side apply. The GitOps repo then
 adopts exactly the same manifests, so its first reconcile changes nothing.
 
 ---

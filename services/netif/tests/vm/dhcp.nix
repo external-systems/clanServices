@@ -186,6 +186,33 @@ in {
         ];
       };
       environment.systemPackages = [pkgs.jq];
+      specialisation = {
+        # Only the DHCP client changes: it drops the router option, so the
+        # default route goes. IfState's file stays the same.
+        nogateway.configuration.environment.etc."netif/dhcpcd/eth1.conf".source = lib.mkForce (
+          pkgs.writeText "netif-dhcpcd-eth1-nogateway.conf" ''
+            noipv4ll
+            ipv4only
+            nogateway
+            script /run/current-system/sw/bin/true
+          ''
+        );
+        # The DHCP link becomes static, on a subnet whose gateway nobody is.
+        static.configuration = {
+          clanServices.netif.links.eth1.dhcp4 = lib.mkForce false;
+          networking.ifstate.settings = {
+            interfaces.eth1.addresses = lib.mkForce ["192.0.77.2/24"];
+            routing.routes = [
+              {
+                to = "0.0.0.0/0";
+                via = "192.0.77.1";
+                dev = "eth1";
+                preference = 100;
+              }
+            ];
+          };
+        };
+      };
       # SSH opens its own port; the probe port is opened by nobody.
       services.openssh.enable = true;
       systemd.services.probe-listener = {
@@ -212,14 +239,24 @@ in {
           3
         ];
       };
-      networking.ifstate.settings.interfaces.eth2 = {
-        addresses = [
-          "198.51.100.1/24"
-          "2001:db8:2::1/64"
-        ];
-        link = {
-          kind = "physical";
-          state = "up";
+      networking.ifstate.settings.interfaces = {
+        eth2 = {
+          addresses = [
+            "198.51.100.1/24"
+            "2001:db8:2::1/64"
+          ];
+          link = {
+            kind = "physical";
+            state = "up";
+          };
+        };
+        # behind the ISP: client4 reaches it only through its default route
+        far0 = {
+          addresses = ["203.0.113.1/32"];
+          link = {
+            kind = "dummy";
+            state = "up";
+          };
         };
       };
       environment.systemPackages = [
@@ -658,6 +695,57 @@ in {
             router.wait_until_succeeds(lan, timeout=60)
             assert eloop_errors(router) == 0
             print("NETIF_DHCP_PD_LOST_OK")
+
+        def client4_switch(name):
+            system = "/run/booted-system" + (f"/specialisation/{name}" if name else "")
+            return client4.execute(f"systemctl reset-failed ifstate.service netif-guard.service; {system}/bin/switch-to-configuration test 2>&1")
+
+        def client4_lease():
+            client4.wait_until_succeeds("ip -4 -o addr show dev eth1 scope global | grep 192.0.2.1 >/dev/null", timeout=90)
+            client4.wait_until_succeeds("ip -4 route show default | grep 'via 192.0.2.1 dev eth1' >/dev/null", timeout=60)
+
+        def client4_guard_log(pattern):
+            client4.wait_until_succeeds(f"journalctl --sync; journalctl -b -u netif-guard.service --no-pager | grep '{pattern}' >/dev/null", timeout=30)
+
+        with subtest("the guard: a change of the DHCP client alone is rolled back, and dropped by the next good switch (N25)"):
+            client4.succeed("systemctl restart netif-guard.service")
+            client4.succeed("grep -x '4 eth1' /var/lib/netif/guard/last-good-defaults")
+            status, output = client4_switch("nogateway")
+            print(output)
+            assert status != 0, "the switch must report the failure"
+            client4_guard_log("no IPv4 default route on eth1")
+            client4_guard_log("dhcpcd on eth1 goes back to the configuration that passed")
+            client4_lease()
+            # the unit runs the kept configuration, while this generation runs
+            client4.succeed("test -e /run/netif-guard/dhcpcd/eth1.conf")
+            client4.wait_until_succeeds("pgrep -af dhcpcd | grep /run/netif-guard/dhcpcd/eth1.conf >/dev/null", timeout=30)
+            client4.succeed("ping -c1 -W2 203.0.113.1")
+            client4_guard_log("rolled back. The running generation")
+            status, output = client4_switch(None)
+            assert status == 0, output
+            client4.succeed("test ! -e /run/netif-guard/dhcpcd")
+            client4.wait_until_succeeds("pgrep -af dhcpcd | grep /etc/netif/dhcpcd/eth1.conf >/dev/null", timeout=30)
+            client4_lease()
+            print("NETIF_DHCP_GUARD_KEPT_OK")
+
+        with subtest("the guard: a DHCP link made static gets its DHCP client back on a rollback (N25)"):
+            status, output = client4_switch("static")
+            print(output)
+            assert status != 0, "the switch must report the failure"
+            client4_guard_log("no answer from 192.0.77.1 on eth1")
+            client4_guard_log("this generation runs no DHCP client on eth1")
+            client4.succeed("systemctl is-active netif-guard-dhcpcd-eth1.service")
+            client4_lease()
+            client4.fail("ip -4 addr show dev eth1 | grep 192.0.77.2 >/dev/null")
+            client4.succeed("ping -c1 -W2 203.0.113.1")
+            # the next good switch stops the guard's client and runs netif's
+            status, output = client4_switch(None)
+            assert status == 0, output
+            client4.fail("systemctl is-active netif-guard-dhcpcd-eth1.service")
+            client4.succeed("systemctl is-active netif-dhcpcd-eth1.service")
+            client4_lease()
+            client4.succeed("test \"$(pgrep -c dhcpcd)\" = 2")
+            print("NETIF_DHCP_GUARD_STATIC_OK")
 
         print("builder loadavg at end:", open("/proc/loadavg").read().strip())
         print("NETIF_DHCP_OK")

@@ -62,7 +62,8 @@
   # list-with-merge-key coercion requires Service ports to carry a
   # protocol; the k8s API defaults it to TCP, so filling it is a no-op
   # against the apiserver. ConfigMap data values must be strings — layer 2
-  # stringifies boolean and integer values from the base manifest.
+  # stringifies boolean and integer values from the base manifest
+  # (`true`/`false`, never Nix's `toString` "1"/"").
   normalizeDoc = obj: let
     stripped = stringifyQuantities (stripNulls obj);
   in
@@ -78,7 +79,9 @@
         data =
           lib.mapAttrs (
             _: v:
-              if builtins.isBool v || builtins.isInt v
+              if builtins.isBool v
+              then boolStr v
+              else if builtins.isInt v
               then toString v
               else v
           )
@@ -119,6 +122,9 @@
       else []
     );
 in rec {
+  # exposed for the eval tests (ConfigMap data stringification)
+  inherit normalizeDoc;
+
   # Translate the merged Cilium profile (mkCiliumValues output, with the
   # admin's cilium.helmValues already folded in) into typed-tree patches.
   # Every value is mkForce'd so it wins over the imported base document.
@@ -574,11 +580,11 @@ in rec {
     spec = {
       ipv4 = {
         cidrs = [(builtins.elemAt cidrs 0)];
-        maskSize = 24;
+        maskSize = (import ./pod-mask.nix).ipv4;
       };
       ipv6 = {
         cidrs = [(builtins.elemAt cidrs 1)];
-        maskSize = 64;
+        maskSize = (import ./pod-mask.nix).ipv6;
       };
     };
     metadata.labels = manifestLabels;

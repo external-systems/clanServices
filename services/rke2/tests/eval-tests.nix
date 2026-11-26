@@ -697,15 +697,26 @@ in {
   };
 
   test_generatorNamesAgentNoPki = {
-    # Agents get the join tokens, the haproxy healthcheck material, and
-    # the mesh material (CA + apiserver leaf set — SANs are eval-computed),
-    # but NEVER the PKI / admin kubeconfig generators.
+    # K1: an agent gets the agent token and the haproxy healthcheck
+    # material only: never the server token, the mesh material, the PKI
+    # or the admin kubeconfig.
     expr = builtins.attrNames gammaTransport.clan.core.vars.generators;
     expected = [
       "rancher-agent-token-rke2"
-      "rancher-clustermesh-ca-mesh"
-      "rancher-clustermesh-rke2"
       "rancher-haproxy-rke2"
+      "state-version"
+    ];
+  };
+
+  # K1: a joining server gets the server token, but the mesh material
+  # stays on the clusterInit server (its secrets oneshot is the reader).
+  test_generatorNamesJoiningServer = {
+    expr = builtins.attrNames betaTransport.clan.core.vars.generators;
+    expected = [
+      "rancher-admin-kubeconfig-rke2"
+      "rancher-agent-token-rke2"
+      "rancher-haproxy-rke2"
+      "rancher-pki-rke2"
       "rancher-server-token-rke2"
       "state-version"
     ];
@@ -763,7 +774,9 @@ in {
         u.serviceConfig.Type
         == "oneshot"
         && u.serviceConfig.Restart == "on-failure"
-        && u.unitConfig.StartLimitIntervalSec == 0
+        # D40 (G11): bounded retries; a changed deployed bundle re-runs it
+        && u.unitConfig.StartLimitBurst == 12
+        && u.restartTriggers == [alphaTransport.environment.etc."clan-bootstrap/rke2/bundle.yaml".source]
         && u.after == ["rke2-server.service"];
       noManifests = alphaTransport.services.rke2.manifests == {};
       agentNoBundle = !(gammaTransport.environment.etc ? "clan-bootstrap/rke2/bundle.yaml");
@@ -875,7 +888,8 @@ in {
       kubeapi = lib.hasInfix "bind 10.42.0.1:7443" alphaHaproxyConfig;
       kubeapi6 = lib.hasInfix "bind [fd10:42::1]:7443" alphaHaproxyConfig;
       supervisor = lib.hasInfix "bind 10.42.0.1:8443" alphaHaproxyConfig;
-      stats = lib.hasInfix "bind 10.42.0.1:8404" alphaHaproxyConfig;
+      # K15: the stats page is on loopback
+      stats = lib.hasInfix "bind 127.0.0.1:8404" alphaHaproxyConfig;
     };
     expected = {
       kubeapi = true;
@@ -929,12 +943,13 @@ in {
     expr = {
       serverHas = alphaTransport.systemd.services ? rke2-rke2-pki-sync-tls;
       agentHas = gammaTransport.systemd.services ? rke2-rke2-pki-sync-tls;
+      # K10: no path unit copies a regenerated CA into a running server
       serverPath = alphaTransport.systemd.paths ? rke2-rke2-pki-sync-tls;
     };
     expected = {
       serverHas = true;
       agentHas = false;
-      serverPath = true;
+      serverPath = false;
     };
   };
 
@@ -1057,6 +1072,9 @@ in {
       network = {
         podCIDRv4 = "10.1.0.0/16";
         podCIDRv6 = "fd10:1::/56";
+        # the published pod block (routed-fabric R11)
+        podMaskSizeV4 = 24;
+        podMaskSizeV6 = 64;
         serviceCIDRv4 = "10.2.0.0/16";
         serviceCIDRv6 = "fd10:2::/112";
         clusterDNS = "10.2.0.10";
@@ -1490,7 +1508,9 @@ in {
       lbipam = fakeApiserverSvc.metadata.annotations."lbipam.cilium.io/ips";
       users = fakeUsers;
       peersKeyPresent = fakeClustermeshSecret != null;
-      peersEndpoints = fakeClustermeshSecret.stringData."rke2-b" or null;
+      # K5: `data` (base64), never `stringData`
+      peersEndpoints = fakeClustermeshSecret.data."rke2-b" or null;
+      peersStringData = fakeClustermeshSecret ? stringData;
       clustermeshEnable = fakeCiliumConfigData."clustermesh-enable";
     };
     expected = {
@@ -1509,7 +1529,9 @@ in {
       lbipam = "172.16.1.79";
       users = "users:\n- name: remote-rke2-b\n  role: remote\n";
       peersKeyPresent = true;
-      peersEndpoints = "endpoints:\n- https://172.16.2.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      # base64 of "endpoints:\n- https://172.16.2.79:2379\n…" (coreutils base64)
+      peersEndpoints = "ZW5kcG9pbnRzOgotIGh0dHBzOi8vMTcyLjE2LjIuNzk6MjM3OQp0cnVzdGVkLWNhLWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQtY2EuY3J0CmtleS1maWxlOiAvdmFyL2xpYi9jaWxpdW0vY2x1c3Rlcm1lc2gvY29tbW9uLWV0Y2QtY2xpZW50LmtleQpjZXJ0LWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQuY3J0";
+      peersStringData = false;
       clustermeshEnable = "true";
     };
   };
@@ -1525,11 +1547,11 @@ in {
           null
           objs).data."users.yaml";
     in {
-      endpoints = secret.stringData."rke2-a" or null;
+      endpoints = secret.data."rke2-a" or null;
       inherit users;
     };
     expected = {
-      endpoints = "endpoints:\n- https://172.16.1.79:2379\ntrusted-ca-file: /var/lib/cilium/clustermesh/common-etcd-client-ca.crt\nkey-file: /var/lib/cilium/clustermesh/common-etcd-client.key\ncert-file: /var/lib/cilium/clustermesh/common-etcd-client.crt";
+      endpoints = "ZW5kcG9pbnRzOgotIGh0dHBzOi8vMTcyLjE2LjEuNzk6MjM3OQp0cnVzdGVkLWNhLWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQtY2EuY3J0CmtleS1maWxlOiAvdmFyL2xpYi9jaWxpdW0vY2x1c3Rlcm1lc2gvY29tbW9uLWV0Y2QtY2xpZW50LmtleQpjZXJ0LWZpbGU6IC92YXIvbGliL2NpbGl1bS9jbHVzdGVybWVzaC9jb21tb24tZXRjZC1jbGllbnQuY3J0";
       users = "users:\n- name: remote-rke2-a\n  role: remote\n";
     };
   };
@@ -1756,6 +1778,157 @@ in {
         "2001:db8:c::c1a8"
         "2001:db8:c::2"
       ];
+    };
+  };
+
+  # --- Round G11 kube hardening -------------------------------------------
+
+  # K2: manual addresses: the cluster ports from members and pods, etcd
+  # from the servers, no blanket pod accept, no trusted fabric link.
+  test_firewallManualBySource = let
+    rules = alphaExplicit.networking.firewall.extraInputRules;
+  in {
+    expr = {
+      cluster = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443, 8443, 10250, 4240 } accept" rules;
+      cluster6 = lib.hasInfix "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443, 8443, 10250, 4240 } accept" rules;
+      etcd = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 2379, 2380, 2381 } accept" rules;
+      supervisorMembersOnly = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept" rules;
+      noBlanketPodAccept = !(lib.hasInfix ''iifname { "cilium*", "lxc*" } accept'' rules);
+      noGuard = !(lib.hasInfix "iifname" rules);
+      trusted = alphaExplicit.networking.firewall.trustedInterfaces;
+    };
+    expected = {
+      cluster = true;
+      cluster6 = true;
+      etcd = true;
+      supervisorMembersOnly = true;
+      noBlanketPodAccept = true;
+      noGuard = true;
+      trusted = [
+        "cilium_host"
+        "cilium_net"
+        "lo"
+      ];
+    };
+  };
+
+  # K2: a fabric agent opens no etcd and no API port, only on its fabric
+  # links and local pod links, and does not trust the fabric links.
+  test_firewallFabricAgent = let
+    rules = gammaTransport.networking.firewall.extraInputRules;
+  in {
+    expr = {
+      noEtcd = !(lib.hasInfix "2379" rules);
+      ports = lib.hasInfix "tcp dport { 7443, 8443, 10250, 4240 } accept" rules;
+      guard = lib.hasInfix ''iifname { "fk-gamma-1", "fk-gamma-2", "lxc*", "cilium*" } ip saddr'' rules;
+      trusted = gammaTransport.networking.firewall.trustedInterfaces;
+    };
+    expected = {
+      noEtcd = true;
+      ports = true;
+      guard = true;
+      trusted = [
+        "cilium_host"
+        "cilium_net"
+        "lo"
+      ];
+    };
+  };
+
+  # K3: the init guard waits for IfState and FRR, dials the other
+  # servers (plain addresses), and names its override file.
+  test_initGuardWaitsForFabric = let
+    guard = alphaTransport.systemd.services.rke2-rke2-init-guard;
+  in {
+    expr = {
+      afterFabric = lib.all (u: lib.elem u guard.after) [
+        "ifstate.service"
+        "frr.service"
+      ];
+      peers = guard.environment.INIT_GUARD_PEERS;
+      override = guard.environment.INIT_GUARD_OVERRIDE;
+    };
+    expected = {
+      afterFabric = true;
+      peers = "10.42.0.2";
+      override = "/var/lib/rancher/rke2/server/allow-new-cluster-rke2";
+    };
+  };
+
+  # K7: two servers are refused; one is fine.
+  test_twoServersRefused = {
+    expr = {
+      two = failedAssertion alphaExplicit "two servers is refused";
+      one = failedAssertion modesSingle "two servers is refused";
+    };
+    expected = {
+      two = true;
+      one = false;
+    };
+  };
+
+  # K11: the instance name is Cilium's cluster-name (at most 32 chars).
+  test_longInstanceNameRefused = {
+    expr = let
+      bad = mkEvaled {
+        instances.a-cluster-name-that-is-longer-than-32 = {
+          module.name = "rke2";
+          module.input = "self";
+          roles.server = {
+            settings = {
+              network.fabric = null;
+              cilium.id = 1;
+            };
+            machines.alpha.settings = {
+              clusterInit = true;
+              network = {
+                ipv4 = "10.0.0.1";
+                ipv6 = "fd00::1";
+              };
+            };
+          };
+        };
+      };
+    in
+      failedAssertion bad.config.nixosConfigurations.alpha.config "the instance name is the Cilium cluster name";
+    expected = true;
+  };
+
+  # K14: configOverrides cannot carry a token or replace a rendered key.
+  test_configOverridesDenied = let
+    evaled = mkEvaled (
+      lib.recursiveUpdate explicitInventory {
+        instances.rke2.roles.server.settings.configOverrides = {
+          token = "in-the-store";
+          tls-san = ["elsewhere"];
+          kubelet-arg = ["max-pods=200"];
+        };
+      }
+    );
+    alpha = evaled.config.nixosConfigurations.alpha.config;
+  in {
+    expr = {
+      denied = failedAssertion alpha "configOverrides may not set tls-san, token:";
+      allowed = alpha.clan.kubeClusters.rke2.renderedDistroConfig.kubelet-arg;
+    };
+    expected = {
+      denied = true;
+      allowed = ["max-pods=200"];
+    };
+  };
+
+  # K15: the stats page is read-only on loopback; the health check
+  # verifies the kubeapi FQDN.
+  test_haproxyStatsLoopbackVerifyhost = {
+    expr = {
+      loopback = lib.hasInfix "bind 127.0.0.1:8404" alphaHaproxyConfig;
+      noUserlist = !(lib.hasInfix "userlist" alphaHaproxyConfig);
+      verifyhost = lib.hasInfix "verify required verifyhost kubeapi-rke2.clan" alphaHaproxyConfig;
+    };
+    expected = {
+      loopback = true;
+      noUserlist = true;
+      verifyhost = true;
     };
   };
 }

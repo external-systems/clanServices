@@ -4,6 +4,33 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 58 (2026-11-26): round G11, hardening of the network stack
+under Kubernetes.** A review of `main` (score 72/100) found 50
+defects, most in the recovery paths (rollback, restart, re-apply,
+failover). The owner approved all of them; K13 (k3s/rke2
+de-duplication) and R7 (`externalTransit` probe) are their own PRs.
+Where each contract lives: netif `specs/netif.md` (round G11 summary,
+N25), gateway `specs/gateway.md` §17, kube and fabric below (D25,
+D40, D63, §6.9–§6.12).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| N1–N4, N6, N8 | The lockout guard could record a bad config as last-good, left a rolled-back DHCP link without a client, passed with nothing to check, never re-checked a rollback | Rollback marker; transient dhcpcd on rollback; last-good defaults per family; re-probe and re-apply when the fault is outside; `ExecStopPost` runs the guard after a failed apply | `netif-guard`, `netif-dhcp`, `netif-v6only` |
+| N5, N7, N9, N10 | Members inherited a default route; an absent NIC held `network-online` 90 s; IPv6 spellings compared unequal; addresses were plain strings | Fixed; address option types from `lib/ip.nix` | nix-unit (netif `underlay.*`) |
+| K1 | Server token and mesh keys on every node | Server token on servers, mesh material on the `clusterInit` server only | `<distro>-join` |
+| K2 | Cluster ports open on every interface in manual mode; pods reached every host port | `lib/kube-cluster/firewall.nix`: ports by source (members, pod CIDRs); etcd servers-only | `<distro>-single` (outside host refused) |
+| K3 | Init guard failed open | Ordered after IfState/FRR; refuses unless every peer refuses the connection; override file `/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>` | `<distro>-ha` (five phases) |
+| K4, K5, K8 | Bundle not re-applied on deploy; no prune; endless retry; keys on a command line | D40 revised: re-applied on change, CRDs awaited, labelled prune while `bootstrap.apply`, bounded retry, `data` Secrets, `--rawfile` | `<distro>-single` |
+| K6, K7, K9, K11, K12, K14, K15 | Missing CIDR/voter/name checks; no k3s secrets encryption; dead `kubelet.extraArgs`; `"1"` booleans; overridable rendered keys; dead HAProxy stats admin | Assertions; two servers refused; k3s `secrets-encryption`; D25 marked planned; stats on loopback; `verifyhost` | nix-unit |
+| K10 | 10-year admin certificate, fixed serials, rke2 CA copied into the live TLS dir | Admin 365 days (renew: `clan vars generate --regenerate --generator rancher-admin-kubeconfig-<i>` on a branch); random serials; rke2 stages a new CA set | `<distro>-single`; probe (rke2 refuses CAs newer than its datastore) |
+| R1 | Pod routes did not cross between dedicated spines | One transit set on both ends | nix-unit `spinePair` |
+| R2 | §16.3 said GR covers an FRR restart | GR covers a bgpd restart; a full restart is a race at the peer; a deploy reloads | `k3s-frr-failure` (`FRR_DEPLOY_RELOADS_OK`, `FRR_FULL_RESTART_OK`) |
+| R3–R6, R8–R11 | Restarting route limits; hostname endpoints dropped silently; fabric links trusted; one-sided overrides; duplicated FRR config; open upstream import; hard-coded pod masks | `warning-only`; hostnames an eval error; `trust = false`, forward filter; symmetric overrides; shared prefix-lists; `acceptedPrefixes`, `ttlSecurity`; `podMaskSize*` export | `routed-fabric` (`ROUTED_FABRIC_UNTRUSTED_OK`, `ROUTED_FABRIC_FORWARD_FILTER_OK`), nix-unit |
+| G1–G14 | See `specs/gateway.md` §17 | — | `nat-gateway*`, `router*`, `*-clat` |
+
+K7 changed the clustermesh fixtures to one server and one agent per
+cluster. Evidence of the full run: the PR of this round.
+
 **Round 57 (2026-11-25): the review's findings are fixed**
 (`specs/gateway.md` round G10, §16.3; owner: "apply all fixes").
 - **Graceful restart.** The Cilium session: `gracefulRestart` in the
@@ -797,8 +824,8 @@ buildable diagrams without becoming a clanServices dependency (D57).
 ### 3.1 Bootstrap contract — "the cluster exists and is reachable"
 
 - Distro install/join for rke2, k3s, and (Reserved) kubeadm `kubernetes`;
-  mixed distros in one fleet; one cluster per node (D16); RKE2 CIS-hardened
-  by default (D25).
+  mixed distros in one fleet; one cluster per node (D16); RKE2's CIS
+  profile is opt-in today, CIS by default is planned (D25).
 - Cluster PKI: CAs, join tokens, admin kubeconfig, read-only
   (no-secrets) kubeconfig (D38); cert generation at bootstrap plus
   documented rotation runbooks and scripts (§6.9/§6.10).
@@ -871,8 +898,11 @@ buildable diagrams without becoming a clanServices dependency (D57).
   derive from the same route policy; external-transit adjacencies may
   carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route. D63 scopes
   BGP/BFD exposure, reserves listen ports, validates endpoint/policy
-  coherence, and uses stable `site`/`wan` timers with DelayOpen and
-  maximum-prefix restart.
+  coherence, and uses stable `site`/`wan` timers with DelayOpen and a
+  fabric route limit that warns (round G11). A spine↔spine session carries
+  the union of what every member consumes or originates, the same on both
+  ends, so leaves on different dedicated spines reach each other (round
+  G11, R1).
 - Access-scoped route consumption (D13): Kubernetes machines always
   install remote pod-pool blocks and advertised-VIP routes (native-
   routing requirement, D49); non-Kubernetes `access = "client"` machines
@@ -1093,7 +1123,10 @@ unless noted) — revoked entries keep one-line reasons for history.
   component is a CNCF project (Cilium, CoreDNS). Host-level components
   (FRR, WireGuard, HAProxy) exempt. rke2 = documented distro-layer
   exception; `k3s` and `kubernetes` are the CNCF distro paths.
-- **D25 RKE2 hardened by default (CIS).** `profile: cis` (v1.29+): PSA
+- **D25 RKE2 hardened by default (CIS).** *Status (round G11): planned.
+  The `rke2` service's `profile` defaults to `null`; `profile = "cis"` is
+  opt-in and maps to the nixpkgs `cisHardening`; no suite runs it, and
+  there is no `security.cis` option.* `profile: cis` (v1.29+): PSA
   `restricted` cluster-wide (except `kube-system`),
   protect-kernel-defaults, etcd user/group, CIS sysctls — host
   prerequisites rendered by the NixOS module. Explicit `security.cis =
@@ -1238,12 +1271,28 @@ unless noted) — revoked entries keep one-line reasons for history.
   two contracts (D44).
 - **D40 Cilium lifecycle: rendered bootstrap bundle → GitOps adoption.**
   The whole day-1 in-cluster surface is ONE kubenix-rendered bundle per
-  cluster (D26 layers), applied ONCE at first boot by a systemd oneshot
-  on the `clusterInit` node: wait for apiserver health, then
-  `kubectl apply --server-side --field-manager=clan-bootstrap`. Never
-  the distro manifests dir (nothing host-resident to track or redeploy);
-  idempotent (SSA no-op when state matches); `bootstrap.apply = false`
-  removes the unit on day 2. Handoff: the identical set is published to
+  cluster (D26 layers), applied by a systemd oneshot on the
+  `clusterInit` node: wait for apiserver health, then
+  `kubectl apply --server-side --force-conflicts
+  --field-manager=clan-bootstrap`. Never the distro manifests dir
+  (nothing host-resident to track or redeploy); idempotent (SSA no-op
+  when state matches); `bootstrap.apply = false` removes the unit on
+  day 2. (REVISED round G11, K4/K5.) The unit runs at every start of the
+  server and again on every deploy that changes the deployed bundle
+  file (`restartTriggers`), without restarting the server; a regenerated
+  ClusterMesh leaf re-runs the mesh secrets unit (`restartUnits`). It
+  applies the non-CR documents first, waits (bounded) until the CRDs of
+  the CR documents are `Established`, then applies the CRs. While
+  `bootstrap.apply` is true clan owns the bundle, so after a successful
+  apply it prunes: it deletes an object only when it carries
+  `clan.lol/cluster=<instance>`, has a `clan-bootstrap` managed-fields
+  entry, and is no longer in the bundle. A hand-made object, or one
+  another manager owns alone, is never pruned; after the GitOps handoff
+  (`bootstrap.apply = false`, D43) nothing is pruned because the unit is
+  gone. Retries are bounded and grow (10 s up to 2 min, at most 12 starts
+  an hour); then the unit stays `failed`, visible in `systemctl --failed`.
+  Peer Secrets render as `data`, so SSA removes a key that left the
+  bundle. Handoff: the identical set is published to
   the GitOps repo; Flux Kustomization (prune on) or Argo CD adopts it.
   First reconcile is a no-op BY CONSTRUCTION (identical bytes, one Nix
   source). Evidence (2026-10-22 research): Flux prune garbage-collects
@@ -1842,7 +1891,25 @@ unless noted) — revoked entries keep one-line reasons for history.
   TCP 179 and UDP 3784/4784 are never opened globally by routed-fabric:
   they are allowed on fabric WireGuard interfaces and, for external
   sessions, only from declared literal `border.upstreamPeers` addresses.
-  Hostnames, zones, and malformed upstream literals are eval errors. The
+  Hostnames, zones, and malformed upstream literals are eval errors.
+  **Amended round G11 (R5): the fabric is no trust zone.**
+  `firewall.trust` defaults to false: a fabric link opens 179 and BFD
+  only, and each service opens its own ports there (k3s/rke2: the
+  cluster's ports and Cilium health 4240). `trust = true` never reaches an
+  `externalTransit` link. Forwarding nodes carry a stateless forward
+  filter in their own table `inet routed-fabric-<instance>` (it only
+  drops; stateless so ECMP that splits a flow over two spines passes): an
+  `externalTransit` link forwards only to the border's `ownedPrefixes`, and
+  a forwarding border forwards nothing from outside the fabric (any link
+  but its fabric links and Cilium's) to the fabric's own addresses
+  (member loopbacks, transfer pool, ULA /48). Where another service turns
+  on the NixOS forward filter, routed-fabric accepts fabric↔fabric transit.
+  **Amended round G11 (R9): upstream policy.** A border announces its
+  `ownedPrefixes` and accepts only the peer's `acceptedPrefixes` (default
+  nothing). `ttlSecurity` (GTSM, both ends) is per peer, default off. No
+  session password: FRR reads it from `frr.conf`, which is in the Nix
+  store, and a password added at runtime would be removed by the next
+  reload. The
   shared IfState base has a stable module key so repeated service imports
   deduplicate, requires globally unique rendered WireGuard listen ports, and
   reserves them, together with entries from the composable clanServices-owned
@@ -1857,8 +1924,17 @@ unless noted) — revoked entries keep one-line reasons for history.
   `sourceReturnTable` and `sourceReturnPriority` pin either derived value.
   Netif policy tables and effective rule priorities are unique across
   instances. Every adjacency with two
-  declared literal endpoints must share an address family; a hostname
-  produces an eval warning because eval does not resolve DNS. This is a
+  declared literal endpoints must share an address family. **Amended
+  round G11 (R4): a hostname endpoint is an eval error.** IfState 2.5.1
+  resolves a WireGuard endpoint name once, at apply, drops the endpoint
+  when DNS fails then, and never resolves it again. The side whose address
+  changes sets `endpoint = null` and dials out to the fixed side; a
+  re-resolve timer is built only when a real case needs it.
+  **Round G11 (R6): per-adjacency overrides bind both ends.** Two
+  different `port` overrides are an eval error, the smaller `underlayMtu`
+  override of the two ends applies to both, and `extraAllowedIPs` is the
+  union of both ends' lists, in both ACLs and in both ends' import and
+  export prefix-lists (exact match). This is a
   declared-endpoint check, not the phase-5 per-host underlay reachability
   matrix. Wireguard-mesh rejects pairs with no endpoint on either side,
   overlapping `extraAllowedIPs`, and same-host routed-fabric listen-port
@@ -1885,8 +1961,25 @@ unless noted) — revoked entries keep one-line reasons for history.
   hold-down. DelayOpen is fixed, not exponential flap damping; FRR route
   dampening is not substituted because upstream discourages it and its
   dual-stack coverage is incomplete. Periodic-flap behavior belongs to the
-  phase-6 WAN soak. Every rendered `maximum-prefix 4096` uses `restart 10`,
-  but for the Cilium session, which uses `warning-only` (round 57).
+  phase-6 WAN soak. **Amended round G11 (R3):** fabric and Cilium
+  sessions render `maximum-prefix 4096 warning-only` (a reset fabric session
+  takes the node's loopback, API and etcd with it); an eval warning names
+  an adjacency whose countable prefixes (members plus Kubernetes nodes)
+  reach 80 % of the limit. Upstream sessions keep `restart 10`.
+  `maximum-paths` is rendered once per address family, from
+  `maximumPaths` (R8). Each distinct prefix set is one shared prefix-list
+  (R10). Pod routes take their length from the cluster's published
+  `network.podMaskSizeV4/V6` (`lib/kube-cluster/pod-mask.nix`, the
+  CiliumPodIPPool `maskSize`, R11). **Supported size (R10):** about 30
+  adjacencies on one machine; random ports and transfer /31s then collide
+  on one machine with about 2 % and 1 % chance (an eval error naming the
+  generator), at 100 about 22 % and 14 %. **Graceful restart (round G11,
+  R2, accepted):** it is promised for a bgpd restart only. A restart of
+  all of FRR stops bfdd too; whether the peers then drop the node at once,
+  as for a dead node, or hold its routes stale is a race (`k3s-frr-failure`
+  saw both). Accepted: BFD must still find a dead node fast. Drain a node
+  before restarting FRR by hand. A deploy reloads FRR (nixpkgs
+  `reloadIfChanged`) and restarts nothing.
   Every profiled neighbor also renders plain `bfd`; site profile defaults
   stay implicit and `use-underlays-nexthop-weight` is explicit, matching FRR
   running-config serialization. A no-op FRR reload therefore has an empty
@@ -2274,7 +2367,8 @@ unless noted) — revoked entries keep one-line reasons for history.
 15. Every cluster mints admin + read-only (no-secrets) kubeconfigs
     (D38); the hub holds both for every spoke.
 16. CNCF in-cluster posture for clan-rendered components (D24); rke2
-    CIS-hardened by default (D25).
+    CIS-hardened by default (D25; planned: `profile = "cis"` is opt-in
+    today).
 17. Every static core link/address/route is inventory-owned through
     `netif` (multi-instance; cross-instance conflicts eval-rejected,
     D50/D53); every fabric AllowedIP and BGP filter derives from one
@@ -2317,8 +2411,8 @@ unless noted) — revoked entries keep one-line reasons for history.
 24. Exposure and convergence follow D63: BGP/BFD are interface/source
     scoped, WireGuard ports are reserved, policy/endpoint/AllowedIP/deploy
     collisions fail eval, forwarding-safe RA is used, and symmetric BFD/BGP
-    profiles plus DelayOpen and maximum-prefix restart favor stability over
-    speed.
+    profiles plus DelayOpen and a warning-only fabric route limit favor
+    stability over speed. The fabric is no trust zone (R5).
 
 ## 6. Subsystem contracts (condensed)
 
@@ -2346,13 +2440,19 @@ leaves, while nix-topology, translation modules, icons, renderers, and
 diagram packages belong to the consumer wrapper (D57).
 
 ### 6.2 Identity, CIDRs, topology, exports
-Cluster name = instance name (≤32 chars, DNS-style). `cilium.id`
+Cluster name = instance name (≤32 chars, DNS-style). The instance name
+is Cilium's `cluster-name`: at most 32 lower-case letters, digits and
+`-`, starting and ending with a letter or digit (eval-asserted). `cilium.id`
 nullable; default = stable hash of instance name → 1–127 (pure Nix, no
 IFD); collisions are eval errors. Explicit 1–255 override requires
 explicit v4 CIDRs above 127. Deployments predating hashed defaults must
 pin current ids/CIDRs before upgrading. One resolved dual-stack CIDR
 structure feeds distro, Cilium, DNS, pools, assertions, exports, and
-`clan.networkFacts` (D57).
+`clan.networkFacts` (D57). An explicit CIDR family pair is set as a
+whole (`podCIDRv4` with `podCIDRv6`, `serviceCIDRv4` with
+`serviceCIDRv6`) or derived as a whole; the pod and service CIDRs never
+overlap; the pod CIDRs are at least a /24 and a /64, the block Cilium's
+pod pool hands each node (eval-asserted).
 region/zone labels default to instance name and must be non-empty.
 `kube_cluster` publishes schemaVersion 4 (revised datapath/exposure
 facts per D58/D60 — no shims). It carries identity,
@@ -2458,7 +2558,7 @@ evaluated per adjacency; private endpoints are allowed when
 actually reachable. One `routed-fabric` instance = one trust domain; one
 machine has at most one membership and one topology role. Declared literal
 endpoints on one adjacency must share an address family; hostname endpoints
-generate an eval warning instead of impure DNS resolution. Source-return
+are an eval error (round G11, R4). Source-return
 tables have an explicit per-adjacency pin, avoid all kernel/Cilium owners
 and netif/source-return collisions, and use independent unique rule
 priorities below 32766. `settings.site` (default `null`) selects the default timer profile:
@@ -2466,9 +2566,11 @@ two ends that name the same site use `site` (BFD 300 ms x3), every
 other pair uses `wan` (BFD 1000 ms x5 and BGP 10/30 seconds), and
 `adjacencies.<remote>.timerProfile` overrides either. Upstreams use `wan`.
 Both ends and upstreams use a five-second fixed DelayOpen hold-down;
-fabric and upstream maximum-prefix limits restart after ten minutes, the
-Cilium session's only warns. Fabric sessions use BGP graceful restart
-(60 s) with BFD as the authority on a dead peer (round 57). No-op reloads preserve
+upstream maximum-prefix limits restart after ten minutes, fabric and
+Cilium limits only warn (round G11). Fabric sessions use BGP graceful
+restart (60 s) for a bgpd restart, with BFD as the authority on a dead
+peer (round 57); a restart of all of FRR may look like a dead node (a
+race, round G11). No-op reloads preserve
 peer uptimes and the immediate RIB (D63).
 
 ```nix
@@ -2647,7 +2749,10 @@ client certificate — existing `mkHaproxyGenerator`). Join URL and agent
 kubeconfigs point at it: server loss never strands nodes. Ports derive
 deterministically from `cilium.id` (existing scheme: 7442+id,
 +1000 supervisor). This is control-plane HA — unrelated to the revoked
-D5 edge-proxy.
+D5 edge-proxy. The health check verifies the serving chain and that the
+certificate names the kubeapi FQDN (`verifyhost`). The stats page is
+read-only and listens on loopback only (`127.0.0.1`/`::1`, port 8404),
+so it has no password; `/run/haproxy/haproxy.sock` stays the admin path.
 
 ### 6.7 Pools, LB, BGP, FRR
 Per D8/D9/D10/D19/D41. Node IPAM serves classless Services with node IPs
@@ -2686,8 +2791,9 @@ authorized ClusterIPs, then exports according to the receiving machine's
 routes on Kubernetes and fleet hosts alike; Cilium's local endpoint
 routes remain more specific. FRR next-hop rewriting resolves each path
 through its per-adjacency interface. Foreign upstreams are configured
-only under `border`, with strict prefix and maximum-prefix policy and
-optional proxy-NDP for on-LAN prefixes.
+only under `border`, with strict prefix and maximum-prefix policy (in:
+`acceptedPrefixes`, nothing by default; out: `ownedPrefixes`), optional
+GTSM and optional proxy-NDP for on-LAN prefixes.
 
 ### 6.8 Day-2 proxy layer (out of contract)
 No Gateway API, Ingress, or proxy implementation is clan-rendered
@@ -2705,10 +2811,22 @@ is GitOps-owned.
 ### 6.9 Secrets / PKI / airgap
 One plane (D35 revised). Clan vars: cluster CAs, join tokens, admin +
 read-only kubeconfigs (D38), ClusterMesh CA/certs, HAProxy health-check
-material, `gitops-hub` identities (D43). Everything else — Sealed
+material, `gitops-hub` identities (D43). A machine holds only what its
+role reads (round G11): the agent token and the HAProxy health-check
+certificate on every node; the server token, the admin kubeconfig and
+(rke2) the PKI on servers; the PKI seed on the k3s `clusterInit` server;
+the ClusterMesh CA generator and leaf set on the `clusterInit` server
+only, whose secrets oneshot is their one reader. An agent never holds
+the server token, which joins the control plane. Secrets are encrypted
+at rest in etcd on both distros (rke2 by default, k3s
+`secrets-encryption: true`). Everything else — Sealed
 Secrets keys included — is day-2 GitOps custody. Public certs readable
 as public values; private material referenced by deployed paths only.
-RKE2 PKI sync non-destructive; k3s init-only seed + native replication.
+RKE2 PKI sync non-destructive: it installs the vars CAs before a
+server's first start only; a later, different set is staged in
+`<tls>-staged` for `rke2 certificate rotate-ca`, never copied into the
+live TLS dir (round G11, K10: a copied set makes the next start fatal,
+"newer than datastore"); k3s init-only seed + native replication.
 Airgap-ready default; one explicit opt-out switch; overrides = complete
 replacement sets or additive lists.
 
@@ -2718,20 +2836,43 @@ Leaf certs: upstream 365-day, renew at startup; manual via
 rotation: staged dir + `rotate-ca`; same-root can be non-disruptive; new
 root disruptive (tokens, kubeconfigs, restarts). Service-account signing
 key: append/retain. Client-identity certs (`gitops-hub` D43, read-only
-D38): 365-day, regenerate via vars + secret-sync, clusters untouched
-(same CA). Cert bootstrap/rotation runbooks + scripts ship in
+D38, and the admin kubeconfig, a `system:masters` identity): 365-day,
+regenerate via vars (+ secret-sync where one exists), clusters untouched
+(same CA). The admin kubeconfig: the owner runs `clan vars generate
+--regenerate --generator rancher-admin-kubeconfig-<instance>` on a branch
+and deploys the servers (round G11, K10). The HAProxy health-check
+certificate, the ClusterMesh leaves and the CAs keep long lives (3650
+days, CAs 3700/7300): each sits on every node or peer and expires there
+on one day, so a short life is an outage of its own. Every serial is
+random. Cert bootstrap/rotation runbooks + scripts ship in
 documentation. No blanket 100-year leaf default. Inventory deletion ≠
 cluster GC: cordon/drain, Node deletion, etcd member removal, mesh
 cleanup, hub kubeconfig/CRB removal = documented runbooks. Disruptive
 changes (pools, CIDRs, ids, CA roots, mesh membership) = reviewed
 operational changes.
 
+The first-server guard (round G11): a `clusterInit` server whose etcd
+directory is missing never starts a second cluster beside a live one.
+Unit `<distro>-<instance>-init-guard` runs before the server, after
+`network-online.target`, `ifstate.service` and `frr.service` (the peers
+are fabric addresses). It dials every other server's API port: a
+connection means a cluster is alive and the guard refuses; "connection
+refused" from every peer means no cluster and the server starts;
+anything else (a timeout, no route) is unknown, and the guard keeps
+trying for 300 s, then refuses. It fails closed. The operator who knows
+no cluster is alive (the first install of an HA cluster whose other
+servers are not up yet, a cluster rebuilt from scratch) creates
+`/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>` and
+restarts the server; the guard deletes the file when it lets the server
+start. Suite `<distro>-ha`.
+
 ### 6.11 CCM, managed manifests, GitOps
 `cloudController = none | rancher | external`; provider CCMs never
 bundled, deployed day-2; hermetic fake-CCM VM test. Every clan-rendered
 manifest labeled (managed-by, instance, component, config-hash; never in
 selectors). Rendering = kubenix (D26); delivery = bootstrap bundle SSA
-once (D40); Rancher helm-controller disabled by default (D42). Day-2
+on boot and on every deploy that changes it, pruning only its own
+labelled objects (D40); Rancher helm-controller disabled by default (D42). Day-2
 GitOps owns all lifecycle post-bootstrap; base upgrades preserve
 operator CRDs.
 
@@ -2741,7 +2882,15 @@ and timer invariants are eval-enforced. The leaf-transit, asymmetric
 source/return, HA-profile and duplicate-ASN rejections below remain planned;
 see the later hardening phases.*
 
-Eval rejects: multiple bootstraps; duplicate ids/CIDRs/ports/ASNs/
+Eval rejects: multiple bootstraps; exactly two servers (etcd needs both
+for quorum: worse than one; an even count above two warns); an instance
+name that is no Cilium cluster name; half-explicit CIDR pairs,
+overlapping pod and service CIDRs, and pod CIDRs smaller than the per-node
+/24 and /64; `configOverrides` keys the service renders, or a token
+(`token`, `agent-token` and their `-file` keys, `server`, `cluster-init`,
+the CIDRs, `cluster-dns`, `node-ip`: an override would replace them
+silently, and a token would land in the Nix store);
+duplicate ids/CIDRs/ports/ASNs/
 interface names/transfer prefixes; missing dual-stack or topology facts;
 pool overlap; scope⇒mode violations; floating without candidates;
 `node-bgp` without exactly one owner, with non-local advertisers, or
@@ -2776,7 +2925,15 @@ delivery; kube-proxy enabled or `install-iptables-rules=false` in the
 canonical profile. The read-only ClusterRole never contains `secrets`
 or write verbs (D38). Firewall: nftables-only — Cilium's required
 KPR/BPF-masquerade rules use iptables-nft; legacy iptables and
-kube-proxy rules are forbidden (D55); API on transport only; public
+kube-proxy rules are forbidden (D55); API on transport only; the
+cluster ports by source (round G11, `lib/kube-cluster/firewall.nix`):
+the API, the HAProxy LB ports, the kubelet (10250) and Cilium's health
+port (4240) from the members' node addresses and the cluster's pod
+CIDRs, the rke2 supervisor (9345) from the members, etcd (2379–2381) on
+servers from the servers only; on a fabric only on the fabric links and
+the local pod links (`lxc*`, `cilium*`). The cluster services never
+trust a fabric link (routed-fabric's `firewall.trust` decides) and never
+accept everything from a pod: a pod is a source like any other. Public
 ports only where exposed; WireGuard only on configured underlays;
 BGP/BFD only on fabric WireGuard interfaces and from declared upstream
 peers, never globally (D63); mirror Services restricted to GitOps

@@ -34,9 +34,11 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   which run on the services (`k3s-clat-mapped` keeps its fixtures). Our
   own DNS64 is removed (`specs/gateway.md` §14.5 point 1). A new design
   question starts as a probe (a throwaway suite that prints `FINDING`
-  lines) and ends as assertions in a real suite.
+  lines) and ends as assertions in a real suite. `checks.clat-follow`
+  simulates the CLAT follower's move rule under loss (round G11).
 - `lib/kube-cluster/` — PRIVATE shared implementation for rke2+k3s
-  (interfaces, renderers, vars, assertions). Not a clan service. Renamed
+  (interfaces, renderers, vars, assertions, the cluster firewall
+  rules in `firewall.nix`). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
 - `flake-parts/` — root flake-parts modules, auto-imported (import-tree):
   - `clan-tests.nix`: the `clanTests` option and the org `vmTests` settings
@@ -81,8 +83,9 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `router` and `nat-gateway` services and `lib/gateway/` (decisions
   G…, probes PR…, slices S…). Both services exist; their suites and
   the fixture suites that remain are its §5. Its §16 is the hardening
-  review of round G9: what was fixed, and a ranked list of findings in
-  the other services that wait for the owner. A router judges its own
+  review of round G9 and its fixes (G10); §17 is round G11 for the
+  gateway services. Round G11 for netif, routed-fabric and the kube
+  services is SPEC.md round 58. A router judges its own
   links only and the NixOS firewall stays on (G25): never set
   `networking.firewall.enable = false` in a service.
   Its human pages are `documentation/docs/gateway/`. Edit them together.

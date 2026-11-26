@@ -59,6 +59,16 @@ read the section of a component before changing code that touches it.
   (`k3s-frr-failure`); with `neighbor … bfd
   check-control-plane-failure` a peer whose machine died is dropped
   when BFD fails, not after the restart time (`FRR_DEAD_NODE_OK`).
+- FRR 10.7.1 graceful restart is reliable for bgpd alone. `systemctl
+  restart frr` stops bfdd with bgpd, and with
+  `check-control-plane-failure` the outcome at the peer is a race: in
+  one run the leaf dropped the node's routes at once (0.0 s), as for a
+  dead node; in the next it kept them stale for over 60 s. Every
+  session and route comes back after the restart either way
+  (`k3s-frr-failure`, `FRR_FULL_RESTART_OK`). A
+  switch to a generation with a changed valid `frr.conf` reloads FRR
+  (nixpkgs `reloadIfChanged`): the bgpd PID and every session stay
+  (`FRR_DEPLOY_RELOADS_OK`).
 - FRR 10.7.1: watchfrr restarts a bgpd killed by SIGKILL; every
   session comes back without action (`k3s-frr-failure`,
   `FRR_BGPD_CRASH_OK`).
@@ -82,10 +92,60 @@ read the section of a component before changing code that touches it.
   it exits; netif's unit flushes dynamic IPv4 addresses after every
   stop (`specs/netif.md` N31). A unit file's `WantedBy=<device>` did
   not start a service in the VM; udev `SYSTEMD_WANTS` does.
+- systemd 262 and `switch-to-configuration`: a unit restarted for its
+  `restartTriggers` (`netif-guard.service`) can start before the
+  oneshot `ifstate.service` that a switch also starts; `After=` orders
+  only jobs that are queued together. netif's guard therefore names the
+  configuration each apply is of (`/run/netif-guard/applying`) and
+  judges nothing else (`netif-guard`, round G11). A oneshot whose
+  `ExecStart` fails skips `ExecStartPost` and runs `ExecStopPost` with
+  `SERVICE_RESULT` other than `success` (`NETIF_GUARD_FAILED_APPLY_OK`).
+  A start or restart of a unit that `Wants=` a oneshot without
+  `RemainAfterExit` starts that oneshot again: a plain restart of a netif
+  dhcpcd unit runs a new IfState apply; `systemctl restart
+  --job-mode=ignore-requirements` does not (`netif-dhcp`,
+  `NETIF_DHCP_GUARD_KEPT_OK`).
+- IfState 2.5.1 `ifstatecli apply` runs `mount` for a configuration
+  with a network namespace (`FileNotFoundError: 'mount'` without it);
+  the NixOS unit puts `/run/wrappers` on its path, and netif's guard
+  carries util-linux for its rollback (`netif-v6only`,
+  `NETIF_V6ONLY_GUARD_OK`).
 - IfState 2.5.1 ignores routes of `proto dhcp` (16) and `proto ra` (9)
   and dynamic addresses by default. `ifstatecli check` prints `ok`,
   `= <value>` or `orphan` for unchanged objects and exits 0 either
   way; tests use `tests/ifstate-noop.nix`.
 - A test node that sends RAs must forward IPv6, or Linux hosts drop it
   as default router seconds after first use (`specs/netif.md` §7).
+- nftables 1.1.6: a named set with `flags interval` refuses two
+  elements that overlap (an address inside a prefix) with
+  `conflicting intervals specified`; with `auto-merge` they load as one
+  interval, and an anonymous set merges them by itself. A dynamic set
+  takes `ip6 saddr & ffff:ffff:ffff:ffff::` as its key in `update`
+  and in a lookup (`nft -c` in a user namespace, 2026-11-26;
+  `nat-gateway` loads the rules, specs/gateway.md §17).
+- Jool 4.1.15: `jool pool4 display --csv --no-headers` prints
+  `Mark,Protocol,Address,Min port,Max port,Iterations,Iterations fixed`,
+  one line per range; `jool bib display --csv --no-headers` one line per
+  held transport address, so its line count is the ports in use; `jool
+  stats display --all --csv` has `JSTAT_BIB_ENTRIES` and
+  `JSTAT_SESSIONS` (`nat-gateway`, `NAT_GATEWAY_POOL4_OK`).
+- k3s and RKE2 embedded etcd: the metrics port 2381 listens on loopback
+  only; a peer that dials a server's node address on 2381 gets
+  "connection refused" while the server runs. A k3s or RKE2 agent writes
+  no kubeconfig of its own (`/etc/rancher/<distro>/<distro>.yaml` exists on
+  servers only). Suites `<distro>-ha` (the init guard phases) and
+  `<distro>-clustermesh`, round G11.
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).
+- rke2 v1.37.1: CA files written into the TLS directory of a running
+  server (`/var/lib/rancher/rke2/server/tls`) change nothing at once: old
+  client certificates keep working, the node stays Ready and HAProxy keeps
+  the backend UP for minutes. The next start is fatal and crash-loops:
+  "… newer than datastore and could cause a cluster outage. Remove the
+  file(s) from disk and restart to be recreated from datastore." The
+  datastore holds the CA set; rotation goes through
+  `rke2 certificate rotate-ca` (probe `rke2-probe-pki-sync`, 2026-11-26;
+  the assertion now lives in `rke2-single`).
+- kubectl 1.36: `kubectl get -o json` leaves out `metadata.managedFields`
+  unless `--show-managed-fields` is given, so a filter on the field
+  manager sees nothing without it. The bootstrap prune (D40) passes it
+  (`k3s-single`, 2026-11-26).

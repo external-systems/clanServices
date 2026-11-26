@@ -941,6 +941,14 @@ in
           v6_egress(node, "after the reboot")
           pod_names(node, "after the reboot")
           host_v4(machine, "after the reboot, with Cilium up")
+          # `kubectl exec` into a pod on the other node needs that node's
+          # agent tunnel to the API server. After the server reboots the
+          # agent dials again behind TCP's SYN backoff, up to about 2 min
+          # (round G11: seen twice after alpha's reboot, "failed to find
+          # Session for client beta"). Wait for the path the test uses,
+          # then assert the pod network as before.
+          for peer in NODES:
+              alpha.wait_until_succeeds(f"{K} timeout 20 kubectl exec anchor-{peer} -- true", timeout=180)
           pod_network("after the reboot")
 
 

@@ -61,16 +61,23 @@ get the `site` timer profile (BFD 300 ms x3); every other pair gets `wan`
 share a LAN or a data centre.
 `adjacencies.<remote>.timerProfile` overrides the default symmetrically.
 Upstreams use `wan`. Both ends and upstreams use a five-second fixed
-DelayOpen recovery hold-down (connect-retry is 10 seconds, above it), and a
-maximum-prefix limit restarts a fabric or upstream session after ten
-minutes; on the Cilium session it only warns. Sessions use BGP graceful
-restart (60 seconds on the fabric, 120 for Cilium): a restart of FRR or of
-the Cilium agent keeps the routes, and BFD still drops a dead peer at once.
+DelayOpen recovery hold-down (connect-retry is 10 seconds, above it). A
+fabric or Cilium session past 4096 prefixes warns and stays up; an upstream
+session restarts after ten minutes. Sessions use BGP graceful restart (60
+seconds on the fabric, 120 for Cilium): a restart of bgpd or of the Cilium
+agent keeps the routes, and BFD still drops a dead peer at once. A restart
+of all of FRR may look like a dead node (bfdd stops too; a race); a
+deploy only reloads FRR.
 A leaf tags what it learns `no-export`. Plain `bfd` accompanies each profile, site defaults stay
 implicit, and `use-underlays-nexthop-weight` is explicit; unchanged reloads
 have an empty dry-run diff and preserve peer uptimes and the immediate RIB.
 BGP/BFD ports are scoped to fabric interfaces and declared literal
-upstream source addresses, never opened globally. All WireGuard listen
+upstream source addresses, never opened globally. The fabric links are not
+trusted interfaces unless `firewall.trust = true` (never an externalTransit
+link); forwarding nodes drop what an externalTransit link sends outside the
+border's `ownedPrefixes`, and borders drop traffic from outside the fabric
+to the fabric's own addresses. Endpoints must be IP literals: a side whose
+address changes sets `endpoint = null` and dials out. All WireGuard listen
 ports are unique and reserved in `net.ipv4.ip_local_reserved_ports`;
 additional ports or ranges merge through `clanServices.networking.reservedPorts`.
 

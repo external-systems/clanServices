@@ -602,10 +602,16 @@ in {
               lib.optional (cfg.guestBridges != {}) guestPortsAfter
               ++ [dnsApply]
               ++ lib.optional (dhcpLinks != {}) (
+                # Only for a link that is there: a start job for an absent
+                # one waits 90 s for its device and holds up every unit
+                # ordered after the client (N31).
                 pkgs.writeShellScript "netif-dhcpcd-start" ''
-                  exec ${lib.getExe' pkgs.systemd "systemctl"} start --no-block ${
-                    lib.escapeShellArgs (map (interface: "${dhcpcdUnit interface}.service") (lib.attrNames dhcpLinks))
-                  }
+                  for interface in ${lib.escapeShellArgs (lib.attrNames dhcpLinks)}; do
+                    if [ -e "/sys/class/net/$interface" ]; then
+                      ${lib.getExe' pkgs.systemd "systemctl"} start --no-block "${dhcpcdUnit "$interface"}.service"
+                    fi
+                  done
+                  exit 0
                 ''
               );
 
@@ -626,10 +632,12 @@ in {
               lib.nameValuePair (dhcpcdUnit interface) {
                 description = "netif: dhcpcd on ${interface} (netif/${l.instance} link ${l.logical})";
                 # Bound to the link: stopped when the link goes away. Started
-                # at boot, by udev when the link appears later (a dock), and
-                # by IfState after it created or renamed the link. IfState
-                # has finished with the link before dhcpcd touches it.
-                wantedBy = ["multi-user.target"];
+                # by IfState after every apply, at boot too, when the link
+                # is there, and by udev when the link appears later (a
+                # dock). IfState has finished with the link before dhcpcd
+                # touches it. Not wanted by multi-user.target: that start
+                # job would wait 90 s for an absent NIC and hold up
+                # network-online.target (N31).
                 bindsTo = [(deviceUnit interface)];
                 after = [
                   (deviceUnit interface)

@@ -24,7 +24,9 @@ resolvers, which netif sets.
   (fewer than two targets answered), and brings it back only after 120
   clean seconds.
 - A client moves after 60 s without its gateway's beacon, only to a
-  beacon that answers, and never moves back on its own.
+  beacon that answered 5 of the last 10 rounds, and never moves back on
+  its own. A round in which no beacon answers does not restart the
+  60 s.
 - A beacon is believed only when it names its own gateway's `pool6`.
   Any other answer counts as silence.
 
@@ -76,9 +78,10 @@ change it.
 
 ## Rate limits
 
-Defaults per source address: `default` 50 new flows/s (burst 200) and
-20 000 packets/s (burst 40 000); `trusted` 1 000 (4 000) and 200 000
-(400 000). Override them for the whole instance
+Defaults per source /64: `default` 50 new flows/s (burst 200) and
+20 000 packets/s (burst 40 000); `trusted` 200 (4 000) and 200 000
+(400 000). The `trusted` new-flow rate keeps one source from filling
+the gateway's one `pool4` address within Jool's 5 minute UDP timeout. Override them for the whole instance
 (`roles.gateway.settings.limits`), for one gateway (its machine
 settings), or for one client (`roles.client.machines.<m>.settings.limits`,
 any of `newFlows`, `newFlowsBurst`, `packets`, `packetsBurst`).

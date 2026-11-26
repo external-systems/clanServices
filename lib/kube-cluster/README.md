@@ -66,28 +66,36 @@ module wiring, and airgap tarball selection stay OUT of this library.
 | `bgp.hashBgpAsns` / `bgp.resolveBgpAsns` | Deterministic private 32-bit ASN pairs per cluster (sha256 of salted instance name → RFC 6996 range; pins override). |
 | `bgp.mkFabricPool` / `bgp.fabricBlocks` | The default private fabric pool (D10): `172.16.<id>.0/24` + `fd11:<id>::/64`; internal ClusterMesh VIPs are pinned at host offset 79 / 0x79 (D60). |
 | `bgp.mkBgpResources` | The BGP v2 CR set (ClusterConfig per node, PeerConfig timers 9/3/5, Advertisements; D13 opt-ins). |
-| `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape (clusterInit count, addresses, resolved-id uniformity, id>127 ⇒ explicit v4 CIDRs, all-or-none transport posture, topology non-empty). |
+| `assertions.mkClusterAssertions` | Eval-time assertions about cluster shape (clusterInit count, never exactly two servers, the instance name as Cilium cluster name, addresses, resolved-id uniformity, id>127 ⇒ explicit v4 CIDRs, CIDR pairs set together, no pod/service overlap, pod CIDRs at least /24 and /64, all-or-none transport posture, topology non-empty). |
+| `assertions.mkClusterWarnings` | Warning strings: an even server count above two. |
+| `assertions.mkConfigOverrideAssertions` | `configOverrides` may not set a key the service renders, nor a token. |
 | `assertions.mkPoolAssertions` | D8 pool assertions: block overlap (incl. against pod/service CIDRs), scope⇒mode, floating coverage, node-name collisions, bgp.enable⇔shared-bgp coupling, fabric block size (§6.12). |
 | `mkFleetChecks` / `fleetChecksModule` | Fleet-wide assertions (§6.2) computed from the `kube_cluster` exports as `clan.checks`: duplicate names/ids, same-group CIDR overlap, node-in-two-clusters (D16, cross-service), mesh-group transport consistency. Wire into a clan with `clan.imports = [ kube.fleetChecksModule ]`. |
-| `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40). |
+| `mkBootstrapApply` | The bootstrap-apply oneshot fragment (bundle etc path + SSA apply unit, D40): re-runs when the deployed bundle changes, CRDs before CRs, bounded retry, prunes only its own labelled objects. |
 | `mkImageDigestAliases` | Per-node oneshot tagging each preloaded pinned image under its `name@digest` alias — the bundle references images digest-pinned, and containerd's CRI resolves digested references only via that canonical alias (offline airgap would otherwise ImagePullBackOff). |
-| `vars.mkTokenGenerators` | Join token generators (`rancher-server-token-<instance>` / `rancher-agent-token-<instance>`). |
+| `vars.mkServerTokenGenerator` / `vars.mkAgentTokenGenerator` | Join token generators (`rancher-server-token-<instance>`, servers only / `rancher-agent-token-<instance>`, every node). |
 | `vars.mkPkiGenerator` | `rancher-pki-<instance>` — the pre-generated cluster CA tree. |
-| `vars.mkHaproxyGenerator` | `rancher-haproxy-<instance>` — LB healthcheck client cert + stats password hash. |
+| `vars.mkHaproxyGenerator` | `rancher-haproxy-<instance>` — LB healthcheck client cert. |
 | `vars.mkAdminKubeconfigGenerator` | `rancher-admin-kubeconfig-<instance>` — operator kubeconfig (server URL parameterized). |
 | `nixos.mkPkiSync` | systemd service + path unit syncing the PKI vars into the distro TLS dir. |
+| `nixos.mkInitGuard` | The first-server guard before a `clusterInit` server without etcd data: after IfState and FRR, refuses when a peer's API answers or stays unknown past the deadline; an override file allows one start (SPEC.md §6.10). |
+| `render.mkInputRules` | The node firewall's input rules: the cluster ports by source (members, pod CIDRs), etcd from servers only, on fabric and local pod links (SPEC.md §6.12). |
+| `render.normalizeDoc` | Normalizes a parsed base-manifest document for the typed tree (ConfigMap booleans render `true`/`false`). |
 
 ## Vars layout (pre-generated PKI, zero user input)
 
 All generators are `share = true` — one CA tree / token set per cluster
 instance. Role placement is the distro service's job:
 
-- **every node**: `rancher-server-token-*` / `rancher-agent-token-*` and
-  `rancher-haproxy-*` (agents join and serve API traffic through their own
-  haproxy; the healthcheck client cert deploys to all, 0400 owner haproxy);
-- **servers only**: `rancher-admin-kubeconfig-*`. `rancher-pki-*` is declared
-  on rke2 servers but only on k3s's initializing server (CA keys never leave
-  the control plane).
+- **every node**: `rancher-agent-token-*` and `rancher-haproxy-*` (agents
+  join and serve API traffic through their own haproxy; the healthcheck
+  client cert deploys to all, 0400 owner haproxy);
+- **servers only**: `rancher-server-token-*` (it joins the control plane, so
+  an agent never holds it) and `rancher-admin-kubeconfig-*`. `rancher-pki-*`
+  is declared on rke2 servers but only on k3s's initializing server (CA keys
+  never leave the control plane);
+- **the `clusterInit` server only**: `rancher-clustermesh-ca-*` and
+  `rancher-clustermesh-*` (its secrets oneshot is their one reader).
 
 `rancher-pki-<instance>` produces a root CA + intermediate CA (both
 `deploy = false` — generator inputs only) and the leaf CAs the distro
@@ -98,9 +106,8 @@ uses an init-only, non-destructive seed in its public service; joining
 servers receive the CA through k3s bootstrap, and live rotation uses
 `k3s certificate rotate-ca`.
 
-The haproxy generator's public `password-hash-haproxy` is eval-consumed via
-`clanLib.getPublicValue`; the public `kubeapi-ca.crt` is consumed via its
-store path (it is a public certificate chain).
+The haproxy generator's public `kubeapi-ca.crt` is consumed via its store
+path (it is a public certificate chain).
 
 ## The per-node haproxy LB
 
@@ -112,8 +119,9 @@ checks over TLS, data stays raw TCP). RKE2 additionally enables the optional
 supervisor frontend/backend; its healthcheck probes the real API port as the
 anti-deadlock readiness signal. K3s sets `enableSupervisor = false` and uses
 only the kube-apiserver LB. Servers list themselves plain and the remote
-servers `backup`; agents list all servers plain. Stats page on the stats port
-(default 8404) with the vars-rendered password hash.
+servers `backup`; agents list all servers plain. The checks verify that the
+certificate names the kubeapi FQDN (`verifyhost`). A read-only stats page
+listens on loopback only (default port 8404), with no password.
 
 ## CIDR derivation
 
