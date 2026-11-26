@@ -221,6 +221,9 @@
             alpha.succeed("systemctl restart frr")
             took = seconds_until(beta, f"! {present}", limit=60)
             print(f"FINDING a full FRR restart on the spine: the leaf dropped its pod route after {took} s")
+            # R2, accepted: graceful restart does not hold the routes of a
+            # node whose bfdd went with bgpd (first run: 0.0 s)
+            assert took is not None and took < 15, took
             alpha.wait_until_succeeds(f"test -n \"$({BGPD_PID})\" && test \"$({BGPD_PID})\" != {old_pid}", timeout=120)
             for node in nodes:
                 all_established(node, sessions[node.name])
