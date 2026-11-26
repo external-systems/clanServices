@@ -2293,10 +2293,17 @@ owner.
      | Tier | New flows per source | Packets per source |
      |---|---|---|
      | `default` | 50/s, burst 200 | 20 000/s, burst 40 000 |
-     | `trusted` | 1 000/s, burst 4 000 | 200 000/s, burst 400 000 |
+     | `trusted` | 200/s, burst 4 000 (round G11; was 1 000/s) | 200 000/s, burst 400 000 |
 
-     A source is one address (/128). The limits count only what a
-     client sends towards the translator; replies are not limited.
+     A source is one /64 (round G11, §17; was one address): a client
+     that owns a /64 cannot open a meter entry per address, and
+     clients that share a /64 share its limit. The limits count only
+     what a client sends towards the translator; replies are not
+     limited.
+     The `trusted` new-flow default is bounded by the one `pool4`
+     address (round G11, §17): burst + rate × 300 s (Jool's UDP
+     timeout) = 4 000 + 200 × 300 = 64 000, under the 64 435 ports of
+     a protocol, so one source cannot fill the pool alone.
      20 000 packets a second is about 240 Mbit/s of 1 500 byte packets.
    - **Built (round G7):** one meter per tier and kind in `inet nat64`
      (`nat64-flows-<tier>`, `nat64-packets-<tier>`). The gateway learns
@@ -2362,8 +2369,11 @@ owner.
   the gap.
 - **A healthy gateway must never look sick** (G23; §13.2 point 5).
   Required:
-  - three or more health targets in different networks; unhealthy
-    only when every target fails, for several rounds in a row;
+  - three or more health targets in different networks; a round is
+    bad when fewer than `quorum` (2) targets answer, and the gateway
+    is unhealthy after `down` bad rounds in a window (§14.5 point 4;
+    the words "every target fails, in a row" were the first draft,
+    corrected in round G11);
   - a suite where one target is dead and the gateway stays healthy,
     and one where the gateway's own translator fails and it withdraws.
   - A sick gateway that looks healthy for a few rounds is the accepted
@@ -2446,7 +2456,15 @@ Locked, as §14.1. They answer the open questions of round G7.
      from cold (120 good rounds).
    - **Client:** the follower moves only when its gateway's beacon has
      not answered for **60 s**, and only to a gateway whose beacon
-     answers. It never moves back on its own. **No hold after a move**
+     answered **5 of the last 10 rounds** (amended in round G11, §17).
+     A round in which no beacon answers does **not** reset the 60 s:
+     the clock starts when the gateway's beacon last named the CLAT's
+     /96 and stops only when it names it again (or the CLAT moves, or
+     its /96 is changed under it). The first rule ("60 s, then any
+     beacon that answers") reset the clock on every silent round, so a
+     move needed about 40 answers in a row from the other gateway: at
+     10 % loss towards it, a move took many minutes. It never moves
+     back on its own. **No hold after a move**
      (the owner, 2026-11-24): a hold could pin a client to a gateway
      that died within it; the gateway's 120 good rounds already keep a
      flapping gateway from attracting clients.
@@ -2771,3 +2789,41 @@ Each line is one run, a sample (§12.4).
   are eval-tested and loaded in `nat-gateway`), and the router's
   boot grace with a prefix that really changed while it was off
   beyond the `router` suite's existing phases.
+
+## 17. Round G11 (2026-11-26): hardening of the gateway services
+
+The owner's hardening review of 2026-11-26 (networking and Kubernetes,
+one PR in five slices) found G1–G14 in `nat-gateway`, `router` and
+`lib/gateway`. The owner approved every fix; decisions 8 (G2) and 9
+(G4) amend §14.1 point 4 and §14.5 point 4 (done first, hard rule 3).
+
+### 17.1 Found and fixed
+
+| # | Found | Now | Proof |
+|---|---|---|---|
+| G1 | `clat-follow` had `Requires=clat.service`. Every IfState apply restarts that oneshot (`PartOf`); one failed start stopped the follower for good ("dependency failed" is no failure `Restart=always` covers). The CLAT kept translating but never moved again | `Wants=` + `After=`; the follower waits by itself while there is no CLAT instance | eval `test_unitsRetry`; `nat-gateway`, `NAT_GATEWAY_CLAT_RETRY_OK`: a CLAT unit that cannot start during an IfState restart, the follower keeps its PID, the unit comes back by itself, the follower still moves |
+| G2 | The follower reset its 60 s clock on every round in which no beacon answered. With its gateway dead and loss towards the other, a move needed about 40 answers in a row (simulated on the old script: median 87 s at 2 % loss, 201 s at 5 %, 1 049 s at 10 %) | §14.5 point 4 amended: a silent round keeps the clock; a move needs 60 s of silence and a candidate that named its own /96 in 5 of the last 10 rounds. Never back on its own. The rule is `Follower.step`, without I/O | `checks.clat-follow` (the real script against a fake clock: 200 seeded runs at 10 % loss all move within 64 s; 4 of 10 never moves; silence from 10 to 200 s, then a candidate: a move at 207 s; no move back; a gap under 60 s; a foreign prefix). `nat-gateway-failover`, `NAT_GATEWAY_LOSSY_CANDIDATE_OK` |
+| G3 | `pool4` was added only when the instance was made: a start killed half way or one failed `add` left Jool on its fallback of a few thousand ports, and the ICMP health check stayed green | Every start checks that each protocol holds exactly `192.0.0.2 1100-65535`, else flushes and adds all three | eval `test_pool4Reconciled`; `nat-gateway`, `NAT_GATEWAY_POOL4_OK` (a pool4 of ten UDP ports and a flushed pool4 are both made whole by a restart; a whole one is left alone) |
+| G4 | One `trusted` source could fill the 64 435 ports of a protocol in about a minute (1 000 new flows/s, Jool's UDP timeout 300 s), invisible to the health check | Decision 9: one `pool4` address stays. (a) `trusted` new flows 200/s, burst 4 000: 4 000 + 200 × 300 = 64 000 < 64 435; still overridable at the three levels of §14.5 point 3. (c) The health check reads Jool's BIB entries per protocol, pool4's size and the session count every 10 rounds into `health.json` (`pool4`) and logs a change of band (50, 80, 95 %). It never withdraws the beacon for it | eval `test_trustedBound`, `test_table`; `nat-gateway`, `NAT_GATEWAY_POOL4_OK`: 10 of 10 UDP ports held, logged at 95 %, the beacon stays |
+| G5 | The meters were keyed by address while the allowlist takes prefixes: a client with a /64 had 2^64 meter entries to fill, after which the fail-closed rule refused every other idle client of its tier | Every meter (tiers and clients with their own limit) is keyed by `ip6 saddr & ffff:ffff:ffff:ffff::`; clients that share a /64 share its limit (§14.1 point 4 amended) | eval `test_meterPer64`, `test_table` (`full`) |
+| G6 | A CLAT address inside a declared prefix (the documented SLAAC setup) made `conflicting intervals specified`: the source sets were `flags interval` without `auto-merge`; the eval tests' own inventory rendered it | `auto-merge` on `trusted`, `default`, `custom`; an eval refusal when a client with its own limit, or a source of the other tier, overlaps another client's sources | eval `test_sourceInsidePrefix`, `test_customOverlapsTier`; `nft -c` (1.1.6, a user namespace): the old sets fail, the new load |
+| G7 | The prefix hook had no retry, and both of its tables loaded in one transaction: a LAN link absent at boot failed both, so no service rewrite and no egress source filter until the delegation changed | `Restart=on-failure`, `RestartSec=10`; one transaction and one generation per table; the run fails (and is retried) when one did not load | eval `test_hookRetries`; `router` (the hook's phases, unchanged log lines) |
+| G8 | No retry of `nat64-jool` or `clat` after a failed start | `Restart=on-failure`, `RestartSec=5` on both oneshots | eval `test_unitsRetry`; `NAT_GATEWAY_CLAT_RETRY_OK` |
+| G9 | No check that gateways have distinct `pool6`, that `address` is outside `pool6` and on the machine, that CLAT addresses differ, that health targets are public, or that `pool6` is a /96 network | Eval refusals for each; addresses compared normalized | eval `test_samePool6`, `test_addressInPool6`, `test_addressNotOnMachine`, `test_addressOtherSpelling`, `test_badPool6`, `test_privateTarget`, `test_duplicateClat` |
+| G10 | A router with no resolver address rendered CoreDNS with an empty `bind` | CoreDNS only when there is an address to bind | eval `test_noZoneNoResolver` |
+| G11 | The service's text said "unhealthy only when every target fails"; the check uses a quorum of 2 | Text corrected (§14.3, the option, the docs); `health.quorum`, `health.down`, `health.up` are service settings | eval `test_healthSettings` |
+| G12 | The CLAT route's MTU was fixed at 1480 | `clat.mtu`, default the smallest MTU netif sets on the uplink zone (1500 when none) less 20 | eval `test_clatMtu` |
+| G13 | Kea subnet ids were positional: a new zone renumbered the leases of the zones after it | The id is the first 28 bits of the SHA-256 of the zone's name, plus one; an eval refusal on a collision | eval `test_keaStableIds` |
+| G14 | Small hardening: `nat64-health` and `clat-follow` ran as root with no sandbox; `ping.wait()`, `systemctl`, `jool` had no timeout; a beacon that could not bind was started and logged every second; `servicePrefix.expose` could lie outside `stable`; the hook's tables stayed after its removal; with rp_filter off machine-wide, the WAN could bring a source of the router's own networks | `lib/gateway/sandbox.nix` (strict file system, a capability bounding set per unit); timeouts on every call; the beacon is started again at most every 10 s and logged once a minute (`beacon_restarts` in `health.json`); an eval refusal for a pinhole outside `stable`; `router-prefix-tables` (`ExecStop` deletes both tables, never restarted on a change); `inet router` chain `wan` (priority raw) drops a WAN source in a zone's static networks, the stable /64, loopback or multicast, and the hook's `router_svc` drops one in the delegated prefix | eval `test_sandboxed`, `test_exposeOutsideStable`, `test_hookTablesRemoved`, `test_wanSpoofedSource`; every gateway and router suite runs the sandboxed units |
+
+What these cost:
+
+- A `trusted` source opens 200 new flows a second after its burst,
+  not 1 000. A busy cluster node can be given more per client
+  (`limits.newFlows`); it then owns that share of the pool.
+- Clients in one /64 share one limit per tier.
+- After a total outage, the first gateway whose beacon is back for 5
+  rounds takes the clients whose gateway is still silent past 60 s.
+
+### 17.2 Evidence (2026-11-26, euc-hel-0)
+

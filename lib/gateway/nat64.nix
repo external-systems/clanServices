@@ -23,24 +23,47 @@
   cfg = config.clanServices.gateway.nat64;
   names = import ./names.nix;
   inherit (names.nat64) host inside netns table;
+  c = import ../kube-cluster/cidr.nix {inherit lib;};
+  ip = import ../ip.nix {inherit lib;};
+  sandbox = import ./sandbox.nix;
+
+  # IPv4 destinations the translator refuses (G5, `nat64-private`)
+  private = ["0.0.0.0/8" "10.0.0.0/8" "100.64.0.0/10" "127.0.0.0/8" "169.254.0.0/16" "172.16.0.0/12" "192.0.0.0/24" "192.168.0.0/16" "198.18.0.0/15" "224.0.0.0/3"];
+  # G9: a pool6 is a /96 with no host bits, outside the special ranges
+  pool6Parts = lib.splitString "/" cfg.pool6;
+  pool6Valid = let
+    parsed = builtins.tryEval (
+      lib.length pool6Parts
+      == 2
+      && ip.isIpv6 (builtins.head pool6Parts)
+      && lib.last pool6Parts == "96"
+      && (c.parse cfg.pool6).start == (c.parse "${builtins.head pool6Parts}/128").start
+      && !(lib.any (special: c.overlap special cfg.pool6) ["::/8" "fe80::/10" "ff00::/8"])
+    );
+  in
+    parsed.success && parsed.value;
+  addressInPool6 = pool6Valid && ip.isIpv6 cfg.address && c.contains cfg.pool6 "${cfg.address}/128";
+  privateTargets = builtins.filter (target: !(ip.isIpv4 target) || lib.any (range: c.contains range "${target}/32") private) cfg.health.targets;
+  # G5: a meter holds one entry per /64
+  per64 = "ip6 saddr & ffff:ffff:ffff:ffff::";
 
   limitType = types.submodule {
     options = {
       newFlows = mkOption {
         type = types.ints.positive;
-        description = "New flows per second from one source address, above the burst.";
+        description = "New flows per second from one source /64, above the burst.";
       };
       newFlowsBurst = mkOption {
         type = types.ints.positive;
-        description = "New flows one source may open at once before the rate applies.";
+        description = "New flows one source /64 may open at once before the rate applies.";
       };
       packets = mkOption {
         type = types.ints.positive;
-        description = "Packets per second from one source address towards the translator, above the burst.";
+        description = "Packets per second from one source /64 towards the translator, above the burst.";
       };
       packetsBurst = mkOption {
         type = types.ints.positive;
-        description = "Packets one source may send at once before the rate applies.";
+        description = "Packets one source /64 may send at once before the rate applies.";
       };
     };
   };
@@ -56,6 +79,7 @@
   healthConfig = pkgs.writeText "nat64-health.json" (builtins.toJSON {
     inherit (cfg) pool6;
     inherit (cfg.health) targets quorum down up resume;
+    inherit netns;
     hosts = "/run/${names.nat64.runtime}/ipv4only.hosts";
     state = "/run/${names.nat64.runtime}/health.json";
     beacon = "${names.nat64.beacon}.service";
@@ -164,6 +188,19 @@ in {
         message = "nat-gateway: pool6 '${cfg.pool6}' is not a /96 (specs/gateway.md G4)";
       }
       {
+        # specs/gateway.md §17 (G9)
+        assertion = pool6Valid;
+        message = "nat-gateway: pool6 '${cfg.pool6}' is not a /96 network with its host bits zero outside ::/8, fe80::/10 and ff00::/8 (specs/gateway.md G4)";
+      }
+      {
+        assertion = ip.isIpv6 cfg.address && !addressInPool6;
+        message = "nat-gateway: the gateway's address '${cfg.address}' is not an IPv6 address outside its pool6 ${cfg.pool6}: inside its pool6 it is routed into the translator (specs/gateway.md G24)";
+      }
+      {
+        assertion = privateTargets == [];
+        message = "nat-gateway: health target(s) ${toString privateTargets} are not public IPv4 addresses: the translator refuses them (`nat64-private`), so the gateway would never be healthy (specs/gateway.md §14.3)";
+      }
+      {
         assertion = cfg.uplinks != [];
         message = "nat-gateway: the gateway has no uplink link; give the netif link that carries the public IPv4 the uplink zone";
       }
@@ -214,18 +251,20 @@ in {
         family = "inet";
         content = ''
           set trusted {
-            type ipv6_addr; flags interval;
+            type ipv6_addr; flags interval; auto-merge;
             ${set cfg.allow.trusted}
           }
           set default {
-            type ipv6_addr; flags interval;
+            type ipv6_addr; flags interval; auto-merge;
             ${set cfg.allow.default}
           }
           set custom {
-            type ipv6_addr; flags interval;
+            type ipv6_addr; flags interval; auto-merge;
             ${set (lib.concatMap (client: client.sources) cfg.custom)}
           }
-          # one entry per source address, forgotten after a minute of quiet
+          # One entry per source /64 (specs/gateway.md §17, G5), forgotten
+          # after a minute of quiet. The source sets above merge what
+          # overlaps: a CLAT address inside a declared prefix loads (G6).
           set flows_trusted { type ipv6_addr; size 65535; flags dynamic,timeout; timeout 1m; }
           set flows_default { type ipv6_addr; size 65535; flags dynamic,timeout; timeout 1m; }
           set packets_trusted { type ipv6_addr; size 65535; flags dynamic,timeout; timeout 1m; }
@@ -242,7 +281,7 @@ in {
             # that is not declared. An ICMPv6 error about an open flow is
             # `related`.
             oifname "${host}" ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom ct state != related counter drop comment "nat64-undeclared"
-            # A meter holds one entry per live source address. When it is
+            # A meter holds one entry per live source /64. When it is
             # full the `update` fails and its rule does not match: the
             # rule after each meter drops a source that has no entry, so
             # a full meter refuses new sources instead of letting them
@@ -252,24 +291,24 @@ in {
               sources = "{ ${lib.concatStringsSep ", " client.sources} }";
               c = "c${toString index}";
             in ''
-              oifname "${host}" ip6 saddr ${sources} ct state new update @flows_${c} { ip6 saddr limit rate over ${toString client.limits.newFlows}/second burst ${toString client.limits.newFlowsBurst} packets } counter drop comment "nat64-flows-client-${client.name}"
-              oifname "${host}" ip6 saddr ${sources} ct state new ip6 saddr != @flows_${c} counter drop comment "nat64-flows-client-${client.name}-full"
-              oifname "${host}" ip6 saddr ${sources} update @packets_${c} { ip6 saddr limit rate over ${toString client.limits.packets}/second burst ${toString client.limits.packetsBurst} packets } counter drop comment "nat64-packets-client-${client.name}"
-              oifname "${host}" ip6 saddr ${sources} ip6 saddr != @packets_${c} counter drop comment "nat64-packets-client-${client.name}-full"
+              oifname "${host}" ip6 saddr ${sources} ct state new update @flows_${c} { ${per64} limit rate over ${toString client.limits.newFlows}/second burst ${toString client.limits.newFlowsBurst} packets } counter drop comment "nat64-flows-client-${client.name}"
+              oifname "${host}" ip6 saddr ${sources} ct state new ${per64} != @flows_${c} counter drop comment "nat64-flows-client-${client.name}-full"
+              oifname "${host}" ip6 saddr ${sources} update @packets_${c} { ${per64} limit rate over ${toString client.limits.packets}/second burst ${toString client.limits.packetsBurst} packets } counter drop comment "nat64-packets-client-${client.name}"
+              oifname "${host}" ip6 saddr ${sources} ${per64} != @packets_${c} counter drop comment "nat64-packets-client-${client.name}-full"
             '')
             cfg.custom}
             # specs/gateway.md §14.1 point 4: a limit per source, two tiers
-            oifname "${host}" ip6 saddr @trusted ct state new update @flows_trusted { ip6 saddr limit rate over ${toString cfg.limits.trusted.newFlows}/second burst ${toString cfg.limits.trusted.newFlowsBurst} packets } counter drop comment "nat64-flows-trusted"
-            oifname "${host}" ip6 saddr @trusted ct state new ip6 saddr != @flows_trusted counter drop comment "nat64-flows-trusted-full"
-            oifname "${host}" ip6 saddr @trusted update @packets_trusted { ip6 saddr limit rate over ${toString cfg.limits.trusted.packets}/second burst ${toString cfg.limits.trusted.packetsBurst} packets } counter drop comment "nat64-packets-trusted"
-            oifname "${host}" ip6 saddr @trusted ip6 saddr != @packets_trusted counter drop comment "nat64-packets-trusted-full"
-            oifname "${host}" ip6 saddr @default ct state new update @flows_default { ip6 saddr limit rate over ${toString cfg.limits.default.newFlows}/second burst ${toString cfg.limits.default.newFlowsBurst} packets } counter drop comment "nat64-flows-default"
-            oifname "${host}" ip6 saddr @default ct state new ip6 saddr != @flows_default counter drop comment "nat64-flows-default-full"
-            oifname "${host}" ip6 saddr @default update @packets_default { ip6 saddr limit rate over ${toString cfg.limits.default.packets}/second burst ${toString cfg.limits.default.packetsBurst} packets } counter drop comment "nat64-packets-default"
-            oifname "${host}" ip6 saddr @default ip6 saddr != @packets_default counter drop comment "nat64-packets-default-full"
+            oifname "${host}" ip6 saddr @trusted ct state new update @flows_trusted { ${per64} limit rate over ${toString cfg.limits.trusted.newFlows}/second burst ${toString cfg.limits.trusted.newFlowsBurst} packets } counter drop comment "nat64-flows-trusted"
+            oifname "${host}" ip6 saddr @trusted ct state new ${per64} != @flows_trusted counter drop comment "nat64-flows-trusted-full"
+            oifname "${host}" ip6 saddr @trusted update @packets_trusted { ${per64} limit rate over ${toString cfg.limits.trusted.packets}/second burst ${toString cfg.limits.trusted.packetsBurst} packets } counter drop comment "nat64-packets-trusted"
+            oifname "${host}" ip6 saddr @trusted ${per64} != @packets_trusted counter drop comment "nat64-packets-trusted-full"
+            oifname "${host}" ip6 saddr @default ct state new update @flows_default { ${per64} limit rate over ${toString cfg.limits.default.newFlows}/second burst ${toString cfg.limits.default.newFlowsBurst} packets } counter drop comment "nat64-flows-default"
+            oifname "${host}" ip6 saddr @default ct state new ${per64} != @flows_default counter drop comment "nat64-flows-default-full"
+            oifname "${host}" ip6 saddr @default update @packets_default { ${per64} limit rate over ${toString cfg.limits.default.packets}/second burst ${toString cfg.limits.default.packetsBurst} packets } counter drop comment "nat64-packets-default"
+            oifname "${host}" ip6 saddr @default ${per64} != @packets_default counter drop comment "nat64-packets-default-full"
             # A /96 destination that embeds a non-global IPv4 address is
             # not the internet (G5): refused after translation.
-            iifname "${host}" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 } counter reject with icmp type net-prohibited comment "nat64-private"
+            iifname "${host}" ip daddr { ${lib.concatStringsSep ", " private} } counter reject with icmp type net-prohibited comment "nat64-private"
           }
           chain input {
             type filter hook input priority -10; policy accept;
@@ -358,9 +397,13 @@ in {
           pkgs.gnused
           pkgs.python3
         ];
+        # G8: a failure at boot (or one failed `jool` call) is tried
+        # again; the script is idempotent
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
+          Restart = "on-failure";
+          RestartSec = 5;
         };
         script = ''
           canon() { python3 -c 'import ipaddress, sys; print(ipaddress.IPv6Network(sys.argv[1], strict=False))' "$1"; }
@@ -379,6 +422,21 @@ in {
           fi
           if ! ip netns exec ${netns} jool instance display | grep -w default >/dev/null; then
             ip netns exec ${netns} jool instance add default --netfilter --pool6 ${cfg.pool6}
+          fi
+          # G3: pool4 is checked at every start, not only when the
+          # instance is made: a start killed half way or one failed `add`
+          # left Jool on its fallback of a few thousand ports. Each
+          # protocol holds exactly the one range, or all are made again.
+          whole=1
+          for proto in tcp udp icmp; do
+            entries=$(ip netns exec ${netns} jool pool4 display --$proto --csv --no-headers)
+            if [ "$(printf '%s\n' "$entries" | grep -c .)" != 1 ] || ! printf '%s\n' "$entries" | grep -F '192.0.0.2,1100,65535' >/dev/null; then
+              whole=0
+            fi
+          done
+          if [ "$whole" != 1 ]; then
+            echo "nat64-jool: pool4 is not the one range 192.0.0.2 1100-65535 per protocol: made again"
+            ip netns exec ${netns} jool pool4 flush
             for proto in tcp udp icmp; do
               ip netns exec ${netns} jool pool4 add 192.0.0.2 1100-65535 --$proto
             done
@@ -398,15 +456,22 @@ in {
         wants = ["${names.nat64.jool}.service"];
         path = [
           pkgs.iputils
+          pkgs.iproute2
+          pkgs.jool-cli
           config.systemd.package
         ];
-        serviceConfig = {
-          ExecStart = "${lib.getExe pkgs.python3} -u ${healthScript} ${healthConfig}";
-          Restart = "always";
-          RestartSec = 1;
-          RuntimeDirectory = names.nat64.runtime;
-          RuntimeDirectoryPreserve = true;
-        };
+        # G14: root for `systemctl` and `ip netns exec`, little else
+        serviceConfig =
+          sandbox
+          // {
+            ExecStart = "${lib.getExe pkgs.python3} -u ${healthScript} ${healthConfig}";
+            Restart = "always";
+            RestartSec = 1;
+            RuntimeDirectory = names.nat64.runtime;
+            RuntimeDirectoryPreserve = true;
+            # ping
+            CapabilityBoundingSet = ["CAP_NET_ADMIN" "CAP_NET_RAW" "CAP_SYS_ADMIN"];
+          };
         unitConfig.StartLimitIntervalSec = 0;
       };
 

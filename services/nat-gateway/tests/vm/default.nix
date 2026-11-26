@@ -532,6 +532,11 @@ in {
         return int(client.succeed(f"grep -c echo {log} || true").strip())
 
 
+    def pool4_state(machine):
+        """What the health check last read of pool4 (round G11, G4)."""
+        return json.loads(machine.succeed("cat /run/nat64-gateway/health.json")).get("pool4") or {}
+
+
     def gateway_ready(gateway):
         machine = gateway.machine
         machine.wait_for_unit("multi-user.target", timeout=300)
@@ -802,6 +807,37 @@ in {
             assert clat_gateway() is gateway and moves() == before
             print("NAT_GATEWAY_IFSTATE_OK")
 
+        with subtest("G1, G8 (round G11): a failed start of the CLAT unit stops no follower; the unit tries again by itself, and the follower still moves"):
+            pid = follower_pid()
+            before = moves()
+            client.succeed("mkdir -p /run/systemd/system/clat.service.d && printf '[Service]\\nExecStartPre=/run/current-system/sw/bin/false\\n' > /run/systemd/system/clat.service.d/fail.conf && systemctl daemon-reload")
+            try:
+                tries = int(client.succeed("systemctl show -p NRestarts --value clat.service").strip())
+                # an IfState apply restarts the CLAT unit (PartOf); its start fails
+                status, out = client.execute("systemctl restart ifstate.service 2>&1")
+                print(f"FINDING an IfState restart while the CLAT unit cannot start: rc={status} {out.strip()}")
+                client.wait_until_succeeds(f"test \"$(systemctl show -p NRestarts --value clat.service)\" -gt {tries}", timeout=30)
+                client.fail("systemctl is-active clat.service")
+                # the follower runs on, the same process
+                client.succeed("systemctl is-active clat-follow.service")
+                assert follower_pid() == pid
+            finally:
+                client.succeed("rm -f /run/systemd/system/clat.service.d/fail.conf && systemctl daemon-reload")
+            # nobody starts it: Restart=on-failure does
+            client.wait_until_succeeds("systemctl is-active clat.service", timeout=30)
+            client.wait_until_succeeds(http("198.51.100.80"), timeout=30)
+            assert follower_pid() == pid and moves() == before
+            # the follower still moves: a /96 no beacon names
+            client.succeed("ip netns exec clat jool_siit -i clat global update pool6 2001:db8:eeee::/96")
+            moved = time.time()
+            client.wait_until_succeeds(f"test \"$({FOLLOW_MOVES})\" -eq {before + 1}", timeout=FOLLOW_AFTER + 30)
+            since = round(time.time() - moved, 1)
+            print(f"FINDING the follower moved a CLAT off a /96 nobody names after {since} s")
+            assert FOLLOW_AFTER - 5 <= since, since
+            client.wait_until_succeeds(http("198.51.100.80"), timeout=30)
+            assert follower_pid() == pid
+            print("NAT_GATEWAY_CLAT_RETRY_OK")
+
 
         with subtest("a pool6 or a CLAT address that changed is reconciled at the next start, compared as addresses"):
             # the gateway: a live instance with another pool6 is replaced
@@ -822,6 +858,36 @@ in {
             assert mapping == "${clatAddr}/128,192.0.0.1/32", mapping
             client.wait_until_succeeds(http("198.51.100.80"), timeout=30)
             print("NAT_GATEWAY_RECONCILE_OK")
+
+        with subtest("G3, G4 (round G11): a full pool4 shows in the health state and the journal and the beacon stays; a start makes pool4 whole again"):
+            machine = G2.machine
+            first = pool4_state(machine)
+            print(f"FINDING gw2's pool4 as its health check reads it: {first}")
+            assert all(first[proto]["ports"] == 64436 for proto in ["tcp", "udp", "icmp"]), first
+            machine.succeed("journalctl -b -u nat64-health -o cat --no-pager | grep -F 'pool4 below 50 %' >/dev/null")
+            # ten UDP ports left; the trusted client opens twenty flows
+            machine.succeed("ip netns exec nat64 jool pool4 remove 192.0.0.2 1100-65535 --udp && ip netns exec nat64 jool pool4 add 192.0.0.2 1100-1109 --udp")
+            trusted.succeed(f"for i in $(seq 20); do python3 /etc/suite/shapes.py udp {G2.server} 9001 10 || true; done")
+            machine.wait_until_succeeds("journalctl -b -u nat64-health -o cat --no-pager | grep -F 'pool4 95 % or more' >/dev/null", timeout=30)
+            full = pool4_state(machine)
+            print(f"FINDING gw2's pool4 with ten UDP ports and twenty flows: {full}")
+            assert full["udp"] == {"ports": 10, "used": 10, "percent": 100.0}, full
+            # never a reason to withdraw: that would fill the other gateway
+            machine.succeed("systemctl is-active nat64-beacon.service")
+            client.succeed(names_prefix(G2))
+            # G3: the next start repairs it, and a flushed pool4 too
+            remade = "journalctl -b -u nat64-jool -o cat --no-pager | grep -cF 'pool4 is not the one range' || true"
+            made = int(machine.succeed(remade).strip())
+            for broken in ["true", "ip netns exec nat64 jool pool4 flush"]:
+                machine.succeed(broken)
+                machine.succeed("systemctl restart nat64-jool.service")
+                assert_gateway(G2)
+            assert int(machine.succeed(remade).strip()) == made + 2
+            # a whole pool4 is left alone
+            machine.succeed("systemctl restart nat64-jool.service")
+            assert int(machine.succeed(remade).strip()) == made + 2
+            machine.wait_until_succeeds("journalctl -b -u nat64-health -o cat --no-pager | tail -n 20 | grep -F 'pool4 below 50 %' >/dev/null", timeout=30)
+            print("NAT_GATEWAY_POOL4_OK")
 
         with subtest("G23: a beacon that names a /96 that is not its gateway's is no proof; the follower ignores it"):
             current = clat_gateway()
@@ -1060,9 +1126,16 @@ in {
                 assert follower_pid() == pid
                 client.succeed("journalctl -b -u clat-follow -o cat --no-pager | tail -n 1 | grep -F 'no beacon answers ipv4only.arpa' >/dev/null")
             finally:
-                for target in every:
+                # The current gateway's targets first, the other's 15 s
+                # later: a silent round no longer resets the follower's
+                # clock (round G11), so a gateway that came back five
+                # rounds before the current one would win the client
+                for target in current.targets:
                     server4.succeed(f"ip addr add {target}/32 dev eth1")
-            for gateway in [G1, G2]:
+                time.sleep(15)
+                for target in other(current).targets:
+                    server4.succeed(f"ip addr add {target}/32 dev eth1")
+            for gateway in [current, other(current)]:
                 client.wait_until_succeeds(names_prefix(gateway), timeout=UP + 90)
             holds_for(client, stays(current, before) + " && ! grep error /tmp/talk-clat >/dev/null", 10, interval=2)
             client.succeed("systemctl stop talk-clat.service")
@@ -1087,6 +1160,28 @@ in {
             machine.wait_until_succeeds(f"pid=$(systemctl show -p MainPID --value nat64-health.service); test \"$pid\" -gt 0 && test \"$pid\" -ne {pid}", timeout=30)
             took = seconds_until(client, names_prefix(gateway), limit=60)
             assert took is not None and took < 20, took
+
+        with subtest("§14.5 point 4 (round G11): the current gateway's beacon goes silent and 10 % of the packets towards the other are lost; the CLAT moves in about a minute"):
+            current, candidate = clat_gateway(), other(clat_gateway())
+            before = moves()
+            # silent, not refused: the queries vanish
+            current.machine.succeed(f"nft 'add table inet silence; add chain inet silence input {{ type filter hook input priority -50; }}; add rule inet silence input ip6 daddr {current.addr} meta l4proto {{ tcp, udp }} th dport 53 drop'")
+            candidate.machine.succeed("tc qdisc add dev eth1 root netem loss 10%")
+            try:
+                took = seconds_until(client, clat_on(candidate), limit=FOLLOW_AFTER + 120, interval=1)
+                print(f"FINDING the CLAT moved {took} s after its beacon went silent, with 10 % loss towards the other gateway")
+                # the first rule needed about 40 answers in a row: many minutes
+                assert took is not None and FOLLOW_AFTER - 5 <= took < FOLLOW_AFTER + 30, took
+                assert moves() == before + 1
+                trusted.wait_until_succeeds(clat_on(candidate), timeout=60)
+            finally:
+                current.machine.succeed("nft delete table inet silence")
+                candidate.machine.succeed("tc qdisc del dev eth1 root")
+            # the old gateway answers again: no move back
+            client.wait_until_succeeds(names_prefix(current), timeout=30)
+            holds_for(client, stays(candidate, before + 1), 15, interval=2)
+            client.wait_until_succeeds(http("198.51.100.80", limit=2), timeout=60)
+            print("NAT_GATEWAY_LOSSY_CANDIDATE_OK")
 
         with subtest("a reboot of a gateway and of a client: everything comes back"):
             gateway = other(clat_gateway())

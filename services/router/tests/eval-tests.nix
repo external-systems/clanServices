@@ -137,6 +137,8 @@ in {
         allowTo = ["servers"];
         ssh = true;
         hostPorts = false;
+        # the networks of the zone link's static addresses (§17, G14)
+        prefixes = ["192.168.10.0/24" "fd00:10:1::/64"];
         subnet = 1;
         dns = {
           ipv4 = "192.168.10.1";
@@ -361,6 +363,100 @@ in {
   test_unknownAllowTo = {
     expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.zones.mgmt.allowTo = ["guest"];}) "zone 'mgmt' may reach unknown zones";
     expected = true;
+  };
+  # Round G11 (specs/gateway.md §17)
+  # G7: the prefix hook tries again, and loads its two tables apart
+  test_hookRetries = {
+    expr = {
+      inherit (base.systemd.services.router-prefix.serviceConfig) Restart RestartSec;
+    };
+    expected = {
+      Restart = "on-failure";
+      RestartSec = 10;
+    };
+  };
+  # G10: a router without a resolver address renders no CoreDNS
+  test_noZoneNoResolver = let
+    alone = with' {
+      instances.edge.roles.router.machines.router.settings = {
+        zones = lib.mkForce {};
+        servicePrefix = lib.mkForce {};
+      };
+    };
+  in {
+    expr = {
+      coredns = alone.services.coredns.enable;
+      clean = lib.all (item: item.assertion || !(lib.hasInfix "router" item.message)) alone.assertions;
+    };
+    expected = {
+      coredns = false;
+      clean = true;
+    };
+  };
+  # G13: a zone's DHCPv4 subnet id comes from its name: a new zone
+  # renumbers no other
+  test_keaStableIds = let
+    ids = config: lib.listToAttrs (map (subnet: lib.nameValuePair subnet.interface subnet.id) config.services.kea.dhcp4.settings.subnet4);
+    before = ids base;
+    after = ids (with' {
+      instances.lan.roles.default.machines.router.settings.links.aaa = {
+        interface = "enp5s0";
+        zone = "aaa";
+        static.ipv4 = ["192.168.5.1/24"];
+        ra = false;
+      };
+      instances.edge.roles.router.machines.router.settings.zones.aaa = {};
+    });
+  in {
+    expr = {
+      kept = lib.all (link: after.${link} == before.${link}) (builtins.attrNames before);
+      distinct = lib.length (lib.unique (builtins.attrValues after)) == lib.length (builtins.attrValues after);
+      added = after ? enp5s0;
+    };
+    expected = {
+      kept = true;
+      distinct = true;
+      added = true;
+    };
+  };
+  # G14: a pinhole outside the stable /64 is refused
+  test_exposeOutsideStable = {
+    expr = failedAssertion (with' {
+      instances.edge.roles.router.machines.router.settings.servicePrefix.expose = [
+        {
+          address = "fd00:10:6::80";
+          protocol = "tcp";
+          ports = [80];
+        }
+      ];
+    }) "not inside servicePrefix.stable";
+    expected = true;
+  };
+  # G14: the hook's tables go with the hook
+  test_hookTablesRemoved = {
+    expr = let
+      unit = base.systemd.services.router-prefix-tables;
+    in {
+      inherit (unit.serviceConfig) Type RemainAfterExit;
+      stop = lib.hasInfix "delete table inet router_svc" (toString unit.serviceConfig.ExecStop) && lib.hasInfix "delete table netdev router_src" (toString unit.serviceConfig.ExecStop);
+    };
+    expected = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      stop = true;
+    };
+  };
+  # G14: the WAN never brings a source that is the router's own, a
+  # loopback or a multicast address
+  test_wanSpoofedSource = {
+    expr = {
+      v4 = lib.hasInfix ''iifname { "enp1s0" } ip saddr { 127.0.0.0/8, 224.0.0.0/4, 240.0.0.0/4, 192.168.10.0/24, 192.168.20.0/24, 192.168.99.0/24 } counter drop comment "WAN spoofed source"'' table;
+      v6 = lib.hasInfix ''iifname { "enp1s0" } ip6 saddr { ::1, ff00::/8, fd00:10:1::/64, fd00:10:2::/64, fd00:10:5::/64 } counter drop comment "WAN spoofed source"'' table;
+    };
+    expected = {
+      v4 = true;
+      v6 = true;
+    };
   };
   test_serviceSubnetOnALink = {
     expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.servicePrefix.subnet = 2;}) "servicePrefix.subnet 2 is also assigned";

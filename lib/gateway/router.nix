@@ -24,6 +24,7 @@
 }: let
   inherit (lib) mkOption types;
   cfg = config.clanServices.gateway.router;
+  c = import ../kube-cluster/cidr.nix {inherit lib;};
   quoted = names: "{ ${lib.concatMapStringsSep ", " (n: ''"${n}"'') names} }";
   lanZones = lib.filterAttrs (_: zone: zone.interfaces != []) cfg.zones;
   lanLinks = lib.concatMap (zone: zone.interfaces) (builtins.attrValues lanZones);
@@ -93,6 +94,26 @@
   # zones with a delegated /64: the hook advertises them
   advertised = lib.filterAttrs (_: zone: zone.subnet != null) lanZones;
 
+  # specs/gateway.md §17 (G14): a packet from the WAN never has a source
+  # that is the router's own (a zone's static prefixes, the stable
+  # service /64; the delegated prefix is the hook's), a loopback or a
+  # multicast address. The machine-wide reverse path filter is off (the
+  # hook's tables answer a wrong LAN source with an error), so this is
+  # the WAN's own check.
+  ownPrefixes = family:
+    lib.sort builtins.lessThan (lib.filter (prefix: lib.hasInfix ":" prefix == (family == "ipv6")) (
+      lib.concatMap (zone: zone.prefixes) (builtins.attrValues lanZones)
+      ++ lib.optional (cfg.servicePrefix.stable != null) cfg.servicePrefix.stable
+    ));
+  spoofed = {
+    ipv4 = ["127.0.0.0/8" "224.0.0.0/4" "240.0.0.0/4"] ++ ownPrefixes "ipv4";
+    ipv6 = ["::1" "ff00::/8"] ++ ownPrefixes "ipv6";
+  };
+
+  # G13: a zone's DHCPv4 subnet id comes from its name, so a new zone
+  # renumbers no other zone's leases
+  subnetId = name: lib.fromHexString (builtins.substring 0 7 (builtins.hashString "sha256" name)) + 1;
+
   hookConfig = pkgs.writeText "router-prefix.json" (builtins.toJSON {
     pd = "/run/netif/pd/${cfg.wan}";
     zones = lib.listToAttrs (lib.concatMap (zone:
@@ -142,6 +163,12 @@
   lanZones);
 
   dhcpZones = lib.filterAttrs (_: zone: zone.dhcp4 != null) lanZones;
+  outsideStable = map (entry: entry.address) (lib.filter (entry: let
+    inside = builtins.tryEval (c.contains cfg.servicePrefix.stable "${entry.address}/128");
+  in
+    cfg.servicePrefix.stable == null || !(inside.success && inside.value))
+  cfg.servicePrefix.expose);
+  # G10: no address, no resolver
   binds = lib.concatMap (zone: lib.filter (address: address != null) [zone.dns.ipv4 zone.dns.ipv6]) (builtins.attrValues lanZones);
   corefile = lib.concatStringsSep "\n" (
     [
@@ -206,6 +233,11 @@ in {
             });
           };
           ssh = mkOption {type = types.bool;};
+          prefixes = mkOption {
+            type = types.listOf types.str;
+            default = [];
+            description = "The networks of the zone link's static addresses, IPv4 and IPv6. The WAN never brings a source inside them.";
+          };
           hostPorts = mkOption {
             type = types.bool;
             default = false;
@@ -318,6 +350,15 @@ in {
           assertion = (cfg.servicePrefix.subnet == null) == (cfg.servicePrefix.stable == null);
           message = "router: servicePrefix needs both 'subnet' and 'stable', or neither (specs/gateway.md G20)";
         }
+        {
+          # specs/gateway.md §17 (G14): a pinhole is into the stable /64
+          assertion = outsideStable == [];
+          message = "router: servicePrefix.expose address(es) ${toString outsideStable} are not inside servicePrefix.stable (${toString cfg.servicePrefix.stable}); the WAN reaches the service /64 only (specs/gateway.md G20)";
+        }
+        {
+          assertion = lib.length (lib.unique (map subnetId (builtins.attrNames dhcpZones))) == lib.length (builtins.attrNames dhcpZones);
+          message = "router: two zones' names give the same DHCPv4 subnet id; rename one (specs/gateway.md §17, G13)";
+        }
       ];
 
     clan._networkFacts.forwarding = true;
@@ -368,6 +409,11 @@ in {
               oifname ${wan} meta nfproto ipv4 masquerade
               ${unzonedNat}
             }
+            chain wan {
+              type filter hook prerouting priority raw;
+              iifname ${wan} ip saddr { ${lib.concatStringsSep ", " spoofed.ipv4} } counter drop comment "WAN spoofed source"
+              iifname ${wan} ip6 saddr { ${lib.concatStringsSep ", " spoofed.ipv6} } counter drop comment "WAN spoofed source"
+            }
             chain input {
               type filter hook input priority filter; policy drop;
               iifname != ${mine} accept comment "not a router link: the machine's firewall decides"
@@ -411,10 +457,10 @@ in {
             persist = true;
             name = "/var/lib/kea/dhcp4.leases";
           };
-          subnet4 = lib.imap1 (id: name: let
+          subnet4 = map (name: let
             zone = dhcpZones.${name};
           in {
-            inherit id;
+            id = subnetId name;
             inherit (zone.dhcp4) subnet;
             interface = builtins.head zone.interfaces;
             pools = [{inherit (zone.dhcp4) pool;}];
@@ -442,7 +488,7 @@ in {
         configFile = "/run/router/corerad.toml";
       };
       # G14: one resolver address per zone, the blocklist, static records
-      coredns = {
+      coredns = lib.mkIf (binds != []) {
         enable = true;
         config = corefile;
       };
@@ -458,7 +504,26 @@ in {
         pathConfig.PathChanged = "/run/netif/pd/${cfg.wan}";
       };
       services = {
-        coredns.after = ["ifstate.service"];
+        coredns = lib.mkIf (binds != []) {after = ["ifstate.service"];};
+        # G14: the hook's tables go when the hook goes (a removed router,
+        # or no zone with a delegated /64). Not restarted on a change:
+        # its stop would drop the live tables until the next change of
+        # the delegation.
+        router-prefix-tables = lib.mkIf (advertised != {}) {
+          description = "Router prefix hook tables: removed when the hook is (specs/gateway.md §17)";
+          wantedBy = ["multi-user.target"];
+          restartIfChanged = false;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${pkgs.coreutils}/bin/true";
+            # `-`: a table that is not there is no failure
+            ExecStop = [
+              "-${lib.getExe pkgs.nftables} delete table inet router_svc"
+              "-${lib.getExe pkgs.nftables} delete table netdev router_src"
+            ];
+          };
+        };
         corerad = lib.mkIf (advertised != {}) {
           after = [
             "ifstate.service"
@@ -484,9 +549,13 @@ in {
           ];
           # every change of the file must get its run
           unitConfig.StartLimitIntervalSec = 0;
+          # G7: a run that failed (a LAN link not there yet) is tried
+          # again; each table loads on its own
           serviceConfig = {
             Type = "oneshot";
             ExecStart = "${hook} ${hookConfig}";
+            Restart = "on-failure";
+            RestartSec = 10;
           };
         };
       };
