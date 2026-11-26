@@ -11,6 +11,33 @@ SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered
 until the proof round), so a phase and a decision never share a label
 (§10).
 
+Round G11 (2026-11-26): **the guard judges only what it applied, and
+undoes a rollback that cannot help** (N25), from the hardening review of
+2026-11-26 (its netif findings 1 to 10; the review's numbers are not
+decisions). What changed:
+- **N25** a second guard run after a rollback records nothing (the
+  marker `/run/netif-guard/rolled-back`); a run that
+  `switch-to-configuration` starts before `ifstate.service` judges
+  nothing (`/run/netif-guard/applying`); a link that held a default
+  route when the last configuration passed must hold one again
+  (`last-good-defaults`), which covers an RA default; a DHCP link made
+  static gets a DHCP client with the kept configuration on a rollback;
+  when the targets are silent with the last good configuration too, the
+  fault is outside the machine and the new configuration is applied
+  again; a failed `ifstate.service` still gets a guard run; the targets
+  are shell words. Suites `netif-guard`, `netif-dhcp`, `netif-v6only`.
+- **N31** dhcpcd units are no longer wanted by `multi-user.target`; an
+  apply starts the client of each link that is there, so an absent NIC
+  no longer holds up `network-online.target` for 90 seconds.
+- **N13** the deploy-target check compares canonical IPv6 spellings
+  (leading zeros, an IPv4 tail).
+- **N23** a bond or bridge member takes no segment-default gateway,
+  DHCP or nameservers; before, a segment gateway put a second default
+  route on the member.
+- Address options are typed: addresses with and without prefix length,
+  gateways, nameservers, route destinations, MTU (68 to 65535) and guard
+  targets fail at evaluation when malformed.
+
 Round G10 (2026-11-25): **the guard's rollback is whole** (N25;
 `specs/gateway.md` §16.3 item 11). It restores dhcpcd's configurations
 beside the IfState file and keeps the running generation's ignore
@@ -1154,6 +1181,12 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   machine (Deck) has no stable underlay address and deploys through a name:
   LAN DNS or a Tailscale MagicDNS name. Tailscale is not a clanServices
   tunnel, so rule 11's literal check does not apply to it.
+  - The literal check compares canonical spellings (round G11):
+    `lib/ip.nix` `normalizeIpv6` drops leading zeros in each group and
+    turns an IPv4 tail into two groups, so `2001:0db8::10` and
+    `2001:db8::10` are one address. Before, another spelling of a
+    tunnel address passed the check. *(eval test
+    `underlay.test_targetHostOnTunnelInAnySpelling`)*
 
 - **N14 Two gates, no versions yet.** netif has no consumers, so
   settings and exports change freely with no shims (AGENTS.md rule 10)
@@ -1598,6 +1631,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
     of the same instance. A bridge as a member of a bridge is an eval
     error. (Today only physical members are allowed; a Hetzner vSwitch
     needs a bridge over a VLAN.)
+  - **A member takes no segment defaults** (round G11). A bond or
+    bridge member gets no segment-default gateway, DHCP or nameservers;
+    its own are rejected (it carries no addressing). Before, a
+    segment gateway put a default route on the member beside the one on
+    the bridge. *(eval test `underlay.test_memberInheritsNoAddressing`)*
   - **Guest ports.** `links.<n>.bridge.guestPorts = true` marks a bridge
     whose undeclared ports belong to a hypervisor. On such a bridge
     netif never deletes, downs or detaches an undeclared port.
@@ -1772,9 +1810,62 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
       reports the failure.
   - **After a rollback** the kernel has the last-good network, while
     `/etc/ifstate/ifstate.yaml` and the running generation still name
-    the bad one. A unit restart or a reboot tries the bad configuration
-    again and rolls back again (probe). The fix is a corrected
-    generation.
+    the bad one. A restart of `ifstate.service` or a reboot tries the
+    bad configuration again and rolls back again (probe). The fix is a
+    corrected generation.
+  - **Round G11 rules** (hardening review of 2026-11-26):
+    - **A second run judges nothing.** A rollback writes
+      `/run/netif-guard/rolled-back` with the failed configuration and
+      dhcpcd directory. A guard run for that same pair (a restart of
+      `netif-guard.service`, or the one `switch-to-configuration`
+      starts) fails at once and records nothing: the kernel holds the
+      rollback, not that configuration. Only `ifstate.service` clears
+      the marker, in a step before each apply. Before, such a run passed
+      and recorded the bad configuration as last-good, and the next
+      boot applied it with nothing to roll back to.
+    - **Judge only what was applied.** The same step writes the
+      configuration it applies to `/run/netif-guard/applying`. A guard
+      run for another configuration exits 0 and judges nothing: the
+      run after the apply follows. `switch-to-configuration` starts the
+      guard (its `restartTriggers`) before `ifstate.service`, and
+      `After=` does not order two jobs that are not queued together
+      (`netif-guard`, first run of round G11).
+    - **A default that was there must come back.** On success the
+      guard records which of netif's links held a main-table default of
+      which family, from IfState, DHCP or an RA (not from a routing
+      daemon): `/var/lib/netif/guard/last-good-defaults`. A later apply
+      waits for the same defaults, beside the DHCPv4 links of N25.
+      A link the new generation takes the default from
+      (`defaultRoute.ipv4/ipv6 = false`) is not waited for: that is how
+      to drop a default on purpose. This covers an RA default and an
+      IPv6-only host, where zero targets used to pass.
+    - **A DHCP link made static.** When the failed generation runs no
+      DHCP client on a link that had one in the last good generation,
+      the rollback starts a transient unit,
+      `netif-guard-dhcpcd-<link>.service`, with the kept configuration,
+      bound to the link. The next apply stops it.
+    - **The fault may be outside.** After a rollback the guard asks
+      again, with the last good configuration in place: its recorded
+      defaults, every gateway in the main table and the declared
+      targets. When only targets stay silent, each silent with the new
+      configuration too, the fault is outside the machine (a gateway
+      that reboots, a switch port still blocking): the guard applies
+      the new configuration again, records nothing, and fails. A
+      missing default or another silent target keeps the rollback.
+    - **A failed apply.** `ifstate.service` runs no `ExecStartPost` when
+      its `ExecStart` fails; its `ExecStopPost` restarts the guard then.
+      The guard checks, and records nothing (the apply was not clean),
+      and rolls back when the gateways are silent.
+    - **Targets** reach the script as shell words, and every address
+      option is typed, so a gateway written with a prefix length fails
+      at evaluation.
+    *(implemented, round G11: `netif-guard` —
+    `NETIF_GUARD_ROLLBACK_OK` (a second run after the rollback fails),
+    `NETIF_GUARD_SECOND_RUN_OK` (the link goes down, the gateway's
+    address stays), `NETIF_GUARD_FAILED_APPLY_OK`,
+    `NETIF_GUARD_OUTSIDE_OK`; `netif-dhcp` — `NETIF_DHCP_GUARD_KEPT_OK`,
+    `NETIF_DHCP_GUARD_STATIC_OK`; `netif-v6only` —
+    `NETIF_V6ONLY_GUARD_OK`; eval tests `underlay.test_guard*`)*
   - **Order.** The guard runs before N15's missing-NIC check, so a
     change that loses both a NIC and the gateway is still rolled back.
   - **Not settled yet** (phase P8): runtime `!include` secrets that a
@@ -1928,6 +2019,11 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
     goes away. It is started at boot, by udev when the link appears
     later (`SYSTEMD_WANTS`), and by `ifstate.service` after each apply,
     which covers a link IfState created or renamed.
+  - Round G11: not wanted by `multi-user.target`. An apply starts the
+    client of each DHCP link that is there; udev starts it when the
+    link appears later. A boot-time start job for an absent NIC waited
+    90 seconds for its device and held up every unit ordered after the
+    client, `network-online.target` among them.
   - `Restart=on-failure`. After every stop, crash or not, the unit
     flushes the link's dynamic IPv4 addresses and its lease files: a
     dhcpcd that finds its address already on the link does not remove

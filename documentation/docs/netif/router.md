@@ -105,7 +105,7 @@ uses those:
 - `clanServices.networking.links.<instance>.<link>`: one link's Linux
   name, kind and zone.
 
-## Lockout guard (planned, phase P8)
+## Lockout guard
 
 The router is headless and remote changes are risky. After every apply,
 netif checks that each default gateway still answers. If one does not
@@ -131,6 +131,28 @@ After a rollback the machine runs the old network, but the new
 generation is still the current one. A reboot tries the new
 configuration again and rolls back again. Fix it by deploying a
 corrected configuration.
+
+The hardening round of 2026-11-26 closed the ways the guard could end
+wrong:
+
+- **A second check after a rollback records nothing.** Before, a
+  restarted guard saw the old network answer and saved the bad
+  configuration as "last good"; the next boot then applied it with
+  nothing to go back to.
+- **The guard judges only a configuration that was applied.** A deploy
+  can start the guard before the network apply; that early run now
+  waits for the real one.
+- **A default route that was there must come back.** This catches an
+  IPv6-only machine that loses its router advertisements, where the
+  guard had nothing to check. To drop a default on purpose, set
+  `defaultRoute.ipv4` or `defaultRoute.ipv6` to false on that link.
+- **A DHCP link made static** gets its DHCP client back on a rollback.
+- **A fault outside the machine** (a gateway that reboots during the
+  deploy) no longer leaves the old network in place: when the old
+  configuration cannot reach the gateway either, the guard puts the new
+  one back and fails, so the deploy still reports it.
+- **A failed apply** is checked too, and a gateway or address written
+  wrong (for example with a prefix length) fails at evaluation.
 
 ## Planned later
 
