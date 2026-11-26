@@ -88,4 +88,10 @@ read the section of a component before changing code that touches it.
   way; tests use `tests/ifstate-noop.nix`.
 - A test node that sends RAs must forward IPv6, or Linux hosts drop it
   as default router seconds after first use (`specs/netif.md` §7).
+- k3s and RKE2 embedded etcd: the metrics port 2381 listens on loopback
+  only; a peer that dials a server's node address on 2381 gets
+  "connection refused" while the server runs. A k3s or RKE2 agent writes
+  no kubeconfig of its own (`/etc/rancher/<distro>/<distro>.yaml` exists on
+  servers only). Suites `<distro>-ha` (the init guard phases) and
+  `<distro>-clustermesh`, round G11.
 - `nix fmt` is org-pkgs treefmt (alejandra and the org linters; see rule 2).
