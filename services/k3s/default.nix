@@ -979,12 +979,13 @@
                 map (iface: ''iifname "${iface}" accept'') transportInterfaces
                 ++ ["meta mark and 0x0f00 == 0x0200 accept"]
               );
-              trustedInterfaces =
-                [
-                  "cilium_host"
-                  "cilium_net"
-                ]
-                ++ transportInterfaces;
+              # The fabric links are not trusted (routed-fabric R5): the
+              # rule below opens the cluster's ports on them, Cilium's
+              # health port (4240) included.
+              trustedInterfaces = [
+                "cilium_host"
+                "cilium_net"
+              ];
               extraInputRules = let
                 interfaceGuard =
                   if transportInterfaces != []
@@ -992,7 +993,7 @@
                   else "";
               in ''
                 iifname { "cilium*", "lxc*" } accept
-                ${interfaceGuard}tcp dport { ${toString kubeapiPort}, ${toString haproxyKubeapiPort}, 10250, 2379, 2380, 2381 } accept
+                ${interfaceGuard}tcp dport { ${toString kubeapiPort}, ${toString haproxyKubeapiPort}, 10250, 2379, 2380, 2381, 4240 } accept
               '';
               extraForwardRules = ''
                 iifname { "cilium*", "lxc*" } accept

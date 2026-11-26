@@ -1082,6 +1082,9 @@ in {
       network = {
         podCIDRv4 = "10.1.0.0/16";
         podCIDRv6 = "fd10:1::/56";
+        # the published pod block (routed-fabric R11)
+        podMaskSizeV4 = 24;
+        podMaskSizeV6 = 64;
         serviceCIDRv4 = "10.2.0.0/16";
         serviceCIDRv6 = "fd10:2::/112";
         clusterDNS = "10.2.0.10";

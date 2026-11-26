@@ -150,26 +150,75 @@ LAN or a data centre. Set
 default; conflicting two-sided overrides fail eval. Border upstreams always
 use `wan`. Both ends and upstreams use a five-second FRR DelayOpen fixed
 hold-down before a recovered session establishes; this is not exponential
-flap damping. A maximum-prefix limit restarts a fabric or upstream session
-after ten minutes; on the local Cilium session it only warns.
+flap damping. A fabric session past 4096 prefixes logs a warning and stays
+up (`warning-only`): a reset would take the node's loopback, its API and
+etcd with it. Evaluation warns when an adjacency can carry 80 % of that
+(members plus Kubernetes nodes). An upstream session still restarts after
+ten minutes.
 
-Sessions use BGP graceful restart: a restart of FRR or of the Cilium agent
-keeps the routes (60 s on the fabric, 120 s for Cilium), and the kernel
-keeps forwarding. BFD still decides that a peer is dead, so a crashed
-node's routes go within seconds. A leaf tags what it learns `no-export`,
+Sessions use BGP graceful restart: a restart of bgpd alone, or of the
+Cilium agent, keeps the routes (60 s on the fabric, 120 s for Cilium), and
+the kernel keeps forwarding. A restart of all of FRR (`systemctl restart
+frr`, an OOM kill, a watchfrr full restart) does not: bfdd stops too, and
+the peers drop the node at once, as for a dead node. That is on purpose:
+BFD must still find a dead node fast. Drain a node before restarting FRR
+by hand. A deploy never restarts FRR: a changed `frr.conf` is reloaded
+(nixpkgs `reloadIfChanged`), and bgpd and its sessions stay. BFD decides
+that a peer is dead, so a crashed node's routes go within seconds. A leaf
+tags what it learns `no-export`,
 so it never passes routes on. Plain `bfd` accompanies each profile, site defaults stay implicit,
 and `use-underlays-nexthop-weight` is explicit, so an unchanged reload has
 an empty dry-run diff and preserves peer uptimes and the immediate RIB.
-TCP 179 and UDP 3784/4784 are opened only on fabric WireGuard interfaces and
-from declared literal upstream peer addresses, never globally. Every
+`maximum-paths` is rendered once per address family, from
+`settings.maximumPaths`. Each distinct host set is one prefix-list that
+every session carrying it shares, so `frr.conf` grows with members plus
+adjacencies, not with their product.
+
+The fabric is no trust zone. `firewall.trust` is off by default: a fabric
+link opens TCP 179 and UDP 3784/4784 and nothing else, and each service
+opens its own ports on the links (k3s and rke2 open the cluster's ports
+and Cilium's health port 4240). With `trust = true` every fabric link is a
+trusted interface, but never an `externalTransit` link. TCP 179 and UDP
+3784/4784 are opened only on fabric WireGuard interfaces and from
+declared literal upstream peer addresses, never globally.
+
+Forwarding nodes carry a forward filter in their own nftables table
+(`inet routed-fabric-<instance>`). It is stateless, so ECMP that sends the
+two directions of a flow through different spines passes, and it only
+drops:
+
+- what an `externalTransit` link forwards must go to the border's
+  `ownedPrefixes`;
+- a forwarding border forwards nothing from outside the fabric (any link
+  but its fabric links and Cilium's) to the fabric's own addresses: the
+  member loopbacks, the transfer pool and the ULA /48.
+
+When another service turns on the NixOS forward filter on a spine (a
+NAT64 gateway), routed-fabric accepts transit between its links there.
+Every
 WireGuard listen port is unique and reserved in
 `net.ipv4.ip_local_reserved_ports`; additional ports or ranges can be added
 through `clanServices.networking.reservedPorts`. The shared IfState module
 has a stable key, so importing it through several networking services is safe.
 
-Declared literal endpoints on an adjacency must share an address family;
-hostname endpoints produce an eval warning because evaluation does not
-resolve DNS. Full per-host underlay-family reachability is phase-5 work.
+Endpoints are IP literals. A hostname is an eval error: IfState resolves a
+WireGuard endpoint name once, when it applies, drops the endpoint when DNS
+fails at that moment, and never resolves it again, so after a power cut or
+a DNS outage the adjacency would stay down. A machine whose address
+changes (dynamic DNS) sets `endpoint = null` and dials out to a peer with
+a fixed address. Declared endpoints on an adjacency must share an address
+family. Full per-host underlay-family reachability is phase-5 work.
+
+Per-adjacency overrides bind both ends. Two different
+`adjacencies.<remote>.port` values on the two ends are an eval error; the
+smaller `underlayMtu` override of the two ends is the MTU of both; the
+`extraAllowedIPs` of both ends are joined and go into both WireGuard ACLs
+and both ends' import and export prefix-lists (exact match).
+
+A session between two spines carries everything any member consumes or
+originates: the same set on both ends. The spine pair is the only path
+between leaves that hang on different dedicated spines, so their pod
+routes must cross it.
 Source-return tables never use `{0,200,201,253,254,255,2004,2005}` or
 collide with same-host netif/source-return tables. Their independent rule
 priorities stay below 32766 and unique across fabric and netif rules.
@@ -182,7 +231,18 @@ healthy eligible node and use ECMP. Ordinary clients receive
 fabric-pool LoadBalancer VIPs only; admin access explicitly receives pod
 and ClusterIP routes. External BGP
 peers and owned prefixes are declared in a machine's optional `border`
-attrset, not duplicated in cluster settings.
+attrset, not duplicated in cluster settings. A border announces its
+`ownedPrefixes` to an upstream and accepts only what the peer's
+`acceptedPrefixes` names (nothing by default). `ttlSecurity = true` turns
+on GTSM (`ttl-security hops 1`); the upstream must set it too. There is
+no session password: FRR reads it from `frr.conf`, which lives in the Nix
+store.
+
+Supported size: up to about 30 adjacencies on one machine (a spine with
+28 leaves and two spines). Ports and transfer /31s are drawn at random, so
+two adjacencies of one machine can collide; at 30 the chance is about 2 %
+for a port and 1 % for a /31, and evaluation names the generator to
+regenerate. At 100 it is about 22 % and 14 %.
 
 A host belongs to at most one routed-fabric instance; multiple instances
 segment trust domains. The cluster-side reference is

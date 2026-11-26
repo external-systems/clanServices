@@ -574,11 +574,11 @@ in rec {
     spec = {
       ipv4 = {
         cidrs = [(builtins.elemAt cidrs 0)];
-        maskSize = 24;
+        maskSize = (import ./pod-mask.nix).ipv4;
       };
       ipv6 = {
         cidrs = [(builtins.elemAt cidrs 1)];
-        maskSize = 64;
+        maskSize = (import ./pod-mask.nix).ipv6;
       };
     };
     metadata.labels = manifestLabels;

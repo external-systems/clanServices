@@ -65,6 +65,8 @@
     inherit (node.clan.networkFacts.fabric.fleet) ipv4 ipv6;
   }) (lib.getAttrs ["spine-a" "spine-b" "alpha" "beta" "gamma"] nodes);
   loopback = nodes.alpha.clan.networkFacts.fabric.fleet.loopback;
+  # beta's underlay link and spine-a's underlay address (both variants)
+  underlayLink = "eth1";
 in {
   name = "routed-fabric" + lib.optionalString netifUnderlay "-netif";
 
@@ -159,7 +161,11 @@ in {
       ...
     }: {
       environment = {
-        systemPackages = [pkgs.tcpdump];
+        systemPackages = [
+          pkgs.tcpdump
+          pkgs.socat
+          pkgs.nftables
+        ];
         etc."frr-reload.py" = {
           source = "${pkgs.frr}/libexec/frr/frr-reload.py";
           mode = "0755";
@@ -328,6 +334,43 @@ in {
             beta.succeed("timeout 2 bash -c 'echo > /dev/tcp/${spineABeta}/179'")
             beta.fail("timeout 2 bash -c 'echo > /dev/tcp/192.168.1.4/179'")
             print("ROUTED_FABRIC_TRANSPORT_OK")
+
+        # R5: the fabric links are no trusted interfaces. A member reaches
+        # BGP and BFD on the link and nothing else a service did not open.
+        with subtest("the fabric is no trust zone: an unopened port on a member's loopback is refused"):
+            alpha.succeed("systemd-run --unit=probe-listener $(command -v socat) TCP-LISTEN:9999,fork,reuseaddr EXEC:true")
+            alpha.wait_until_succeeds("ss -tln | grep ':9999 ' >/dev/null", timeout=30)
+            alpha.succeed("timeout 3 bash -c 'echo > /dev/tcp/127.0.0.1/9999'")
+            for source in [beta, gamma, spine_a, spine_b]:
+                source.succeed(f"ping -c 1 -W 2 {stable['alpha']['ipv4']}")
+                source.fail(f"timeout 3 bash -c 'echo > /dev/tcp/{stable['alpha']['ipv4']}/9999'")
+                source.fail(f"timeout 3 bash -c 'echo > /dev/tcp/{stable['alpha']['ipv6']}/9999'")
+            alpha.succeed("systemctl stop probe-listener")
+            for machine in machines:
+                machine.fail("nft list chain inet nixos-fw input | grep 'trusted interfaces' | grep '\"rf' >/dev/null")
+            print("ROUTED_FABRIC_UNTRUSTED_OK")
+
+        # R5: the border's forward filter. A packet from outside the
+        # fabric (beta's underlay) to a member loopback, sent through
+        # spine-a, is dropped there and counted.
+        with subtest("the border does not forward from outside the fabric to the fabric's own addresses"):
+            def infra_drops():
+                rules = spine_a.succeed("nft -a list chain inet routed-fabric-fleet forward")
+                line = [l for l in rules.splitlines() if "@infra4" in l]
+                assert len(line) == 1, rules
+                return int(line[0].split("counter packets ")[1].split()[0])
+            before = infra_drops()
+            beta.succeed("ip route add ${stable.gamma.ipv4}/32 via 192.168.1.4 dev ${underlayLink} metric 1")
+            try:
+                beta.succeed("ip route get ${stable.gamma.ipv4} | grep 'dev ${underlayLink}' >/dev/null")
+                beta.fail("ping -c 3 -W 1 -I ${underlayLink} ${stable.gamma.ipv4}")
+            finally:
+                beta.succeed("ip route del ${stable.gamma.ipv4}/32 via 192.168.1.4 dev ${underlayLink} metric 1")
+            after = infra_drops()
+            assert after >= before + 3, (before, after)
+            # the fabric path still works
+            beta.succeed("ping -c 1 -W 2 ${stable.gamma.ipv4}")
+            print("ROUTED_FABRIC_FORWARD_FILTER_OK")
 
         # Spine HA: FRR reload/restart keep the RIB/FIB stable across a
         # single-spine failure and recovery.
