@@ -425,9 +425,9 @@ in rec {
   # Graceful restart (specs/gateway.md §16.3 point 2): a restart of bgpd
   # alone keeps this node's routes at its peers (they hold them as stale
   # for restart-time) and in its own kernel (zebra -r -K, set by
-  # routed-fabric). A restart of all of FRR does not: bfdd goes too, and
-  # `check-control-plane-failure` makes the peers drop the node at once,
-  # as for a dead node (upstream-facts.md, FRR). A deploy reloads FRR
+  # routed-fabric). A restart of all of FRR is not covered: bfdd goes
+  # too, and whether the peers drop the node at once, as for a dead
+  # node, or hold its routes stale is a race (upstream-facts.md, FRR). A deploy reloads FRR
   # and restarts nothing (nixpkgs `reloadIfChanged`).
   mkConfig = {
     routerId,

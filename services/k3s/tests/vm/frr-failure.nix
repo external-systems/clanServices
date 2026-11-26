@@ -18,10 +18,10 @@
 #   - a deploy carries a valid FRR change: FRR reloads it, bgpd and
 #     every session stay (a deploy never restarts FRR).
 #   - FRR restarts as a whole (`systemctl restart frr`): bfdd goes with
-#     bgpd, so the leaf treats the spine as dead and drops its routes
-#     at once; graceful restart covers a bgpd restart only (routed-fabric
-#     R2, accepted: BFD must still find a dead node fast). Everything
-#     comes back by itself.
+#     bgpd, so the leaf may treat the spine as dead and drop its routes
+#     at once (a race; graceful restart is promised for a bgpd restart
+#     only: routed-fabric R2, accepted, BFD must still find a dead node
+#     fast). Everything comes back by itself.
 {
   lib,
   inputs,
@@ -211,7 +211,7 @@
             pods_reach_each_other(60)
             print("FRR_DEPLOY_RELOADS_OK")
 
-        with subtest("FRR restarts as a whole on the spine: the leaf drops the spine's routes as for a dead node, and everything comes back"):
+        with subtest("FRR restarts as a whole on the spine: the session drops (the routes may go at once), and everything comes back"):
             ipv4, _ = pod_ips("alpha")
             spine_pods = ipaddress.ip_network(f"{ipv4}/24", strict=False)
             present = f"ip -4 route show proto bgp {spine_pods} | grep . >/dev/null"
@@ -221,9 +221,11 @@
             alpha.succeed("systemctl restart frr")
             took = seconds_until(beta, f"! {present}", limit=60)
             print(f"FINDING a full FRR restart on the spine: the leaf dropped its pod route after {took} s")
-            # R2, accepted: graceful restart does not hold the routes of a
-            # node whose bfdd went with bgpd (first run: 0.0 s)
-            assert took is not None and took < 15, took
+            # R2, accepted: graceful restart is not promised for a full
+            # restart. Which one happens is a race between bgpd's
+            # NOTIFICATION and bfdd going down: two runs, one dropped the
+            # route at once (0.0 s), one kept it stale past 60 s. Only the
+            # recovery is asserted.
             alpha.wait_until_succeeds(f"test -n \"$({BGPD_PID})\" && test \"$({BGPD_PID})\" != {old_pid}", timeout=120)
             for node in nodes:
                 all_established(node, sessions[node.name])

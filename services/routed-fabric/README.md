@@ -66,8 +66,8 @@ fabric or Cilium session past 4096 prefixes warns and stays up; an upstream
 session restarts after ten minutes. Sessions use BGP graceful restart (60
 seconds on the fabric, 120 for Cilium): a restart of bgpd or of the Cilium
 agent keeps the routes, and BFD still drops a dead peer at once. A restart
-of all of FRR looks like a dead node (bfdd stops too); a deploy only
-reloads FRR.
+of all of FRR may look like a dead node (bfdd stops too; a race); a
+deploy only reloads FRR.
 A leaf tags what it learns `no-export`. Plain `bfd` accompanies each profile, site defaults stay
 implicit, and `use-underlays-nexthop-weight` is explicit; unchanged reloads
 have an empty dry-run diff and preserve peer uptimes and the immediate RIB.

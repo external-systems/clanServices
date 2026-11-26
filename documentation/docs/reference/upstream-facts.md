@@ -59,11 +59,13 @@ read the section of a component before changing code that touches it.
   (`k3s-frr-failure`); with `neighbor … bfd
   check-control-plane-failure` a peer whose machine died is dropped
   when BFD fails, not after the restart time (`FRR_DEAD_NODE_OK`).
-- FRR 10.7.1 graceful restart covers bgpd alone. `systemctl restart
-  frr` stops bfdd with bgpd, and the peer drops the node's routes at
-  once (measured 0.0 s), as for a dead node, with
-  `check-control-plane-failure`; every session and route comes back
-  after the restart (`k3s-frr-failure`, `FRR_FULL_RESTART_OK`). A
+- FRR 10.7.1 graceful restart is reliable for bgpd alone. `systemctl
+  restart frr` stops bfdd with bgpd, and with
+  `check-control-plane-failure` the outcome at the peer is a race: in
+  one run the leaf dropped the node's routes at once (0.0 s), as for a
+  dead node; in the next it kept them stale for over 60 s. Every
+  session and route comes back after the restart either way
+  (`k3s-frr-failure`, `FRR_FULL_RESTART_OK`). A
   switch to a generation with a changed valid `frr.conf` reloads FRR
   (nixpkgs `reloadIfChanged`): the bgpd PID and every session stay
   (`FRR_DEPLOY_RELOADS_OK`).

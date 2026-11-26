@@ -1928,9 +1928,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   adjacencies on one machine; random ports and transfer /31s then collide
   on one machine with about 2 % and 1 % chance (an eval error naming the
   generator), at 100 about 22 % and 14 %. **Graceful restart (round G11,
-  R2, accepted):** it covers a bgpd restart only. A restart of all of FRR
-  stops bfdd too and looks like a dead node to the peers, on purpose: BFD
-  must still find a dead node fast. A deploy reloads FRR (nixpkgs
+  R2, accepted):** it is promised for a bgpd restart only. A restart of
+  all of FRR stops bfdd too; whether the peers then drop the node at once,
+  as for a dead node, or hold its routes stale is a race (`k3s-frr-failure`
+  saw both). Accepted: BFD must still find a dead node fast. Drain a node
+  before restarting FRR by hand. A deploy reloads FRR (nixpkgs
   `reloadIfChanged`) and restarts nothing.
   Every profiled neighbor also renders plain `bfd`; site profile defaults
   stay implicit and `use-underlays-nexthop-weight` is explicit, matching FRR
@@ -2514,8 +2516,8 @@ Both ends and upstreams use a five-second fixed DelayOpen hold-down;
 upstream maximum-prefix limits restart after ten minutes, fabric and
 Cilium limits only warn (round G11). Fabric sessions use BGP graceful
 restart (60 s) for a bgpd restart, with BFD as the authority on a dead
-peer (round 57); a restart of all of FRR looks like a dead node (round
-G11). No-op reloads preserve
+peer (round 57); a restart of all of FRR may look like a dead node (a
+race, round G11). No-op reloads preserve
 peer uptimes and the immediate RIB (D63).
 
 ```nix

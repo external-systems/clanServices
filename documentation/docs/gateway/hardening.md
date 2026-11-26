@@ -50,7 +50,7 @@ breaks. Contract: `specs/gateway.md` §16.3 and SPEC.md round 57.
 | # | What was wrong | Now | Proof |
 |---|---|---|---|
 | 1 | A restart of Cilium on a node looked like a dead node: its routes vanished from every other node | BGP graceful restart between Cilium and FRR. The routes stay for up to 120 s while Cilium is away | `k3s-frr-failure` (`FRR_CILIUM_RESTART_OK`) |
-| 2 | A restart of FRR took a manager off the cluster network | Graceful restart on the cluster-network sessions too. The kernel keeps the routes while bgpd is away. A node that is really dead is still dropped fast: BFD sees it. Corrected in round G11: this covers bgpd only. A restart of all of FRR looks like a dead node, on purpose; a deploy only reloads FRR | `k3s-frr-failure` (`FRR_DEAD_NODE_OK`, `FRR_FULL_RESTART_OK`, `FRR_DEPLOY_RELOADS_OK`) |
+| 2 | A restart of FRR took a manager off the cluster network | Graceful restart on the cluster-network sessions too. The kernel keeps the routes while bgpd is away. A node that is really dead is still dropped fast: BFD sees it. Corrected in round G11: this covers bgpd only. A restart of all of FRR may look like a dead node (a race); a deploy only reloads FRR | `k3s-frr-failure` (`FRR_DEAD_NODE_OK`, `FRR_FULL_RESTART_OK`, `FRR_DEPLOY_RELOADS_OK`) |
 | 3 | Members in different places got LAN timers unless you set `site` | `site` is empty by default. Fast timers only when **both ends name the same site**. Everything else gets the slow, safe timers | eval `test_stabilityProfilesAndRecovery` |
 
 !!! note "What this means for you"

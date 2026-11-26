@@ -159,9 +159,10 @@ ten minutes.
 Sessions use BGP graceful restart: a restart of bgpd alone, or of the
 Cilium agent, keeps the routes (60 s on the fabric, 120 s for Cilium), and
 the kernel keeps forwarding. A restart of all of FRR (`systemctl restart
-frr`, an OOM kill, a watchfrr full restart) does not: bfdd stops too, and
-the peers drop the node at once, as for a dead node. That is on purpose:
-BFD must still find a dead node fast. Drain a node before restarting FRR
+frr`, an OOM kill, a watchfrr full restart) is not covered: bfdd stops
+too, and the peers may drop the node at once, as for a dead node, or hold
+its routes stale; which one is a race. That is accepted: BFD must still
+find a dead node fast. Drain a node before restarting FRR
 by hand. A deploy never restarts FRR: a changed `frr.conf` is reloaded
 (nixpkgs `reloadIfChanged`), and bgpd and its sessions stay. BFD decides
 that a peer is dead, so a crashed node's routes go within seconds. A leaf
