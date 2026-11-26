@@ -123,6 +123,9 @@ A probe on 2026-11-16 ran a prototype:
   configuration.
 - **A first boot has nothing to roll back to.** The guard then only
   fails loudly.
+- **The rollback is whole** (2026-11-25). It also puts back the DHCP
+  client settings, and it keeps the links that other services own
+  (WireGuard, Cilium). Before, it restored the link file only.
 
 After a rollback the machine runs the old network, but the new
 generation is still the current one. A reboot tries the new

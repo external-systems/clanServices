@@ -109,10 +109,20 @@
         with subtest("bgpd crashes on the spine: watchfrr restarts it, sessions, routes and pods come back"):
             old_pid = alpha.succeed(BGPD_PID).strip()
             dropped = int(beta.succeed(DROPPED).strip())
+            ipv4, _ = pod_ips("alpha")
+            spine_pods = ipaddress.ip_network(f"{ipv4}/24", strict=False)
+            route_stays = f"ip -4 route show proto bgp {spine_pods} | grep . >/dev/null"
             alpha.succeed("pkill -KILL -x bgpd")
             # the crash is an outage: the leaf loses its session to the
             # spine (else "everything comes back" would prove nothing)
             beta.wait_until_succeeds(f"test \"$({DROPPED})\" -gt {dropped}", timeout=120)
+            # graceful restart (specs/gateway.md §16.3): the session is
+            # gone, the spine still forwards, and the leaf keeps the
+            # spine's routes as stale instead of withdrawing them
+            beta.succeed(route_stays)
+            stale = beta.succeed("vtysh -c 'show bgp ipv4 unicast' | grep -c '^S' || true").strip()
+            print(f"FINDING the leaf holds {stale} stale IPv4 paths while the spine's bgpd is away")
+            holds_for(beta, route_stays, 5, interval=0.5)
             alpha.wait_until_succeeds(f"test -n \"$({BGPD_PID})\" && test \"$({BGPD_PID})\" != {old_pid}", timeout=120)
             alpha.succeed("systemctl is-active frr.service")
             for node in nodes:
@@ -121,6 +131,23 @@
             pods_reach_each_other(300)
             observe("alpha: frr after the crash", alpha, "journalctl -u frr --no-pager -l | grep -i -E 'bgpd|restart' | tail -n 20")
             print("FRR_BGPD_CRASH_OK")
+
+        with subtest("the Cilium agent restarts on the spine: the leaf keeps the spine's pod routes for the 30 s watched, and the pods reach each other after"):
+            ipv4, _ = pod_ips("alpha")
+            spine_pods = ipaddress.ip_network(f"{ipv4}/24", strict=False)
+            route_stays = f"ip -4 route show proto bgp {spine_pods} | grep . >/dev/null"
+            beta.succeed(route_stays)
+            agent = alpha.succeed(f"{KUBECTL} -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=alpha -o name").strip()
+            alpha.succeed(f"{KUBECTL} -n kube-system delete {agent} --wait=false")
+            # the agent's own session (::1) drops; FRR is the helper
+            alpha.wait_until_succeeds(PEERS + " | jq -e 'any(.[]; .[0] == \"::1\" and .[1] != \"Established\")' >/dev/null", timeout=60)
+            holds_for(beta, route_stays, 30, interval=1)
+            alpha.wait_until_succeeds(f"{KUBECTL} -n kube-system wait --for=condition=Ready pod -l k8s-app=cilium --timeout=120s", timeout=300)
+            for node in nodes:
+                all_established(node, sessions[node.name])
+            beta.succeed(route_stays)
+            pods_reach_each_other(120)
+            print("FRR_CILIUM_RESTART_OK")
 
         with subtest("a broken FRR config is refused at reload (the switch still exits 0); the running FRR, its sessions and the pods stay"):
             pid = alpha.succeed(BGPD_PID).strip()
@@ -158,6 +185,16 @@
                 all_established(node, sessions[node.name])
             pods_reach_each_other(60)
             print("FRR_BAD_RELOAD_OK")
+
+        with subtest("the spine itself dies: BFD ends the session and the leaf drops the spine's routes within 15 s; graceful restart does not hold a dead node's routes"):
+            ipv4, _ = pod_ips("alpha")
+            spine_pods = ipaddress.ip_network(f"{ipv4}/24", strict=False)
+            beta.succeed(f"ip -4 route show proto bgp {spine_pods} | grep . >/dev/null")
+            alpha.crash()
+            took = seconds_until(beta, f"! ip -4 route show proto bgp {spine_pods} | grep . >/dev/null", limit=90)
+            print(f"FINDING the leaf dropped the dead spine's pod route after {took} s")
+            assert took is not None and took < 15, took
+            print("FRR_DEAD_NODE_OK")
   '';
 in
   lib.recursiveUpdate body {

@@ -242,20 +242,31 @@ in {
             # that is not declared. An ICMPv6 error about an open flow is
             # `related`.
             oifname "${host}" ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom ct state != related counter drop comment "nat64-undeclared"
+            # A meter holds one entry per live source address. When it is
+            # full the `update` fails and its rule does not match: the
+            # rule after each meter drops a source that has no entry, so
+            # a full meter refuses new sources instead of letting them
+            # pass unlimited (specs/gateway.md §16.3).
             # specs/gateway.md §14.5 point 3: a client's own limit first
             ${lib.concatImapStrings (index: client: let
               sources = "{ ${lib.concatStringsSep ", " client.sources} }";
               c = "c${toString index}";
             in ''
               oifname "${host}" ip6 saddr ${sources} ct state new update @flows_${c} { ip6 saddr limit rate over ${toString client.limits.newFlows}/second burst ${toString client.limits.newFlowsBurst} packets } counter drop comment "nat64-flows-client-${client.name}"
+              oifname "${host}" ip6 saddr ${sources} ct state new ip6 saddr != @flows_${c} counter drop comment "nat64-flows-client-${client.name}-full"
               oifname "${host}" ip6 saddr ${sources} update @packets_${c} { ip6 saddr limit rate over ${toString client.limits.packets}/second burst ${toString client.limits.packetsBurst} packets } counter drop comment "nat64-packets-client-${client.name}"
+              oifname "${host}" ip6 saddr ${sources} ip6 saddr != @packets_${c} counter drop comment "nat64-packets-client-${client.name}-full"
             '')
             cfg.custom}
             # specs/gateway.md §14.1 point 4: a limit per source, two tiers
             oifname "${host}" ip6 saddr @trusted ct state new update @flows_trusted { ip6 saddr limit rate over ${toString cfg.limits.trusted.newFlows}/second burst ${toString cfg.limits.trusted.newFlowsBurst} packets } counter drop comment "nat64-flows-trusted"
+            oifname "${host}" ip6 saddr @trusted ct state new ip6 saddr != @flows_trusted counter drop comment "nat64-flows-trusted-full"
             oifname "${host}" ip6 saddr @trusted update @packets_trusted { ip6 saddr limit rate over ${toString cfg.limits.trusted.packets}/second burst ${toString cfg.limits.trusted.packetsBurst} packets } counter drop comment "nat64-packets-trusted"
+            oifname "${host}" ip6 saddr @trusted ip6 saddr != @packets_trusted counter drop comment "nat64-packets-trusted-full"
             oifname "${host}" ip6 saddr @default ct state new update @flows_default { ip6 saddr limit rate over ${toString cfg.limits.default.newFlows}/second burst ${toString cfg.limits.default.newFlowsBurst} packets } counter drop comment "nat64-flows-default"
+            oifname "${host}" ip6 saddr @default ct state new ip6 saddr != @flows_default counter drop comment "nat64-flows-default-full"
             oifname "${host}" ip6 saddr @default update @packets_default { ip6 saddr limit rate over ${toString cfg.limits.default.packets}/second burst ${toString cfg.limits.default.packetsBurst} packets } counter drop comment "nat64-packets-default"
+            oifname "${host}" ip6 saddr @default ip6 saddr != @packets_default counter drop comment "nat64-packets-default-full"
             # A /96 destination that embeds a non-global IPv4 address is
             # not the internet (G5): refused after translation.
             iifname "${host}" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 } counter reject with icmp type net-prohibited comment "nat64-private"

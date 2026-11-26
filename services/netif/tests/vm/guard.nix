@@ -112,6 +112,15 @@ in {
           address = "192.168.5.2/24";
           gateway = "192.168.5.1";
         };
+        # The same loss of the gateway, in a generation that also gives
+        # a link to another owner (as a first deploy of a cluster does).
+        owned.configuration = {
+          networking.ifstate.settings = uplink {
+            address = "192.168.5.2/24";
+            gateway = "192.168.5.1";
+          };
+          clanServices.networking.owners.suite.interfaces = ["^owned"];
+        };
         # A harmless change.
         good.configuration.networking.ifstate.settings = uplink {
           address = "192.168.1.2/24";
@@ -209,6 +218,25 @@ in {
             assert guard_done() != "success"
             host.succeed("ip -4 addr show eth1 | grep '192.168.1.2/24' >/dev/null")
             print("NETIF_GUARD_ROLLBACK_OK")
+
+        with subtest("the rollback keeps what the failed generation gave to another owner (N6, N25)"):
+            # the first generation knows no such owner: its configuration
+            # alone would delete the link
+            status, output = switch("owned")
+            assert status != 0, "the switch must report the failure"
+            journal("rolled back")
+            host.succeed("ip link add owned0 type dummy && ip link set owned0 up")
+            invocation = "systemctl show -p InvocationID --value netif-guard.service"
+            before_restart = host.succeed(invocation).strip()
+            host.succeed("systemctl restart ifstate.service")
+            host.wait_until_succeeds(f"test \"$({invocation})\" != '{before_restart}'", timeout=60)
+            assert guard_done() != "success"
+            host.succeed("ip -4 addr show eth1 | grep '192.168.1.2/24' >/dev/null")
+            host.succeed("ip link show owned0")
+            host.succeed("grep -F owned /run/netif-guard/rollback.yaml >/dev/null")
+            host.succeed("ip link del owned0")
+            assert last_good() == first
+            print("NETIF_GUARD_OWNERS_OK")
 
         with subtest("a good change is kept and becomes the new last-good"):
             status, output = switch("good")

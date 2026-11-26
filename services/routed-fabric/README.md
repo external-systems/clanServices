@@ -55,12 +55,18 @@ netif/source-return collisions; independent rule priorities stay below
 32766 and unique across netif and fabric. `sourceReturnTable` and
 `sourceReturnPriority` are the explicit per-adjacency pins.
 
-Equal `settings.site` values default to the `site` timer profile (BFD 300
-ms x3), different sites to `wan` (BFD 1000 ms x5 plus BGP 10/30 seconds).
+`settings.site` is unset by default. Two members that name the same site
+get the `site` timer profile (BFD 300 ms x3); every other pair gets `wan`
+(BFD 1000 ms x5 plus BGP 10/30 seconds). Set it only on machines that
+share a LAN or a data centre.
 `adjacencies.<remote>.timerProfile` overrides the default symmetrically.
 Upstreams use `wan`. Both ends and upstreams use a five-second fixed
-DelayOpen recovery hold-down, and every maximum-prefix limit restarts after
-ten minutes. Plain `bfd` accompanies each profile, site defaults stay
+DelayOpen recovery hold-down (connect-retry is 10 seconds, above it), and a
+maximum-prefix limit restarts a fabric or upstream session after ten
+minutes; on the Cilium session it only warns. Sessions use BGP graceful
+restart (60 seconds on the fabric, 120 for Cilium): a restart of FRR or of
+the Cilium agent keeps the routes, and BFD still drops a dead peer at once.
+A leaf tags what it learns `no-export`. Plain `bfd` accompanies each profile, site defaults stay
 implicit, and `use-underlays-nexthop-weight` is explicit; unchanged reloads
 have an empty dry-run diff and preserve peer uptimes and the immediate RIB.
 BGP/BFD ports are scoped to fabric interfaces and declared literal

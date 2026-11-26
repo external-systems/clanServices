@@ -143,6 +143,21 @@ checked against the code.
 - **Not fixed, for the owner:** §16.3 ranks what the review found in
   `routed-fabric`, the cluster services and netif.
 
+Round G10 (2026-11-25): **the sixteen findings of §16.3 are fixed.**
+The owner: "yes to all 3 ... please apply all fixes"; nothing is
+deployed, so no change is breaking (AGENTS.md rule 10).
+- **Accepted:** G25 and the default-route rule of SPEC.md D71.
+- **Stability first (§16.3 items 1 to 3):** BGP graceful restart on
+  the Cilium session and on the fabric sessions; `site` has no
+  default, and the fast timers need the same site named on both ends.
+  Suite `k3s-frr-failure` gained three phases.
+- **Items 4 to 16** are fixed in `lib/kube-cluster`, `routed-fabric`,
+  netif, the router and `nat-gateway` (§16.3, SPEC.md round 57,
+  `specs/netif.md` N25).
+- **G25 amended:** the router takes `unzoned.source` from the
+  machine's fabric export; the option is an override.
+- Evidence: §16.5.
+
 
 
 As in `specs/netif.md` §0: *(planned)*, *(probe-verified)*,
@@ -1045,11 +1060,12 @@ any code (AGENTS.md rule 3).
       WireGuard accepts cluster sources only (a LAN client's SYN to a
       pod on another node was dropped there), and the answer then
       returns through the router's stack. Pods see the router as the
-      source, not the client. `unzoned.source.ipv4`/`.ipv6` name that
-      source; on a node it is the node's fabric address (the fabric's
+      source, not the client. The source is the machine's fabric address, read
+      from its `node_transport` export (round G10; the fabric's
       links hold transfer addresses a peer does not accept as a source:
       a plain masquerade chose the LAN address, and the peer dropped
-      it). Unset: the outgoing link's address. For a zone that is not named, the router drops
+      it). `unzoned.source.ipv4`/`.ipv6` override it. No fabric and no
+      override: the outgoing link's address. For a zone that is not named, the router drops
       what the zone sends towards unzoned links: no connection forms,
       but it cannot stop a single packet from a pod on the router
       itself into the zone. A Cilium network policy narrows either;
@@ -2612,63 +2628,40 @@ is a router and a node. Stability comes before fast failover.
 | One list of device names can attach Cilium to a router's zone link | Two machines with the same link name (identical mini PCs): the router's zone link and another node's uplink. Cilium on the zone link forwards past the router's table | Eval refusal, with the name | eval `test_d71RouterZoneLinkRefused` (k3s, rke2) |
 | A gateway needs a client | An instance of gateways only (three managers, all with a public IPv4) failed evaluation | Allowed: an empty allowlist lets nobody through | eval `test_noClients` |
 
-### 16.3 Found in the existing services, not fixed
+### 16.3 Found in the existing services, fixed in round G10
 
-Read in the code by the reviewers and checked again against it; none
-was run. Ranked by damage to the two use cases. Each needs the owner's
-word before code: most change every cluster suite.
+Read in the code by the reviewers in round G9. The owner's word came
+on 2026-11-25: fix all sixteen. Ranked by damage to the two use cases.
 
-1. **No BGP graceful restart between Cilium and FRR**
-   (`lib/kube-cluster/bgp.nix`, `frr.nix`; nothing renders
-   `gracefulRestart`). A restart of the Cilium agent keeps forwarding
-   but drops the session; FRR withdraws that node's pod and service
-   routes everywhere until the agent is back. A healthy node looks
-   sick. Direction: `gracefulRestart` in the peer config, and a suite
-   case that restarts the agent under traffic.
-2. **A restart of FRR withdraws the node's fabric address**, and the
-   control plane (etcd, the API) rides it. A deploy that restarts FRR
-   on all three managers at once can lose quorum for seconds.
-   Direction: BGP graceful restart on the fabric sessions, or a
-   documented rule: one manager at a time.
-3. **`site` defaults to `"default"` on every member**
-   (`services/routed-fabric`), so two members in different places that
-   never set it get the LAN timers (BFD 300 ms x 3) over the internet.
-   A second of jitter drops a healthy peer. Direction: `wan` timers
-   unless both ends name the same site.
-4. **A `clusterInit` server that is reinstalled starts a second
-   cluster** (empty etcd, the same CAs): the other nodes' HAProxy check
-   accepts it. Direction: refuse to start when another server answers.
-5. **A change of `cilium-config` reaches no running agent**: a manager
-   that becomes a gateway gets its uplink masqueraded only after a
-   restart of its agent, at some later reboot. Direction: a documented
-   step, one node at a time.
-6. **The ClusterMesh secrets unit restarts `clustermesh-apiserver` at
-   every run** (`bootstrap.nix`), so every restart of the init server
-   drops the mesh sessions. Direction: restart only on a change.
-7. **`operator.replicas = 1`** in a cluster of three managers: while
-   its node is down, no new pod CIDR and no new LoadBalancer address.
-8. **`maximum-prefix 4096 restart 10` on the Cilium session**: past
-   the limit FRR drops the session for 10 minutes, and with it the
-   node's pod routes. Direction: `warning-only` there.
-9. **A leaf can pass routes on** (the export filter matches prefixes,
-    not the path), against "leaves never provide transit".
-10. **`ipv4NativeRoutingCIDR` is `10.0.0.0/8`, fixed**: pods reach a
-    host in a provider's or a home's 10/8 network with their pod
-    address. Direction: an eval check against the netif addresses.
-11. **netif's guard rolls back the IfState file only**: not a dhcpcd
-    configuration, and with the old ignore list.
-12. **The PKI install is skipped, not failed, when its secret is
-    missing** (`ConditionPathExists`): the server then makes its own
-    CAs. Direction: `AssertPathExists`.
-13. **HAProxy has no `timeout tunnel`**: an idle `kubectl exec` or
-    `logs -f` ends after a minute.
-14. **The router reads netif's internal `clanServices.netif.links`**
-    (round G7's question 4), with defaults that hide a renamed key.
-15. **Every router boot retires the current prefix for a few seconds**
-    (the hook runs before dhcpcd's first reply; netif N16 lists it as
-    open).
-16. **A rate-limit meter that is full fails open**: a source prefix
-    with more than 65 535 live addresses is no longer limited.
+| # | Found | Now | Proof |
+|---|---|---|---|
+| 1 | No BGP graceful restart between Cilium and FRR: a restart of the agent withdrew the node's pod and service routes everywhere | `gracefulRestart` in the `CiliumBGPPeerConfig` (120 s); FRR `bgp graceful-restart` with `preserve-fw-state` | `k3s-frr-failure`, `FRR_CILIUM_RESTART_OK`; eval `test_g10Hardening` |
+| 2 | A restart of FRR withdrew the node's fabric address, which etcd and the API ride | Graceful restart on the fabric sessions (restart and stale-path time 60 s, `select-defer-time 0`); zebra keeps its routes over a restart (`-r -K120`). `bfd check-control-plane-failure` on fabric neighbors: a peer whose BFD fails is dropped at once, graceful restart or not | `k3s-frr-failure`: routes kept while bgpd is away; `FRR_DEAD_NODE_OK` (a crashed spine's route gone in under 15 s) |
+| 3 | `site` defaulted to `"default"`, so members in different places got the LAN timers | `site` is `null` by default. The `site` profile applies only when both ends name the same site; every other pair gets `wan` | eval `test_stabilityProfilesAndRecovery`; the cluster suites set `site = "lab"` |
+| 4 | A reinstalled `clusterInit` server started a second cluster | Unit `<instance>-init-guard`, before the server: with no etcd data it probes every other server's API (10 tries, 3 s apart) and fails when one answers | eval `test_g10Hardening` (k3s, rke2): the unit and its order. The refusal itself is not run in a suite |
+| 5 | A change of `cilium-config` reached no running agent | The DaemonSet's pod template carries `clan.lol/cilium-config-hash`; a change rolls the agents, `maxUnavailable: 1` | eval `test_g10Hardening` |
+| 6 | The ClusterMesh secrets unit restarted `clustermesh-apiserver` at every run | Restarted only when a secret's `resourceVersion` changed | `<distro>-clustermesh*` |
+| 7 | `operator.replicas = 1` | 2 when the cluster has two or more members | eval `test_g10Hardening`; every multi-node cluster suite boots with it |
+| 8 | `maximum-prefix 4096 restart 10` on the Cilium session dropped it for 10 minutes | `maximum-prefix 4096 warning-only` | eval `test_localCiliumFrr` (routed-fabric) |
+| 9 | A leaf could pass routes on | What a leaf imports is tagged `no-export` | eval `test_stabilityProfilesAndRecovery` |
+| 10 | `ipv4NativeRoutingCIDR` is `10.0.0.0/8`: pods reached a host in another 10/8 network unmasqueraded | Eval refusal (`underlayViolations`): a member's static IPv4 netif address inside 10/8 and outside the cluster's ranges, with the address named. A DHCP address cannot be checked | eval `test_underlayInNativeRoutingRange` (k3s, rke2) |
+| 11 | netif's guard rolled back the IfState file only | `specs/netif.md` N25: dhcpcd's configurations are recorded and restored; the rollback keeps the running generation's ignore lists | `netif-guard`, `NETIF_GUARD_OWNERS_OK` |
+| 12 | The PKI install was skipped when its secret was missing | `AssertPathExists`: the unit fails, and the server with it | eval `test_g10Hardening` |
+| 13 | HAProxy had no `timeout tunnel` | `timeout tunnel 1h` | eval `test_g10Hardening` |
+| 14 | The router read netif's internal option | `clanServices.netif.links` is public (read-only); the router asserts that a zone's delegated subnet is a /64 | eval `test_zoneNotA64` |
+| 15 | Every router boot retired the current prefix for some seconds | The hook's first run after a boot, with no state file and a prefix in use, keeps it for 45 s and runs again then (`router-prefix-recheck`) | `router`, the boot phases |
+| 16 | A full rate-limit meter failed open | After each meter: a new flow whose source is not in the meter's set is dropped and counted (`nat64-*-full`) | eval `full` (nat-gateway); `nat-gateway` |
+
+| 17 | Found by this round's first full run, older than the PR (in a suite log of 2026-11-18): **bgpd aborts** (`bgp_connect_timer(): assertion (!connection->t_read)`, FRR 10.7.1) when a neighbor's ConnectRetry timer expires while DelayOpen runs. Both were 5 s. watchfrr started bgpd again, so suites passed; under load it failed `k3s-clat` once | `timers connect 10` on every neighbor with DelayOpen | eval `test_stabilityProfilesAndRecovery` (`connectOutlastsDelayOpen`); no assertion and no core dump in any log of the last two runs. An argument from the timers and two runs, not a proof |
+
+What these cost:
+
+- The first start of a `clusterInit` server takes up to 30 s longer
+  (the probe).
+- A reinstalled `clusterInit` server does not come up until the owner
+  moves `clusterInit` to a server that has the data. That is the point.
+- Graceful restart hides a session loss for up to 120 s (Cilium) and
+  60 s (fabric). A dead node is still found by BFD.
 
 ### 16.4 Evidence (2026-11-25, euc-hel-0)
 
@@ -2734,3 +2727,47 @@ Each line is one run, a sample (§12.4).
   `k3s-clat-mapped` and `netif-v6only` evaluate to the derivations of
   the commit before this round.
 
+### 16.5 Evidence, round G10 (2026-11-25, euc-hel-0)
+
+Each line is one run, a sample (§12.4).
+
+- **All 48 suites passed on the final code**, in four `vm-test --all
+  --remote --rebuild` runs joined by `--resume` (a suite ran again
+  whenever its derivation changed). The last run: 29 suites, all
+  passed, none `PASS(!)`.
+- **What the runs found, each fixed before the next:**
+  1. 25 suites did not build: the guard's merge script failed its
+     lint (two long lines). No suite had booted it.
+  2. `netif-dhcp`: two probes read the dhcpcd version from the unit's
+     `ExecStart`, which is now a wrapper script. They read the script.
+     The checks are the same.
+  3. `k3s-clat` failed beside other suites: bgpd on a node aborted
+     (item 17) while the other node rebooted.
+  4. `k3s-join-netif`: "a reapply changes nothing" compared routes
+     while the ClusterMesh apiserver's VIP was still being announced
+     (the end of the first server's boot). The phase now waits until
+     both nodes finished booting and their routes held still for 5 s.
+     Its comparison is unchanged.
+- **`k3s-frr-failure`** (`K3S_FRR_FAILURE_OK`, passed, 229 s):
+  - a spine's bgpd killed: the leaf kept the spine's routes as stale
+    paths (1 IPv4 path counted) and pods kept answering;
+  - the Cilium agent restarted on a node: the other node kept that
+    node's pod route for the 30 s watched (`FRR_CILIUM_RESTART_OK`);
+  - the spine's machine crashed: the leaf dropped its pod route after
+    0.6 s (`FRR_DEAD_NODE_OK`; the limit is 15 s). Graceful restart
+    did not hide a dead node.
+- **`netif-guard`** (`NETIF_GUARD_OK`, passed, 137 s): a rollback kept
+  a link the running generation lists as another owner's
+  (`NETIF_GUARD_OWNERS_OK`).
+- **`router`** (passed, 324 s), with the boot grace of item 15;
+  **`router-kube`** (passed, 302 s), with `unzoned.source` read from
+  the fabric; **`nat-gateway`** (340 s), **`nat-gateway-failover`**
+  (2 099 s), **`nat-gateway-kube`** (203 s), **`k3s-clat`** (653 s),
+  **`rke2-clat`** (788 s).
+- **Not run in a suite:** the init guard's refusal (item 4; the unit
+  and its order are eval-tested, and every cluster suite boots through
+  it), a changed `cilium-config` rolling the agents (item 5), the
+  PKI assertion failing (item 12), a full meter (item 16; the rules
+  are eval-tested and loaded in `nat-gateway`), and the router's
+  boot grace with a prefix that really changed while it was off
+  beyond the `router` suite's existing phases.

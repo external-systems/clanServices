@@ -5,7 +5,9 @@
 #     listed; otherwise the first listed one is. A prefix that was
 #     current and is no longer listed is retired: advertised as
 #     deprecated for 2 h. No file: no delegation, so the current prefix
-#     is retired and the service rule goes.
+#     is retired and the service rule goes. But not on the first run
+#     after a boot: dhcpcd has not answered yet, so the prefix on disk
+#     stays current for 45 s and the hook then looks again (§16.3).
 #   - Its own nftables tables hold the service rewrite (G20) and the set
 #     of delegated prefixes: IPv6 from a LAN zone to the WAN with another
 #     source is rejected on the LAN links' ingress (`netdev router_src`),
@@ -39,6 +41,12 @@ DOMAIN = CONFIG["domain"]
 PREF64 = CONFIG["pref64"]
 TABLES = ["inet router_svc", "netdev router_src"]
 RETIRED_FOR = 7200
+# The first run after a boot (/run is new): netif's file is not there
+# yet, because dhcpcd has not had its first reply. That is not a lost
+# delegation. The prefix on disk stays current for GRACE seconds, then
+# the hook runs once more and believes what it finds.
+BOOT = "/run/router/first-run-done"
+GRACE = 45
 
 
 def subnet(prefix, number):
@@ -128,6 +136,20 @@ def handle(text):
     prefixes = delegated(text)
     state = load_state()
     now = time.time()
+    first = not os.path.exists(BOOT)
+    if first:
+        write(BOOT, "")
+    if first and not prefixes and state["current"]:
+        waiting = subprocess.run(
+            ["systemd-run", "--quiet", "--collect", f"--on-active={GRACE}", "--unit=router-prefix-recheck",
+             "systemctl", "start", "--no-block", "router-prefix.service"],
+            capture_output=True, text=True,
+        )
+        if waiting.returncode == 0:
+            prefixes = [state["current"]]
+            print(f"router-prefix: no delegation yet after the boot; {state['current']} stays current for {GRACE} s", flush=True)
+        else:
+            print(f"router-prefix: could not schedule the recheck ({waiting.stderr.strip()}); no delegation means none", flush=True)
     current = state["current"] if state["current"] in prefixes else (prefixes[0] if prefixes else None)
     if state["current"] and state["current"] != current:
         state["retired"][state["current"]] = now

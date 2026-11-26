@@ -126,6 +126,10 @@ in {
     # on no other address of a `devices` link. Empty: Cilium's default
     # (the first address of every device).
     nodeAddresses ? [],
+    # The operator hands out pod CIDRs and LoadBalancer addresses: two
+    # replicas (leader election) once the cluster has two nodes, so one
+    # node down does not stop it (specs/gateway.md §16.3).
+    memberCount ? 1,
   }: let
     hostCidr = address:
       if lib.hasInfix ":" address
@@ -177,7 +181,10 @@ in {
           chainingMode = "none";
           exclusive = true;
         };
-        operator.replicas = 1;
+        operator.replicas =
+          if memberCount >= 2
+          then 2
+          else 1;
         gatewayAPI.enabled = false;
         ingressController.enabled = false;
         loadBalancer.algorithm = "maglev";

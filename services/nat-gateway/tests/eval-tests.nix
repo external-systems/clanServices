@@ -145,6 +145,8 @@ in {
         # the translator is no way into the gateway's own IPv4 ports
         host = lib.hasInfix ''iifname "jool0" meta nfproto ipv4 counter reject with icmp type host-prohibited comment "nat64-host"'' (table gw1);
         masquerade = lib.hasInfix ''oifname { "eth1" } masquerade'' (table gw1);
+        # a full meter refuses a source it holds no entry for
+        full = lib.hasInfix ''ip6 saddr @default ct state new ip6 saddr != @flows_default counter drop comment "nat64-flows-default-full"'' (table gw1) && lib.hasInfix ''comment "nat64-packets-trusted-full"'' (table gw1);
         beacon = lib.hasInfix ''comment "beacon-undeclared"'' (table gw1);
         defaultRate = lib.hasInfix "limit rate over 50/second burst 200 packets" (table gw1);
         trustedRate = lib.hasInfix "limit rate over 1000/second burst 4000 packets" (table gw1);
@@ -156,6 +158,7 @@ in {
         private = true;
         host = true;
         masquerade = true;
+        full = true;
         beacon = true;
         defaultRate = true;
         trustedRate = true;

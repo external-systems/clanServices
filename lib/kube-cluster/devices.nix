@@ -26,6 +26,7 @@
 # Never a VPN link: a netif link in a zone named in `vpnZones`, or a
 # name that starts with a known VPN prefix, is refused (§14.2).
 {lib}: let
+  cidr = import ./cidr.nix {inherit lib;};
   vpnPrefixes = ["tailscale" "wt" "nb-" "zt" "tun"];
   vpnZones = ["vpn" "tailnet"];
 
@@ -90,6 +91,27 @@
     );
 in {
   inherit vpnPrefixes vpnZones;
+
+  # A member's static IPv4 underlay address inside Cilium's fixed
+  # native-routing range: a list of messages. Pods reach that network
+  # with their pod address (no masquerade), and a host there that is no
+  # cluster member cannot answer (specs/gateway.md §16.3).
+  underlayViolations = {
+    clanLib,
+    exports,
+    members,
+    nativeRoutingCidr,
+  }:
+    lib.concatMap (
+      member:
+        lib.concatMap (
+          link:
+            map (address: "the address ${address} of '${member}' (link ${link.interface or "?"}) is inside ${nativeRoutingCidr}, the range Cilium never masquerades: pods would reach that network with their pod address. Use another private range for the underlay") (
+              builtins.filter (address: !(lib.hasInfix ":" address) && cidr.overlap nativeRoutingCidr address) (link.addresses or [])
+            )
+        ) (lib.concatMap (value: builtins.attrValues (value.netif.links or {})) (exportsOf clanLib exports "netif" member))
+    )
+    members;
 
   # Names in `devices` that are a zone link of a member that is a
   # router: a list of messages. `devices` is one list of names for the

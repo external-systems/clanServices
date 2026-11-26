@@ -505,6 +505,7 @@
       # validated in mkCiliumValues).
       ciliumProfile = kube.render.mkCiliumValues {
         inherit settings instanceName;
+        memberCount = builtins.length members;
         transportFacts = {
           # Devices cover EVERY cluster member's datapath interfaces
           # (one cilium-config serves all nodes, §6.4/D51); the MTU is
@@ -816,6 +817,10 @@
                 inherit clanLib exports members;
                 devices = lib.splitString " " (ciliumProfile.devices or "");
               }
+              ++ kube.devices.underlayViolations {
+                inherit clanLib exports members;
+                nativeRoutingCidr = "10.0.0.0/8";
+              }
             )
             ++ (kube.assertions.mkClusterAssertions {
               inherit
@@ -1017,7 +1022,8 @@
             wantedBy = ["multi-user.target"];
             before = ["k3s.service"];
             requiredBy = ["k3s.service"];
-            unitConfig.ConditionPathExists =
+            # an assertion, not a condition: see lib/kube-cluster/nixos.nix
+            unitConfig.AssertPathExists =
               config.clan.core.vars.generators."rancher-pki-${instanceName}".files."server-ca.key".path;
             serviceConfig = {
               Type = "oneshot";
@@ -1070,6 +1076,26 @@
 
         # The bootstrap bundle + apply oneshot on the clusterInit node
         # only (D40). bootstrap.apply = false is the day-2 off-ramp.
+        # specs/gateway.md §16.3: a first server without data never
+        # starts beside a cluster that is alive
+        (lib.mkIf (modeActive && isInit) (
+          kube.nixos.mkInitGuard {
+            inherit pkgs;
+            namePrefix = "k3s-${instanceName}";
+            beforeUnit = "k3s.service";
+            etcdDir = "/var/lib/rancher/k3s/server/db/etcd";
+            port = kubeapiPort;
+            peers = map (
+              m: let
+                addr = memberAddr m.machineName;
+              in
+                if addr.ipv4 != null
+                then addr.ipv4
+                else "[${addr.ipv6}]"
+            ) (builtins.filter (m: m.machineName != machine.name) serverMembers);
+          }
+        ))
+
         (lib.mkIf (modeActive && isInit && settings.bootstrap.apply) (
           kube.mkBootstrapApply {
             inherit pkgs instanceName;

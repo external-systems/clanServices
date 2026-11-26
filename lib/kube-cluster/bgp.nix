@@ -248,6 +248,15 @@ in rec {
               keepAliveTimeSeconds = 3;
               connectRetryTimeSeconds = 5;
             };
+            # specs/gateway.md §16.3 point 1: a restart of the Cilium
+            # agent keeps forwarding (eBPF), so FRR keeps the node's
+            # routes while the session is away instead of withdrawing
+            # them everywhere. FRR is a graceful-restart helper by
+            # default.
+            gracefulRestart = {
+              enabled = true;
+              restartTimeSeconds = 120;
+            };
             families = [
               {
                 afi = "ipv4";

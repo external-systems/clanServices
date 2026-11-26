@@ -287,6 +287,20 @@ in {
     expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.unzoned.zones = ["guest"];}) "'unzoned.zones' names unknown zones";
     expected = true;
   };
+  # specs/gateway.md §16.3 item 14: a zone is one /64
+  test_zoneNotA64 = {
+    expr = failedAssertion (with' {
+      instances.wan.roles.default.machines.router.settings.links.wan.dhcp.prefixDelegation.assign = [
+        {
+          instance = "lan";
+          link = "home";
+          subnet = 1;
+          length = 62;
+        }
+      ];
+    }) "a zone is one /64";
+    expected = true;
+  };
   test_twoLinksInAZone = {
     expr = failedAssertion (with' {instances.lan.roles.default.machines.router.settings.links.mgmt.zone = "home";}) "have more than one netif link";
     expected = true;

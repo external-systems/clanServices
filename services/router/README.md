@@ -30,9 +30,10 @@ What may cross between the two sides is named, default deny:
   tell who opened a flow there: Cilium sends a pod's packets straight
   out of the zone's link, past the router's table. A flow from the
   zone is masqueraded: pods see the router's address as the source,
-  because the fabric carries cluster addresses only. **On a node, set
-  `unzoned.source.ipv4` and `.ipv6` to the node's fabric address**: a
-  plain masquerade picks an address the fabric's peers refuse. Narrow it with a
+  because the fabric carries cluster addresses only. On a node the source is the node's fabric
+  address, read from the fabric (`unzoned.source.ipv4` and `.ipv6`
+  override it): a plain masquerade picks an address the fabric's peers
+  refuse. Narrow it with a
   Cilium network policy. For a zone that is not named, the router drops
   what the zone sends towards the cluster, so no connection forms.
 - `zones.<zone>.hostPorts = true`: the zone may reach the ports the

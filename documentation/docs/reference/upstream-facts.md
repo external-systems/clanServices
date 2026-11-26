@@ -44,6 +44,21 @@ read the section of a component before changing code that touches it.
   in the Nix sandbox and exits non-zero on a line it rejects (2 for an
   unknown command, 4 for an incomplete one). It checks syntax only: a
   neighbor command for an undefined peer exits 0 (`checks.frr-conf`).
+- FRR 10.7.1: bgpd aborts with `bgp_fsm.c:541: bgp_connect_timer():
+  assertion (!connection->t_read) failed` when a neighbor's
+  ConnectRetry timer expires while its DelayOpen timer runs. With
+  `timers connect 5` beside `timers delayopen 5` both end together:
+  seen in suite logs since 2026-11-18 (`rke2-clustermesh`,
+  `netif-modes`, `k3s-clat`), about one boot in some dozens. watchfrr
+  starts bgpd again, so most suites passed. This repo renders
+  `timers connect 10` on every neighbor with DelayOpen. Whether that
+  closes it is a claim from the timer arithmetic and one full run
+  without the assertion, not a proof.
+- FRR 10.7.1 graceful restart: with `bgp graceful-restart` on both
+  ends, a peer keeps the routes of a bgpd that was killed
+  (`k3s-frr-failure`); with `neighbor … bfd
+  check-control-plane-failure` a peer whose machine died is dropped
+  when BFD fails, not after the restart time (`FRR_DEAD_NODE_OK`).
 - FRR 10.7.1: watchfrr restarts a bgpd killed by SIGKILL; every
   session comes back without action (`k3s-frr-failure`,
   `FRR_BGPD_CRASH_OK`).

@@ -11,7 +11,7 @@
 # Frozen (§14.1 point 2), not built: IPv6-mostly (G9; `pref64` is only
 # the advertisement), a second WAN (G16), several routers (G17), flow
 # records (G19).
-_: let
+{clanLib, ...}: let
   cidr = lib: import ../../lib/kube-cluster/cidr.nix {inherit lib;};
 in {
   _class = "clan.service";
@@ -20,7 +20,11 @@ in {
     description = "The edge of a LAN: zones with default deny, NAT44, DHCPv4, router advertisements from the delegated prefix, a resolver per zone";
     readme = builtins.readFile ./README.md;
     categories = ["Network"];
-    exports.out = ["router"];
+    exports = {
+      # the machine's fabric address, when it is on a fabric (G25)
+      inputs = ["node_transport"];
+      out = ["router"];
+    };
   };
 
   roles.router = {
@@ -88,10 +92,10 @@ in {
             default = null;
             description = ''
               The ${family} source address a zone's flow gets on the
-              unzoned side. On a cluster node: the node's own fabric
-              address, because the fabric's WireGuard accepts cluster
-              addresses only and its links may hold no address a peer
-              accepts. null: the outgoing link's address (masquerade).
+              unzoned side. null: the machine's own fabric address when
+              it is on a fabric (read from the fabric's export; the
+              fabric's WireGuard accepts cluster addresses only), else
+              the outgoing link's address (masquerade).
             '';
           });
         unzoned.zones = lib.mkOption {
@@ -177,6 +181,7 @@ in {
       instanceName,
       machine,
       settings,
+      exports,
       mkExports,
       ...
     }: {
@@ -236,11 +241,27 @@ in {
             else null;
         };
         missing = builtins.filter (name: (netif.zones.${name} or []) == []) (builtins.attrNames settings.zones);
+        # G25: the machine's own address on a fabric, from the fabric's
+        # export; an address the owner names wins
+        fabric = builtins.filter (value: value != null) (
+          map (value: value.node_transport or null) (
+            builtins.attrValues (clanLib.selectExports (scope: scope.machineName == machine.name) exports)
+          )
+        );
+        fabricAddress = family: lib.findFirst (address: address != null) null (map (value: value.${family} or null) fabric);
+        source = lib.genAttrs ["ipv4" "ipv6"] (
+          family:
+            if settings.unzoned.source.${family} != null
+            then settings.unzoned.source.${family}
+            else fabricAddress family
+        );
+        # the hook advertises a /64 per zone (router-prefix.py)
+        notA64 = builtins.filter (entry: lib.elem entry.interface zoneLinks && entry.length != 64) assigned;
         zoneLinks = lib.concatMap (name: netif.zones.${name} or []) (builtins.attrNames settings.zones);
         # a zone's addresses, DHCPv4 and resolver come from one link
         several = builtins.filter (name: lib.length (netif.zones.${name} or []) > 1) (builtins.attrNames settings.zones);
         # a LAN host must not configure the router by an advertisement
-        listening = builtins.filter (link: (netif.links.${link} or {ra = false;}).ra) zoneLinks;
+        listening = builtins.filter (link: netif.links.${link}.ra) zoneLinks;
         # the router's own IPv4 address inside the pool kea leases from
         inPool = builtins.filter (name: let
           zone = resolved.${name};
@@ -269,6 +290,10 @@ in {
             message = "router/${instanceName}: servicePrefix.subnet ${toString settings.servicePrefix.subnet} is also assigned to a link by netif's prefixDelegation.assign (specs/gateway.md G20)";
           }
           {
+            assertion = notA64 == [];
+            message = "router/${instanceName}: netif assigns a delegated subnet that is not a /64 to the zone link(s) ${toString (map (entry: entry.interface) notA64)}; a zone is one /64";
+          }
+          {
             assertion = several == [];
             message = "router/${instanceName}: zone(s) ${toString several} have more than one netif link; a zone is one link (put the ports in a bridge)";
           }
@@ -289,7 +314,11 @@ in {
           enable = true;
           inherit wan;
           zones = lib.mapAttrs resolve settings.zones;
-          inherit (settings) domain pref64 servicePrefix wanPorts unzoned;
+          inherit (settings) domain pref64 servicePrefix wanPorts;
+          unzoned = {
+            inherit (settings.unzoned) zones;
+            inherit source;
+          };
           dns = {
             inherit (settings.dns) blocklist records upstream;
             forwardOptions = lib.optional tls "tls_servername ${settings.dns.tlsServerName}";

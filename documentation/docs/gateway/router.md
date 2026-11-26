@@ -51,7 +51,7 @@ Your home box is both. Since 2026-11-25 the service is built for it.
 | Setting | Default | Meaning |
 |---|---|---|
 | `unzoned.zones = ["home"]` | none | zone `home` and the cluster's pods and Services may reach each other, both ways |
-| `unzoned.source.ipv4`, `.ipv6` | the outgoing port's address | the address such traffic appears to come from. On a node: set it to the node's cluster-network address, or pods on other nodes are unreachable |
+| `unzoned.source.ipv4`, `.ipv6` | the node's cluster-network address; without one, the outgoing port's address | the address such traffic appears to come from. The router reads it from the cluster network. Set it only to override |
 | `zones.<zone>.hostPorts` | off | the zone may reach the ports the machine opens to everyone, such as the cluster network's WireGuard ports. Turn it on for the zone that holds your other nodes |
 | `wanPorts.tcp`, `wanPorts.udp` | empty | ports of the router itself that the internet may reach |
 

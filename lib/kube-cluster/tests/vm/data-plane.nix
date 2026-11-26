@@ -405,6 +405,9 @@ in {
           # Default Round-17 shape: one spine and one Kubernetes leaf;
           # border configuration remains orthogonal on both nodes (D59).
           roles = {
+            # one LAN: the fast timers (the default between sites is `wan`)
+            spine.settings.site = "lab";
+            leaf.settings.site = "lab";
             spine.machines = {
               alpha.settings = {
                 ipv4 = "192.168.77.1";

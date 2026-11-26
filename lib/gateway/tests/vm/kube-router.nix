@@ -188,15 +188,10 @@ in
               upstream = [internet4];
               records."service.test" = internet4;
             };
-            # the home zone may reach the cluster's pods and services
-            unzoned = {
-              zones = ["home"];
-              # alpha's fabric addresses: what the fabric's peers accept
-              source = {
-                ipv4 = "192.168.77.1";
-                ipv6 = "fd77::1";
-              };
-            };
+            # the home zone may reach the cluster's pods and services;
+            # the source such flows get is alpha's fabric address, which
+            # the router reads from the fabric's export
+            unzoned.zones = ["home"];
           };
         };
         # no upstream BGP peer: a home network has none

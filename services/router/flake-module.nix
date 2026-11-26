@@ -4,7 +4,7 @@
   self,
   ...
 }: let
-  module = ./default.nix;
+  module = lib.modules.importApply ./default.nix {clanLib = inputs.clan-core.lib;};
 in {
   clan = {
     modules.router = module;

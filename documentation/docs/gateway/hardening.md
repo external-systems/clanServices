@@ -15,9 +15,9 @@ Stability counts more than fast failover. The contract version is
 - **The NAT gateway design held.** Three holes were found and closed.
 - **The router did not fit your home box.** It is rebuilt to share a
   machine with a cluster, and a new test proves it.
-- **The cluster network has three stability gaps** that are older than
-  this work. They are listed, not changed: each one touches every
-  cluster test and needs your word first.
+- **The cluster network had three stability gaps** that are older than
+  this work. You said to fix them, and the 13 smaller findings with
+  them. All 16 are fixed (round G10, below). All 48 tests pass.
 
 ## Found and fixed
 
@@ -40,63 +40,83 @@ Stability counts more than fast failover. The contract version is
 2. The stray-packet check bounds **time**, not a count: accepted.
 3. The long test is **split**.
 
-## Found, not fixed: yours to decide
+## The 16 older findings: all fixed (round G10)
 
-Ranked by how much they can hurt. All were read in the code; none was
-run.
+You answered: fix all of them now. Nothing is deployed, so nothing
+breaks. Contract: `specs/gateway.md` §16.3 and SPEC.md round 57.
 
 ### Stability of the cluster network
 
-1. **A restart of Cilium on a node looks like a dead node.** Traffic
-   keeps flowing, but the node's routes are withdrawn from every other
-   node until Cilium is back. Fix: BGP graceful restart between Cilium
-   and FRR, and a test that restarts Cilium under traffic.
-2. **A restart of FRR takes a manager off the cluster network.** etcd
-   and the API ride that network. Restarting FRR on all three managers
-   at once can cost quorum for some seconds. Fix: graceful restart
-   there too. Until then: deploy an FRR change **one manager at a
-   time**.
-3. **Members in different places use LAN timers unless you set
-   `site`.** Every member's `site` is `"default"`, so two machines in
-   different data centres, or home and cloud, expect an answer within
-   0.9 s. A second of jitter drops a healthy link. Fix: slow timers
-   unless both ends name the same site. Until then: **set `site` on
-   every member.**
+| # | What was wrong | Now | Proof |
+|---|---|---|---|
+| 1 | A restart of Cilium on a node looked like a dead node: its routes vanished from every other node | BGP graceful restart between Cilium and FRR. The routes stay for up to 120 s while Cilium is away | `k3s-frr-failure` (`FRR_CILIUM_RESTART_OK`) |
+| 2 | A restart of FRR took a manager off the cluster network | Graceful restart on the cluster-network sessions too. The kernel keeps the routes while FRR is away. A node that is really dead is still dropped fast: BFD sees it | `k3s-frr-failure` (`FRR_DEAD_NODE_OK`) |
+| 3 | Members in different places got LAN timers unless you set `site` | `site` is empty by default. Fast timers only when **both ends name the same site**. Everything else gets the slow, safe timers | eval `test_stabilityProfilesAndRecovery` |
+
+!!! note "What this means for you"
+    Set `site` only on machines that share a LAN or a data centre.
+    Leave it unset for home-to-cloud links.
 
 ### Clusters
 
-4. **A reinstalled first manager starts a second cluster.** It finds
-   no data, has the same certificates, and the other nodes accept it.
-   Until fixed: before reinstalling the first manager, move
-   `clusterInit` or join it as a normal server.
-5. **A changed Cilium setting reaches no running node.** A manager
-   that becomes a gateway masquerades on its uplink only after its
-   Cilium restarts. Restart it by hand, one node at a time.
-6. **The ClusterMesh certificates unit restarts its server at every
-   run**, so each restart of the first manager drops the mesh sessions.
-7. **One Cilium operator** in a three-manager cluster. While its node
-   is down, no new LoadBalancer address and no new pod range.
-8. **The route limit on the Cilium session** drops the whole session
-   for 10 minutes when crossed (4 096 routes).
-9. **Pods reach hosts in a `10.x` network with their pod address.**
-    Avoid `10.x` for a home LAN or a cloud private network.
+| # | What was wrong | Now |
+|---|---|---|
+| 4 | A reinstalled first manager started a second cluster | It refuses to start when it has no data and another manager answers. The log says what to do |
+| 5 | A changed Cilium setting reached no running node | The setting's hash is on the Cilium pods. A change restarts them, one node at a time |
+| 6 | The ClusterMesh unit restarted its server at every run | Only when a certificate changed |
+| 7 | One Cilium operator | Two, in a cluster of two or more machines |
+| 8 | Crossing the route limit dropped the Cilium session for 10 minutes | A warning in the log; the session stays |
+| 9 | Pods reached hosts in a `10.x` network with their pod address | A machine with a static `10.x` address outside the cluster's ranges is refused before a deploy, with the address named |
 
 ### Machines
 
-10. **netif's rollback restores the link file only**, not a DHCP
-    client setting.
-11. **A missing certificate secret is skipped, not refused**: the
-    server then makes its own certificates.
-12. **`kubectl exec` and `logs -f` through the load balancer end after
-    one idle minute.**
+| # | What was wrong | Now | Proof |
+|---|---|---|---|
+| 10 | netif's rollback restored the link file only | It restores the DHCP client settings too, and keeps the links other services own | `netif-guard` (`NETIF_GUARD_OWNERS_OK`) |
+| 11 | A missing certificate secret was skipped | The unit fails; the server does not start with its own certificates | eval |
+| 12 | `kubectl exec` and `logs -f` ended after one idle minute | One hour | eval |
 
 ### Smaller
 
-13. A leaf of the cluster network can pass routes on.
-14. The router reads an internal netif option.
-15. Every router boot retires the current prefix for a few seconds.
-16. A rate limit whose table is full stops limiting (more than 65 535
-    live addresses in one client prefix).
+| # | What was wrong | Now |
+|---|---|---|
+| 13 | A leaf could pass routes on | What a leaf learns is marked "do not pass on" (BGP `no-export`) |
+| 14 | The router read an internal netif option | The option is public. Zone networks must be a `/64` |
+| 15 | Every router boot retired the current prefix for a few seconds | The first run after a boot waits 45 s for the ISP's answer before it retires anything |
+| 16 | A full rate-limit table stopped limiting | A full table refuses new sources; it is counted |
+
+### One more, found by the test run
+
+**FRR's BGP daemon crashed about once in some dozen boots.** This is
+older than this work (it is in a test log from 2026-11-18). Two FRR
+timers were both 5 s and ended together, which trips a bug in FRR
+10.7.1. FRR restarted itself, so tests passed, but under load it failed
+one. One timer is now 10 s. No crash in any log of the last two full
+runs. That is good evidence, not proof.
+
+One more, from your third answer: the router now takes the address it
+uses towards pods on other nodes **from the cluster network itself**.
+You no longer set `unzoned.source`; you can still override it.
+
+### What no test ran
+
+These are checked at build time only, not in a booted test:
+
+- the first manager **refusing** to start (its unit and order are
+  checked; every cluster test boots through it);
+- a changed Cilium setting rolling the pods;
+- a missing certificate secret failing the unit;
+- a full rate-limit table.
+
+### What you must know when you deploy
+
+- **The first start of the first manager takes up to 30 s longer.** It
+  asks the other managers whether a cluster exists.
+- **To rebuild a lost first manager**: move `clusterInit` to a manager
+  that has the data. The rebuilt machine then joins it. The refusal in
+  the log says so.
+- **A changed Cilium setting now rolls the Cilium pods.** One node at
+  a time; traffic keeps flowing.
 
 ## What was checked and is sound
 

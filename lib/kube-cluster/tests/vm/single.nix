@@ -66,6 +66,9 @@ in {
         mesh = {
           module.name = "routed-fabric";
           module.input = "self";
+          # one LAN: the fast timers (the default between sites is `wan`)
+          roles.spine.settings.site = "lab";
+          roles.leaf.settings.site = "lab";
           roles.spine.machines.alpha.settings = {
             ipv4 = "192.168.77.1";
             ipv6 = "fd00:77::1";

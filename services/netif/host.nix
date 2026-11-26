@@ -359,10 +359,21 @@ in {
   };
 
   options.clanServices.netif = {
-    links = mkOption {
+    guardGeneration = mkOption {
       internal = true;
+      type = types.str;
+      default = "";
+      description = "What the guard judges as one unit: the IfState configuration and the dhcpcd configurations of this generation.";
+    };
+    dhcpcdConfs = mkOption {
+      internal = true;
+      type = types.nullOr types.path;
+      default = null;
+      description = "A directory of this generation's dhcpcd configurations, one per DHCP link. The guard keeps the last one that passed (specs/netif.md N25).";
+    };
+    links = mkOption {
       default = {};
-      description = "Every netif link of this machine, keyed by interface name. Set by netif's perMachine module.";
+      description = "Every netif link of this machine, keyed by interface name, with its resolved facts (addresses, zone, DHCP modes, the delegation's assignments). Set by netif's perMachine module. Other services on the machine read it and never set it: the `router` service takes each zone's addresses and subnet id from here (specs/netif.md N10, specs/gateway.md §16.3).";
       type = types.attrsOf (
         types.submodule {
           options = {
@@ -517,6 +528,15 @@ in {
           dhcpLinks;
         systemPackages = lib.optional (dhcpLinks != {}) pkgs.dhcpcd_latest;
       };
+      clanServices.netif.dhcpcdConfs = lib.mkIf (dhcpLinks != {}) (
+        pkgs.linkFarm "netif-dhcpcd-confs" (
+          lib.mapAttrsToList (interface: _: {
+            name = "${interface}.conf";
+            path = config.environment.etc."netif/dhcpcd/${interface}.conf".source;
+          })
+          dhcpLinks
+        )
+      );
 
       boot.kernel.sysctl."net.ipv6.conf.default.ra_defrtr_metric" = cfg.routeMetric;
 
@@ -618,11 +638,21 @@ in {
                   "systemd-resolved.service"
                 ];
                 wants = ["ifstate.service"];
-                restartTriggers = [(dhcpcdConf interface l)];
+                restartTriggers = [config.environment.etc."netif/dhcpcd/${interface}.conf".source];
                 unitConfig.StartLimitIntervalSec = 0;
                 serviceConfig =
                   {
-                    ExecStart = "${lib.getExe pkgs.dhcpcd_latest} -B -f /etc/netif/dhcpcd/${interface}.conf ${interface}";
+                    # After a rollback of this generation the guard leaves
+                    # the last configuration that passed in /run; it is
+                    # used only while this same generation runs (N25).
+                    ExecStart = pkgs.writeShellScript "netif-dhcpcd-${interface}" ''
+                      conf=/etc/netif/dhcpcd/${interface}.conf
+                      kept=/run/netif-guard/dhcpcd/${interface}.conf
+                      if [ -e "$kept" ] && [ "$(${lib.getExe' pkgs.coreutils "cat"} /run/netif-guard/generation 2>/dev/null)" = ${lib.escapeShellArg config.clanServices.netif.guardGeneration} ]; then
+                        conf=$kept
+                      fi
+                      exec ${lib.getExe pkgs.dhcpcd_latest} -B -f "$conf" ${interface}
+                    '';
                     # A clean slate after every stop, crash or not: a dhcpcd
                     # that found its address already on the link does not
                     # remove it on exit. IPv4 only; IPv6 "dynamic" addresses

@@ -553,6 +553,10 @@
       };
     };
   });
+  # alpha's underlay address inside 10.0.0.0/8
+  d71TenUnderlay = mkEvaled (lib.recursiveUpdate d71Inventory {
+    instances.links.roles.default.machines.alpha.settings.links.wan.static.ipv4 = ["10.20.0.5/24"];
+  });
   d71Vpn = mkEvaled (lib.recursiveUpdate d71Inventory {
     instances.k3s-a.roles.server.settings.cilium.helmValues.devices = "fk-alpha-1 fk-alpha-2 fk-beta-1 fk-beta-2 clat0 eno1 wlp2s0 tailscale0";
   });
@@ -1720,6 +1724,48 @@ in {
   # device; the one cluster-wide list of names would make it one.
   test_d71RouterZoneLinkRefused = {
     expr = failedAssertion d71Router.config.nixosConfigurations.delta.config "'eth0' is a zone link of the router 'delta' and also a Cilium device";
+    expected = true;
+  };
+  # specs/gateway.md §16.3: an underlay inside Cilium's fixed
+  # native-routing range is refused
+  # specs/gateway.md §16.3 items 1, 4, 5, 7, 12, 13
+  test_g10Hardening = {
+    expr = let
+      peerConfig = lib.findFirst (o: o.kind == "CiliumBGPPeerConfig") null bundleObjs;
+      agents = findObj "DaemonSet" "cilium";
+      guard = alphaTransport.systemd.services."k3s-k3s-init-guard";
+    in {
+      ciliumGracefulRestart = peerConfig.spec.gracefulRestart;
+      configHash = builtins.stringLength agents.spec.template.metadata.annotations."clan.lol/cilium-config-hash" > 0;
+      rollout = agents.spec.updateStrategy.rollingUpdate.maxUnavailable;
+      operators = (findObj "Deployment" "cilium-operator").spec.replicas;
+      initGuard = {
+        inherit (guard) before;
+        inherit (guard) requiredBy;
+        onInitOnly = !(betaTransport.systemd.services ? "k3s-k3s-init-guard");
+      };
+      pkiAsserted = lib.any (unit: (unit.unitConfig.AssertPathExists or null) != null) (lib.attrValues (lib.filterAttrs (name: _: lib.hasInfix "pki" name) alphaTransport.systemd.services));
+      tunnel = lib.hasInfix "timeout tunnel  1h" alphaHaproxyConfig;
+    };
+    expected = {
+      ciliumGracefulRestart = {
+        enabled = true;
+        restartTimeSeconds = 120;
+      };
+      configHash = true;
+      rollout = 1;
+      operators = 2;
+      initGuard = {
+        before = ["k3s.service"];
+        requiredBy = ["k3s.service"];
+        onInitOnly = true;
+      };
+      pkiAsserted = true;
+      tunnel = true;
+    };
+  };
+  test_underlayInNativeRoutingRange = {
+    expr = failedAssertion d71TenUnderlay.config.nixosConfigurations.alpha.config "10.20.0.5/24 of 'alpha'";
     expected = true;
   };
   test_d71VpnLinkRefused = {

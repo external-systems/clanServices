@@ -1132,8 +1132,12 @@ in {
         units = lib.filter (lib.hasPrefix "netif-dhcpcd-") (lib.attrNames kam.systemd.services);
         inherit (unit) bindsTo wantedBy;
         inherit (unit.serviceConfig) Restart NoNewPrivileges ProtectSystem;
-        upstream = lib.hasInfix "dhcpcd-10.5" unit.serviceConfig.ExecStart;
-        ownConfig = lib.hasInfix "-f /etc/netif/dhcpcd/enp4s0.conf enp4s0" unit.serviceConfig.ExecStart;
+        upstream = lib.hasInfix "dhcpcd-10.5" unit.serviceConfig.ExecStart.text;
+        # netif's own file, or the one the guard kept after a rollback (N25)
+        ownConfig =
+          lib.hasInfix "conf=/etc/netif/dhcpcd/enp4s0.conf" unit.serviceConfig.ExecStart.text
+          && lib.hasInfix "kept=/run/netif-guard/dhcpcd/enp4s0.conf" unit.serviceConfig.ExecStart.text
+          && lib.hasInfix ''-B -f "$conf" enp4s0'' unit.serviceConfig.ExecStart.text;
         ifstateHooks = kamIfstate.parameters.hooks or {};
       };
       expected = {

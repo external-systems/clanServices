@@ -1566,7 +1566,9 @@ in {
     in {
       pathUnit = frag.systemd.paths."rke2-test-pki-sync-tls".pathConfig.PathChanged;
       inherit (unit) before requiredBy;
-      condition = unit.unitConfig.ConditionPathExists;
+      # a missing secret fails the unit (specs/gateway.md §16.3 item 12)
+      asserted = unit.unitConfig.AssertPathExists;
+      skippable = unit.unitConfig ? ConditionPathExists;
       syncsTlsDir = lib.hasInfix "TLS_DIR=\"/var/lib/rancher/rke2/server/tls\"" unit.serviceConfig.ExecStart;
       syncsEtcdCas = lib.hasInfix "$TLS_DIR/etcd/peer-ca.crt" unit.serviceConfig.ExecStart;
     };
@@ -1574,7 +1576,8 @@ in {
       pathUnit = ["/run/secrets/shared/rancher-pki-test/server-ca.key"];
       before = ["rke2-server.service"];
       requiredBy = ["rke2-server.service"];
-      condition = "/run/secrets/shared/rancher-pki-test/server-ca.key";
+      asserted = "/run/secrets/shared/rancher-pki-test/server-ca.key";
+      skippable = false;
       syncsTlsDir = true;
       syncsEtcdCas = true;
     };
