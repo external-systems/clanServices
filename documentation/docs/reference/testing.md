@@ -3,6 +3,22 @@
 Misconfiguration fails at evaluation where possible and is VM-proven where
 it cannot be. Tests cover the Bootstrap and Data-plane contracts only.
 
+
+## Current phase: best design first
+
+Decided by the owner on 2026-11-27 (SPEC.md round 61). It holds until the
+design is frozen for the 0.1.x release.
+
+- No one consumes these services yet, and no machine runs them.
+- So the suites prove behaviour. They are not regression protection yet.
+- A better design may change or remove a suite, a fixture, a counter name
+  or a rendered string. Amend the spec first, build the design, then make
+  the suites prove its behaviour.
+- The safety behaviour stays. Replace a check only with an equal or
+  stronger behaviour check.
+- Hostile-actor suites put an attacker VM beside the system. They are
+  extended, never weakened.
+
 ## Seams and rules
 
 - Pure renderer nix-unit tests, including kubenix determinism.
