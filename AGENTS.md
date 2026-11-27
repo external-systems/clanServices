@@ -129,6 +129,29 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `nix run .#suite-compare -- BASE AFTER` (every node derivation and
   normalized test script equal; `reference/testing.md`).
 
+## Current phase: best design first
+
+Owner's decision, 2026-11-27. It holds until the owner says the design is
+frozen (planned for the 0.1.x release).
+
+- There are NO consumers and NO deployed machines. Nothing needs protecting.
+- The goal is the BEST design for safety and stability of every clanService.
+  Judge a design on its merits, never on how many suites it would change.
+- The VM suites and nix-unit tests exist to PROVE BEHAVIOUR. They are not
+  regression protection yet. Do not baby-sit them: when a better design
+  needs a suite, a fixture, a counter name, a rendered string or a whole
+  suite to change or go, change it.
+- Order of work: amend the spec, build the best design, then make the
+  suites prove its behaviour. Regression protection is added by the owner
+  only after that.
+- What stays fixed: the safety behaviour itself. A change may replace a
+  check with a stronger or equal behaviour check (for example "an outsider
+  cannot reach a pod"). It may never drop a safety behaviour to make a
+  design pass. The hostile suites (`*-hostile`, `hostile-*`) state that
+  behaviour: extend them, do not weaken them.
+- Checks that pin a mechanism (a rule's comment, a counter's chain, "this
+  ruleset is empty", an exact rendered string) are free to rewrite.
+
 ## Hard rules
 
 1. `git add` new files BEFORE any nix eval — Nix reads the git tree.
@@ -143,6 +166,8 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
    findings by hand (`nix-style` skill). Formatter changes are pkgs PRs.
 3. No spec-implementation drift: amend the spec BEFORE implementing when a
    test disproves an assumption; never weaken a test to fit code.
+   Rewriting a test for a better design is not weakening it, as long as
+   the safety behaviour it proved is still proved ("Current phase" above).
 4. Distro-specific config lives in the thin `rke2`/`k3s` services; shared
    behavior goes in the shared lib (`lib/kube-cluster/`) — fix once, not
    twice.

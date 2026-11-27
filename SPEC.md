@@ -4,6 +4,28 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 61 (2026-11-27): best design first; owner decisions of the
+hardening review.** No code changed in this round. The owner set the
+phase rule for the work up to the 0.1.x release (§7 "Current phase"):
+there are no consumers and no deployed machines, so every clanService
+is judged on the best design for safety and stability, and the suites
+are rewritten to prove that design's behaviour. A whole-repo review
+with hostile-actor VM suites (an attacker VM; hermetic) found gaps on
+`main`; their fixes land in later rounds, each with its suite. The
+decisions below are **decided, not implemented**.
+
+| ID | Decision | Status |
+|---|---|---|
+| H1 | Best design first: tests prove behaviour and may be rewritten; a safety behaviour is never dropped; hostile suites are extended, never weakened (§7) | active |
+| H2 | NodePorts answer cluster members only by default; an opt-in list names other sources. Published services use LB VIPs | decided, not implemented |
+| H3 | Links that may reach fabric and pod addresses through a machine: the fabric's own, the CLAT link and the NAT64 link always; a router zone only when it opts in (default off) | decided, not implemented |
+| H4 | `access = client\|member` is enforced on the spine, not only by the leaf's imports | decided, not implemented |
+| H5 | routed-fabric does not originate `ownedPrefixes` into the fabric: the upstream's route to them is the operator's (R7). Eval warning when a prefix is owned and no upstream is declared | decided, not implemented |
+| H6 | netif ignores DHCP classless routes (option 121) by default; a link may opt in | decided, not implemented |
+| H7 | The README quick start must evaluate (a nix-unit test evaluates it); its assertion stays | decided, not implemented |
+| H8 | A rogue router advertisement between two LAN neighbours is layer 2 and out of scope for the router; documented as a limit | active |
+| H9 | Every interface schema version is reset to 1 before the 0.1.x release, with no migration (hard rule 10) | decided, not implemented |
+
 **Round 60 (2026-11-26): R7, external transit.** A probe sent an
 outside client through upstream → border leaf → dedicated spine →
 VIP leaf. Nothing arrived: the spine's transit filter dropped every
@@ -3101,6 +3123,17 @@ Rendering must show the declared dynamic mode or unknown state instead
 of inventing addresses or runtime edges.
 
 ## 7. Testing contract (D44)
+
+**Current phase: best design first (round 61, H1).** Until the owner
+freezes the design for the 0.1.x release, the suites and nix-unit tests
+prove behaviour; they are not regression protection. A better design
+may change or remove any suite, fixture, counter name or rendered
+string. The spec is amended first, then the design is built, then the
+suites prove its behaviour. What stays fixed is the safety behaviour: a
+check is replaced only by an equal or stronger behaviour check, and a
+hostile-actor suite (an attacker VM that scans, spoofs and hijacks; it
+collects every verdict and fails at the end) is extended, never
+weakened. Checks that pin a mechanism are free to rewrite.
 
 Seams: pure renderer nix-unit tests (kubenix render determinism
 included); throwaway clans via `clanLib.clan` (inventory boundary);
