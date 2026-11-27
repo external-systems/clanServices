@@ -37,6 +37,11 @@ in rec {
       imports = [./tests/vm/default.nix];
       inherit clan;
     };
+    # R7: external transit ends on its owner (SPEC.md D63, round 60)
+    routed-fabric-transit = {
+      imports = [./tests/vm/transit.nix];
+      inherit clan;
+    };
     routed-fabric-netif = {
       imports = [./tests/vm/netif.nix];
       clan = clan // {modules = clan.modules // {inherit (self.clan.modules) netif;};};

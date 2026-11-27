@@ -266,9 +266,13 @@ Sealed-Secrets suites. Reserved: MCS-API and upstream-kubernetes suites.
 **VM-proven on the final IfState tree:** netif live apply/check/restore;
 DHCPv4/default-route and IPv6 SLAAC with one persistent client across live
 reapply; routed-fabric transport and spine HA on a
-flat underlay (NAT sites, external transit, Internet source/return and
-route-filter negatives are planned, see
-[Data-plane hardening](../plans/data-plane-hardening.md));
+flat underlay; external transit (`routed-fabric-transit`,
+`ROUTED_FABRIC_TRANSIT_OK`: an outside client reaches the owner border
+over one `externalTransit` link and the reply returns over it, the
+fabric's own traffic crosses the link, and outside traffic past the
+owner or to an address it does not own is dropped and counted; SPEC.md
+round 60). NAT sites and route-filter negatives are planned, see
+[Data-plane hardening](../plans/data-plane-hardening.md);
 k3s/RKE2 single/join/HA and native data planes; and the native,
 selective and external ClusterMesh variants. Since D72 the tunnel
 variants are gone; `<distro>-clustermesh-nodeport` carries the
