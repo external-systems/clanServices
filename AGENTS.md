@@ -40,6 +40,11 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   (interfaces, renderers, vars, assertions, the cluster firewall
   rules in `firewall.nix`). Not a clan service. Renamed
   from `lib/rancher-cluster/` in delivery phase 1 (SPEC.md D45).
+  `service.nix` is the ONE implementation of both clan services
+  (round 59, K13): `services/{k3s,rke2}/default.nix` only pass it a
+  distro record (name, units, add-ons, config keys, the runtime and
+  PKI pieces). A fix to either service goes in `service.nix` unless
+  it is one of those distro fields.
 - `flake-parts/` — root flake-parts modules, auto-imported (import-tree):
   - `clan-tests.nix`: the `clanTests` option and the org `vmTests` settings
     (limits, `parallel` budget, timeout, `flakeChecks`);

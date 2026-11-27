@@ -24,8 +24,11 @@ tunnel mode and `wireguard-mesh` were removed (D72).
 
 **Distro runtime.** `rke2` and `k3s` are thin services: they own bootstrap,
 TLS directory, and join semantics. Everything shared — interfaces,
-rendering, secrets, assertions — lives once in the library, so a fix lands
-once, not twice. `distroDefaults.enable` (D42) defaults to `false` for a
+rendering, secrets, assertions, and the service module itself
+(`lib/kube-cluster/service.nix`) — lives once in the library, so a fix lands
+once, not twice. Each distro service is a short record of what differs:
+unit names, the rke2 supervisor port, add-ons, config keys, and how the CA
+tree reaches the distro. `distroDefaults.enable` (D42) defaults to `false` for a
 uniform minimal base across all three distros; set it `true` on rke2/k3s to
 restore stock distro components (helm-controller, Traefik, Multus) through
 the distro's own machinery. servicelb stays off in both modes — Node IPAM
