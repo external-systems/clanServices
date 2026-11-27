@@ -189,13 +189,35 @@ two directions of a flow through different spines passes, and it only
 drops:
 
 - what an `externalTransit` link forwards must go to the border's
-  `ownedPrefixes`;
+  `ownedPrefixes`, and it stops there: nothing from the link is forwarded
+  on into the fabric (only fabric-to-fabric traffic crosses);
 - a forwarding border forwards nothing from outside the fabric (any link
   but its fabric links and Cilium's) to the fabric's own addresses: the
   member loopbacks, the transfer pool and the ULA /48.
 
 When another service turns on the NixOS forward filter on a spine (a
 NAT64 gateway), routed-fabric accepts transit between its links there.
+
+### External transit
+
+An `externalTransit` adjacency carries traffic from outside the fabric
+over one WireGuard link (crypto ACL 0/0). Exactly one end declares
+`border.ownedPrefixes`: the **owner**. The other end is the **upstream**
+end, where the outside is; it routes the owned prefixes into the link
+(statically, or from its own upstream session).
+
+- External sources end on the owner: its own addresses, or VIPs its
+  Cilium delivers. Every other fabric link drops a source from outside
+  the fabric in its crypto ACL, so the owner drops such a packet first
+  and counts it.
+- Replies leave the owner by `adjacencies.<upstream>.sourceReturn` over
+  the same link.
+- The transit filter is on the owner only. Fabric traffic between the
+  two ends (and through them) still crosses the link; cluster pod and
+  VIP routes do not.
+- A path that enters at one border and ends behind a spine is not
+  supported. A probe showed every hop would need a 0/0 ACL and its own
+  source-return rule (SPEC.md round 60).
 Every
 WireGuard listen port is unique and reserved in
 `net.ipv4.ip_local_reserved_ports`; additional ports or ranges can be added

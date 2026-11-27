@@ -772,6 +772,25 @@
     };
   };
   borderEval = mkEvaled borderInventory;
+  # R7: an externalTransit adjacency with no owner, or with two
+  noOwnerEval = mkEvaled (
+    lib.recursiveUpdate baseInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.adjacencies.client.externalTransit = true;
+    }
+  );
+  twoOwnersEval = mkEvaled (
+    lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.leaf.machines.client.settings.border = {
+        ownedPrefixes = ["198.51.100.0/24"];
+        upstreamPeers = [
+          {
+            address = "203.0.113.9";
+            asn = 64501;
+          }
+        ];
+      };
+    }
+  );
   borderSpine = borderEval.config.nixosConfigurations.spine-a.config;
   borderClient = borderEval.config.nixosConfigurations.client.config;
 
@@ -1700,6 +1719,22 @@ in {
         fabric = true;
       };
     };
+    test_externalTransitHasOneOwner = {
+      expr = let
+        failed = eval: name: failedAssertion eval.config.nixosConfigurations.${name}.config "externalTransit adjacency";
+      in {
+        noOwner = failed noOwnerEval "spine-a";
+        noOwnerPeer = failed noOwnerEval "client";
+        twoOwners = failed twoOwnersEval "spine-a";
+        oneOwner = failed borderEval "spine-a" || failed borderEval "client";
+      };
+      expected = {
+        noOwner = true;
+        noOwnerPeer = true;
+        twoOwners = true;
+        oneOwner = false;
+      };
+    };
     test_forwardFilter = {
       expr = let
         table = config: config.networking.nftables.tables."routed-fabric-fleet".content or null;
@@ -1710,8 +1745,15 @@ in {
         owned = lib.hasInfix "elements = { 172.16.0.0/12 }" border;
         outsideToInfra = lib.hasInfix "ip daddr @infra4 counter drop" border && lib.hasInfix "ip6 daddr @infra6 counter drop" border;
         infraHasLoopbacks = lib.hasInfix "192.168.77.10/32" border;
-        # the transit link's other end: the same guard there
-        peer = table borderClient != null;
+        # R7: the owner's link stops outside sources there; the
+        # fabric's own traffic crosses
+        endsHere = lib.hasInfix ''iifname { "${transit}" } oifname'' border && lib.hasInfix "externalTransit: ends on this border" border;
+        fabricCrosses =
+          lib.hasInfix ''iifname { "${transit}" } ip saddr @infra4 ip daddr @infra4 accept'' border
+          && lib.hasInfix ''iifname { "${transit}" } ip6 saddr @infra6 ip6 daddr @infra6 accept'' border;
+        # the upstream end (no border) has no transit guard: it would
+        # drop everything the link forwards
+        peer = table borderClient;
         # a spine with no border and no transit link: no table
         plainSpine = table spine;
         leaf = table client;
@@ -1722,7 +1764,9 @@ in {
         owned = true;
         outsideToInfra = true;
         infraHasLoopbacks = true;
-        peer = true;
+        endsHere = true;
+        fabricCrosses = true;
+        peer = null;
         plainSpine = null;
         leaf = null;
         transitAccept = true;

@@ -4,6 +4,22 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 60 (2026-11-26): R7, external transit.** A probe sent an
+outside client through upstream → border leaf → dedicated spine →
+VIP leaf. Nothing arrived: the spine's transit filter dropped every
+packet from the link (its `ownedPrefixes` set was empty, so fabric
+traffic died too); past it, the VIP leaf's WireGuard ACL dropped the
+outside source; replies left by the leaf's underlay default; with
+source-return on every hop, the border's filter dropped the replies.
+The reverse-path filter dropped nothing. Decision (D63 amended): an
+`externalTransit` link has exactly one owner end with
+`ownedPrefixes`, the transit filter lives only there, and external
+sources end on that owner (eval assertion; counted drop for the rest).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| R7 | `externalTransit` had eval coverage only; the filter on the non-owner end dropped all forwarded traffic, fabric too; multi-hop transit silently failed | One owner end (eval error otherwise); filter on the owner only; fabric↔fabric crosses; onward forwarding into the fabric dropped and counted | `routed-fabric-transit` (`ROUTED_FABRIC_TRANSIT_OK`), nix-unit |
+
 **Round 59 (2026-11-26): K13, one implementation of k3s and rke2.**
 The two services were ~1 200 lines each, ~95 % the same (K13 of
 round 58; hard rule 4). `lib/kube-cluster/service.nix` now holds the
@@ -1913,6 +1929,22 @@ unless noted) — revoked entries keep one-line reasons for history.
   but its fabric links and Cilium's) to the fabric's own addresses
   (member loopbacks, transfer pool, ULA /48). Where another service turns
   on the NixOS forward filter, routed-fabric accepts fabric↔fabric transit.
+  **Amended round 60 (R7): external transit ends on its border.** An
+  `externalTransit` adjacency has `border.ownedPrefixes` on exactly one
+  end, the *owner*; the other end is the *upstream* end (where the
+  outside is). External sources cross that one WireGuard link and end on
+  the owner: its own addresses, or VIPs its Cilium delivers. They are
+  never forwarded on into the fabric: every other link's crypto ACL
+  drops a source outside the fabric, so the owner drops it first and
+  counts it (`externalTransit: ends on this border`). Replies leave the
+  owner by `sourceReturn` over the same link. The transit filter is
+  rendered on the owner only; on the upstream end it would drop every
+  packet the link forwards, fabric traffic too (probe, round 60). On the
+  owner, fabric-to-fabric traffic (source and destination in the
+  fabric's own addresses) still crosses the link; cluster pod and VIP
+  routes do not. Multi-hop external transit (derived `sourceReturn` and
+  0/0 ACLs on every hop) is not built; a case that needs it starts as a
+  new probe.
   **Amended round G11 (R9): upstream policy.** A border announces its
   `ownedPrefixes` and accepts only the peer's `acceptedPrefixes` (default
   nothing). `ttlSecurity` (GTSM, both ends) is per peer, default off. No

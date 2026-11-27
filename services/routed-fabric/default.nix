@@ -57,7 +57,7 @@
       externalTransit = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "Permit external sources with 0/0 crypto ACLs; never installs a main-table default route. The link is never a trusted interface, and what it forwards into the fabric must go to the border's ownedPrefixes.";
+        description = "Permit external sources with 0/0 crypto ACLs; never installs a main-table default route. Exactly one end has border.ownedPrefixes (the owner); outside traffic ends there and is never forwarded on into the fabric. The link is never a trusted interface.";
       };
       sourceReturn = lib.mkOption {
         type = lib.types.bool;
@@ -743,6 +743,12 @@
       mtu = fabric.adjacencyMtu underlayMtu;
       externalTransit =
         (localOverride.externalTransit or false) || (remoteOverride.externalTransit or false);
+      # R7 (D63): an externalTransit link has exactly one owner end, the
+      # one with border.ownedPrefixes
+      transitOwners = builtins.length (builtins.filter (settings: (settings.border or null) != null) [
+        ownSettings
+        remoteSettings
+      ]);
       sourceReturn = localOverride.sourceReturn or false;
       # R6: both ends carry the union of both ends' extra prefixes
       extraAllowedIPs = lib.unique ((localOverride.extraAllowedIPs or []) ++ (remoteOverride.extraAllowedIPs or []));
@@ -862,6 +868,7 @@
         table
         timerOverrideConflict
         timerProfile
+        transitOwners
         underlayMtu
         ;
       local = localAddress;
@@ -1274,7 +1281,9 @@
       # own table, so it only ever drops: what the NixOS firewall and
       # other services accept or refuse stays theirs.
       #   - an externalTransit link forwards only to the border's
-      #     ownedPrefixes (its crypto ACL is 0/0);
+      #     ownedPrefixes (its crypto ACL is 0/0), and only on the owner
+      #     end; outside sources end there (R7): nothing from the link
+      #     goes on into the fabric but the fabric's own traffic;
       #   - a forwarding border sends nothing from outside the fabric to
       #     the fabric's own addresses: the member loopbacks, the
       #     transfer prefixes and the ULA /48. Cilium's links are inside.
@@ -1301,7 +1310,9 @@
         }
       '';
       guardBorder = forwarding && border != null && fabricInterfaces != [];
-      guardTransit = transitInterfaces != [];
+      # R7: on the owner end only; on the upstream end the owned sets
+      # are empty and the guard would drop everything the link forwards
+      guardTransit = transitInterfaces != [] && border != null;
       forwardTable = ''
         ${nftSet "owned4" "4" (ownedOf 4)}
         ${nftSet "owned6" "6" (ownedOf 6)}
@@ -1310,8 +1321,13 @@
         chain forward {
           type filter hook forward priority filter - 5; policy accept;
           ${lib.optionalString guardTransit ''
+          iifname ${quoted transitInterfaces} ip saddr @infra4 ip daddr @infra4 accept
+          iifname ${quoted transitInterfaces} ip6 saddr @infra6 ip6 daddr @infra6 accept
           iifname ${quoted transitInterfaces} meta nfproto ipv4 ip daddr != @owned4 counter drop comment "externalTransit: to ownedPrefixes only"
           iifname ${quoted transitInterfaces} meta nfproto ipv6 ip6 daddr != @owned6 counter drop comment "externalTransit: to ownedPrefixes only"
+          ${lib.optionalString (fabricInterfaces != []) ''
+            iifname ${quoted transitInterfaces} oifname ${quoted fabricInterfaces} counter drop comment "externalTransit: ends on this border"
+          ''}
         ''}
           ${lib.optionalString guardBorder ''
           iifname ${quoted fabricInterfaces} accept
@@ -1502,6 +1518,14 @@
             {
               assertion = lib.all (peer: ip.isLiteral peer.address) upstreamPeers;
               message = "routed-fabric/${instanceName}: border.upstreamPeers addresses must be literal unzoned IPv4 or IPv6 addresses";
+            }
+            {
+              assertion = lib.all (adjacency: !adjacency.externalTransit || adjacency.transitOwners == 1) adjacencies;
+              message = "routed-fabric/${instanceName}: every externalTransit adjacency needs border.ownedPrefixes on exactly one end, the owner, where outside traffic ends (SPEC.md D63, round 60): ${
+                lib.concatMapStringsSep ", " (adjacency: "${machine.name}<->${adjacency.remoteName} has ${toString adjacency.transitOwners}") (
+                  builtins.filter (adjacency: adjacency.externalTransit && adjacency.transitOwners != 1) adjacencies
+                )
+              }";
             }
             {
               assertion = sourceReturns == [] || border != null;

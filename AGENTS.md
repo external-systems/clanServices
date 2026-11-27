@@ -64,7 +64,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `observe`, `print_versions`, `seconds_until`, `holds_for`,
   `state_dump_on_failure`; use them in new suites).
   Each service, and `lib/gateway`, registers its suites in its
-  `flake-module.nix` (48 in all; `vm-test --list` counts them)
+  `flake-module.nix` (49 in all; `vm-test --list` counts them)
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`

@@ -32,6 +32,12 @@ read the section of a component before changing code that touches it.
   interface and multiple interfaces, never overlapping peers on one
   interface. FRR 10.7.1 reload starts newly enabled daemons without
   restarting bgpd (probe-verified 2026-10-24).
+- WireGuard (Linux 6.18): a packet that arrives from a peer with a
+  source outside that peer's `allowed-ips` is dropped silently and
+  counted only as an rx error of the interface (`ip -s link`); tcpdump
+  on the interface never sees it. So an outside source crosses exactly
+  the links whose ACL is 0/0 (routed-fabric `externalTransit`)
+  (`routed-fabric-transit` probe, round 60, 2026-11-26).
 - FRR 10.7.1 on NixOS: when `frr.conf` has a line vtysh rejects,
   `frrinit.sh reload` (the unit's `ExecReload`) logs
   "vtysh failed to process new configuration" and still exits 0. systemd
