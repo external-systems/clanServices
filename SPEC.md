@@ -4,6 +4,15 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 59 (2026-11-26): K13, one implementation of k3s and rke2.**
+The two services were ~1 200 lines each, ~95 % the same (K13 of
+round 58; hard rule 4). `lib/kube-cluster/service.nix` now holds the
+whole service; `services/{k3s,rke2}/default.nix` are ~180-line distro
+records. No behaviour changed: `suite-compare` of every suite against
+`main` shows equal node derivations and test scripts. Fixes found
+while moving the code are recorded for the next review, not made
+here (a faithful refactor changes nothing).
+
 **Round 58 (2026-11-26): round G11, hardening of the network stack
 under Kubernetes.** A review of `main` (score 72/100) found 50
 defects, most in the recovery paths (rollback, restart, re-apply,
@@ -2425,7 +2434,11 @@ host routes; `routed-fabric` owns the encrypted spine/leaf fabric,
 per-adjacency WireGuard, fabric-specific policy routing, and one
 integrated FRR configuration; thin distro services own
 bootstrap/TLS-dir/join semantics and Cilium resources; shared lib
-(`lib/kube-cluster/`) owns parity. FRR/Zebra owns dynamic routes and
+(`lib/kube-cluster/`) owns parity. Both services are ONE module,
+`lib/kube-cluster/service.nix`, called with a distro record
+(round 59, K13): the record holds only what differs (unit names,
+supervisor port, add-ons, distro config keys, `services.<distro>`,
+how the CA tree is seeded or synced). FRR/Zebra owns dynamic routes and
 Cilium owns its datapath; the IfState ignore rules preserve those
 ownership boundaries. The generic `node_transport` schemaVersion 2 is
 declared OUTSIDE `lib/kube-cluster` as the neutral transport seam (D58).
