@@ -94,6 +94,13 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   links only and the NixOS firewall stays on (G25): never set
   `networking.firewall.enable = false` in a service.
   Its human pages are `documentation/docs/gateway/`. Edit them together.
+- `specs/target-design.md` and `specs/design-{routed-fabric,kube,gateway,netif}.md`
+  — the target design of round 61 (best design first). Not implemented.
+  The index holds the shared contracts, the owner's open decisions and
+  the build order; each area file holds invariants, rule sets, code
+  sketches, probes and its PR steps. Read the index and the area file
+  before a hardening change. A probe that disagrees amends the design
+  file first. Its human page is `documentation/docs/plans/target-design.md`.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
   record (D1–D72) and dated round summaries hold the history; read them

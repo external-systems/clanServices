@@ -12,7 +12,14 @@ is judged on the best design for safety and stability, and the suites
 are rewritten to prove that design's behaviour. A whole-repo review
 with hostile-actor VM suites (an attacker VM; hermetic) found gaps on
 `main`; their fixes land in later rounds, each with its suite. The
-decisions below are **decided, not implemented**.
+decisions below are **decided, not implemented**. The target design
+that follows from the rule is `specs/target-design.md` (index, shared
+contracts, open owner decisions O1–O8, build order) with one file per
+area: `specs/design-routed-fabric.md`, `specs/design-kube.md`,
+`specs/design-gateway.md`, `specs/design-netif.md`. None of it was run:
+each file lists the probes that go first. Until a step implements a
+part and amends this file or `specs/{netif,gateway}.md`, those stay the
+status authority.
 
 | ID | Decision | Status |
 |---|---|---|
@@ -25,6 +32,7 @@ decisions below are **decided, not implemented**.
 | H7 | The README quick start must evaluate (a nix-unit test evaluates it); its assertion stays | decided, not implemented |
 | H8 | A rogue router advertisement between two LAN neighbours is layer 2 and out of scope for the router; documented as a limit | active |
 | H9 | Every interface schema version is reset to 1 before the 0.1.x release, with no migration (hard rule 10) | decided, not implemented |
+| H10 | The target design of `specs/target-design.md` is the direction for netif, routed-fabric, the kube services and the gateways: allow-lists, not drop-lists | decided, not implemented |
 
 **Round 60 (2026-11-26): R7, external transit.** A probe sent an
 outside client through upstream → border leaf → dedicated spine →

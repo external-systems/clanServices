@@ -70,6 +70,7 @@ _: {
         }
         {
           Plans = [
+            {"Target design (round 61)" = "plans/target-design.md";}
             {"Data-plane hardening" = "plans/data-plane-hardening.md";}
             {"Agent brief" = "plans/agent-brief.md";}
             {
