@@ -76,6 +76,11 @@ in {
           module.input = "self";
           # one LAN: the fast timers (the default between sites is `wan`)
           roles.spine.settings.site = "lab";
+          # D75 (A5): the pinned loopbacks lie in their pools
+          roles.spine.settings.loopback4Pool = "192.168.77.0/24";
+          roles.spine.settings.loopback6Pool = "fd00:77::/64";
+          roles.leaf.settings.loopback4Pool = "192.168.77.0/24";
+          roles.leaf.settings.loopback6Pool = "fd00:77::/64";
           roles.leaf.settings.site = "lab";
           roles.spine.machines.alpha.settings = {
             ipv4 = "192.168.77.1";

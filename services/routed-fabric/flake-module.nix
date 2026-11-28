@@ -47,6 +47,12 @@ in rec {
       imports = [./tests/vm/hostile.nix];
       inherit clan;
     };
+    # D75: a member that boots without its guard runs no FRR and holds
+    # no BGP route; FRR starts by itself when the guard loads
+    routed-fabric-fail-closed = {
+      imports = [./tests/vm/fail-closed.nix];
+      inherit clan;
+    };
     routed-fabric-netif = {
       imports = [./tests/vm/netif.nix];
       clan = clan // {modules = clan.modules // {inherit (self.clan.modules) netif;};};

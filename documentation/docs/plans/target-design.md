@@ -102,6 +102,13 @@ Done so far:
   table and forwarding off inside each translator; the gateway refuses
   private destinations before translation; a CLAT host forwards IPv6
   for its CLAT and for declared links only (`forwardLinks`).
+- Fabric steps 3, 5 and 7 (SPEC.md D75): typed options, pinned
+  loopbacks inside their pools (`loopback6Pool`), `node-bgp` pools
+  originated by their owner only, no `firewall.trust`; fabric links take
+  no redirect or router advertisement and members answer ARP only for a
+  link's own addresses; the fabric's pools are `unreachable` until BGP
+  says otherwise. Proven by `hostile-fabric`, `k3s-hostile` and the new
+  suite `routed-fabric-fail-closed`.
 
 Until the design is frozen, tests prove behaviour and may be rewritten
 (see [Testing](../reference/testing.md)).

@@ -103,10 +103,21 @@ repairing an address collision does not reset BGP sessions.
 A `loopback4Pool` change re-rolls only unpinned IPv4 loopbacks when `node4`
 is regenerated. A `transfer4Pool` change re-rolls only `transfer4`; a
 `portRange` change re-rolls only ports. These edits never re-roll the ULA,
-IPv6 loopbacks, transfer6, ASNs, or unrelated adjacency values. IPv4 pools
-must have exactly one slash, a dotted-quad address, and prefix length 0–30;
-malformed shapes and non-canonical addresses produce the canonical-CIDR eval
-assertion, not a raw Nix parse error.
+IPv6 loopbacks, transfer6, ASNs, or unrelated adjacency values. Addresses
+and prefixes are typed (D75): `ipv4`, `ipv6`, the pools, `ownedPrefixes`,
+`extraPrefixes` and an upstream's `address`. A pin with a prefix length or
+a pool without one fails evaluation of the option; a pool with host bits
+set fails the canonical-CIDR assertion.
+
+A pinned loopback lies in its pool (D75, A5): a pinned `ipv4` in
+`loopback4Pool`, a pinned `ipv6` in `loopback6Pool`. The generated ULA is
+random, so nobody can pin into it; set `loopback6Pool` (member-uniform,
+for example `fd00:77::/64`) to pin IPv6 loopbacks. Unpinned members keep a
+generated address in the ULA. The fabric's own addresses are then the
+pools and nothing else: the guard's sets and the unreachable aggregates
+never change when a member joins. Evaluation warns when a pool lies in a
+private or shared IPv4 range on a member whose underlay takes DHCP: a LAN
+in that range would have its hosts dropped as fabric sources.
 
 `portRange` defaults to 10000–29999 and must be equal on every member. Custom
 ranges must avoid `clanServices.networking.reservedPorts` and, on Kubernetes
@@ -179,12 +190,11 @@ an empty dry-run diff and preserves peer uptimes and the immediate RIB.
 every session carrying it shares, so `frr.conf` grows with members plus
 adjacencies, not with their product.
 
-The fabric is no trust zone. `firewall.trust` is off by default: a fabric
-link answers BGP (TCP 179) and BFD (UDP 3784) from its peer and nothing
-else, and each service opens its own ports on the links (k3s and rke2
-open the cluster's ports and Cilium's health port 4240). With
-`trust = true` every fabric link is a trusted interface, but never an
-`externalTransit` link. BGP and BFD of a fabric link answer only the
+The fabric is no trust zone, and no option makes it one (`firewall.trust`
+is gone, D75): a fabric link answers BGP (TCP 179) and BFD (UDP 3784) from
+its peer and nothing else, and each service opens its own ports on the
+links by source (k3s and rke2 open the cluster's ports and Cilium's health
+port 4240). BGP and BFD of a fabric link answer only the
 peer's address on that link, sent to this end's address on it; BFD is
 single hop with TTL 255. UDP 4784 (multihop BFD) is closed on fabric
 links, and no `ttl-security` is rendered: on FRR 10.7.1 it turns the
@@ -202,9 +212,11 @@ counted and has a comment that names it.
 | `ingress` | prerouting, priority raw | a fabric link carries only its contract (`<peer>: source outside its contract`, `<peer>: destination outside its contract`); any other link carries no fabric source (`fabric source from outside the fabric`) and, unless it is declared inside, reaches no fabric address (`outside to a fabric address`) |
 | `forward` | forward, priority filter − 5 | a packet that uses a fabric link: only a spine relays between fabric links; pod links (`cilium*`, `lxc*`) and inside links pass; the rest is dropped (`from the fabric to a link outside it`, `from outside into a fabric link`) |
 | `egress` | postrouting | a fabric address never leaves by a link outside the fabric, also when a bogus route points there (`fabric destination on a link outside the fabric`) |
+| `local_out` | output; on a member with a Cilium neighbor only | BGP on the loopback is for root: FRR's session with the local Cilium agent is on `::1`, and its client is the agent (`BGP on the loopback is for root`) |
 
 The fabric's addresses are the loopback and transfer pools, the ULA /48
-and every member's stable address. A link is **inside** when the service
+and `loopback6Pool` when it is set. A pinned loopback lies in its pool,
+so no member's own address is listed. A link is **inside** when the service
 that owns it says so in `clan.networkFacts.fabricInside`: the CLAT and
 NAT64 host links always, a router zone only with `fabric = true`.
 `access` is enforced on the spine this way: a client leaf reaches only
@@ -212,11 +224,29 @@ what it is sent routes for. A packet for a pod on a Kubernetes node
 enters Cilium before nftables, so pods are guarded by the cluster, not
 by this table.
 
+The fabric fails closed (D75). Its pools are `unreachable` routes in the
+main table with a high metric (4294967000): a BGP /32 or a connected /31
+is more specific and wins, and when it is withdrawn a packet for a fabric
+address gets "No route to host" at once instead of the LAN's default
+route. The `egress` chain is the second layer, and the only one for a
+bogus more-specific route.
+
 FRR waits for the guard: it starts after `nftables.service`, and its
 pre-start check waits up to 80 seconds for the table, then the unit
 retries. A check that failed at once would hit the unit's start limit
-and leave FRR down for good. On a running machine zebra keeps the
-kernel's routes while FRR waits; the peers withdraw theirs.
+and leave FRR down for good. A member that boots without its guard runs
+no routing daemon and holds no BGP route; FRR starts by itself within
+seconds of the table loading (suite `routed-fabric-fail-closed`). On a
+running machine zebra keeps the kernel's routes while FRR waits; the
+peers withdraw theirs.
+
+Link hardening (D75). Every fabric link takes no ICMP redirect, sends
+none, takes no source-routed packet and no router advertisement: IfState
+sets the netif baseline (N47) plus `accept_ra = 0` on the link and
+restores it on every apply. `rp_filter` is left alone: the design does not
+lean on it. Every member sets `arp_ignore = 1` and `arp_announce = 2`
+(`mkDefault`; netif's baseline sets the same values): without them Linux
+answers ARP for the fabric loopback on the underlay NIC.
 
 Until transit tunnels become their own link class, an `externalTransit`
 link is exempt from the contract chains and keeps the R7 transit rules
@@ -262,8 +292,10 @@ family. Full per-host underlay-family reachability is phase-5 work.
 Per-adjacency overrides bind both ends. Two different
 `adjacencies.<remote>.port` values on the two ends are an eval error; the
 smaller `underlayMtu` override of the two ends is the MTU of both; the
-`extraAllowedIPs` of both ends are joined and go into both WireGuard ACLs
-and both ends' import and export prefix-lists (exact match).
+`extraPrefixes` of both ends are joined. Each is a route, an ACL entry and
+a contract entry: it goes into both WireGuard ACLs, both ends' import and
+export prefix-lists (exact match) and the link's sources and destinations
+in the guard.
 
 A session between two spines carries everything any member consumes or
 originates: the same set on both ends. The spine pair is the only path
@@ -276,14 +308,22 @@ priorities stay below 32766 and unique across fabric and netif rules.
 explicit non-conflicting values when derived values are unsuitable.
 
 Node-owned `node-bgp` pools advertise only from their owner (and only when
-BGP delivery actually exists). `shared-bgp` pools advertise from every
+BGP delivery actually exists). The fabric enforces it too (D75): only the
+owner may originate the pool, so a spine imports it from the owner's link
+only, it is in no other member's WireGuard ACL, and the local Cilium
+session of a non-owner may not hand it to FRR. Every member still
+consumes it. `shared-bgp` pools advertise from every
 healthy eligible node and use ECMP. Ordinary clients receive
 fabric-pool LoadBalancer VIPs only; admin access explicitly receives pod
 and ClusterIP routes. External BGP
 peers and owned prefixes are declared in a machine's optional `border`
 attrset, not duplicated in cluster settings. A border announces its
 `ownedPrefixes` to an upstream and accepts only what the peer's
-`acceptedPrefixes` names (nothing by default). `ttlSecurity = true` turns
+`acceptedPrefixes` names (nothing by default). Nothing originates the
+owned prefixes into the fabric. None may be shorter than /8 or /16, nor
+overlap the fabric's pools or a cluster's pod or Service CIDRs. An
+`acceptedPrefixes` entry is a prefix optionally followed by `ge N` and
+`le N` (asserted: it goes verbatim into `frr.conf`). `ttlSecurity = true` turns
 on GTSM (`ttl-security hops 1`); the upstream must set it too. There is
 no session password: FRR reads it from `frr.conf`, which lives in the Nix
 store.

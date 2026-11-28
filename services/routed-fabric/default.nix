@@ -9,6 +9,7 @@
   fabric = import ../../lib/kube-cluster/fabric.nix {inherit lib;};
   frr = import ../../lib/kube-cluster/frr.nix {inherit lib;};
   ip = import ../../lib/ip.nix {inherit lib;};
+  baseline = import ../../lib/sysctl-baseline.nix;
 
   pairs = values:
     lib.concatMap (
@@ -49,10 +50,10 @@
         default = null;
         description = "Override the smallest underlay MTU used for this adjacency. Both ends use the smaller of the two ends' overrides.";
       };
-      extraAllowedIPs = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
+      extraPrefixes = lib.mkOption {
+        type = lib.types.listOf ip.types.cidr;
         default = [];
-        description = "Deliberate routed-only prefixes this adjacency carries: added on both ends to the WireGuard ACL and to the session's import and export prefix-lists (exact match). The union of both ends' lists.";
+        description = "Deliberate routed-only prefixes this adjacency carries. Each is a route, an ACL entry and a contract entry: added on both ends to the WireGuard ACL, to the session's import and export prefix-lists (exact match) and to the link's sources and destinations in the guard. The union of both ends' lists.";
       };
       externalTransit = lib.mkOption {
         type = lib.types.bool;
@@ -91,22 +92,28 @@
     options = {
       modes = modeScope.option;
       ipv4 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv4;
         default = null;
-        description = "Stable fabric IPv4 host address without a prefix; null reads the public node allocation.";
+        description = "Stable fabric IPv4 host address without a prefix; null reads the public node allocation. A pinned address must lie in loopback4Pool.";
       };
       ipv6 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv6;
         default = null;
-        description = "Stable fabric IPv6 host address without a prefix; null reads the public node allocation.";
+        description = "Stable fabric IPv6 host address without a prefix; null reads the public node allocation. A pinned address must lie in loopback6Pool (or, with none set, in the generated ULA's loopback /64).";
+      };
+      loopback6Pool = lib.mkOption {
+        type = lib.types.nullOr ip.types.ipv6Cidr;
+        default = null;
+        example = "fd00:77::/64";
+        description = "Member-uniform IPv6 prefix for pinned loopbacks (settings.ipv6). Null: the generated ULA's loopback /64, which no operator can know in advance. Unpinned members always take a generated address in the ULA. The prefix joins the fabric's own addresses (the guard and the unreachable aggregates), so it must not overlap anything outside the fabric.";
       };
       loopback4Pool = lib.mkOption {
-        type = lib.types.str;
+        type = ip.types.ipv4Cidr;
         default = "198.18.0.0/17";
         description = "Member-uniform IPv4 loopback allocation pool recorded by the shared prefix generator.";
       };
       transfer4Pool = lib.mkOption {
-        type = lib.types.str;
+        type = ip.types.ipv4Cidr;
         default = "198.19.0.0/16";
         description = "Member-uniform IPv4 transfer allocation pool recorded by the shared prefix generator.";
       };
@@ -166,7 +173,7 @@
           "admin"
         ];
         default = "member";
-        description = "Route consumption only: member, fabric VIP client, or pod/ClusterIP admin.";
+        description = "What this member is sent routes for: member, fabric VIP client, or pod/ClusterIP admin. Enforced on the spine: a member reaches only what it is sent routes for (the link's destinations in the guard).";
       };
       maximumPaths = lib.mkOption {
         type = lib.types.ints.positive;
@@ -183,16 +190,16 @@
           lib.types.submodule {
             options = {
               ownedPrefixes = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
+                type = lib.types.listOf ip.types.cidr;
                 default = [];
-                description = "Prefixes this border may originate and accept from upstream.";
+                description = "Prefixes that end on this border: the upstream export filter, the transit link's reach, the source-return rules. Nothing originates them: the route to them is the operator's (H5). None may be shorter than /8 (IPv4) or /16 (IPv6), nor overlap the fabric's own addresses or a cluster's pod or Service CIDRs.";
               };
               upstreamPeers = lib.mkOption {
                 type = lib.types.listOf (
                   lib.types.submodule {
                     options = {
                       address = lib.mkOption {
-                        type = lib.types.str;
+                        type = ip.types.address;
                         description = "Upstream BGP peer literal unzoned IPv4 or IPv6 address.";
                       };
                       asn = lib.mkOption {
@@ -203,7 +210,7 @@
                         type = lib.types.listOf lib.types.str;
                         default = [];
                         example = ["0.0.0.0/0"];
-                        description = "Routes this border accepts from the peer, each an FRR prefix-list match (a prefix, optionally with `ge`/`le`). Empty accepts nothing: the session only announces ownedPrefixes.";
+                        description = "Routes this border accepts from the peer, each an FRR prefix-list match: a prefix, optionally followed by `ge N` and/or `le N` (asserted). Empty accepts nothing: the session only announces ownedPrefixes.";
                       };
                       ttlSecurity = lib.mkOption {
                         type = lib.types.bool;
@@ -237,11 +244,6 @@
           type = lib.types.bool;
           default = true;
           description = "Open allocated WireGuard UDP listen ports.";
-        };
-        trust = lib.mkOption {
-          type = lib.types.bool;
-          default = false;
-          description = "Make the fabric's WireGuard links trusted interfaces (every port open to every fabric member and client). Off: a link opens only BGP (179) and BFD, and each service opens its own ports on the links (the kube services open the cluster's). An externalTransit link is never trusted.";
         };
       };
     };
@@ -478,24 +480,55 @@
     poolRecordDrift =
       lib.optional (loopback4PoolRecord != ownSettings.loopback4Pool) "routed-fabric/${instanceName}: recorded loopback4Pool differs from settings; run: clan vars generate ${machine.name} --generator ${loopback4PoolGenerator} --regenerate to update the record, then regenerate ${node4Generator} to re-roll only unpinned IPv4 loopbacks"
       ++ lib.optional (transfer4PoolRecord != ownSettings.transfer4Pool) "routed-fabric/${instanceName}: recorded transfer4Pool differs from settings; run: clan vars generate ${machine.name} --generator ${transfer4PoolGenerator} --regenerate to update the record, then regenerate each adjacency -transfer4 generator to re-roll only transfer4 prefixes";
-    allocationPools = [
-      {
-        name = "loopback4Pool";
-        cidr = loopback4PoolRecord;
-      }
-      {
-        name = "transfer4Pool";
-        cidr = transfer4PoolRecord;
-      }
-      {
-        name = "loopback6";
-        cidr = "${ulaBase}:0::/64";
-      }
-      {
-        name = "transfer6";
-        cidr = "${ulaBase}:1::/64";
-      }
-    ];
+    allocationPools =
+      [
+        {
+          name = "loopback4Pool";
+          cidr = loopback4PoolRecord;
+        }
+        {
+          name = "transfer4Pool";
+          cidr = transfer4PoolRecord;
+        }
+        {
+          name = "loopback6";
+          cidr = "${ulaBase}:0::/64";
+        }
+        {
+          name = "transfer6";
+          cidr = "${ulaBase}:1::/64";
+        }
+      ]
+      ++ lib.optional (ownSettings.loopback6Pool != null) {
+        name = "loopback6Pool";
+        cidr = ownSettings.loopback6Pool;
+      };
+    # D75 (A5): the fabric's own addresses are its pools and nothing
+    # else, because a pinned loopback must lie in its pool. A member
+    # that joins changes no other member's guard sets.
+    fabricPools = {
+      "4" = [loopback4PoolRecord transfer4PoolRecord];
+      "6" = ["${ulaBase}::/48"] ++ lib.optional (ownSettings.loopback6Pool != null) ownSettings.loopback6Pool;
+    };
+    pinnedOutsidePool = lib.concatMap (
+      name: let
+        memberSettings = allMachines.${name}.settings;
+        pool6 =
+          if memberSettings.loopback6Pool != null
+          then memberSettings.loopback6Pool
+          else "${ulaBase}:0::/64";
+      in
+        lib.optional (
+          memberSettings.ipv4 != null && cidr.validV4Pool ownSettings.loopback4Pool && !cidr.contains ownSettings.loopback4Pool "${memberSettings.ipv4}/32"
+        ) "${name}/ipv4=${memberSettings.ipv4} outside loopback4Pool=${ownSettings.loopback4Pool}"
+        ++ lib.optional (
+          memberSettings.ipv6 != null && !cidr.contains pool6 "${memberSettings.ipv6}/128"
+        ) "${name}/ipv6=${memberSettings.ipv6} outside ${
+          if memberSettings.loopback6Pool != null
+          then "loopback6Pool=${pool6}"
+          else "the generated ${pool6} (set loopback6Pool on every member to pin IPv6 loopbacks)"
+        }"
+    ) (builtins.attrNames allMachines);
     memberNames = builtins.attrNames allMachines;
     unequalPoolMembers =
       builtins.filter (
@@ -505,6 +538,7 @@
           memberSettings.loopback4Pool
           != ownSettings.loopback4Pool
           || memberSettings.transfer4Pool != ownSettings.transfer4Pool
+          || memberSettings.loopback6Pool != ownSettings.loopback6Pool
           || memberSettings.portRange != ownSettings.portRange
       )
       memberNames;
@@ -514,6 +548,21 @@
       )
       exports
     );
+    # D75 (A7): a pool in a private or shared range on a member whose
+    # underlay takes DHCP. A LAN that hands out that range later would
+    # have its hosts dropped as "fabric source from outside the fabric".
+    ownDhcp4 = lib.any (value: lib.any (link: link.dhcp4) (builtins.attrValues value.netif.links)) (
+      builtins.filter (value: value ? netif) (lib.attrValues (
+        clanLib.selectExports (
+          scope: scope.serviceName == "netif" && scope.machineName == machine.name
+        )
+        exports
+      ))
+    );
+    privatePools = builtins.filter (pool: cidr.validV4Pool pool && lib.any (cidr.overlap pool) ["10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10"]) [
+      ownSettings.loopback4Pool
+      ownSettings.transfer4Pool
+    ];
     underlayCidrs = lib.unique (
       lib.concatMap (
         value: lib.concatMap (link: link.addresses) (builtins.attrValues value.netif.links)
@@ -580,11 +629,32 @@
       ];
       extra = [];
     };
-    localClusterRoutes = frr.mergeRoutes (
-      map clusterRoutes (builtins.filter (facts: facts.members ? ${machine.name}) clusterList)
-    );
+    # D75 (R-A5, I10): what a member may originate. A shared-bgp pool
+    # from every node of its cluster; a node-bgp pool from its owner
+    # only (D8), so a non-owner's announcement of it never passes the
+    # spine's import filter or its WireGuard ACL. Consumption
+    # (`consumptionRoutes`) still reads every pool of `clusterRoutes`.
+    originRoutes = name: facts: let
+      pools =
+        lib.filterAttrs (
+          _: pool:
+            pool.delivery
+            == "shared-bgp"
+            || (pool.delivery == "node-bgp" && pool.owner == name)
+        )
+        facts.pools;
+    in
+      clusterRoutes facts
+      // {
+        vips = lib.unique (lib.concatMap (pool: pool.blocks) (builtins.attrValues pools));
+      };
+    originRoutesFor = name:
+      frr.mergeRoutes (
+        [frr.emptyRoutes]
+        ++ map (originRoutes name) (builtins.filter (facts: facts.members ? ${name}) clusterList)
+      );
     localRoutes =
-      localClusterRoutes
+      originRoutesFor machine.name
       // {
         hosts = [
           "${ownAddress.ipv4}/32"
@@ -626,7 +696,7 @@
     # between two spines carries everything any member consumes or
     # originates. One set for every spine pair, the same on both ends.
     spineTransitRoutes = frr.mergeRoutes (
-      map consumptionRoutes memberNames ++ map clusterRoutesFor memberNames
+      map consumptionRoutes memberNames ++ map originRoutesFor memberNames
     );
 
     spineNames = lib.sort builtins.lessThan (builtins.attrNames (roles.spine.machines or {}));
@@ -751,11 +821,11 @@
       ]);
       sourceReturn = localOverride.sourceReturn or false;
       # R6: both ends carry the union of both ends' extra prefixes
-      extraAllowedIPs = lib.unique ((localOverride.extraAllowedIPs or []) ++ (remoteOverride.extraAllowedIPs or []));
+      extraPrefixes = lib.unique ((localOverride.extraPrefixes or []) ++ (remoteOverride.extraPrefixes or []));
       extraRoutes =
         frr.emptyRoutes
         // {
-          extra = extraAllowedIPs;
+          extra = extraPrefixes;
         };
       localEndpointHost = endpointOf machine.name;
       localFamily = endpointFamily localEndpointHost;
@@ -788,7 +858,7 @@
         then spineTransitRoutes
         else if ownRole == "spine"
         then
-          (clusterRoutesFor remoteName)
+          (originRoutesFor remoteName)
           // {
             hosts = let
               address = addressOf remoteName;
@@ -890,19 +960,6 @@
       knownPrefixes = lib.length memberNames + lib.length kubernetesMachines;
     };
 
-    clusterRoutesFor = name:
-      frr.mergeRoutes (
-        [
-          {
-            hosts = [];
-            vips = [];
-            pods = [];
-            services = [];
-          }
-        ]
-        ++ map clusterRoutes (builtins.filter (facts: facts.members ? ${name}) clusterList)
-      );
-
     adjacencies = map mkAdjacency peerNames;
     ownAsn = asnOf machine.name;
     poolsValid = cidr.validV4Pool ownSettings.loopback4Pool && cidr.validV4Pool ownSettings.transfer4Pool;
@@ -947,7 +1004,7 @@
             localAsn = ownAsn;
             sourceAddresses = ownAddress;
             cluster = facts;
-            routes = clusterRoutes facts;
+            routes = originRoutes machine.name facts;
           }
       ) (builtins.filter (facts: facts.members ? ${machine.name}) clusterList);
     };
@@ -1120,6 +1177,15 @@
                 state = "up";
                 inherit (adjacency) mtu;
               };
+              # D75 (design §3.8): a fabric link takes no redirect, no
+              # source route and no router advertisement. The netif
+              # baseline (N47) on the link itself, so IfState restores
+              # it on every apply. No `rp_filter`: the design does not
+              # lean on it (I11), and a value set here does not hold.
+              sysctl = {
+                ipv4 = baseline.everyLink4;
+                ipv6 = baseline.everyLink6 // {accept_ra = 0;};
+              };
               wireguard = {
                 private_key = "!include ${privateKeyFile}";
                 listen_port = adjacency.port;
@@ -1136,8 +1202,20 @@
           })
           adjacencies
         );
+      # D75 (I8): the fabric's pools are unreachable until BGP or a
+      # link says otherwise. A /32 or a /31 is more specific and wins;
+      # when it is withdrawn the packet gets "No route to host" at once
+      # and never follows the default route. The guard's `egress` chain
+      # is the second layer, and the only one for a bogus more-specific
+      # route.
+      unreachableRoutes = map (prefix: {
+        to = prefix;
+        type = "unreachable";
+        preference = 4294967000;
+      }) (fabricPools."4" ++ fabricPools."6");
       ifstateRoutes =
-        lib.concatMap (
+        unreachableRoutes
+        ++ lib.concatMap (
           adjacency:
             lib.optionals adjacency.sourceReturn [
               {
@@ -1191,6 +1269,44 @@
         if border != null
         then border.upstreamPeers
         else [];
+      ownedPrefixes =
+        if border != null
+        then border.ownedPrefixes
+        else [];
+      prefixLength = prefix: lib.toInt (lib.last (lib.splitString "/" prefix));
+      shortOwnedPrefixes =
+        builtins.filter (
+          prefix:
+            prefixLength prefix
+            < (
+              if isV6 prefix
+              then 16
+              else 8
+            )
+        )
+        ownedPrefixes;
+      clusterAddressCidrs =
+        lib.concatMap (facts: [
+          facts.network.podCIDRv4
+          facts.network.podCIDRv6
+          facts.network.serviceCIDRv4
+          facts.network.serviceCIDRv6
+        ])
+        clusterList;
+      ownedOverlaps =
+        lib.concatMap (
+          prefix:
+            map (other: "${prefix} overlaps ${other}") (
+              builtins.filter (cidr.overlap prefix) (fabricPools."4" ++ fabricPools."6" ++ clusterAddressCidrs)
+            )
+        )
+        ownedPrefixes;
+      badAcceptedPrefixes = builtins.filter (entry: let
+        parts = lib.splitString " " entry;
+      in
+        builtins.match "[0-9a-fA-F:./]+( (ge|le) [0-9]+){0,2}" entry
+        == null
+        || !(ip.isCidr (builtins.head parts))) (lib.concatMap (peer: peer.acceptedPrefixes) upstreamPeers);
       upstream4 = map (peer: peer.address) (
         builtins.filter (peer: ip.isIpv4 peer.address) upstreamPeers
       );
@@ -1278,7 +1394,10 @@
           ++ lib.optional (ownSettings.ipv6 != null) {
             setting = "ipv6";
             cidr = "${ownAddress.ipv6}/128";
-            ownPool = "loopback6";
+            ownPool =
+              if ownSettings.loopback6Pool != null
+              then "loopback6Pool"
+              else "loopback6";
           }
         );
       # Mode scoping (N4): rendered only in the instance's modes.
@@ -1309,12 +1428,9 @@
       isV6 = lib.hasInfix ":";
       v4Of = builtins.filter (prefix: !(isV6 prefix));
       v6Of = builtins.filter isV6;
-      # F: the fabric's own addresses. The pools, and the members'
-      # addresses for a pinned one outside its pool.
-      fabricAddresses = {
-        "4" = lib.unique ([loopback4PoolRecord transfer4PoolRecord] ++ v4Of stableHosts);
-        "6" = lib.unique (["${ulaBase}::/48"] ++ v6Of stableHosts);
-      };
+      # F: the fabric's own addresses, its pools (A5: a pinned
+      # loopback lies in its pool)
+      fabricAddresses = fabricPools;
       quoted = names: "{ ${lib.concatMapStringsSep ", " (name: ''"${name}"'') names} }";
       nftSet = name: family: elements: ''
         set ${name} {
@@ -1331,6 +1447,10 @@
       podLinks = ["cilium*" "lxc*"];
       declaredInside = config.clan.networkFacts.fabricInside;
       guard = adjacencies != [];
+      # D75 (probe P6): FRR's session with the local Cilium agent is on
+      # the loopback, and its client is cilium-agent (root). Another
+      # local user must not open BGP there.
+      ciliumNeighbor = lib.any (facts: facts.members ? ${machine.name}) clusterList;
       # R7: on the owner end only; on the upstream end the owned sets
       # are empty and the guard would drop everything the link forwards
       guardTransit = transitInterfaces != [] && border != null;
@@ -1396,6 +1516,12 @@
           ip daddr @fabric4 counter drop comment "fabric destination on a link outside the fabric"
           ip6 daddr @fabric6 counter drop comment "fabric destination on a link outside the fabric"
         }
+        ${lib.optionalString ciliumNeighbor ''
+          chain local_out {
+            type filter hook output priority filter; policy accept;
+            oifname "lo" tcp dport 179 meta skuid != 0 counter reject comment "BGP on the loopback is for root"
+          }
+        ''}
       '';
     in {
       imports = [
@@ -1405,7 +1531,8 @@
 
       config = modeScope.scope modeActive {
         warnings =
-          map (
+          lib.optional (ownDhcp4 && privatePools != []) "routed-fabric/${instanceName}: ${lib.concatStringsSep ", " privatePools} lies in a private or shared IPv4 range and '${machine.name}' takes its underlay address by DHCP: a LAN in that range would have its hosts dropped as fabric sources; the default pools are in 198.18.0.0/15"
+          ++ map (
             adjacency: "routed-fabric/${instanceName}: adjacency ${adjacency.key} can carry ${toString adjacency.knownPrefixes} prefixes per family, near the ${toString frr.routeLimit}-prefix warning limit of a fabric session (FRR logs past it; the session stays up)"
           )
           nearRouteLimit;
@@ -1569,15 +1696,25 @@
               message = "routed-fabric/${instanceName}: border requires ownedPrefixes and upstreamPeers";
             }
             {
-              assertion =
-                border
-                == null
-                || !(builtins.elem "0.0.0.0/0" border.ownedPrefixes || builtins.elem "::/0" border.ownedPrefixes);
-              message = "routed-fabric/${instanceName}: border ownedPrefixes must not contain default routes";
+              # D75 (A3): a default route split in halves is no better
+              assertion = shortOwnedPrefixes == [];
+              message = "routed-fabric/${instanceName}: border.ownedPrefixes must not be shorter than /8 (IPv4) or /16 (IPv6): ${lib.concatStringsSep ", " shortOwnedPrefixes}";
             }
             {
-              assertion = lib.all (peer: ip.isLiteral peer.address) upstreamPeers;
-              message = "routed-fabric/${instanceName}: border.upstreamPeers addresses must be literal unzoned IPv4 or IPv6 addresses";
+              # D75 (A4)
+              assertion = ownedOverlaps == [];
+              message = "routed-fabric/${instanceName}: border.ownedPrefixes overlap the fabric's own addresses or a cluster's pod or Service CIDRs: ${lib.concatStringsSep ", " ownedOverlaps}";
+            }
+            {
+              # D75 (A5): F holds the pools only, so a pin outside its pool
+              # would be a fabric address the guard does not know
+              assertion = pinnedOutsidePool == [];
+              message = "routed-fabric/${instanceName}: pinned loopbacks must lie in their pool: ${lib.concatStringsSep "; " pinnedOutsidePool}";
+            }
+            {
+              # D75 (R-A9): the entry goes verbatim into frr.conf
+              assertion = badAcceptedPrefixes == [];
+              message = "routed-fabric/${instanceName}: border.upstreamPeers.*.acceptedPrefixes entries must be a prefix optionally followed by `ge N` and/or `le N`: ${lib.concatMapStringsSep ", " builtins.toJSON badAcceptedPrefixes}";
             }
             {
               assertion = lib.all (adjacency: !adjacency.externalTransit || adjacency.transitOwners == 1) adjacencies;
@@ -1943,6 +2080,14 @@
           pkgs.frr
           pkgs.wireguard-tools
         ];
+        # D75 (F20, H16): Linux answers ARP for any local address on any
+        # link, so the fabric loopback would answer on the underlay.
+        # With these a link answers only for its own addresses. netif's
+        # baseline sets the same values (design-netif step 8, O6).
+        boot.kernel.sysctl = {
+          "net.ipv4.conf.all.arp_ignore" = lib.mkDefault 1;
+          "net.ipv4.conf.all.arp_announce" = lib.mkDefault 2;
+        };
         networking = {
           ifstate.settings = {
             interfaces = ifstateInterfaces;
@@ -1982,7 +2127,6 @@
             extraForwardRules = lib.optionalString (forwarding && fabricInterfaces != []) ''
               iifname ${quoted fabricInterfaces} oifname ${quoted fabricInterfaces} accept comment "routed-fabric transit"
             '';
-            trustedInterfaces = lib.optionals ownSettings.firewall.trust fabricInterfaces;
           };
         };
         services.frr = {

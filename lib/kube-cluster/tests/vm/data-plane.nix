@@ -407,6 +407,11 @@ in {
           roles = {
             # one LAN: the fast timers (the default between sites is `wan`)
             spine.settings.site = "lab";
+            # D75 (A5): the pinned loopbacks lie in their pools
+            spine.settings.loopback4Pool = "192.168.77.0/24";
+            spine.settings.loopback6Pool = "fd77::/64";
+            leaf.settings.loopback4Pool = "192.168.77.0/24";
+            leaf.settings.loopback6Pool = "fd77::/64";
             leaf.settings.site = "lab";
             spine.machines = {
               alpha.settings = {
