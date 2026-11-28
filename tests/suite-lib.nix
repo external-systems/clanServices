@@ -6,6 +6,8 @@
 #   seconds_until(machine, cmd, ...)  how long until a command succeeds
 #   holds_for(machine, cmd, seconds)  a command keeps succeeding for a stated time
 #   state_dump_on_failure([...])      `with` block: dump network state, then re-raise
+#   drops(machine, table, comment)    packets counted by the rules of one nft
+#                                     table whose comment matches
 #
 # A suite asserts facts with `assert`, `succeed`, `fail` and the
 # `wait_until_*` calls. `observe` is context for the reader of a log.
@@ -63,6 +65,18 @@
       while _suite_time.time() - started < seconds:
           machine.succeed(cmd)
           _suite_time.sleep(interval)
+
+
+  def drops(machine, table, comment):
+      """Packets counted by every rule of the nft table `table` (for
+      example "inet routed-fabric-fleet") whose line has `comment`. Find a
+      rule by its comment, never by a set or chain name. Counters reset
+      when the table reloads: read before and after an attack with no
+      deploy between."""
+      rules = machine.succeed(f"nft list table {table}")
+      lines = [line for line in rules.splitlines() if comment in line and "counter packets" in line]
+      assert lines, f"no rule with comment {comment!r} in {table} on {machine.name}"
+      return sum(int(line.split("counter packets ")[1].split()[0]) for line in lines)
 
 
   _SUITE_DUMP = [

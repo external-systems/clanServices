@@ -146,6 +146,8 @@ in {
     };
 
   testScript = ''
+    ${import ../../../../tests/suite-lib.nix}
+
     fabric = [cloud, home, far]
     stable = ${builtins.toJSON stable}
     home_cloud = "${(adj "home" "cloud").interface}"
@@ -158,10 +160,7 @@ in {
 
 
     def counter(machine, comment):
-        rules = machine.succeed("nft list chain inet routed-fabric-fleet forward")
-        lines = [l for l in rules.splitlines() if comment in l]
-        assert lines, rules
-        return sum(int(l.split("counter packets ")[1].split()[0]) for l in lines)
+        return drops(machine, "inet routed-fabric-fleet", comment)
 
 
     def capture(taps):
@@ -230,12 +229,15 @@ in {
             print("ROUTED_FABRIC_TRANSIT_ENDS_OK")
 
         with subtest("outside traffic to an address the owner does not own is dropped and counted"):
-            before = counter(home, "externalTransit: to ownedPrefixes only")
+            # D73: the upstream end refuses it first, at its ingress guard; the
+            # owner's own rule stays for what an upstream end lets through
+            before = counter(cloud, "outside to a fabric address")
             isp.succeed(f"ip route add {stable['far']['ipv4']}/32 via 192.168.1.2")
             cloud.succeed(f"ip route get {stable['far']['ipv4']} | grep {cloud_home} >/dev/null")
             isp.fail(f"ping -c 3 -W 1 -I {client} {stable['far']['ipv4']}")
-            after = counter(home, "externalTransit: to ownedPrefixes only")
+            after = counter(cloud, "outside to a fabric address")
             assert after >= before + 3, (before, after)
+            assert "externalTransit: to ownedPrefixes only" in home.succeed("nft list chain inet routed-fabric-fleet forward")
 
         print("ROUTED_FABRIC_TRANSIT_OK")
     except Exception:

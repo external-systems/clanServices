@@ -1,4 +1,4 @@
-# Decision record (D1–D72)
+# Decision record (D1–D73)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history. D64 (allocations in
@@ -299,6 +299,33 @@ FRR is the only data plane.
   node addresses (D69). It also carries the tunnel suite's Kubernetes
   checks: cross-node pod traffic with a 200 KB body (the MTU proof),
   ClusterIP from pods, and Node IPAM dropping a dead node.
+
+### D73 — Link contracts and one guard table (2026-11-27, implemented)
+
+routed-fabric names what may cross a link instead of what may not.
+The rule: **a link carries a packet only if BGP may carry its route.**
+
+- One **link contract** per adjacency: `sources` (what the peer may
+  announce, and its link address) and `destinations` (what the peer is
+  sent routes for, and this end's link address). WireGuard's ACL is the
+  sources, the BGP lists read the same sets, and so does the firewall.
+- One **guard table** (`inet routed-fabric-<instance>`) with the same
+  shape on every member: a fabric link carries only its contract;
+  another link carries no fabric source and reaches no fabric address;
+  only a spine relays between fabric links; a fabric address never
+  leaves by the underlay.
+- `access` is enforced on the spine: a leaf reaches only what it is sent
+  routes for. Pods on a Kubernetes node are guarded by the cluster, not
+  by this table (Cilium delivers to a local pod before nftables).
+- BGP and BFD answer only the peer's address on its own link. No GTSM:
+  it turned BFD into multihop on FRR 10.7.1.
+- FRR waits for the guard table before it starts.
+- Links whose owner says they are inside the fabric
+  (`clan.networkFacts.fabricInside`): the CLAT and NAT64 links always,
+  a router zone only with `fabric = true`.
+- Tested by `hostile-fabric`: an outsider and a rogue member attack the
+  fabric; every attack also runs without the guard first, to show it is
+  real.
 
 ### D68 — `router` and `nat-gateway` have their own contract (planned)
 

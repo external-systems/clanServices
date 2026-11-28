@@ -66,6 +66,11 @@ in {
                 default = false;
                 description = "The zone may reach the ports this machine opens to everyone (`networking.firewall.allowedTCPPorts` and the like), such as a fabric's WireGuard ports. For a zone that holds other cluster nodes (G25).";
               };
+              fabric = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+                description = "The zone's hosts may reach a fabric's addresses (members, pods) through this machine: its links are declared inside the fabric (`clan.networkFacts.fabricInside`, SPEC.md D73). Off: routed-fabric's guard drops every packet from the zone to a fabric address or into a fabric link.";
+              };
             };
           });
         };
@@ -246,7 +251,7 @@ in {
           ids = map (entry: entry.subnet) (builtins.filter (entry: entry.interface == first) assigned);
         in {
           interfaces = links;
-          inherit (zone) internet allowTo ssh hostPorts;
+          inherit (zone) internet allowTo ssh hostPorts fabric;
           prefixes = map network (builtins.filter (lib.hasInfix "/") addresses);
           subnet =
             if ids == []

@@ -42,6 +42,11 @@ in rec {
       imports = [./tests/vm/transit.nix];
       inherit clan;
     };
+    # D73: a hostile actor against the guard and the link contracts
+    hostile-fabric = {
+      imports = [./tests/vm/hostile.nix];
+      inherit clan;
+    };
     routed-fabric-netif = {
       imports = [./tests/vm/netif.nix];
       clan = clan // {modules = clan.modules // {inherit (self.clan.modules) netif;};};

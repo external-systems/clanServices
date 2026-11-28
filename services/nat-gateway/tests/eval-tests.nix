@@ -498,6 +498,18 @@ in {
   };
 
   client = {
+    # D73: the CLAT and NAT64 host links are always inside a fabric:
+    # routed-fabric's guard lets their hosts reach fabric addresses
+    test_fabricInside = {
+      expr = {
+        gateway = gw1.clan.networkFacts.fabricInside;
+        client = node.clan.networkFacts.fabricInside;
+      };
+      expected = {
+        gateway = ["jool0"];
+        client = ["clat0"];
+      };
+    };
     # The CLAT starts on the first gateway and knows every beacon.
     test_clat = {
       expr = {

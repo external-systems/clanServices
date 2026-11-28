@@ -287,7 +287,10 @@ flat underlay; external transit (`routed-fabric-transit`,
 over one `externalTransit` link and the reply returns over it, the
 fabric's own traffic crosses the link, and outside traffic past the
 owner or to an address it does not own is dropped and counted; SPEC.md
-round 60). NAT sites and route-filter negatives are planned, see
+round 60); the fabric's guard against an outsider on the underlay and a
+rogue member (`hostile-fabric`, `HOSTILE_FABRIC_OK`: every verdict has a
+positive control that runs the attack without the guard or shows its
+packets arrive; SPEC.md round 62, D73). NAT sites and route-filter negatives are planned, see
 [Data-plane hardening](../plans/data-plane-hardening.md);
 k3s/RKE2 single/join/HA and native data planes; and the native,
 selective and external ClusterMesh variants. Since D72 the tunnel

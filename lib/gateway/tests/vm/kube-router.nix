@@ -27,7 +27,8 @@
 #     through both firewalls;
 #   - default deny holds: zone to zone, the WAN to the router's and the
 #     cluster's ports, a zone that is not in `unzoned.zones` to a pod; a
-#     zone with it reaches pods on both nodes;
+#     zone with it (and `fabric = true`, so routed-fabric's guard lets
+#     it into the fabric links, SPEC.md D73) reaches pods on both nodes;
 #   - a NodePort does not answer on the WAN address (D69);
 #   - a restart of nftables and an IfState apply leave all of it working.
 {inputs}: {
@@ -182,7 +183,9 @@ in
                 dhcp = false;
                 hostPorts = true;
               };
-              home = {};
+              # D73: the home zone's link is inside the fabric, so
+              # routed-fabric's guard lets its flows into the fabric links
+              home.fabric = true;
             };
             dns = {
               upstream = [internet4];
@@ -511,6 +514,8 @@ in
               for machine in [alpha, beta]:
                   machine.fail("systemctl --failed --no-legend | grep .")
 
+      for machine in [alpha, beta]:
+          print(f"FINDING guard drops on {machine.name} at the end of the suite: " + " | ".join(l.strip() for l in machine.succeed("nft list ruleset | awk '/^table inet (routed-fabric|kube)-/,/^}/' | grep 'counter packets [1-9]' || true").splitlines()))
       print("ROUTER_KUBE_OK")
     '';
   }

@@ -225,7 +225,12 @@ in {
       };
     };
     # netif renders accept_ra 2 on a forwarding machine
-    clan._networkFacts.forwarding = true;
+    clan._networkFacts = {
+      forwarding = true;
+      # D73: this link's hosts may reach a fabric's addresses through
+      # this machine (routed-fabric's guard reads the fact)
+      fabricInside = [names.nat64.host];
+    };
 
     environment.systemPackages = [
       pkgs.jool-cli

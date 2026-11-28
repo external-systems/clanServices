@@ -1122,6 +1122,8 @@ in {
             alpha.succeed("kubectl get pod after -o jsonpath='{.spec.nodeName}' | grep -x alpha >/dev/null")
             for ip in cluster_ips:
                 alpha.succeed(from_pod("after", url(ip)) + " >/dev/null")
+        for machine in [alpha, beta]:
+            print(f"FINDING guard drops on {machine.name} at the end of the suite: " + " | ".join(l.strip() for l in machine.succeed("nft list ruleset | awk '/^table inet (routed-fabric|kube)-/,/^}/' | grep 'counter packets [1-9]' || true").splitlines()))
         print("${lib.toUpper (lib.replaceStrings ["-"] ["_"] suiteName)}_OK")
     except Exception:
         safe_dump(alpha)

@@ -82,8 +82,8 @@ These cross a file boundary. Build them once, in the step named.
 
 | Contract | Owner | Readers | Lands in |
 |---|---|---|---|
-| Fact `clan.networkFacts.fabricInside` (links, beside a fabric's own, whose hosts may reach fabric and pod addresses through this machine) | `lib/kube-cluster/network-facts.nix` | routed-fabric guard, kube guard | fabric steps 1 and 2 |
-| Who sets `fabricInside`: the CLAT link and the NAT64 link always; a router zone only with `zones.<name>.fabric = true` (default false; H3). `unzoned.zones` is removed, `unzoned.source` becomes `fabricSource` | `lib/gateway/{clat,nat64,router}.nix` | — | fabric steps 1 and 2 (CLAT, NAT64), gateway step 6 (zones) |
+| Fact `clan.networkFacts.fabricInside` (links, beside a fabric's own, whose hosts may reach fabric and pod addresses through this machine) | `lib/kube-cluster/network-facts.nix` | routed-fabric guard, kube guard | fabric steps 1 and 2 (**done**, round 62) |
+| Who sets `fabricInside`: the CLAT link and the NAT64 link always; a router zone only with `zones.<name>.fabric = true` (default false; H3). `unzoned.zones` is removed, `unzoned.source` becomes `fabricSource` | `lib/gateway/{clat,nat64,router}.nix` | — | fabric steps 1 and 2 (CLAT, NAT64 and the zone option: **done**, round 62), gateway step 6 (removes `unzoned.zones`) |
 | Fact `clan.networkFacts.forwardLinks` (interface-name patterns that may forward IPv6 on a CLAT host). A CLAT host drops all other forwarded IPv6 (O7). Kube sets `["cilium*" "lxc*"]`; routed-fabric sets its fabric (and transit) links when the member forwards; the router sets its links. One nix-unit assertion each. A service that forwards and does not set it is cut off on a CLAT host | `lib/kube-cluster/network-facts.nix`; enforced by `lib/gateway/clat.nix` | kube, routed-fabric, router | gateway step 3, with the three setters in the same PR |
 | "An outsider or a non-member cannot reach a pod" is a **kube** invariant (the clusterwide policy). The fabric table guards fabric links and relayed traffic only. The fabric gives kube the true sender (WireGuard ACL) | kube | routed-fabric states the limit | kube step 7 |
 | A host of a router zone with `fabric = true` is `world` for Cilium: it reaches only pods labelled `clan.lol/outside=allow` (or in a labelled namespace), through a Service whose ranges hold it. Proven apart, NOT-RUN together: gateway step 6 adds the combined verdict to `router-kube` | kube (policy), gateway (zone) | READMEs of both | kube step 7, gateway step 6, whichever lands second |
@@ -118,6 +118,7 @@ All decided on 2026-11-27. None is open. H2–H10 are in SPEC.md round
 | O6 | `accept_dad = 0`: no. `arp_ignore`/`arp_announce`: yes | VERIFIED-VM for k3s on the fabric (P11) and needed by the fabric (F20). rke2 and the gateway suites NOT-RUN | design-netif step 8, design-routed-fabric §3.8 |
 | O7 | Default-deny IPv6 forwarding on a CLAT host, opened by `forwardLinks` | VERIFIED-VM (`nat-gateway-hostile` C08 with negative proof; `k3s-clat` with pods) | design-gateway §3.5, step 3 |
 | O8 | remote-builder is redesigned apart, together with the change in external-systems/home | not probed. **Do not build gateway step 7 until the owner schedules it** | design-gateway §3.10, step 7 |
+| O9 | A router zone with `fabric = true` reaches only pods labelled `clan.lol/outside=allow` (or in a labelled namespace), through a Service whose source ranges hold it (SPEC.md H21) | the zone option landed with fabric steps 1 and 2 (round 62); the policy is NOT-RUN together with it | design-kube §3.4, step 7; gateway step 6 |
 
 A design choice of the probe round, not an owner decision: the
 ClusterMesh API Service is type LoadBalancer with ranges on every

@@ -423,7 +423,8 @@
     mode = config.clanServices.networking.mode.name;
     links = builtins.attrNames (interfacesFor config) != [];
     bgp = config.services.frr.bgpd.enable;
-    firewall = config.networking.firewall.interfaces != {};
+    # D73: the guard table and the per-link BGP and BFD input rules
+    firewall = config.networking.nftables.tables ? "routed-fabric-fleet" && lib.hasInfix "tcp dport 179 accept" config.networking.firewall.extraInputRules;
     # what clan reads from the parent configuration stays in every mode
     generator = config.clan.core.vars.generators ? "routed-fabric-fleet";
     fact = config.clan.networkFacts.fabric ? fleet;
@@ -1145,28 +1146,47 @@
   );
 in {
   rendering = {
+    # D73 (I9): BGP and BFD answer a link's peer address only, sent to
+    # this end's address on the link; no port is open per interface or
+    # globally, and the multihop BFD port is closed on fabric links.
+    # The behaviour proof is hostile-fabric F03, F04, F23, F24.
     test_bgpBfdExposureIsScoped = {
-      expr = {
+      expr = let
+        rules = spine.networking.firewall.extraInputRules;
+        links = builtins.attrValues spine.clan.networkFacts.fabric.fleet.adjacencies;
+        remoteOf = link: family: configs.${link.remote}.config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.${family};
+      in {
         globalTcp = spine.networking.firewall.allowedTCPPorts;
         globalBfd = lib.any (port: lib.elem port spine.networking.firewall.allowedUDPPorts) [3784 4784];
-        perInterface = lib.all (
-          interface:
-            interface.allowedTCPPorts
-            == [179]
-            && interface.allowedUDPPorts == [3784 4784]
-        ) (builtins.attrValues spine.networking.firewall.interfaces);
-        noUpstreamByDefault = spine.networking.firewall.extraInputRules == "";
-        upstreamRule = borderSpine.networking.firewall.extraInputRules;
+        perInterface = lib.all (interface: !(lib.elem 179 interface.allowedTCPPorts) && interface.allowedUDPPorts == []) (builtins.attrValues spine.networking.firewall.interfaces);
+        perLink =
+          lib.all (
+            link:
+              lib.hasInfix ''iifname "${link.interface}" ip saddr ${remoteOf link "ipv4"} ip daddr ${link.ipv4} tcp dport 179 accept'' rules
+              && lib.hasInfix ''iifname "${link.interface}" ip saddr ${remoteOf link "ipv4"} ip daddr ${link.ipv4} udp dport 3784 ip ttl 255 accept'' rules
+              && lib.hasInfix ''iifname "${link.interface}" ip6 saddr ${remoteOf link "ipv6"} ip6 daddr ${link.ipv6} tcp dport 179 accept'' rules
+              && lib.hasInfix ''iifname "${link.interface}" ip6 saddr ${remoteOf link "ipv6"} ip6 daddr ${link.ipv6} udp dport 3784 ip6 hoplimit 255 accept'' rules
+          )
+          links;
+        someLink = links != [];
+        noMultihopBfd = !(lib.hasInfix "4784" rules);
+        noGtsm = !(lib.hasInfix "ttl-security" spine.services.frr.config);
+        upstreamRule =
+          lib.hasInfix ''
+            ip saddr { 203.0.113.1 } tcp dport 179 accept
+            ip saddr { 203.0.113.1 } udp dport { 3784, 4784 } accept
+          ''
+          borderSpine.networking.firewall.extraInputRules;
       };
       expected = {
         globalTcp = [];
         globalBfd = false;
         perInterface = true;
-        noUpstreamByDefault = true;
-        upstreamRule = ''
-          ip saddr { 203.0.113.1 } tcp dport 179 accept
-          ip saddr { 203.0.113.1 } udp dport { 3784, 4784 } accept
-        '';
+        perLink = true;
+        someLink = true;
+        noMultihopBfd = true;
+        noGtsm = true;
+        upstreamRule = true;
       };
     };
     test_wireguardPortsReserved = {
@@ -1598,9 +1618,12 @@ in {
         services = true;
       };
     };
+    # D73: what a Kubernetes node originates is what its peer may
+    # address on it (the link's destinations), no longer part of the
+    # WireGuard ACL (the ACL is the sources the peer may send)
     test_kubernetesLocalAdvertisements = {
       expr = let
-        text = builtins.toJSON (allowedFor node);
+        text = builtins.toJSON (map (link: link.destinations) (builtins.attrValues node.clan.networkFacts.fabric.fleet.adjacencies));
       in {
         pods = lib.hasInfix "10.1.0.0/16" text;
         services = lib.hasInfix "10.2.0.0/16" text;
@@ -1735,41 +1758,104 @@ in {
         oneOwner = false;
       };
     };
-    test_forwardFilter = {
+    # D73: the guard. Every member with an adjacency has the table and
+    # its chains; rule text is not compared (the hostile suites prove
+    # the behaviour). The R7 transit rules stay until transit tunnels
+    # become their own link class.
+    test_guardOnEveryMember = {
       expr = let
-        table = config: config.networking.nftables.tables."routed-fabric-fleet".content or null;
+        table = config: config.networking.nftables.tables."routed-fabric-fleet".content or "";
+        chains = ["chain ingress {" "chain forward {" "chain from_fabric {" "chain into_fabric {" "chain egress {"];
+        shaped = config: lib.all (chain: lib.hasInfix chain (table config)) chains;
+        linkChains = config:
+          lib.all (link: link.externalTransit || lib.hasInfix "chain link_${link.interface} {" (table config)) (
+            builtins.attrValues config.clan.networkFacts.fabric.fleet.adjacencies
+          );
         border = table borderSpine;
         transit = borderSpine.clan.networkFacts.fabric.fleet.adjacencies.client.interface;
       in {
+        everyMember = lib.all shaped [spine client node borderSpine borderClient];
+        everyLink = lib.all linkChains [spine client node borderSpine borderClient];
+        # only a spine relays between fabric links
+        relayOnSpineOnly = let
+          fromFabric = config: builtins.head (lib.splitString "chain into_fabric {" (lib.last (lib.splitString "chain from_fabric {" (table config))));
+          relays = config: lib.hasInfix ''oifname { "rf'' (fromFabric config);
+        in {
+          spine = relays spine;
+          leaf = relays client;
+        };
+        fabricHasPools = lib.hasInfix "198.19.0.0/16" (table spine) && lib.hasInfix "192.168.77.10/32" border;
+        waitsForGuard = builtins.length spine.systemd.services.frr.serviceConfig.ExecStartPre >= 1;
+        # R7, until step 4
         transitToOwnedOnly = lib.hasInfix ''iifname { "${transit}" } meta nfproto ipv4 ip daddr != @owned4 counter drop'' border;
         owned = lib.hasInfix "elements = { 172.16.0.0/12 }" border;
-        outsideToInfra = lib.hasInfix "ip daddr @infra4 counter drop" border && lib.hasInfix "ip6 daddr @infra6 counter drop" border;
-        infraHasLoopbacks = lib.hasInfix "192.168.77.10/32" border;
-        # R7: the owner's link stops outside sources there; the
-        # fabric's own traffic crosses
-        endsHere = lib.hasInfix ''iifname { "${transit}" } oifname'' border && lib.hasInfix "externalTransit: ends on this border" border;
-        fabricCrosses =
-          lib.hasInfix ''iifname { "${transit}" } ip saddr @infra4 ip daddr @infra4 accept'' border
-          && lib.hasInfix ''iifname { "${transit}" } ip6 saddr @infra6 ip6 daddr @infra6 accept'' border;
-        # the upstream end (no border) has no transit guard: it would
-        # drop everything the link forwards
-        peer = table borderClient;
-        # a spine with no border and no transit link: no table
-        plainSpine = table spine;
-        leaf = table client;
+        endsHere = lib.hasInfix "externalTransit: ends on this border" border;
+        transitNotInVmap = !(lib.hasInfix "link_${transit}" border);
+        upstreamEndHasNoTransitRules = !(lib.hasInfix "externalTransit" (table borderClient));
         transitAccept = lib.hasInfix "routed-fabric transit" spine.networking.firewall.extraForwardRules;
       };
       expected = {
+        everyMember = true;
+        everyLink = true;
+        relayOnSpineOnly = {
+          spine = true;
+          leaf = false;
+        };
+        fabricHasPools = true;
+        waitsForGuard = true;
         transitToOwnedOnly = true;
         owned = true;
-        outsideToInfra = true;
-        infraHasLoopbacks = true;
         endsHere = true;
-        fabricCrosses = true;
-        peer = null;
-        plainSpine = null;
-        leaf = null;
+        transitNotInVmap = true;
+        upstreamEndHasNoTransitRules = true;
         transitAccept = true;
+      };
+    };
+    # D73: one value per adjacency. What one end accepts as a source is
+    # what the other end is sent routes for; WireGuard carries exactly
+    # the sources; no fabric link has a 0/0 ACL.
+    test_contractMirror = {
+      expr = let
+        members = ["spine-a" "client" "node-a"];
+        links = name: configs.${name}.config.clan.networkFacts.fabric.fleet.adjacencies;
+        transfer = name: remote: let
+          link = (links name).${remote};
+        in ["${link.ipv4}/32" "${link.ipv6}/128"];
+        pairs = lib.concatMap (name: map (remote: {inherit name remote;}) (builtins.attrNames (links name))) members;
+        known = builtins.filter (pair: lib.elem pair.remote members) pairs;
+        mirrored = pair: let
+          own = (links pair.name).${pair.remote};
+          other = (links pair.remote).${pair.name};
+        in
+          lib.sort builtins.lessThan (lib.subtractLists (transfer pair.remote pair.name) own.sources)
+          == lib.sort builtins.lessThan (lib.subtractLists (transfer pair.remote pair.name) other.destinations);
+      in {
+        somePairs = known != [];
+        mirror = lib.all mirrored known;
+        aclIsSources = lib.all (pair: let own = (links pair.name).${pair.remote}; in own.allowedIPs == own.sources) pairs;
+        noZeroAcl = lib.all (pair: lib.all (prefix: !(lib.hasSuffix "/0" prefix)) (links pair.name).${pair.remote}.allowedIPs) pairs;
+      };
+      expected = {
+        somePairs = true;
+        mirror = true;
+        aclIsSources = true;
+        noZeroAcl = true;
+      };
+    };
+    # D73 (I6): `access` is enforced on the spine. A client is sent no
+    # pod and no Service route, so it may address neither.
+    test_clientContractHasNoPods = {
+      expr = let
+        toClient = spine.clan.networkFacts.fabric.fleet.adjacencies.client.destinations;
+      in {
+        pods = lib.any (lib.hasPrefix "10.1.") toClient;
+        services = lib.any (lib.hasPrefix "10.2.") toClient;
+        loopbacks = lib.any (lib.hasSuffix "/32") toClient;
+      };
+      expected = {
+        pods = false;
+        services = false;
+        loopbacks = true;
       };
     };
   };

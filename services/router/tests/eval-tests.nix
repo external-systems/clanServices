@@ -137,6 +137,7 @@ in {
         allowTo = ["servers"];
         ssh = true;
         hostPorts = false;
+        fabric = false;
         # the networks of the zone link's static addresses (§17, G14)
         prefixes = ["192.168.10.0/24" "fd00:10:1::/64"];
         subnet = 1;
@@ -284,6 +285,19 @@ in {
         zones = ["home" "mgmt" "servers"];
       }
     ];
+  };
+  # D73 (specs/gateway.md H3): a zone's hosts reach a fabric through
+  # this machine only with `fabric = true`; routed-fabric's guard reads
+  # the fact
+  test_fabricZoneFact = {
+    expr = {
+      default = base.clan.networkFacts.fabricInside;
+      home = (with' {instances.edge.roles.router.machines.router.settings.zones.home.fabric = true;}).clan.networkFacts.fabricInside;
+    };
+    expected = {
+      default = [];
+      home = ["enp2s0"];
+    };
   };
   test_unknownUnzoned = {
     expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.unzoned.zones = ["guest"];}) "'unzoned.zones' names unknown zones";
