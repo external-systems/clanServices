@@ -1607,6 +1607,17 @@ in {
         checked = true;
       };
     };
+    # Each member of a cluster exports its facts: a cluster with two
+    # members renders its Cilium neighbor block once on each.
+    test_ciliumNeighborOnce = let
+      twice = mkEvaled (lib.recursiveUpdate baseInventory {
+        instances.cluster-a.roles.default.machines.spine-a = {};
+      });
+      count = config: lib.length (lib.filter (line: lib.trim line == "neighbor ::1 remote-as 4200000001") (lib.splitString "\n" config.services.frr.config));
+    in {
+      expr = count twice.config.nixosConfigurations.node-a.config;
+      expected = 1;
+    };
     test_localCiliumFrr = {
       expr = {
         peer = lib.hasInfix "neighbor ::1 remote-as 4200000001" node.services.frr.config;

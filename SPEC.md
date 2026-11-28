@@ -35,6 +35,10 @@ commit per step (`specs/design-netif.md` §8.3 to §8.5,
 - **G30** the router's prefix hook takes only a delegation it may use
   (global unicast, /32 to /64, not its own, at most 8) and runs in a
   sandbox.
+- **Fabric fix.** routed-fabric keeps one `kube_cluster` record per
+  cluster name: every member exports the same facts, so a cluster with
+  two members rendered its `neighbor ::1` block (and every per-cluster
+  list) twice (nix-unit `test_ciliumNeighborOnce`).
 
 | ID | Was | Now | Proof |
 |---|---|---|---|

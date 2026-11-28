@@ -443,20 +443,31 @@
 
     allExports = lib.attrValues (clanLib.selectExports (_: true) exports);
     clusterExports = builtins.filter (value: value ? kube_cluster) allExports;
-    clusterList = map (value: value.kube_cluster) (
-      builtins.filter (
-        value: let
-          facts = value.kube_cluster;
-          reference = facts.network.fabric or facts.transport;
-        in
-          reference.service
-          != null
-          && reference.instance != null
-          && reference.service == "routed-fabric"
-          && reference.instance == instanceName
-      )
-      clusterExports
-    );
+    # Every member of a cluster exports the same `kube_cluster` facts, so
+    # one cluster comes once per member: keep the first of each name. A
+    # second copy rendered the `neighbor ::1` block (and every per-cluster
+    # list) twice.
+    clusterList = let
+      matching = map (value: value.kube_cluster) (
+        builtins.filter (
+          value: let
+            facts = value.kube_cluster;
+            reference = facts.network.fabric or facts.transport;
+          in
+            reference.service
+            != null
+            && reference.instance != null
+            && reference.service == "routed-fabric"
+            && reference.instance == instanceName
+        )
+        clusterExports
+      );
+    in
+      builtins.foldl' (kept: facts:
+        if lib.any (other: other.name == facts.name) kept
+        then kept
+        else kept ++ [facts]) []
+      matching;
     kubernetesMachines = lib.unique (
       lib.concatMap (facts: builtins.attrNames facts.members) clusterList
     );
