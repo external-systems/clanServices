@@ -8,6 +8,9 @@
 #   state_dump_on_failure([...])      `with` block: dump network state, then re-raise
 #   drops(machine, table, comment)    packets counted by the rules of one nft
 #                                     table whose comment matches
+#   soft_checks(label)                `with` block yielding `check(ok, what,
+#                                     detail)`: collects every failed check
+#                                     and fails at the end with the full list
 #
 # A suite asserts facts with `assert`, `succeed`, `fail` and the
 # `wait_until_*` calls. `observe` is context for the reader of a log.
@@ -105,4 +108,22 @@
                   except Exception as error:  # a dead VM must not hide the failure
                       print(f"DUMP {machine.name}: {cmd}: {error}")
           raise
+
+
+  @_suite_contextlib.contextmanager
+  def soft_checks(label):
+      """Independent checks of one phase: each failure is printed at once
+      and the block fails at its end with all of them, so one run shows
+      every broken check. Keep a hard `assert` where a later step needs
+      the state the check proves."""
+      failed = []
+
+      def check(ok, what, detail=""):
+          print(f"CHECK {'OK  ' if ok else 'FAIL'} {label}: {what}" + (f" [{detail}]" if detail else ""))
+          if not ok:
+              failed.append(what)
+          return bool(ok)
+
+      yield check
+      assert not failed, f"{label}: {len(failed)} check(s) failed: {failed}"
 ''

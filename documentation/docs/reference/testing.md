@@ -73,6 +73,30 @@ design is frozen for the 0.1.x release.
   `-` → `_`) as the last statement of its `testScript`, after every
   assertion, and intermediate markers remain. They are for readers; the
   runner does not check them.
+- **Running some phases.** While fixing a failure, boot the suite with
+  only the phases you need:
+
+  ```bash
+  VM_PHASES='rogue DHCP|guest' vm-test netif-hostile --remote --rebuild --quiet
+  ```
+
+  `VM_PHASES` holds `|`-separated words. Only the subtests whose name
+  contains one of them run; every other `with subtest(...)` body is
+  skipped and logged as `PHASE SKIPPED (VM_PHASES)`. Code outside
+  subtests (boot, helpers, the final marker) always runs, so name the
+  phases a later phase depends on too. The switch works for every suite
+  (`flake-parts/clan-tests.nix` puts a filter in front of the test
+  script). It is read only by an impure evaluation, so it needs
+  `--rebuild`; unset, the suite derivation is unchanged. A phase-only
+  run proves the phase, not the suite: run the whole suite once at the
+  end. The gateway suites' `phases` argument (`nat-gateway`,
+  `-failover`, `-hostile`) is a different thing: it picks the suite.
+- **Soft checks.** Checks that do not depend on each other collect their
+  failures and fail once at the end, so one run shows every broken
+  check: `with soft_checks("label") as check:` then
+  `check(ok, "what", detail)` (`tests/suite-lib.nix`). The hostile
+  suites do the same with their `verdict` and `control` lists. Keep a
+  hard `assert` where a later step needs the state that a check proves.
 - **Pipes.** Test scripts read whole streams: `cmd | grep PAT >/dev/null`,
   never `grep -q`, whose early exit kills the writer with SIGPIPE under the
   driver's `pipefail`.
