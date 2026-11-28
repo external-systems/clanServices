@@ -190,8 +190,13 @@
   # addressing, so it is never a source.
   v4Default = r:
     r.memberOf == null && r.default4 && (r.dhcp4 || (r.gateway4 != null && r.policy.table == null));
+  # An advertised default counts only where the link takes one: `ra`
+  # and no static IPv6 gateway (N48).
   v6Default = r:
-    r.memberOf == null && r.default6 && (r.ra || (r.gateway6 != null && r.policy.table == null));
+    r.memberOf
+    == null
+    && r.default6
+    && ((r.gateway6 != null && r.policy.table == null) || (r.ra && r.gateway6 == null));
 
   # IPv4/IPv6 split helpers for export facts and endpoint selection.
   # Exported endpoints are bare host addresses: static inventory values
@@ -478,8 +483,16 @@
     };
     ra = mkOption {
       type = types.bool;
-      default = true;
-      description = "Accept IPv6 router advertisements on this link (IfState ipv6.accept_ra/autoconf).";
+      default = false;
+      description = ''
+        Accept IPv6 router advertisements on this link: prefixes and
+        SLAAC addresses, and a default router when the link may own the
+        IPv6 default and has no static IPv6 gateway. Never a
+        route-information route, an MTU or a hop limit below 64. Off by
+        default: any host on the link can send one, and on a link with
+        'ra = true' any on-link host can become the default router
+        (specs/netif.md N48).
+      '';
     };
     defaultRoute = {
       ipv4 = mkOption {
@@ -763,6 +776,17 @@
           {
             assertion = memberOf == null || !hasAddressing link;
             message = "netif/${instanceName}: member link '${logical}' of machine '${machineName}' is consumed by '${memberOf}' and must not set addresses, DHCP, gateways, routes, or nameservers; set them on '${memberOf}' instead";
+          }
+          # E4 (N48): a member takes no router advertisement.
+          {
+            assertion = memberOf == null || !link.ra;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' is a member of '${toString memberOf}' and sets 'ra = true'; a member carries no addressing. Set 'ra' on '${toString memberOf}' instead (N48)";
+          }
+          # E3 (N48): DHCPv6 carries no router, so a DHCPv6 link that may
+          # own the IPv6 default needs a source for one.
+          {
+            assertion = !(memberOf == null && r.dhcp6 && r.default6 && !r.ra && r.gateway6 == null);
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' uses DHCPv6 and may own the IPv6 default, but has no source for one: DHCPv6 carries no router. Set 'ra = true' on this link, or 'defaultRoute.ipv6 = false' (N48)";
           }
           {
             assertion = !(lib.elem logical duplicatedMembers);
@@ -1108,12 +1132,13 @@ in {
                 else "802.3ad";
               bond_miimon = 100;
             };
-          # The baseline (N47): no redirects, no source routes. IfState
-          # restores it on every apply. The RA keys stay as they are
-          # until design step 2.
+          # The baseline (N47, N48): no redirects, no source routes,
+          # router advertisements only where declared. IfState restores
+          # it on every apply.
           sysctl.ipv4 = baseline.everyLink4;
           sysctl.ipv6 =
             baseline.everyLink6
+            // baseline.raOff6
             // {
               accept_ra =
                 if r.ra
@@ -1126,12 +1151,18 @@ in {
                 if r.ra
                 then 1
                 else 0;
-              # Prefixes and addresses from an RA, but no default router,
-              # when the link may not own the IPv6 default (N21).
-              accept_ra_defrtr =
-                if r.ra && r.default6
+              accept_ra_pinfo =
+                if r.ra
                 then 1
                 else 0;
+              # A default router from an RA only on the link that may own
+              # the IPv6 default and has no static IPv6 gateway (N21, N48).
+              accept_ra_defrtr =
+                if r.ra && r.default6 && r.gateway6 == null
+                then 1
+                else 0;
+              # stable source addresses (S5)
+              use_tempaddr = 0;
             };
         }
         // lib.optionalAttrs (link.match.mac != null) {
@@ -1334,7 +1365,11 @@ in {
 
         warnings =
           lib.optional (active && config.clan.networkFacts.fabric != {} && unsizedDhcpDefaults != [])
-          "netif/${instanceName}: machine '${machine.name}' is a fabric member and its DHCP link(s) ${lib.concatStringsSep ", " unsizedDhcpDefaults} carry the default route with neither 'mtu' nor 'pathMtu'; tunnels will assume 1500. Set 'pathMtu' to the provider's value (N17)";
+          "netif/${instanceName}: machine '${machine.name}' is a fabric member and its DHCP link(s) ${lib.concatStringsSep ", " unsizedDhcpDefaults} carry the default route with neither 'mtu' nor 'pathMtu'; tunnels will assume 1500. Set 'pathMtu' to the provider's value (N17)"
+          # E5 (N48): a guest on the bridge can send router advertisements.
+          ++ map (
+            logical: "netif/${instanceName}: link '${logical}' of machine '${machine.name}' is a bridge with 'bridge.guestPorts' and sets 'ra = true': any guest can then give this machine addresses and routes. Set 'ra = false' unless the bridge's own uplink is the only sender (N48)"
+          ) (lib.attrNames (lib.filterAttrs (_: r: r.guestPorts && r.ra) resolved));
 
         # A cloud NIC found by its udev path is renamed by udev before
         # IfState runs; IfState then knows it by name (N26). '.link'

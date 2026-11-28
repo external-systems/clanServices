@@ -332,8 +332,9 @@ in {
           never-default = "false";
         };
         ethernet.mtu = "1500";
-        # router advertisements are accepted unless 'ra = false'
-        v6 = "auto";
+        # router advertisements are opt-in (netif N48): no addresses and
+        # no 'ra' means link-local only
+        v6 = "link-local";
       };
     };
     # The IfState mode of the same machine: IfState, dhcpcd, the scoped

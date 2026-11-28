@@ -183,7 +183,7 @@
         };
       }
     )
-    baseInventory;
+    raBaseInventory;
   kam = evaled.config.nixosConfigurations.kamrui-h1.config;
   edge = evaled.config.nixosConfigurations.edge-1.config;
 
@@ -239,10 +239,18 @@
       instances.home-net.roles.default.machines.kamrui-h1.settings.links.eth.gateway.ipv4 = "192.168.10.1"; # dock DHCP already owns the default
     }
   );
+  # The base inventory with RAs on both links of kamrui-h1 (N48: opt-in).
+  raBaseInventory = lib.recursiveUpdate baseInventory {
+    instances.home-net.roles.default.machines.kamrui-h1.settings.links = {
+      dock.ra = true;
+      eth.ra = true;
+    };
+  };
   # One default route per family, chosen explicitly (N21).
-  privateLink = extra:
+  privateLink = privateLinkOn baseInventory;
+  privateLinkOn = inventory: extra:
     (mkEvaled (
-      lib.recursiveUpdate baseInventory {
+      lib.recursiveUpdate inventory {
         instances.cloud-private = {
           module.name = "netif";
           module.input = "self";
@@ -256,13 +264,17 @@
       }
     )).config.nixosConfigurations.kamrui-h1.config;
   privateNoDefault = privateLink {
+    ra = true;
     defaultRoute = {
       ipv4 = false;
       ipv6 = false;
     };
   };
   privateSecondV4 = privateLink {defaultRoute.ipv6 = false;};
-  privateSecondRa = privateLink {defaultRoute.ipv4 = false;};
+  privateSecondRa = privateLinkOn raBaseInventory {
+    defaultRoute.ipv4 = false;
+    ra = true;
+  };
   privateNoRa = privateLink {
     defaultRoute.ipv4 = false;
     ra = false;
@@ -448,6 +460,49 @@
       }
     );
   kamOf = eval: eval.config.nixosConfigurations.kamrui-h1.config;
+  # kamrui-h1 with extra links in its home-net instance (design §3.9)
+  kamWithLinks = links:
+    kamOf (mkEvaled (lib.recursiveUpdate baseInventory {
+      instances.home-net.roles.default.machines.kamrui-h1.settings.links = links;
+    }));
+  raKeys = machineConfig: interface:
+    lib.getAttrs ["accept_ra" "autoconf" "accept_ra_pinfo" "accept_ra_defrtr" "accept_ra_rt_info_max_plen" "accept_ra_mtu" "accept_ra_min_hop_limit" "use_tempaddr"]
+    machineConfig.networking.ifstate.settings.interfaces.${interface}.sysctl.ipv6;
+  raOff = {
+    accept_ra = 0;
+    autoconf = 0;
+    accept_ra_pinfo = 0;
+    accept_ra_defrtr = 0;
+    accept_ra_rt_info_max_plen = 0;
+    accept_ra_mtu = 0;
+    accept_ra_min_hop_limit = 64;
+    use_tempaddr = 0;
+  };
+  # N48: a link that takes RAs and the default, one beside a static
+  # gateway; a guest-ports bridge and its member.
+  raKam = kamWithLinks {
+    ral = {
+      interface = "enp9s0";
+      ra = true;
+    };
+    rgw = {
+      interface = "enp8s0";
+      ra = true;
+      static.ipv6 = ["2001:db8:8::2/64"];
+      gateway.ipv6 = "2001:db8:8::1";
+      defaultRoute.ipv6 = false;
+    };
+    guests = {
+      kind = "bridge";
+      bridge = {
+        guestPorts = true;
+        members = ["gport"];
+      };
+      static.ipv4 = ["192.0.2.1/24"];
+      defaultRoute.ipv6 = false;
+    };
+    gport.interface = "enp7s0";
+  };
   tailscaleKam = kamOf (withKamrui {services.tailscale.enable = true;} baseInventory);
   iwdKam = kamOf (withKamrui {networking.wireless.iwd.enable = true;} baseInventory);
   desktopKam = kamOf (withKamrui {services.xserver.enable = true;} baseInventory);
@@ -531,7 +586,7 @@
         };
       };
     }
-    baseInventory);
+    raBaseInventory);
   containerInventory = address:
     lib.recursiveUpdate baseInventory {
       instances.mgmt.roles.default.machines.kamrui-h1.settings.links.mgmt0.static.ipv4 = lib.mkForce [address];
@@ -653,6 +708,7 @@
         roles.default.machines.edge-1.settings.links.wan0 = {
           interface = "enp9s0";
           static.ipv4 = ["10.40.0.2/24"];
+          ra = true;
         };
       };
     }).config.nixosConfigurations.edge-1.config;
@@ -1297,13 +1353,13 @@ in {
         kind = "physical";
         mtu = 1500;
         hooks = false;
-        ra = {
-          accept_redirects = 0;
-          accept_source_route = 0;
-          accept_ra = 1;
-          autoconf = 1;
-          accept_ra_defrtr = 1;
-        };
+        # RAs are opt-in (N48)
+        ra =
+          raOff
+          // {
+            accept_redirects = 0;
+            accept_source_route = 0;
+          };
         globalDns = [];
         staticDns = "192.168.10.1\n";
         resolved = true;
@@ -1685,14 +1741,14 @@ in {
             addresses = [];
             dhcp4 = true;
             dhcp6 = false;
-            ra = true;
+            ra = false; # opt-in (N48)
             gateway4 = null;
             gateway6 = null;
             routes = [];
             gatewayInMain = true; # DHCP lease default
             defaultRoute = {
               ipv4 = true;
-              ipv6 = true; # router advertisements
+              ipv6 = false; # no source: RAs are opt-in (N48)
             };
             trusted = false; # N19
             zone = null;
@@ -1716,7 +1772,7 @@ in {
             ];
             dhcp4 = false;
             dhcp6 = false;
-            ra = true;
+            ra = false;
             gateway4 = null;
             gateway6 = null;
             routes = [];
@@ -1821,13 +1877,15 @@ in {
         clean = true;
         nogateway = true;
         ownerKeepsGateway = false;
-        ra = {
-          accept_redirects = 0;
-          accept_source_route = 0;
-          accept_ra = 1;
-          autoconf = 1;
-          accept_ra_defrtr = 0;
-        };
+        ra =
+          raOff
+          // {
+            accept_redirects = 0;
+            accept_source_route = 0;
+            accept_ra = 1;
+            autoconf = 1;
+            accept_ra_pinfo = 1;
+          };
         facts = {
           ipv4 = false;
           ipv6 = false;
@@ -1897,6 +1955,97 @@ in {
         };
         kernel = lib.genAttrs baselineKeys (_: 0);
       };
+    };
+    # N48: router advertisements only where declared.
+    test_raOffByDefault = {
+      expr = {
+        declared = raKeys kam "enp3s0";
+        default = lib.genAttrs ["accept_ra" "autoconf" "accept_ra_defrtr" "accept_ra_pinfo" "accept_ra_rt_info_max_plen" "accept_ra_mtu" "accept_ra_min_hop_limit"] (key: kam.boot.kernel.sysctl."net.ipv6.conf.default.${key}");
+        # no glob: it would switch RAs off on hot-plug links at every reload
+        glob = kam.boot.kernel.sysctl ? "net.ipv6.conf.*.accept_ra";
+      };
+      expected = {
+        declared = raOff;
+        default = {
+          accept_ra = 0;
+          autoconf = 0;
+          accept_ra_defrtr = 0;
+          accept_ra_pinfo = 0;
+          accept_ra_rt_info_max_plen = 0;
+          accept_ra_mtu = 0;
+          accept_ra_min_hop_limit = 64;
+        };
+        glob = false;
+      };
+    };
+    test_raOptIn = {
+      expr = raKeys raKam "enp9s0";
+      expected =
+        raOff
+        // {
+          accept_ra = 1;
+          autoconf = 1;
+          accept_ra_pinfo = 1;
+          accept_ra_defrtr = 1;
+        };
+    };
+    # A static IPv6 gateway is never joined by an advertised default.
+    test_raBesideStaticGateway = {
+      expr = (raKeys raKam "enp8s0").accept_ra_defrtr;
+      expected = 0;
+    };
+    test_raOffOnGuestBridgeAndMember = {
+      expr = map (interface: (raKeys raKam interface).accept_ra) ["guests" "enp7s0"];
+      expected = [0 0];
+    };
+    # E3: DHCPv6 carries no router.
+    test_dhcp6NeedsRouter = {
+      expr = failedAssertion (kamWithLinks {
+        v6 = {
+          interface = "enp9s0";
+          dhcp.ipv6 = true;
+        };
+      }) "DHCPv6 carries no router";
+      expected = true;
+    };
+    test_dhcp6WithRa = {
+      expr = failedAssertion (kamWithLinks {
+        v6 = {
+          interface = "enp9s0";
+          dhcp.ipv6 = true;
+          ra = true;
+        };
+      }) "DHCPv6 carries no router";
+      expected = false;
+    };
+    # E4: a member carries no addressing.
+    test_raOnMember = {
+      expr = failedAssertion (kamWithLinks {
+        nic = {
+          interface = "enp9s0";
+          ra = true;
+        };
+        br9 = {
+          kind = "bridge";
+          bridge.members = ["nic"];
+          defaultRoute.ipv6 = false;
+        };
+      }) "a member carries no addressing";
+      expected = true;
+    };
+    # E5: a guest can send advertisements on a guest-ports bridge.
+    test_raOnGuestBridgeWarns = {
+      expr =
+        lib.any (lib.hasInfix "sets 'ra = true': any guest")
+        (kamWithLinks {
+          guests = {
+            kind = "bridge";
+            bridge.guestPorts = true;
+            ra = true;
+            defaultRoute.ipv6 = false;
+          };
+        }).warnings;
+      expected = true;
     };
     # The RA default gets netif's metric: the sysctl default for links
     # IfState creates, and a write before each apply for the others (N18).

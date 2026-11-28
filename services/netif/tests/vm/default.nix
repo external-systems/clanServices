@@ -22,6 +22,9 @@ _: {
                 ipv6 = ["fd00:99::2/64"];
               };
               endpoint = true;
+              # the IPv6 default of this machine comes from an
+              # advertisement: RAs are opt-in (N48)
+              ra = true;
               # with a policy table the gateway is that table's default
               gateway.ipv4 = "10.99.0.1";
               routingPolicy = {

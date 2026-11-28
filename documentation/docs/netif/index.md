@@ -80,6 +80,14 @@ passes the contract gate.
   redirect or accepts a source-routed packet, in every mode, also links
   netif does not declare and links that appear later (N47). The suite
   `netif-hostile` attacks a netif machine to prove it.
+- **Router advertisements:** off unless a link says `ra = true` (N48).
+  Such a link takes prefixes and addresses; it takes the default
+  router only when it may own the IPv6 default and has no static IPv6
+  gateway. No link takes a route-information route, an MTU or a hop
+  limit below 64 from an advertisement. Hot-plug links (docks) take
+  advertisements; Wi-Fi under iwd and NetworkManager links handle
+  their own. A DHCPv6 link that owns the IPv6 default needs `ra = true`
+  (DHCPv6 carries no router); the build says so.
 
 - **Firewall:** a link is untrusted unless its segment or the link sets
   `firewall.trust = true` (from P3b). Services open their own ports.

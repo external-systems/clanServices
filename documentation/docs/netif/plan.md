@@ -250,8 +250,9 @@ in VMs: Cilium Kubernetes, FRR, and a desktop with both kinds of mode.
 Wi-Fi is proven in both kinds of mode too (above).
 
 One thing to know when writing a config: a link accepts router
-advertisements unless you say `ra = false`, so it counts as a possible
-IPv6 default. On a machine with several links, all but one need
+advertisements only when you say `ra = true` (N48, round 68; before it
+was the default). Such a link counts as a possible IPv6 default. On a
+machine with several of them, all but one need
 `defaultRoute.ipv6 = false`. Set it once for a whole segment in the
 instance settings. The build error names the links.
 

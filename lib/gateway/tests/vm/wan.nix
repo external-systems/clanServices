@@ -46,6 +46,8 @@ in {
         roles.default.machines.router.settings.links = {
           wan = {
             match.mac = permanent;
+            # the IPv6 default comes from the ISP's advertisement (N48)
+            ra = true;
             zone = "wan";
             dhcp = {
               ipv4 = true;

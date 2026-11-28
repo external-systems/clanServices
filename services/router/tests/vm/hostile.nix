@@ -60,6 +60,8 @@ in {
           module.input = "self";
           roles.default.machines.router.settings.links.wan = {
             interface = "eth1";
+            # the IPv6 default comes from the ISP's advertisement (N48)
+            ra = true;
             zone = "wan";
             dhcp = {
               ipv4 = true;
@@ -110,13 +112,18 @@ in {
             client.settings.links.uplink = {
               interface = "eth1";
               dhcp.ipv4 = true;
+              # SLAAC and the default from the router's CoreRAD (N48)
+              ra = true;
             };
             intruder.settings.links.uplink = {
               interface = "eth1";
               dhcp.ipv4 = true;
+              # SLAAC and the default from the router's CoreRAD (N48)
+              ra = true;
             };
             node.settings.links.uplink = {
               interface = "eth1";
+              ra = true;
               static.ipv4 = ["192.168.20.10/24"];
               gateway.ipv4 = "192.168.20.1";
             };

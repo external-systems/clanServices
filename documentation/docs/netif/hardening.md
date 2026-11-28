@@ -36,7 +36,10 @@ does not); ARP poisoning of the real gateway is the switch's to stop.
 
 The suite `netif-hostile` proves each part as it is built. The first
 part (N47): no link takes or sends an ICMP redirect or accepts a
-source-routed packet.
+source-routed packet. The second (N48): a link takes router
+advertisements only when it says `ra = true`, and then only a prefix
+and an address, plus the default router when it owns the IPv6 default
+and has no static gateway.
 
 ## Decisions with thin proof
 

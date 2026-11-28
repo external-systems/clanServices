@@ -21,6 +21,8 @@
         module.name = "netif";
         module.input = "self";
         roles.default.machines.router.settings.links.wan = {
+          # the IPv6 default comes from the ISP's advertisement (netif N48)
+          ra = true;
           interface = "enp1s0";
           zone = "wan";
           dhcp = {

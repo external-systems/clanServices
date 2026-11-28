@@ -242,10 +242,18 @@
     export PATH=${path}
     # an advertised IPv6 default sits where the DHCPv4 one does (N18)
     echo ${toString hotplugMetric} > "/proc/sys/net/ipv6/conf/$1/ra_defrtr_metric"
-    # a machine that forwards IPv6 only accepts advertisements with 2
+    # A hot-plug link takes router advertisements (N48): `default` has
+    # them off, so turn on what a dock needs before the link is up. The
+    # route-information, MTU and hop-limit keys stay as `default` set them.
+    # A machine that forwards IPv6 only accepts advertisements with 2.
     if [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding)" = 1 ]; then
       echo 2 > "/proc/sys/net/ipv6/conf/$1/accept_ra"
+    else
+      echo 1 > "/proc/sys/net/ipv6/conf/$1/accept_ra"
     fi
+    for key in autoconf accept_ra_pinfo accept_ra_defrtr; do
+      echo 1 > "/proc/sys/net/ipv6/conf/$1/$key"
+    done
     ip link set dev "$1" up
   '';
   hotplugCleanup = pkgs.writeShellScript "netif-hotplug-cleanup" ''

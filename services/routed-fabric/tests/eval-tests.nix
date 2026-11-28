@@ -1084,6 +1084,8 @@
         roles.default.machines.spine-a.settings.links.wan = {
           interface = "enp1s0";
           dhcp.ipv4 = true;
+          # router advertisements are opt-in (netif N48)
+          ra = true;
         };
       };
     }
@@ -1106,6 +1108,8 @@
         roles.default.machines.client.settings.links.wan = {
           interface = "enp1s0";
           dhcp.ipv4 = true;
+          # router advertisements are opt-in (netif N48)
+          ra = true;
         };
       };
     }

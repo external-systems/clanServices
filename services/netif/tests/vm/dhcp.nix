@@ -101,6 +101,8 @@ in {
           roles.default.machines = {
             router.settings.links.wan = {
               interface = "eth1";
+              # the IPv6 default comes from the ISP's advertisement (N48)
+              ra = true;
               dhcp = {
                 ipv4 = true;
                 ipv6 = true;
@@ -119,6 +121,7 @@ in {
             };
             client4.settings.links.uplink = {
               interface = "eth1";
+              ra = true;
               dhcp.ipv4 = true;
             };
           };
@@ -142,6 +145,8 @@ in {
             # the one trusted link of the suite (N19)
             firewall.trust = true;
             zone = "private";
+            # a prefix and an address from the advertisement, no router
+            ra = true;
             dhcp.ipv4 = true;
             defaultRoute = {
               ipv4 = false;

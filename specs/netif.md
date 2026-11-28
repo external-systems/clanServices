@@ -6,10 +6,26 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N47` so they never collide with
+together.** Decisions are numbered `N1`–`N48` so they never collide with
 SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
+
+Round 68 (2026-11-28): **netif steps 2 to 4 of the target design**
+(SPEC.md round 68; `specs/design-netif.md` §8.3 to §8.5). What changed:
+- **N48** router advertisements only where declared: `ra` defaults to
+  false; the kernel's `default` scope takes none; a link with `ra =
+  true` takes prefixes and addresses, a default router only when it may
+  own the IPv6 default and has no static IPv6 gateway, and never a
+  route-information route, an MTU or a hop limit below 64. Eval checks
+  E3 (DHCPv6 without a router source), E4 (`ra` on a member) and the
+  warning E5 (`ra` on a guest-ports bridge). Every fixture that takes
+  its IPv6 default or SLAAC address from an advertisement says
+  `ra = true`.
+- **`netif-hostile`** gains the `ral` link (H16a–d), the guest's
+  advertisement (H15), the VLAN parent (H23) and the RA survey of every
+  link; H02, H03 and the rogue prefix route are verdicts now, each with
+  a control that turns the key on by hand and sees the effect.
 
 Round 64 (2026-11-27): **netif step 1 of the target design: the
 threat model, one sysctl baseline and `netif-hostile`** (SPEC.md round
@@ -2248,12 +2264,12 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   - **Invariants and the step that implements each.** I7 no redirect,
     no source route on any link: **step 1, implemented (N47)**. I13 the
     firewall stays closed: already true (N19). I8 RA only where
-    declared: step 2. I9 a lease sets a closed list, I11 DNS scope:
+    declared: step 2, **implemented (N48)**. I9 a lease sets a closed list, I11 DNS scope:
     step 4. I1–I6 (no lockout by deploy, do no harm, only proven bundles
     recorded, a bad bundle is not retried, own evidence only, a missing
     NIC blocks nothing), I10, S1–S3: step 6. I12 one manager per boot:
     step 7. S4 one writer per kernel object and per sysctl key: the
-    registry and N47. S5 stable source addresses: step 2.
+    registry and N47. S5 stable source addresses: step 2 (N48).
   - **Rewritten in step 6.** N25 (the guard), N31 (dhcpcd units) and
     N36 (targets) stay as they are until the transaction lands; step 6
     rewrites them to the design's §3.2.
@@ -2294,6 +2310,53 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   port, hot-plug, veth, bridge, dummy, WireGuard) with its control;
   `netif` `assert_ifstate_noop` with the new keys; nix-unit
   `test_sysctlBaseline`)*
+
+- **N48 Router advertisements only where declared.** A link takes
+  router advertisements only when it says `ra = true` (default false);
+  and there only what the link needs (I8; design §3.4, §3.6). Amends
+  N21 (an RA default needs `ra = true` and no static IPv6 gateway) and
+  extends N47 (`lib/sysctl-baseline.nix` gains `raOff6`).
+  - **Keys of a declared link** (IfState `sysctl.ipv6`, restored on
+    every apply): `accept_ra` 1 with `ra` (2 when the machine forwards),
+    else 0; `autoconf` and `accept_ra_pinfo` follow `ra`;
+    `accept_ra_defrtr` 1 only when `ra`, the link may own the IPv6
+    default and has no static IPv6 gateway; `accept_ra_rt_info_max_plen`
+    0, `accept_ra_mtu` 0, `accept_ra_min_hop_limit` 64 always;
+    `use_tempaddr` 0 (S5, stable source addresses).
+  - **Every other link.** `boot.kernel.sysctl` writes `raOff6` for the
+    `default` scope only, so a bridge port, veth, member, VLAN parent
+    or container link that appears later takes nothing. No glob and no
+    `all`: a glob would switch RAs off on hot-plug links at every sysctl
+    reload, and `all.accept_ra` has no effect on a link. iwd and
+    NetworkManager handle advertisements on their own links (design P4).
+    Residual: a NIC that exists before systemd-sysctl runs and that no
+    instance declares keeps the kernel's `accept_ra = 1` (it is down
+    unless something brings it up).
+  - **Hot-plug links** (`hotplugUp`) turn on `accept_ra` (2 when
+    forwarding), `autoconf`, `accept_ra_pinfo` and `accept_ra_defrtr`
+    before the link comes up; the other keys stay as `default` set them.
+  - **Default source (N21).** `v6Default`: a static IPv6 gateway outside
+    a policy table, or `ra` with no static IPv6 gateway.
+  - **Eval checks.** E3: a DHCPv6 link that may own the IPv6 default
+    needs `ra = true` or a static gateway (DHCPv6 carries no router).
+    E4: a bond or bridge member must not set `ra`. E5 (warning): `ra`
+    on a bridge with `bridge.guestPorts`.
+  - **Limit.** On a link with `ra = true` any on-link host can become
+    the default router when the link owns the default. That is what
+    `ra = true` means; the option text says so.
+  *(implemented round 68; suite `netif-hostile` `NETIF_HOSTILE_OK`:
+  H02, H03, H04 (prefix and route information) with a control each
+  (the same advertisement adds the default, the address and the routes
+  once the keys are 1 by hand), H15 and H23 with a capture control,
+  H16a–d with a control each (the advertisement carries a default
+  router, route information, MTU 1280 and hop limit 1), the RA survey
+  of every link with its control; `netif`, `netif-dhcp`,
+  `netif-v6only`, `netif-hotplug`, `router`, `hostile-router`,
+  `gateway-wan` with `ra = true` where they take an advertised
+  default; nix-unit `test_raOffByDefault`, `test_raOptIn`,
+  `test_raBesideStaticGateway`, `test_raOffOnGuestBridgeAndMember`,
+  `test_dhcp6NeedsRouter`, `test_dhcp6WithRa`, `test_raOnMember`,
+  `test_raOnGuestBridgeWarns`)*
 
 
 ## 4. Invariants
@@ -2449,7 +2512,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   | `netif-containers` | Docker and rootful Podman keep links, namespaces, default and user-defined networks and a published port reached from another machine across two applies, in an IfState mode; pool-overlap eval error | P7 |
   | `netif-vmhost` | bridge sends from the uplink's MAC; a bridge over a VLAN; guest ports with arbitrary names survive two applies and stay reachable | P7 |
   | `netif-guard` | a change that loses the gateway is rolled back and the unit fails; a good change is kept; a gateway that ignores ping passes; no previous configuration fails loudly | P8 |
-  | `netif-hostile` | an attacker beside the machine: no open TCP port on any address; a forged ICMP redirect moves no route and redirects and source routes are off on every link (with a positive control each); a spoofed source gets no answer; the RA fixture's advertisement arrives (control) and gives no route-information route. Later design steps add their verdicts (design §6) | round 64 (N46, N47) |
+  | `netif-hostile` | an attacker beside the machine: no open TCP port on any address; a forged ICMP redirect moves no route and redirects and source routes are off on every link (with a positive control each); a spoofed source gets no answer; a rogue advertisement beside a static gateway gives no default, address or route, on an `ra` link only a prefix (no default, route information, MTU or hop limit), and nothing to a guest-ports bridge or a VLAN parent; only declared `ra` links and hot-plug links take advertisements (each with a control). Later design steps add their verdicts (design §6) | rounds 64, 68 (N46–N48) |
 
   Existing suites stay green throughout.
 

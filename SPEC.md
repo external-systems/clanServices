@@ -4,6 +4,26 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 68 (2026-11-28): wave 2 of the round-61 target design for
+netif (steps 2 to 4) and the gateway (steps 4 and 5).** One PR, one
+commit per step (`specs/design-netif.md` §8.3 to §8.5,
+`specs/design-gateway.md` §8 rows 4 and 5). The contracts are
+`specs/netif.md` and `specs/gateway.md`:
+
+- **Test tooling.** `VM_PHASES='word|word' vm-test <suite> --rebuild`
+  runs only the named subtests of any suite (an impure evaluation; the
+  suite derivation is unchanged without it); `soft_checks` collects
+  independent failures (`documentation/docs/reference/testing.md`).
+- **N48** router advertisements only where declared: `ra` defaults to
+  false, the kernel's `default` scope takes none, an `ra` link takes a
+  prefix and (only when it may own the IPv6 default and has no static
+  gateway) the default router, never route information, an MTU or a
+  low hop limit.
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| N48 | Every link took router advertisements, beside a static IPv6 gateway too; a guest port, a VLAN parent or a member took them | Only links with `ra = true` and hot-plug links; there no route information, MTU or hop limit | `netif-hostile` (H02, H03, H04, H15, H16a–d, H23 and the RA survey, each with a control), `netif`, `netif-dhcp`, `netif-v6only`, `netif-hotplug`, `router`, `hostile-router`, `gateway-wan`; nix-unit `test_raOffByDefault`, `test_raOptIn`, `test_raOnMember`, `test_dhcp6NeedsRouter` |
+
 **Round 67 (2026-11-28): kube steps 3 and 4, a fabric always, typed
 options, HAProxy on loopback, one firewall matrix (D76).** Wave 2 of the
 round-61 target design for the kube services (`specs/design-kube.md`

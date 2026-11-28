@@ -86,8 +86,8 @@ in {
             };
             ra = mkOption {
               type = types.bool;
-              default = true;
-              description = "IPv6 router-advertisement acceptance.";
+              default = false;
+              description = "IPv6 router-advertisement acceptance (opt-in, specs/netif.md N48).";
             };
             gateway4 = mkOption {
               type = types.nullOr types.str;

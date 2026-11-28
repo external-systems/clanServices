@@ -1,15 +1,16 @@
 # netif-hostile: hostile neighbours on the links of a netif machine
-# (specs/netif.md N46, N47; specs/design-netif.md §6). Hermetic: test
-# VLANs only, no real network.
+# (specs/netif.md N46, N47, N48; specs/design-netif.md §6). Hermetic:
+# test VLANs only, no real network.
 #
 #   gw        192.168.1.1, 2001:db8:1::1: the real gateway (VLAN 1)
 #   victim    netif. eth1 `uplink` (static, owns both defaults); eth2
-#             `side` (static, no default); eth3 `trunk` (a VLAN parent
-#             without addressing) and `v10` on it; `br0` (guest ports)
-#             with a guest port; the hot-plug prefix `enx` with a veth
-#             "dock"
-#   attacker  on VLANs 1 and 2: scans, a router-advertisement fixture
-#             (radvd), a forged ICMP redirect, spoofed sources
+#             `side` (static, no default); eth3 `ral` (`ra = true`, no
+#             default); eth5 `trunk` (a VLAN parent without addressing)
+#             and `v10` on it; `br0` (guest ports) with a guest port in
+#             a namespace; the hot-plug prefix `enx` with a veth "dock"
+#   attacker  on VLANs 1 to 5: scans, a router-advertisement fixture
+#             (radvd) on eth1 and eth3, scapy advertisements, a forged
+#             ICMP redirect, spoofed sources
 #
 # Every attack ends in one `verdict(id, safe, detail)`. The suite runs
 # all of them, prints a `HOSTILE SAFE|GAP <id>` line each, and fails at
@@ -39,7 +40,7 @@
       inherit addresses;
       withBase = true;
     };
-  vlans = [1 2 3];
+  vlans = [1 2 3 4 5];
 in {
   name = "netif-hostile";
 
@@ -71,8 +72,14 @@ in {
               ipv6 = false;
             };
           };
-          trunk = {
+          # takes router advertisements, does not own the IPv6 default
+          ral = {
             interface = "eth3";
+            ra = true;
+            defaultRoute.ipv6 = false;
+          };
+          trunk = {
+            interface = "eth5";
             defaultRoute.ipv6 = false;
           };
           v10 = {
@@ -114,7 +121,8 @@ in {
       environment.systemPackages = [
         pkgs.tcpdump
         pkgs.wireguard-tools
-        pkgs.python3
+        # the guest's advertisement (H15)
+        (pkgs.python3.withPackages (ps: [ps.scapy]))
       ];
       clanServices.netif.hotplug.interfaces = ["^enx"];
     };
@@ -127,9 +135,22 @@ in {
       };
       networking = {
         firewall.enable = false;
-        ifstate.settings.interfaces.eth2 = {
-          addresses = ["198.51.100.66/24"];
-          link = {
+        ifstate.settings.interfaces = {
+          eth2 = {
+            addresses = ["198.51.100.66/24"];
+            link = {
+              kind = "physical";
+              state = "up";
+            };
+          };
+          eth3 = {
+            addresses = ["2001:db8:3::66/64"];
+            link = {
+              kind = "physical";
+              state = "up";
+            };
+          };
+          eth5.link = {
             kind = "physical";
             state = "up";
           };
@@ -142,10 +163,10 @@ in {
         pkgs.iputils
         (pkgs.python3.withPackages (ps: [ps.scapy]))
       ];
-      # The router-advertisement fixture of H02-H04. radvd refuses an
-      # interface whose MinRtrAdvInterval is not between 3 s and 3/4 of
-      # MaxRtrAdvInterval, and then sends nothing while its unit is
-      # active: the control below proves the advertisement arrived.
+      # The router-advertisement fixture of H02-H04 (eth1) and H16 (eth3).
+      # radvd refuses an interface whose MinRtrAdvInterval is not between
+      # 3 s and 3/4 of MaxRtrAdvInterval, and then sends nothing while its
+      # unit is active: the controls below prove the advertisement arrived.
       services.radvd = {
         enable = true;
         config = ''
@@ -155,6 +176,16 @@ in {
             MaxRtrAdvInterval 4;
             MinRtrAdvInterval 3;
             prefix 2001:db8:bad::/64 {};
+            route 2001:db8:f00d::/48 {};
+          };
+          interface eth3 {
+            AdvSendAdvert on;
+            AdvDefaultPreference high;
+            MaxRtrAdvInterval 4;
+            MinRtrAdvInterval 3;
+            AdvLinkMTU 1280;
+            AdvCurHopLimit 1;
+            prefix 2001:db8:bad3::/64 {};
             route 2001:db8:f00d::/48 {};
           };
         '';
@@ -167,8 +198,12 @@ in {
   testScript = ''
     import json
 
+    ${import ../../../../tests/suite-lib.nix}
+
     RESULTS = []
     CONTROLS = []
+    # boot links of the VM that no instance declares (design §3.4 residual)
+    UNDECLARED_AT_BOOT = ["eth0", "eth4"]
 
 
     def verdict(key, safe, detail=""):
@@ -225,6 +260,38 @@ in {
         return [line.strip() for line in out.splitlines() if match in line]
 
 
+    def global6(link):
+        """The global IPv6 addresses of one link, one line."""
+        return " ".join(victim.succeed(f"ip -6 -o addr show dev {link} scope global | awk '{{print $4}}' | sort").split())
+
+
+    def default6(link):
+        """Gateways of the IPv6 default routes that leave by one link."""
+        return [route.get("gateway") for route in json.loads(victim.succeed("ip -j -6 route show default")) if route.get("dev") == link]
+
+
+    def ra_keys(link, **keys):
+        """Set router-advertisement keys of one link by hand (a control)."""
+        victim.succeed("sysctl -w " + " ".join(f"net.ipv6.conf.{link}.{key}={value}" for key, value in keys.items()) + " >/dev/null")
+
+
+    def forget_ra(link):
+        """Remove what an advertisement left on a link: its routes, its
+        addresses and the prefix routes."""
+        victim.succeed(
+            f"ip -6 route flush dev {link} proto ra; ip -6 addr flush dev {link} scope global dynamic;"
+            f" for p in $(ip -6 route show dev {link} proto kernel | awk '/expires/ {{print $1}}'); do ip -6 route del $p dev {link}; done; true"
+        )
+
+
+    def ensure_guest():
+        """A guest in a namespace behind the guest port gp0 of br0."""
+        victim.succeed(
+            "ip netns list | grep -w guest >/dev/null || (ip netns add guest && ip link add gp0 type veth peer name g0 netns guest"
+            " && ip link set gp0 master br0 up && ip -n guest link set g0 up && ip -n guest link set lo up)"
+        )
+
+
     def redirect_moves(route):
         """The forged redirect: the gateway's address tells the victim to
         reach 203.0.113.9 through the attacker. Its inner packet is a UDP
@@ -265,7 +332,7 @@ in {
 
     with subtest("a rogue router advertisement beside a static IPv6 gateway"):
         capture("h02", "eth1", "icmp6 and ip6[40] == 134", 15, "in", "-v")
-        attacker.succeed("systemctl start radvd")
+        attacker.succeed("systemctl restart radvd")
         seen = captured("h02")
         control(
             "H02-H04 the fixture's advertisement reaches eth1 with a prefix and a route-information option",
@@ -273,21 +340,56 @@ in {
             " ".join(seen.split())[:400] if seen.strip() else "nothing captured",
         )
         victim.succeed("sleep 10")
-        defaults = [route.get("gateway") for route in json.loads(victim.succeed("ip -j -6 route show default"))]
-        info("H02 the IPv6 default stays on the declared gateway only; design step 2 (accept_ra_defrtr 0 beside a static gateway) closes it", f"default via {defaults}")
-        addresses = victim.succeed("ip -6 -o addr show dev eth1 scope global | awk '{print $4}' | sort").strip()
-        info("H03 no address from the rogue prefix; design step 2 (RA only where declared) closes it", addresses.replace("\n", " "))
-        info("H04 the rogue prefix route; design step 2 (RA only where declared) closes it", f"{routes6('2001:db8:bad::/64')}")
+        defaults = default6("eth1")
+        verdict("H02 the IPv6 default stays on the declared gateway only", defaults == ["2001:db8:1::1"], f"default via {defaults}")
+        addresses = global6("eth1")
+        verdict("H03 no address from the rogue prefix", "2001:db8:bad:" not in addresses, addresses)
+        found = routes6("2001:db8:bad:")
+        verdict("H04 no route for the rogue prefix", found == [], f"{found}")
         found = routes6("2001:db8:f00d")
         verdict("H04 no route-information route from the advertisement", found == [], f"{found}")
-        # The control: the link's key at 64 (what would let the option in)
-        # and the same advertisement installs the route.
-        victim.succeed("sysctl -w net.ipv6.conf.eth1.accept_ra_rt_info_max_plen=64 >/dev/null")
-        code, _ = victim.execute("timeout 20 sh -c 'until ip -6 route show table all | grep 2001:db8:f00d >/dev/null; do sleep 1; done'")
-        control("H04 the same advertisement installs its route when eth1 takes route information", code == 0, f"{routes6('2001:db8:f00d')}")
-        victim.succeed("sysctl -w net.ipv6.conf.eth1.accept_ra_rt_info_max_plen=0 >/dev/null")
+        # The controls: eth1 with the keys of a link that declares `ra`
+        # and owns the default, plus route information, and the same
+        # advertisement installs each thing the verdicts looked for.
+        ra_keys("eth1", accept_ra=1, autoconf=1, accept_ra_pinfo=1, accept_ra_defrtr=1, accept_ra_rt_info_max_plen=64)
+        took = seconds_until(victim, "ip -6 route show default dev eth1 proto ra | grep fe80 && ip -6 route show table all | grep 2001:db8:f00d", limit=30)
+        control("H02 the same advertisement adds a default router when eth1 takes one", default6("eth1") != ["2001:db8:1::1"], f"default via {default6('eth1')} after {took} s")
+        control("H03 the same advertisement adds an address when eth1 takes prefixes", "2001:db8:bad:" in global6("eth1"), global6("eth1"))
+        control("H04 the same advertisement adds the prefix route and the route-information route", routes6("2001:db8:bad:") != [] and routes6("2001:db8:f00d") != [], f"{routes6('2001:db8:')}")
         attacker.succeed("systemctl stop radvd")
-        victim.succeed("ip -6 route del 2001:db8:f00d::/48 dev eth1 || true")
+        ra_keys("eth1", accept_ra=0, autoconf=0, accept_ra_pinfo=0, accept_ra_defrtr=0, accept_ra_rt_info_max_plen=0)
+        forget_ra("eth1")
+        assert default6("eth1") == ["2001:db8:1::1"], default6("eth1")
+
+    with subtest("a rogue advertisement on a link that declared `ra`: prefixes only"):
+        attacker.succeed("systemctl restart radvd")
+        took = seconds_until(victim, "ip -6 -o addr show dev eth3 scope global | grep 2001:db8:bad3:", limit=60)
+        control("H16 the link with `ra = true` takes the advertised prefix", took is not None, f"{global6('eth3')} after {took} s")
+        victim.succeed("sleep 8")
+        routes = routes6("dev eth3")
+        defaults = default6("eth3")
+        mtu = sysctl(victim, "ipv6/conf/eth3/mtu")
+        hop = sysctl(victim, "ipv6/conf/eth3/hop_limit")
+        verdict("H16a no default router from an `ra` link that does not own the IPv6 default", defaults == [], f"default via {defaults}")
+        verdict("H16b no route-information route from an advertisement", [route for route in routes if "f00d" in route] == [], f"{routes}")
+        verdict("H16c an advertisement does not shrink the MTU", mtu == "1500", f"mtu {mtu}")
+        verdict("H16d an advertisement does not lower the hop limit", hop == "64", f"hop_limit {hop}")
+        # The controls: the four keys that the baseline holds, opened by
+        # hand, and the same advertisement does each thing.
+        ra_keys("eth3", accept_ra_defrtr=1, accept_ra_rt_info_max_plen=64, accept_ra_mtu=1, accept_ra_min_hop_limit=1)
+        seconds_until(
+            victim,
+            "ip -6 route show default dev eth3 | grep fe80 && ip -6 route show table all dev eth3 | grep 2001:db8:f00d"
+            " && test $(cat /proc/sys/net/ipv6/conf/eth3/mtu) = 1280 && test $(cat /proc/sys/net/ipv6/conf/eth3/hop_limit) = 1",
+            limit=30,
+        )
+        control("H16a the advertisement carries a default router (taken with accept_ra_defrtr 1)", default6("eth3") != [], f"default via {default6('eth3')}")
+        control("H16b the advertisement carries route information (taken with accept_ra_rt_info_max_plen 64)", [route for route in routes6("dev eth3") if "f00d" in route] != [], f"{routes6('dev eth3')}")
+        control("H16c the advertisement carries MTU 1280 (taken with accept_ra_mtu 1)", sysctl(victim, "ipv6/conf/eth3/mtu") == "1280", sysctl(victim, "ipv6/conf/eth3/mtu"))
+        control("H16d the advertisement carries hop limit 1 (taken with accept_ra_min_hop_limit 1)", sysctl(victim, "ipv6/conf/eth3/hop_limit") == "1", sysctl(victim, "ipv6/conf/eth3/hop_limit"))
+        attacker.succeed("systemctl stop radvd")
+        ra_keys("eth3", accept_ra_defrtr=0, accept_ra_rt_info_max_plen=0, accept_ra_mtu=0, accept_ra_min_hop_limit=64, mtu=1500, hop_limit=64)
+        forget_ra("eth3")
 
     with subtest("a forged ICMP redirect in the gateway's name"):
         moved, route = redirect_moves("203.0.113.9")
@@ -344,10 +446,9 @@ in {
         finding("P10 scope default", show("default"))
         # a guest port, a hot-plugged dock, a veth pair with one end in a
         # bridge, a dummy and a WireGuard link, all added after boot
+        ensure_guest()
         victim.succeed(
-            "ip netns add guest && ip link add gp0 type veth peer name g0 netns guest && ip link set gp0 master br0 up"
-            " && ip -n guest link set g0 up"
-            " && ip netns add dock && ip link add dockpeer netns dock type veth peer name enxdock && ip -n dock link set dockpeer up"
+            "ip netns add dock && ip link add dockpeer netns dock type veth peer name enxdock && ip -n dock link set dockpeer up"
             " && ip link add vt0 type veth peer name vt1 && ip link add dm0 type dummy && ip link add brx type bridge"
             " && ip link set vt1 master brx && ip link add wg9 type wireguard && udevadm settle"
         )
@@ -361,6 +462,36 @@ in {
         victim.succeed("sysctl -w net.ipv4.conf.dm0.accept_redirects=1 >/dev/null && systemctl restart systemd-sysctl.service")
         finding("P3 dm0, set to 1, after a systemd-sysctl restart (0 = the glob reaches an existing link)", show("dm0"))
 
+    with subtest("a guest on the guest-ports bridge sends a router advertisement"):
+        ensure_guest()
+        victim.wait_until_succeeds("ip -n guest -6 addr show dev g0 scope link | grep -v tentative | grep fe80 >/dev/null", timeout=30)
+        capture("h15", "br0", "icmp6 and ip6[40] == 134", 12, "in", "-v")
+        victim.succeed(
+            "ip netns exec guest python3 -c \"from scapy.all import *; "
+            "sendp(Ether(dst='33:33:00:00:00:01')/IPv6(dst='ff02::1')/ICMPv6ND_RA(routerlifetime=1800)"
+            "/ICMPv6NDOptPrefixInfo(prefix='2001:db8:bad0::', prefixlen=64, L=1, A=1), iface='g0', count=4, inter=1, verbose=0)\""
+        )
+        seen = captured("h15")
+        control("H15 the guest's advertisement reaches br0", "router advertisement" in seen and "2001:db8:bad0::/64" in seen, " ".join(seen.split())[:300])
+        victim.succeed("sleep 2")
+        state = victim.succeed("ip -6 addr show; ip -6 route show table all")
+        values = {link: sysctl(victim, f"ipv6/conf/{link}/accept_ra") for link in ["br0", "gp0"]}
+        verdict("H15 a guest's router advertisement gives the host no address and no route", "2001:db8:bad0" not in state and set(values.values()) == {"0"}, f"accept_ra {values}")
+
+    with subtest("a rogue advertisement on a VLAN parent that has no addressing"):
+        capture("h23", "eth5", "icmp6 and ip6[40] == 134", 12, "in", "-v")
+        attacker.succeed(
+            "python3 -c \"from scapy.all import *; "
+            "sendp(Ether(dst='33:33:00:00:00:01')/IPv6(dst='ff02::1')/ICMPv6ND_RA(routerlifetime=1800)"
+            "/ICMPv6NDOptPrefixInfo(prefix='2001:db8:bad5::', prefixlen=64, L=1, A=1), iface='eth5', count=4, inter=1, verbose=0)\""
+        )
+        seen = captured("h23")
+        control("H23 the advertisement reaches the VLAN parent", "router advertisement" in seen and "2001:db8:bad5::/64" in seen, " ".join(seen.split())[:300])
+        victim.succeed("sleep 2")
+        state = victim.succeed("ip -6 addr show; ip -6 route show table all")
+        parent = sysctl(victim, "ipv6/conf/eth5/accept_ra")
+        verdict("H23 a VLAN parent without addressing takes nothing from an advertisement", "2001:db8:bad5" not in state and parent == "0", f"accept_ra {parent}")
+
     with subtest("every link of the machine"):
         survey = (
             "for f in /proc/sys/net/ipv4/conf/*/accept_redirects /proc/sys/net/ipv4/conf/*/secure_redirects /proc/sys/net/ipv4/conf/*/send_redirects"
@@ -368,8 +499,8 @@ in {
             " case $f in */lo/*) continue ;; esac; v=$(cat $f); [ \"$v\" = 0 ] || echo \"$f=$v\"; done"
         )
         links = victim.succeed("ls /sys/class/net").split()
-        wanted = ["eth0", "eth1", "eth2", "eth3", "br0", "gp0", "enxdock", "vt0", "vt1", "dm0", "dm1", "brx", "wg9"]
-        vlan = [link for link in links if link.startswith("eth3.")]
+        wanted = ["eth0", "eth1", "eth2", "eth3", "eth5", "br0", "gp0", "enxdock", "vt0", "vt1", "dm0", "dm1", "brx", "wg9"]
+        vlan = [link for link in links if link.startswith("eth5.")]
         # the control: the survey sees every kind of link and finds a key
         # that is not 0
         victim.succeed("sysctl -w net.ipv4.conf.dm1.send_redirects=1 >/dev/null")
@@ -382,6 +513,20 @@ in {
         )
         bad = victim.succeed(survey).strip()
         verdict("H20 no redirect and no source route on any link (declared, guest port, hot-plug, veth, bridge, WireGuard)", bad == "", f"links: {' '.join(links)}; not 0: {bad}")
+        # I8: router advertisements only where declared. Allowed: `ral`,
+        # hot-plug links, and links that exist before systemd-sysctl runs
+        # and that nobody declares (the measured residual of design §3.4:
+        # `default` cannot reach them and the RA keys have no glob). `all`
+        # has no effect on a link for IPv6.
+        taking = {}
+        for line in victim.succeed("for f in /proc/sys/net/ipv6/conf/*/accept_ra; do echo \"$f $(cat $f)\"; done").splitlines():
+            path, value = line.split()
+            if value != "0":
+                taking[path.split("/")[-2]] = value
+        control("H20 the RA survey finds the declared `ra` link taking advertisements", taking.get("eth3") == "1", f"{taking}")
+        allowed = ["lo", "all", "eth3", *UNDECLARED_AT_BOOT]
+        wrong = {link: value for link, value in taking.items() if link not in allowed and not link.startswith("enx")}
+        verdict("H20 router advertisements only on the declared `ra` link and hot-plug links", wrong == {}, f"taking RAs: {taking}")
 
     print("HOSTILE SUMMARY")
     for key, safe, detail in RESULTS:
