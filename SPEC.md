@@ -14,12 +14,14 @@ with hostile-actor VM suites (an attacker VM; hermetic) found gaps on
 `main`; their fixes land in later rounds, each with its suite. The
 decisions below are **decided, not implemented**. The target design
 that follows from the rule is `specs/target-design.md` (index, shared
-contracts, open owner decisions O1–O8, build order) with one file per
-area: `specs/design-routed-fabric.md`, `specs/design-kube.md`,
-`specs/design-gateway.md`, `specs/design-netif.md`. None of it was run:
-each file lists the probes that go first. Until a step implements a
-part and amends this file or `specs/{netif,gateway}.md`, those stay the
-status authority.
+contracts, owner decisions O1–O8, probe results, build order) with one
+file per area: `specs/design-routed-fabric.md`, `specs/design-kube.md`,
+`specs/design-gateway.md`, `specs/design-netif.md`. A probe round on
+the same day ran a prototype of each area in VM suites on the remote
+builder; each design line says VERIFIED-VM, REFUTED or NOT-RUN, and the
+findings are `specs/probes/2026-11-27/`. The prototypes are not on
+`main`. Until a step implements a part and amends this file or
+`specs/{netif,gateway}.md`, those stay the status authority.
 
 | ID | Decision | Status |
 |---|---|---|
@@ -33,6 +35,16 @@ status authority.
 | H8 | A rogue router advertisement between two LAN neighbours is layer 2 and out of scope for the router; documented as a limit | active |
 | H9 | Every interface schema version is reset to 1 before the 0.1.x release, with no migration (hard rule 10) | decided, not implemented |
 | H10 | The target design of `specs/target-design.md` is the direction for netif, routed-fabric, the kube services and the gateways: allow-lists, not drop-lists | decided, not implemented |
+| H11 | (O1) A transit tunnel is its own outside-class link type; `externalTransit` and `sourceReturn` go | decided, probed, not implemented |
+| H12 | (O2) A non-member must not reach a pod, also on a kube spine. The guard is a clusterwide Cilium policy rendered by the bootstrap: nft does not see a packet for a pod on the receiving node. This policy is part of the data plane (it amends §3.3 "policy is day-2" when it lands) | decided, probed, not implemented |
+| H13 | (O3, refines H2) No custom eBPF. Every outside-facing Service is type LoadBalancer with source ranges; Cilium guards every front by them; admission policies refuse NodePort Services, `externalIPs` and missing ranges, and fill in the default (members and pods) | decided, probed, not implemented |
+| H14 | (O4) Pod Security default: enforce `baseline`, warn `restricted`; a namespace label opts out | decided, probed, not implemented |
+| H15 | (O5) netif: a new configuration must prove itself or the machine stays on the last good one; a declared one-shot override covers a planned move | decided, probed, not implemented |
+| H16 | (O6) No `accept_dad = 0`. `arp_ignore = 1` and `arp_announce = 2` on fabric members and netif links | decided, probed (k3s), not implemented |
+| H17 | (O7) A CLAT host forwards IPv6 only for the CLAT and for links a service declares (`forwardLinks`) | decided, probed, not implemented |
+| H18 | (O8) remote-builder is redesigned apart, with the matching change in external-systems/home; not before the owner schedules it | decided, not implemented |
+| H19 | Every hostile verdict has a positive control; a missing control fails the suite. Two RA verdicts were empty without one | active for new suites |
+| H20 | No GTSM on fabric sessions: on FRR 10.7.1 it turns the neighbor's BFD multihop. Sessions are pinned by link, peer address and own address | decided, probed, not implemented |
 
 **Round 60 (2026-11-26): R7, external transit.** A probe sent an
 outside client through upstream → border leaf → dedicated spine →
