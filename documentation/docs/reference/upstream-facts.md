@@ -341,6 +341,15 @@ its lines are in `specs/probes/2026-11-27/`.
   `accept_ra_rt_info_max_plen = 0`, `accept_ra_mtu = 0`,
   `accept_ra_min_hop_limit = 64`, an advertisement gives the prefix and
   a SLAAC address and nothing else (`netif-hostile` H16).
+- An IPv4 ICMP redirect whose inner packet matches a flow the host
+  sent passes the NixOS firewall as related traffic; only
+  `accept_redirects` then stops it. With the link's key at 1 and `all`
+  at 0 the redirect moves the route (`ip route get` shows the new
+  gateway): a host takes a redirect when `all` OR the link says 1
+  (`netif-hostile` H05 control, round 64).
+- An advertisement's route-information option installs nothing while
+  `accept_ra_rt_info_max_plen` is 0 (the kernel default) and installs
+  the route once the link's key is 64 (`netif-hostile` H04 control).
 - systemd-sysctl: a glob key (`net.ipv4.conf.*.accept_redirects`) is
   applied to every link that exists when `systemd-sysctl.service` runs,
   and to each link that appears later (`99-systemd.rules` runs it on the

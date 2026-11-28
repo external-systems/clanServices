@@ -11,6 +11,9 @@
 > the session handoff maps it. `specs/netif.md` is still the status
 > authority until each step of §8 amends it. The index, the cross-area
 > contracts and the build order are in `specs/target-design.md`.
+>
+> **Done:** steps 0 and 1 (round 64: `specs/netif.md` N46, N47; the
+> sysctl baseline and `netif-hostile`).
 
 Base: `main` at deeaba4. Builds on `reviews/netif.md` (N-A1..N-A16).
 Paths are relative to the repo root.
@@ -613,7 +616,7 @@ v6Default = r:
 - Residual on an RA link: any on-link host can become a default router. That is what `ra = true` means. Documented in the option text.
 - Not netif's: iwd and NetworkManager on their own links (P4, §9).
 
-**A finding about the evidence of `main`.** The verdicts H02–H04 that the review recorded as "safe on `main`" proved nothing: radvd refused the rogue interface (`MinRtrAdvInterval … must be … no more than 3/4 of MaxRtrAdvInterval`), so no advertisement was ever sent. The suite now has a `control` before each group of verdicts (a packet capture or a positive effect that proves the attack arrived) and fails when a control is missing. `hostile-router` has the same radvd line (`services/router/tests/vm/hostile.nix:161`, `MaxRtrAdvInterval 4` without `MinRtrAdvInterval 3`) and needs the same control.
+**A finding about the evidence of `main`.** The verdicts H02–H04 that the review recorded as "safe on `main`" proved nothing: the radvd fixture refused the rogue interface (`MinRtrAdvInterval … must be … no more than 3/4 of MaxRtrAdvInterval`), so no advertisement was ever sent. radvd appears only as a test fixture (the attacker's rogue RA sender, an ISP simulator); the router's RA daemon is CoreRAD (G15, target-design O11). The suite now has a `control` before each group of verdicts (a packet capture or a positive effect that proves the attack arrived) and fails when a control is missing. `hostile-router` has the same radvd line (`services/router/tests/vm/hostile.nix:161`, `MaxRtrAdvInterval 4` without `MinRtrAdvInterval 3`) and needs the same control.
 
 ### 3.7 Option surface
 
@@ -820,12 +823,12 @@ New static check `checks.netif-guard-logic` (register in `flake-parts/`, beside 
 
 Suite `netif-hostile` (`services/netif/tests/vm/hostile.nix`). It ran with the prototype; the table is what it printed. Each row is one `verdict(id, safe, detail)`. A `control` before each group proves that the attack reached the victim; a missing control fails the suite. That rule exists because H02–H04 were empty on `main` (§3.6).
 
-Topology as built: `gw` (the real gateway, VLAN 1); `attacker` on VLANs 1–5 (radvd, dnsmasq, scapy, nmap); `victim` with `uplink` (eth1, static, owns both defaults), `side` (eth2, DHCPv4, no default), `ral` (eth3, `ra = true`, no default), `optin` (eth4, DHCPv4 with `dhcp.dns` and `dhcp.classlessRoutes`), `trunk` (eth5, a VLAN parent without addressing) and `v10`, `br0` (guest ports) with a veth guest in a namespace, and the hot-plug prefix `enx` with a veth "dock" whose rogue server sits in a namespace.
+Topology as built: `gw` (the real gateway, VLAN 1); `attacker` on VLANs 1–5 (a radvd fixture, dnsmasq, scapy, nmap); `victim` with `uplink` (eth1, static, owns both defaults), `side` (eth2, DHCPv4, no default), `ral` (eth3, `ra = true`, no default), `optin` (eth4, DHCPv4 with `dhcp.dns` and `dhcp.classlessRoutes`), `trunk` (eth5, a VLAN parent without addressing) and `v10`, `br0` (guest ports) with a veth guest in a namespace, and the hot-plug prefix `enx` with a veth "dock" whose rogue server sits in a namespace.
 
 | Id | Attack | Result with the prototype |
 |---|---|---|
 | H01 | full TCP scan of every address of the victim (`nmap -sS -p-`) | SAFE: no open port |
-| H02 | radvd on VLAN 1, high preference, beside a static IPv6 gateway | SAFE (control: the RA was captured on eth1): the default stays on the declared gateway |
+| H02 | the radvd fixture on VLAN 1, high preference, beside a static IPv6 gateway | SAFE (control: the RA was captured on eth1): the default stays on the declared gateway |
 | H03 | the same RA carries a prefix | SAFE: no address from it |
 | H04 | the same RA carries a route-information option | SAFE: no route |
 | H05 | forged ICMP redirect in the gateway's name (scapy) | SAFE: the route does not move |
@@ -837,7 +840,7 @@ Topology as built: `gw` (the real gateway, VLAN 1); `attacker` on VLANs 1–5 (r
 | H13 | `optin`: the link declared `dhcp.dns` and `dhcp.classlessRoutes` | SAFE as "declared": DNS set, `default-route yes`, the option-121 route installed, MTU still 1500 |
 | H14 | spoofed source: a packet on VLAN 1 with a source address of the `side` subnet (scapy) | SAFE (control: an honest echo is answered): no reply leaves the victim (firewall reverse-path check) |
 | H15 | a guest on `br0` sends an RA with a prefix (scapy in a namespace) | SAFE (control: the RA was captured on br0): no address, no route; `accept_ra` of `br0` and of the guest port is 0 |
-| H16a–d | radvd on `ral` (`ra = true`, not the default owner): default router, route information, MTU 1280, hop limit 1 | SAFE (control: the link took the advertised prefix): no default on eth3, no route, MTU 1500, hop limit 64 |
+| H16a–d | the radvd fixture on `ral` (`ra = true`, not the default owner): default router, route information, MTU 1280, hop limit 1 | SAFE (control: the link took the advertised prefix): no default on eth3, no route, MTU 1500, hop limit 64 |
 | H18a–c | rogue DHCP on a hot-plug link: options 121, 3, 26, 6 | SAFE (control: the lease is on the link): only the router at metric 200; `default-route no` while a declared link has DNS; MTU 1500; redirects 0 |
 | H19 | `arping` from VLAN 1 for the victim's address on eth2 | SAFE with the step-8 keys on (`Received 0 response(s)`; control: the victim's own address on eth1 answers). Without them Linux answers for any local address |
 | H20 | every link of the machine except `lo` (declared, guest port, hot-plug, veth, bridge, dummy, WireGuard): six redirect and source-route keys | SAFE: all 0 on `br0 brx dm0 dm1 enxdock eth0 eth1 eth2 eth3 eth4 eth5 eth5.10 gp0 vt0 vt1 wg9` and on `all` and `default` |
@@ -901,7 +904,7 @@ Suite `netif-modes` (I12), VERIFIED-VM: booted in the NetworkManager mode, `swit
 
 ## 8. Implementation order
 
-Every step: spec text first (`specs/netif.md` and `documentation/docs/netif/` together, hard rule 3), then code, then `git add -A`, `fmt`, `check`, and the named suites one at a time with `vm-test <suite> --remote --quiet --rebuild`. One PR per step. Take the code from `probes/netif/prototype.patch` (the session evidence): every file named below is in it, in the state that passed the suites named in §9. Decision ids: take the next free `N…` id in `specs/netif.md` at the time of the PR (`N45` is taken).
+Every step: spec text first (`specs/netif.md` and `documentation/docs/netif/` together, hard rule 3), then code, then `git add -A`, `fmt`, `check`, and the named suites one at a time with `vm-test <suite> --remote --quiet --rebuild`. One PR per step. Take the code from `probes/netif/prototype.patch` (the session evidence): every file named below is in it, in the state that passed the suites named in §9. Decision ids: take the next free `N…` id in `specs/netif.md` at the time of the PR (`N46` and `N47` are steps 0 and 1).
 
 How to cut the prototype into steps: apply the whole patch in a scratch worktree, then for each step copy only the files and hunks the step lists. Steps 1, 2 and 4 touch the same two files (`services/netif/default.nix`, `services/netif/host.nix`) in separate hunks.
 
@@ -917,6 +920,7 @@ How to cut the prototype into steps: apply the whole patch in a scratch worktree
 - `services/netif/default.nix`: in `mkIfstateBase`, `sysctl.ipv4 = baseline.everyLink4;` and `baseline.everyLink6` at the head of `sysctl.ipv6`. Leave the RA keys as they are on `main` (that is step 2).
 - `services/netif/host.nix`: nothing.
 - Suite: add `services/netif/tests/vm/hostile.nix` and its `clanTests.netif-hostile` entry. In this step keep only the verdicts that this step makes safe: H01, H05–H08, H14, H20 and the P3/P10 findings. The other verdicts arrive with their steps (a red verdict never lands on `main`).
+- **As built (round 64).** Every verdict group has a positive control that gates the suite: H01 an open port on the gateway; H05–H08 the same forged redirect moves the route when the link's `accept_redirects` is 1 (the inner packet is a UDP flow the victim sent, so the firewall passes it as related and only the sysctl decides); H14 an honest echo; H20 the survey sees every kind of link and finds a planted 1. The radvd fixture (`MinRtrAdvInterval 3`) and its capture control are in already: H04 is a verdict for the route-information option (the kernel's `accept_ra_rt_info_max_plen = 0`) with its own control (with the link's key at 64 the same advertisement installs `2001:db8:f00d::/48 proto ra`). The prototype's H04 read routes through a filter that dropped every line with `expires`, so it could not have seen an RA route; the suite now reads them unfiltered; H02, H03 and the rogue prefix route are `info` lines naming step 2. `side` is static here (step 4 makes it DHCP).
 - nix-unit (`services/netif/tests/eval-tests.nix`): a declared link renders `sysctl.ipv4.accept_redirects == 0`, `secure_redirects == 0`, `send_redirects == 0`, `accept_source_route == 0`, `sysctl.ipv6.accept_redirects == 0`; `config.boot.kernel.sysctl` has `net.ipv4.conf.all.accept_redirects`, `net.ipv4.conf.default.accept_redirects` and `"net.ipv4.conf.*.accept_redirects"`, all 0.
 - Proof: `netif-hostile`; `netif` (its `assert_ifstate_noop`); one kube suite for the glob beside Cilium (`k3s-join-netif` and `k3s-data-plane-netif` passed with the whole prototype; `k3s-single` was not run).
 - Docs: `documentation/docs/reference/upstream-facts.md`, the facts of §9 marked "step 1".
@@ -932,7 +936,7 @@ How to cut the prototype into steps: apply the whole patch in a scratch worktree
   - `lib/gateway/tests/vm/v6only-host.nix`: `uplink` of `slaac`;
   - not checked by a run, read them before the PR (risk R3): `lib/gateway/tests/vm/wan.nix`, `services/router/tests/vm/default.nix`, `lib/gateway/tests/vm/dual-wan.nix`, the kube suites with IPv6 over an advertised default. Grep every inventory for a link with IPv6 and no static IPv6 gateway.
   - no change needed: `netif-hotplug` (the dock is a hot-plug link), `netif-match`, `netif-guard`, `netif-vmhost`, `netif-wifi` and `netif-desktop` (they set `ra = false` or use no advertisement on a netif link).
-- Suite: `netif-hostile` gains the `ral`, `trunk`, `v10` and `br0` links, the radvd fixture with `MinRtrAdvInterval 3`, the controls, and verdicts H02–H04, H15, H16a–d, H23.
+- Suite: `netif-hostile` gains the `ral` link and its radvd fixture interface, the controls of H15, H16 and H23, and verdicts H15, H16a–d, H23; the `info` lines H02, H03 and the H04 prefix route become verdicts (step 1 has the radvd fixture on VLAN 1, its capture control, the `trunk`, `v10` and `br0` links).
 - nix-unit: static `gateway.ipv6` with `ra = true` renders `accept_ra_defrtr == 0`; a bridge with `guestPorts` and a bridge member render `accept_ra == 0`; a link with `ra = true` and no gateway renders `{accept_ra = 1; autoconf = 1; accept_ra_defrtr = 1;}`; the E3 and E4 texts of §3.9.
 - Proof: `netif-hostile`, `netif`, `netif-dhcp`, `netif-v6only`, `netif-hotplug`, `netif-vmhost`, `netif-wifi`, `netif-desktop`, `netif-modes`.
 

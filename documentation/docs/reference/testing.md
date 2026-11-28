@@ -294,7 +294,11 @@ packets arrive; SPEC.md round 62, D73); the cluster against an
 outsider on the node LAN, a fabric leaf outside the cluster, a pod and
 a local user (`k3s-hostile`, `rke2-hostile`, `<DISTRO>_HOSTILE_OK`: no
 gap, every verdict group with a working positive control; SPEC.md round
-63, D74). NAT sites and route-filter negatives are planned, see
+63, D74); a netif machine against a hostile LAN neighbour
+(`netif-hostile`, `NETIF_HOSTILE_OK`: no open port, no redirect or
+source route on any link, no answer to a spoofed source, every verdict
+group with a working positive control; the RA verdicts that netif step
+2 closes are `info` lines; SPEC.md round 64, `specs/netif.md` N47). NAT sites and route-filter negatives are planned, see
 [Data-plane hardening](../plans/data-plane-hardening.md);
 k3s/RKE2 single/join/HA and native data planes; and the native,
 selective and external ClusterMesh variants. Since D72 the tunnel

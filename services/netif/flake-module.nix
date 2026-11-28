@@ -41,6 +41,10 @@ in rec {
       imports = [./tests/vm/guard.nix];
       inherit clan;
     };
+    netif-hostile = {
+      imports = [./tests/vm/hostile.nix];
+      inherit clan;
+    };
     netif-match = {
       imports = [./tests/vm/match.nix];
       inherit clan;

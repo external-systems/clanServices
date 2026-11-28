@@ -1298,6 +1298,8 @@ in {
         mtu = 1500;
         hooks = false;
         ra = {
+          accept_redirects = 0;
+          accept_source_route = 0;
           accept_ra = 1;
           autoconf = 1;
           accept_ra_defrtr = 1;
@@ -1820,6 +1822,8 @@ in {
         nogateway = true;
         ownerKeepsGateway = false;
         ra = {
+          accept_redirects = 0;
+          accept_source_route = 0;
           accept_ra = 1;
           autoconf = 1;
           accept_ra_defrtr = 0;
@@ -1858,6 +1862,40 @@ in {
             via = "198.51.100.1";
           }
         ];
+      };
+    };
+    # The sysctl baseline (N47): a declared link renders no redirects
+    # and no source routes; `all`, `default` and the glob cover every
+    # other link.
+    test_sysctlBaseline = let
+      baselineKeys = lib.concatMap (scope: [
+        "net.ipv4.conf.${scope}.accept_redirects"
+        "net.ipv4.conf.${scope}.secure_redirects"
+        "net.ipv4.conf.${scope}.send_redirects"
+        "net.ipv4.conf.${scope}.accept_source_route"
+        "net.ipv6.conf.${scope}.accept_redirects"
+        "net.ipv6.conf.${scope}.accept_source_route"
+      ]) ["all" "default" "*"];
+    in {
+      expr = {
+        ipv4 = kamInterfaces.enp3s0.sysctl.ipv4;
+        ipv6 = {
+          inherit (kamInterfaces.enp3s0.sysctl.ipv6) accept_redirects accept_source_route;
+        };
+        kernel = lib.genAttrs baselineKeys (key: kam.boot.kernel.sysctl.${key});
+      };
+      expected = {
+        ipv4 = {
+          accept_redirects = 0;
+          secure_redirects = 0;
+          send_redirects = 0;
+          accept_source_route = 0;
+        };
+        ipv6 = {
+          accept_redirects = 0;
+          accept_source_route = 0;
+        };
+        kernel = lib.genAttrs baselineKeys (_: 0);
       };
     };
     # The RA default gets netif's metric: the sysctl default for links

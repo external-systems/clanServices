@@ -93,6 +93,10 @@ Done so far:
   the table `inet kube-<instance>` (a host on the node LAN no longer
   reaches a pod), the rke2 supervisor front for members only, and
   `packages.rke2` as the runtime.
+- netif steps 0 and 1 ([netif](../netif/index.md) N46, N47): the threat
+  model and invariants are in the contract; no link takes or sends an
+  ICMP redirect or accepts a source route, in any mode; the suite
+  `netif-hostile` puts an attacker beside a netif machine.
 
 Until the design is frozen, tests prove behaviour and may be rewritten
 (see [Testing](../reference/testing.md)).

@@ -4,6 +4,28 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 64 (2026-11-27): netif steps 0 and 1, the threat model, one
+sysctl baseline and `netif-hostile`.** First netif step of the round-61
+target design (`specs/design-netif.md` §8.1, §8.2). The contract is
+`specs/netif.md` (status authority for host networking):
+
+- **N46** the threat model (T1–T8) and the invariants (I1–I13, S1–S5)
+  of the design are part of the netif contract; each invariant names
+  the step that implements it.
+- **N47** one sysctl baseline for every link of every IfState-base
+  machine, in every mode: no ICMP redirect taken or sent, no
+  source-routed packet. `lib/ifstate.nix` writes `all`, `default` and
+  the glob `*`; netif writes the same keys on each declared link. It
+  reaches fabric and kube nodes too (they import the same base).
+- **`netif-hostile`**: every verdict group with a positive control that
+  gates the suite (H19). What netif step 2 closes (an RA default and a
+  SLAAC address beside a static IPv6 gateway) is an `info` line naming
+  the step. The attacker's radvd is a test fixture (H23).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| N47 | Redirects accepted (kernel default 1 on a link) and sent; nothing pinned source routes | 0 on every link, every mode, from two sinks | `netif-hostile` (`NETIF_HOSTILE_OK`, no gap, every control works), `netif`, `netif-guard`, `netif-dhcp`, `netif-hotplug`, `k3s-join`, `routed-fabric`; nix-unit `test_sysctlBaseline` |
+
 **Round 63 (2026-11-27): kube step 1, the hostile suites and the first
 kube guards (D74).** First kube step of the round-61 target design
 (`specs/design-kube.md` §8 item 1). It puts `k3s-hostile` and
@@ -138,6 +160,7 @@ findings are `specs/probes/2026-11-27/`. The prototypes are not on
 | H20 | No GTSM on fabric sessions: on FRR 10.7.1 it turns the neighbor's BFD multihop. Sessions are pinned by link, peer address and own address | implemented round 62 (D73) |
 | H21 | A host of a router zone with `fabric = true` is `world` for Cilium: it reaches only pods labelled `clan.lol/outside=allow` (or in a labelled namespace), through a Service whose source ranges hold it | decided; the zone option is in (round 62), the Cilium policy is kube step 7 |
 | H22 | The ClusterMesh API Service is type LoadBalancer with source ranges on every exposure mode, node-port too (a class no controller serves, its fixed NodePort answers the ranges only). On node-port exposure `cilium clustermesh status` cannot read it; `cilium-dbg status` on the agents replaces it | decided (owner, 2026-11-27); kube step 8 |
+| H23 | (O11) CoreRAD is the router's RA daemon, never radvd. radvd appears only as a test fixture (the ISP simulator, the attacker's rogue RA sender) | active (owner, 2026-11-27) |
 
 **Round 60 (2026-11-26): R7, external transit.** A probe sent an
 outside client through upstream → border leaf → dedicated spine →
