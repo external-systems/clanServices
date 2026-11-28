@@ -16,11 +16,16 @@ in {
     instanceName,
     roleMembers,
     settings,
-    transportFacts ? null,
+    # machine name -> the member's resolved node_transport facts (null:
+    # the member has no export from network.fabric)
+    transportFacts,
     # [ { name, settings } ] — the fully merged per-machine settings of
     # every cluster member, name = "<role>/<machine>" (for the parity
     # check across all machines of all roles).
     roleSettings ? [],
+    # K-A8: the distro's own cluster-level options (rke2: `profile`),
+    # checked for parity beside the shared ones
+    extraClusterLevel ? [],
     # the resolved pod/service CIDRs (cilium.nix resolveCidrs), for the
     # overlap and prefix-length checks; null skips them
     resolvedCidrs ? null,
@@ -72,15 +77,18 @@ in {
     );
     clusterInitMembers = lib.filter (m: m.settings.clusterInit) serverMembers;
 
+    # The members' node addresses come from the fabric's node_transport
+    # export (D72: the fabric is the only transport; manual addresses
+    # were removed in round 67, D76). A member without an export has
+    # none; the assertion below names it.
     memberAddrs =
       map (
-        m:
-          if transportFacts != null && transportFacts ? ${m.machineName}
-          then transportFacts.${m.machineName}
-          else {
-            ipv4 = m.settings.network.ipv4 or null;
-            ipv6 = m.settings.network.ipv6 or null;
-          }
+        m: let
+          facts = transportFacts.${m.machineName} or null;
+        in
+          if facts == null
+          then {}
+          else facts
       )
       roleMembers;
     memberIpv4s = map (a: a.ipv4 or null) memberAddrs;
@@ -100,14 +108,9 @@ in {
       then explicit
       else hashCiliumId instanceName;
 
-    # §6.3 all-or-none fabric posture: members either all ride the fabric
-    # or all carry manual addresses; mixing breaks the mesh trust domain.
-    memberUsesFabric = m: (m.settings.network.fabric or null) != null;
-    fabricMembers = lib.filter memberUsesFabric roleMembers;
-    manualMembers = lib.filter (m: !memberUsesFabric m) roleMembers;
     membersMissingFacts =
       lib.filter (
-        m: !(transportFacts ? ${m.machineName}) || transportFacts.${m.machineName} == null
+        m: (transportFacts.${m.machineName} or null) == null
       )
       roleMembers;
 
@@ -135,8 +138,10 @@ in {
         "distroDefaults"
         "coredns"
         "bootstrap"
+        "firewall"
       ]
       rs
+      // lib.getAttrs (lib.filter (n: rs ? ${n}) extraClusterLevel) rs
       // {
         networkFabric = rs.network.fabric or null;
       };
@@ -181,13 +186,6 @@ in {
     }
     {
       assertion =
-        transportFacts
-        != null
-        || lib.all (m: m.settings.network.ipv4 != null && m.settings.network.ipv6 != null) roleMembers;
-      message = "kube-cluster/${instanceName}: network.fabric is null, so every member must set network.ipv4 and network.ipv6";
-    }
-    {
-      assertion =
         builtins.length (lib.unique (lib.filter (x: x != null) memberIpv4s))
         == builtins.length (lib.filter (x: x != null) memberIpv4s);
       message = "kube-cluster/${instanceName}: every cluster member needs a unique IPv4 address";
@@ -219,14 +217,8 @@ in {
       message = "kube-cluster/${instanceName}: all members must resolve the same cilium.id (resolved here: ${toString resolvedId}); check for per-member cilium.id drift";
     }
     {
-      assertion = fabricMembers == [] || manualMembers == [];
-      message = "kube-cluster/${instanceName}: all-or-none fabric posture (§6.3) — members mix fabric-provided and manual addresses: fabric: ${
-        lib.concatMapStringsSep ", " (m: m.machineName) fabricMembers
-      }; manual: ${lib.concatMapStringsSep ", " (m: m.machineName) manualMembers}";
-    }
-    {
-      assertion = transportFacts == null || membersMissingFacts == [];
-      message = "kube-cluster/${instanceName}: these members have no export from the configured fabric source (add them to the routed-fabric instance or switch to manual addresses): ${
+      assertion = membersMissingFacts == [];
+      message = "kube-cluster/${instanceName}: these members have no node_transport export from network.fabric (add them to that routed-fabric instance): ${
         lib.concatMapStringsSep ", " (m: m.machineName) membersMissingFacts
       }";
     }
@@ -251,10 +243,6 @@ in {
       message = "kube-cluster/${instanceName}: network.podCIDRv6 must be contained in ipv6NativeRoutingCIDR fd10::/16 (D49)";
     }
     {
-      assertion = !settings.bgp.enable || settings.network.fabric != null;
-      message = "kube-cluster/${instanceName}: bgp.enable requires network.fabric so routed-fabric owns the node-local FRR peer; manual-address clusters must disable BGP and the default fabric pool";
-    }
-    {
       # Cluster-level settings are one logical cluster configuration:
       # they must be identical on every machine of every role
       # (server/agent), otherwise the bundle, the per-member exports,
@@ -262,19 +250,16 @@ in {
       assertion = roleDrift == [];
       message = "kube-cluster/${instanceName}: cluster-level settings must be identical across all machines — drifted member(s): ${
         lib.concatStringsSep ", " (map (r: r.name) roleDrift)
-      } (set cilium/pools/bgp/fabric/mesh/meshGroup/domain/distroDefaults/coredns/bootstrap/network.fabric uniformly on every machine of every role)";
+      } (set cilium/pools/bgp/fabric/mesh/meshGroup/domain/distroDefaults/coredns/bootstrap/firewall/network.fabric${lib.concatMapStrings (n: "/${n}") extraClusterLevel} uniformly on every machine of every role)";
     }
     {
       # D58: the transport route exchange and capabilities are uniform
       # across the cluster's members (one transport instance = one trust domain).
-      assertion =
-        transportFacts
-        == null
-        || lib.all (
-          n:
-            transport.uniformityKey transportFacts.${n}
-            == transport.uniformityKey transportFacts.${builtins.head (builtins.attrNames transportFacts)}
-        ) (lib.tail (builtins.attrNames transportFacts));
+      assertion = lib.all (
+        n:
+          transport.uniformityKey transportFacts.${n}
+          == transport.uniformityKey transportFacts.${builtins.head (builtins.attrNames transportFacts)}
+      ) (lib.drop 1 (builtins.attrNames transportFacts));
       message = "kube-cluster/${instanceName}: node_transport profiles differ across members — one transport instance must present ONE uniform route-exchange/capability profile (D58)";
     }
   ];
@@ -474,9 +459,8 @@ in {
   # pin) must differ on every local-router member. An equality makes the
   # Cilium→FRR `::1` session accidental iBGP instead of eBGP (D9). Only
   # enforced while BGP is active: with no node-bgp/shared-bgp pool no
-  # CiliumBGPClusterConfig is rendered and no session exists. Vacuous for
-  # manual-address clusters: their members have no routeExchange and are
-  # filtered out of hostAsns upstream.
+  # CiliumBGPClusterConfig is rendered and no session exists. A member
+  # without a local-router profile is filtered out of hostAsns upstream.
   mkBgpAsnAssertions = {
     instanceName,
     ciliumAsn,

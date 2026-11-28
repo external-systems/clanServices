@@ -1,4 +1,4 @@
-# Decision record (D1–D74)
+# Decision record (D1–D76)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history. D64 (allocations in
@@ -299,6 +299,26 @@ FRR is the only data plane.
   node addresses (D69). It also carries the tunnel suite's Kubernetes
   checks: cross-node pod traffic with a 200 KB body (the MTU proof),
   ClusterIP from pods, and Node IPAM dropping a dead node.
+
+### D76 — A fabric always; HAProxy on loopback; one firewall matrix (2026-11-28, implemented)
+
+Kube steps 3 and 4 of the target design.
+
+- A cluster always rides a fabric: `network.fabric` is required and
+  the manual addresses are gone. A one-machine cluster is a one-machine
+  fabric; the README quick start shows one, and a test evaluates it.
+- Options are typed: the domain is a DNS name, the CIDRs are prefixes.
+  The rke2 `profile` must be the same on every machine.
+- The HAProxy fronts listen on loopback only. No other host and no pod
+  reaches them. An rke2 agent's supervisor front has the port 9345, so
+  its tunnel for `kubectl logs` and `exec` reaches the servers.
+- The node firewall is one matrix by source: the API for members and
+  pods, the supervisor and Cilium's health port for members, the kubelet
+  for servers (pods only with `firewall.kubeletFromPods`), etcd for
+  servers. No link is trusted.
+- Tested by `k3s-hostile` and `rke2-hostile`: a pod reaches only the API
+  on a server, a member and a fabric leaf outside the cluster do not
+  reach a front; each verdict has a positive control.
 
 ### D74 — The kube guard table; the supervisor front for members (2026-11-27, implemented)
 

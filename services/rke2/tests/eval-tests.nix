@@ -34,6 +34,8 @@
           netif = ../../netif/netif-interface.nix;
           nat_gateway = ../../nat-gateway/nat-gateway-interface.nix;
           router = ../../router/router-interface.nix;
+          # the README quick start rides a routed-fabric instance
+          routed_fabric = ../../routed-fabric/routed-fabric-interface.nix;
         };
       # Fleet-wide kube-cluster assertions (§6.2) as clan.checks — enforced
       # by clanLib.clan's checkConfig.
@@ -43,45 +45,60 @@
         rke2 = rke2Module;
         modes = ../../modes/default.nix;
         k3s = k3sModule;
-        inherit (self.clan.modules) netif nat-gateway router;
+        inherit (self.clan.modules) netif nat-gateway router routed-fabric;
       };
       machines = machineConfigs;
       inherit inventory;
     };
 
-  # Inventory with explicit per-node addresses (no transport service).
-  explicitInventory = {
-    instances.rke2 = {
-      module.name = "rke2";
-      module.input = "self";
-      roles.server = {
-        settings = {
-          network.fabric = null;
-          # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
-          cilium.id = 1;
-        };
-        machines = {
-          alpha.settings = {
-            clusterInit = true;
-            network = {
-              ipv4 = "10.0.0.1";
-              ipv6 = "fd00::1";
-            };
+  # D76: every cluster rides a fabric. `mkMesh` is a fake-transport
+  # instance holding the given machines (10.0.0.<n>, fd00::<n>).
+  fakeFabric = {
+    service = "fake-transport";
+    instance = "mesh";
+  };
+  meshAddrs = {
+    alpha = 1;
+    beta = 2;
+    gamma = 3;
+    delta = 4;
+  };
+  mkMesh = names: {
+    module.name = "fake-transport";
+    module.input = "self";
+    roles.node.machines = lib.genAttrs names (name: {
+      settings = {
+        ipv4 = "10.0.0.${toString meshAddrs.${name}}";
+        ipv6 = "fd00::${toString meshAddrs.${name}}";
+        asn = 4258224171 + meshAddrs.${name};
+      };
+    });
+  };
+
+  # Two servers on the fake fabric (the base fixture of most tests).
+  pairInventory = {
+    instances = {
+      mesh = mkMesh ["alpha" "beta"];
+      rke2 = {
+        module.name = "rke2";
+        module.input = "self";
+        roles.server = {
+          settings = {
+            network.fabric = fakeFabric;
+            # Pinned id (§6.2): keeps CIDRs/clusterDNS/HAProxy ports stable.
+            cilium.id = 1;
           };
-          beta.settings = {
-            clusterInit = false;
-            network = {
-              ipv4 = "10.0.0.2";
-              ipv6 = "fd00::2";
-            };
+          machines = {
+            alpha.settings.clusterInit = true;
+            beta.settings.clusterInit = false;
           };
         };
       };
     };
   };
 
-  explicitEvaled = mkEvaled explicitInventory;
-  alphaExplicit = explicitEvaled.config.nixosConfigurations.alpha.config;
+  pairEvaled = mkEvaled pairInventory;
+  alphaPair = pairEvaled.config.nixosConfigurations.alpha.config;
 
   # Inventory backed by a native node_transport instance (the fake
   # transport below; SPEC.md D72): two servers plus one agent.
@@ -149,7 +166,7 @@
 
   # distroDefaults opt-in: the service refrains from disabling the distro's
   # packaged components (D42).
-  stockInventory = lib.recursiveUpdate explicitInventory {
+  stockInventory = lib.recursiveUpdate pairInventory {
     instances.rke2.roles.server.settings.distroDefaults.enable = true;
   };
   stockEvaled = mkEvaled stockInventory;
@@ -167,6 +184,7 @@
   modesSingle =
     (mkEvaled {
       instances = {
+        mesh = mkMesh ["alpha"];
         modes = modesInstance {
           alpha.settings.modes = {
             default.manager = "networkmanager";
@@ -178,16 +196,12 @@
           module.input = "self";
           roles.server = {
             settings = {
-              network.fabric = null;
+              network.fabric = fakeFabric;
               cilium.id = 1;
             };
             machines.alpha.settings = {
               clusterInit = true;
               modes = ["kubernetes"];
-              network = {
-                ipv4 = "10.0.0.1";
-                ipv6 = "fd00::1";
-              };
             };
           };
         };
@@ -195,7 +209,7 @@
     }).config.nixosConfigurations.alpha.config;
   modesVoter =
     (mkEvaled (
-      lib.recursiveUpdate explicitInventory {
+      lib.recursiveUpdate pairInventory {
         instances = {
           modes = modesInstance {
             alpha.settings.modes = {
@@ -240,7 +254,7 @@
   gammaHaproxyConfig = gammaTransport.services.haproxy.config;
 
   # A cluster with two clusterInit servers should fail.
-  dualInitInventory = lib.recursiveUpdate explicitInventory {
+  dualInitInventory = lib.recursiveUpdate pairInventory {
     instances.rke2.roles.server.machines.beta.settings.clusterInit = true;
   };
   dualInitEvaled = mkEvaled dualInitInventory;
@@ -643,7 +657,7 @@
   };
 in {
   test_serviceEnabled = {
-    expr = alphaExplicit.services.rke2.enable;
+    expr = alphaPair.services.rke2.enable;
     expected = true;
   };
 
@@ -663,7 +677,7 @@ in {
       images-core-linux-amd64-tar-zst = fakeImages;
     };
     alpha =
-      (mkEvaled (lib.recursiveUpdate explicitInventory {
+      (mkEvaled (lib.recursiveUpdate pairInventory {
         instances.rke2.roles.server.settings.packages.rke2 = fakePackage;
       })).config.nixosConfigurations.alpha.config;
   in {
@@ -678,7 +692,7 @@ in {
   };
 
   test_roleServer = {
-    expr = alphaExplicit.services.rke2.role;
+    expr = alphaPair.services.rke2.role;
     expected = "server";
   };
 
@@ -687,8 +701,8 @@ in {
     expected = "agent";
   };
 
-  test_explicitNodeIpDualStack = {
-    expr = alphaExplicit.services.rke2.nodeIP;
+  test_pairNodeIpDualStack = {
+    expr = alphaPair.services.rke2.nodeIP;
     expected = "10.0.0.1,fd00::1";
   };
 
@@ -707,17 +721,20 @@ in {
     expected = "https://kubeapi-rke2.clan:8443";
   };
 
+  # An agent's supervisor front has the supervisor's own port (D76,
+  # specs/design-kube.md §3.6): its tunnel dials the servers on the port
+  # of its join URL.
   test_agentUsesLocalHaproxy = {
     expr = gammaTransport.services.rke2.serverAddr;
-    expected = "https://kubeapi-rke2.clan:8443";
+    expected = "https://kubeapi-rke2.clan:9345";
   };
 
   test_generatorNamesServer = {
-    expr = builtins.attrNames alphaExplicit.clan.core.vars.generators;
+    expr = builtins.attrNames alphaPair.clan.core.vars.generators;
     expected = [
       "rancher-admin-kubeconfig-rke2"
       "rancher-agent-token-rke2"
-      "rancher-clustermesh-ca-clan"
+      "rancher-clustermesh-ca-mesh"
       "rancher-clustermesh-rke2"
       "rancher-haproxy-rke2"
       "rancher-pki-rke2"
@@ -915,16 +932,22 @@ in {
   test_haproxyPortDerivation = {
     # cilium.id = 1 -> kubeapi LB 7443, supervisor LB 8443, stats 8404.
     expr = {
-      kubeapi = lib.hasInfix "bind 10.42.0.1:7443" alphaHaproxyConfig;
-      kubeapi6 = lib.hasInfix "bind [fd10:42::1]:7443" alphaHaproxyConfig;
-      supervisor = lib.hasInfix "bind 10.42.0.1:8443" alphaHaproxyConfig;
+      # D76: the fronts bind loopback only
+      kubeapi = lib.hasInfix "bind 127.0.0.1:7443" alphaHaproxyConfig;
+      kubeapi6 = lib.hasInfix "bind [::1]:7443" alphaHaproxyConfig;
+      notOnNodeAddress = !(lib.hasInfix "bind 10.42.0.1" alphaHaproxyConfig) && !(lib.hasInfix "bind [fd10:42::1]" alphaHaproxyConfig);
+      supervisor = lib.hasInfix "bind 127.0.0.1:8443" alphaHaproxyConfig;
+      # an agent's supervisor front has the supervisor's own port (§3.6)
+      agentSupervisor = lib.hasInfix "bind 127.0.0.1:9345" gammaHaproxyConfig && lib.hasInfix "bind [::1]:9345" gammaHaproxyConfig;
       # K15: the stats page is on loopback
       stats = lib.hasInfix "bind 127.0.0.1:8404" alphaHaproxyConfig;
     };
     expected = {
       kubeapi = true;
       kubeapi6 = true;
+      notOnNodeAddress = true;
       supervisor = true;
+      agentSupervisor = true;
       stats = true;
     };
   };
@@ -933,9 +956,10 @@ in {
     # alpha (server) lists itself plain and beta as backup, both families,
     # targeting the real apiserver port 6443 and supervisor port 9345.
     expr = {
-      selfPlain = lib.hasInfix "server alpha-4 10.42.0.1:6443\n" alphaHaproxyConfig;
-      peerBackup = lib.hasInfix "server beta-4 10.42.0.2:6443 backup" alphaHaproxyConfig;
-      peerBackup6 = lib.hasInfix "server beta-6 [fd10:42::2]:9345 backup" alphaHaproxyConfig;
+      # every connection leaves with this node's address (D76)
+      selfPlain = lib.hasInfix "server alpha-4 10.42.0.1:6443 source 10.42.0.1\n" alphaHaproxyConfig;
+      peerBackup = lib.hasInfix "server beta-4 10.42.0.2:6443 source 10.42.0.1 backup" alphaHaproxyConfig;
+      peerBackup6 = lib.hasInfix "server beta-6 [fd10:42::2]:9345 source [fd10:42::1] backup" alphaHaproxyConfig;
     };
     expected = {
       selfPlain = true;
@@ -947,8 +971,8 @@ in {
   test_haproxyAgentBackupsPlain = {
     # Agents list every server plain (no backup flag).
     expr = {
-      alphaPlain = lib.hasInfix "server alpha-4 10.42.0.1:6443\n" gammaHaproxyConfig;
-      betaPlain = lib.hasInfix "server beta-4 10.42.0.2:6443\n" gammaHaproxyConfig;
+      alphaPlain = lib.hasInfix "server alpha-4 10.42.0.1:6443 source 10.42.0.3\n" gammaHaproxyConfig;
+      betaPlain = lib.hasInfix "server beta-4 10.42.0.2:6443 source 10.42.0.3\n" gammaHaproxyConfig;
       noBackups = !(lib.hasInfix " backup" gammaHaproxyConfig);
     };
     expected = {
@@ -958,14 +982,17 @@ in {
     };
   };
 
-  test_kubeapiFqdnPinnedToOwnAddress = {
+  # D76: the kubeapi FQDN resolves to loopback, where the fronts listen.
+  test_kubeapiFqdnOnLoopback = {
     expr = {
-      alpha = lib.hasInfix "10.42.0.1 kubeapi-rke2.clan" alphaTransport.networking.extraHosts;
-      gamma = lib.hasInfix "10.42.0.3 kubeapi-rke2.clan" gammaTransport.networking.extraHosts;
+      alpha = alphaTransport.networking.extraHosts;
+      gamma = gammaTransport.networking.extraHosts;
+      haproxyAfterIfstate = lib.elem "ifstate.service" (gammaTransport.systemd.services.haproxy.after or []);
     };
     expected = {
-      alpha = true;
-      gamma = true;
+      alpha = "127.0.0.1 kubeapi-rke2.clan\n::1 kubeapi-rke2.clan\n";
+      gamma = "127.0.0.1 kubeapi-rke2.clan\n::1 kubeapi-rke2.clan\n";
+      haproxyAfterIfstate = true;
     };
   };
 
@@ -1020,30 +1047,90 @@ in {
     expected = true;
   };
 
-  test_missingExplicitAddressAssertion = {
-    expr = let
-      bad = mkEvaled {
-        instances.rke2 = {
-          module.name = "rke2";
-          module.input = "self";
-          roles.server = {
-            settings = {
-              network.fabric = null;
-              cilium.id = 1;
-            };
-            machines.alpha.settings = {
-              clusterInit = true;
-              network = {
-                ipv4 = null;
-                ipv6 = "fd00::1";
-              };
+  # K-A8: the distro's own options are cluster-level too: a server with
+  # `profile = "cis"` beside an agent without it is refused.
+  test_profileParity = let
+    evaled = mkEvaled (lib.recursiveUpdate transportInventory {
+      instances.rke2.roles.server.settings.profile = "cis";
+    });
+  in {
+    expr = failedAssertion evaled.config.nixosConfigurations.alpha.config "bootstrap/firewall/network.fabric/profile uniformly";
+    expected = true;
+  };
+
+  # D76: network.fabric is required (manual addresses are gone), and a
+  # member outside the fabric instance is named by an assertion.
+  test_fabricRequired = {
+    expr =
+      (builtins.tryEval
+        (mkEvaled {
+          instances = {
+            mesh = mkMesh ["alpha"];
+            rke2 = {
+              module.name = "rke2";
+              module.input = "self";
+              roles.server.machines.alpha.settings.clusterInit = true;
             };
           };
+        }).config.nixosConfigurations.alpha.config.services.haproxy.config).success;
+    expected = false;
+  };
+
+  # K-A7: addresses and the domain are typed; a prefix length in a
+  # CIDR's place or a domain with a space fails at evaluation.
+  test_typedOptions = let
+    evalWith = settings:
+      (builtins.tryEval (
+        builtins.toJSON
+        (mkEvaled (lib.recursiveUpdate pairInventory {
+          instances.rke2.roles.server.settings = settings;
+        })).config.nixosConfigurations.alpha.config.clan.kubeClusters.rke2.renderedDistroConfig
+      )).success;
+  in {
+    expr = {
+      podCidrNoPrefix = evalWith {
+        network = {
+          podCIDRv4 = "10.9.0.0";
+          podCIDRv6 = "fd10:9::/56";
         };
       };
-    in
-      failedAssertion bad.config.nixosConfigurations.alpha.config "network.fabric is null";
-    expected = true;
+      podCidrV6InV4 = evalWith {
+        network = {
+          podCIDRv4 = "fd10:9::/56";
+          podCIDRv6 = "fd10:9::/56";
+        };
+      };
+      badDomain = evalWith {domain = "bad domain";};
+      goodDomain = evalWith {domain = "example.org";};
+    };
+    expected = {
+      podCidrNoPrefix = false;
+      podCidrV6InV4 = false;
+      badDomain = false;
+      goodDomain = true;
+    };
+  };
+
+  # H7: the README quick start evaluates with no failed assertion, and
+  # the README shows it verbatim.
+  test_readmeQuickStart = let
+    inventory = import ./readme-inventory.nix;
+    alpha = (mkEvaled inventory).config.nixosConfigurations.alpha.config;
+  in {
+    expr = {
+      shown = lib.hasInfix (builtins.readFile ./readme-inventory.nix) (builtins.readFile ../README.md);
+      # the services' own assertions (the machine has no disk or boot
+      # loader in this fixture)
+      failed = lib.filter (m: lib.hasInfix "kube" m || lib.hasInfix "fabric" m) (
+        map (a: a.message) (lib.filter (a: !a.assertion) alpha.assertions)
+      );
+      rendered = builtins.isString alpha.services.haproxy.config;
+    };
+    expected = {
+      shown = true;
+      failed = [];
+      rendered = true;
+    };
   };
 
   # --- kube_cluster export (§6.2) ------------------------------------------
@@ -1197,7 +1284,7 @@ in {
   # --- all-or-none transport posture (§6.3) ---------------------------------
 
   test_postureMissingMemberRejected = {
-    expr = failedAssertion postureEvaled.config.nixosConfigurations.alpha.config "no export from the configured fabric source";
+    expr = failedAssertion postureEvaled.config.nixosConfigurations.alpha.config "no node_transport export from network.fabric";
     expected = true;
   };
 
@@ -1614,13 +1701,13 @@ in {
   };
 
   test_forwardingFact = {
-    expr = alphaExplicit.clan.networkFacts.forwarding;
+    expr = alphaPair.clan.networkFacts.forwarding;
     expected = true;
   };
   # O7 (specs/design-gateway.md §3.5): pods are forwarded; a CLAT host
   # leaves the pod links to Cilium
   test_forwardLinksFact = {
-    expr = lib.all (link: lib.elem link alphaExplicit.clan.networkFacts.forwardLinks) ["cilium*" "lxc*"];
+    expr = lib.all (link: lib.elem link alphaPair.clan.networkFacts.forwardLinks) ["cilium*" "lxc*"];
     expected = true;
   };
 
@@ -1819,63 +1906,109 @@ in {
 
   # --- Round G11 kube hardening -------------------------------------------
 
-  # K2: manual addresses: the cluster ports from members and pods, etcd
-  # from the servers, no blanket pod accept, no trusted fabric link.
-  # K-A2: the supervisor and its LB front (8443) from the members only.
-  test_firewallManualBySource = let
-    rules = alphaExplicit.networking.firewall.extraInputRules;
+  # D76 (specs/design-kube.md §3.2): the node firewall is one matrix of
+  # rows (data); each row opens its ports to classes of sources.
+  test_firewallMatrixRows = let
+    rows = args:
+      map (row: row.name) (kube.render.firewallMatrix ({
+          kubeapiPort = 6443;
+          supervisorPort = 9345;
+          supervisor = true;
+        }
+        // args));
+    kubelet = args:
+      (lib.findFirst (row: row.name == "kubelet") null (kube.render.firewallMatrix ({
+          isServer = false;
+          kubeapiPort = 6443;
+          supervisorPort = 9345;
+          supervisor = true;
+        }
+        // args))).from;
   in {
     expr = {
-      cluster = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443, 10250, 4240 } accept" rules;
-      cluster6 = lib.hasInfix "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443, 10250, 4240 } accept" rules;
-      etcd = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 2379, 2380, 2381 } accept" rules;
-      supervisorMembersOnly = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 8443, 9345 } accept" rules;
-      supervisorMembersOnly6 = lib.hasInfix "ip6 saddr { fd00::1, fd00::2 } tcp dport { 8443, 9345 } accept" rules;
-      noBlanketPodAccept = !(lib.hasInfix ''iifname { "cilium*", "lxc*" } accept'' rules);
-      noGuard = !(lib.hasInfix "iifname" rules);
-      trusted = alphaExplicit.networking.firewall.trustedInterfaces;
+      server = rows {isServer = true;};
+      agent = rows {isServer = false;};
+      kubelet = kubelet {};
+      kubeletFromPods = kubelet {kubeletFromPods = true;};
     };
     expected = {
-      cluster = true;
-      cluster6 = true;
-      etcd = true;
-      supervisorMembersOnly = true;
-      supervisorMembersOnly6 = true;
-      noBlanketPodAccept = true;
-      noGuard = true;
-      trusted = [
-        "cilium_host"
-        "cilium_net"
-        "lo"
-      ];
+      server = ["api" "supervisor" "kubelet" "cilium-health" "etcd"];
+      agent = ["kubelet" "cilium-health"];
+      kubelet = ["servers"];
+      kubeletFromPods = ["servers" "pods"];
     };
   };
 
-  # K2: a fabric agent opens no etcd and no API port, only on its fabric
-  # links and local pod links, and does not trust the fabric links.
-  # K-A2: its supervisor front (8443) answers the members only.
-  test_firewallFabricAgent = let
-    rules = gammaTransport.networking.firewall.extraInputRules;
+  # The rendered rows on a server and an agent: by source, only on the
+  # fabric links and the local pod links; no HAProxy front, no 2381, no
+  # trusted Cilium link.
+  test_firewallBySource = let
+    server = alphaTransport.networking.firewall.extraInputRules;
+    agent = gammaTransport.networking.firewall.extraInputRules;
   in {
     expr = {
-      noEtcd = !(lib.hasInfix "2379" rules);
-      ports = lib.hasInfix "tcp dport { 7443, 10250, 4240 } accept" rules;
-      supervisorFront = lib.hasInfix "tcp dport { 8443 } accept" rules;
-      supervisorFrontNoPods = !(lib.hasInfix "/56 } tcp dport { 8443 }" rules || lib.hasInfix "/16 } tcp dport { 8443 }" rules);
-      guard = lib.hasInfix ''iifname { "fk-gamma-1", "fk-gamma-2", "lxc*", "cilium*" } ip saddr'' rules;
-      trusted = gammaTransport.networking.firewall.trustedInterfaces;
+      api = lib.hasInfix "ip saddr { 10.42.0.1, 10.42.0.2, 10.42.0.3, 10.1.0.0/16 } tcp dport { 6443 } accept" server;
+      api6 = lib.hasInfix "ip6 saddr { fd10:42::1, fd10:42::2, fd10:42::3, fd10:1::/56 } tcp dport { 6443 } accept" server;
+      supervisor = lib.hasInfix "ip saddr { 10.42.0.1, 10.42.0.2, 10.42.0.3 } tcp dport { 9345 } accept" server;
+      kubelet = lib.hasInfix "ip saddr { 10.42.0.1, 10.42.0.2 } tcp dport { 10250 } accept" server;
+      health = lib.hasInfix "ip saddr { 10.42.0.1, 10.42.0.2, 10.42.0.3 } tcp dport { 4240 } accept" server;
+      etcd = lib.hasInfix "ip saddr { 10.42.0.1, 10.42.0.2 } tcp dport { 2379, 2380 } accept" server;
+      noFront = !(lib.hasInfix "7443" server || lib.hasInfix "8443" server || lib.hasInfix "7443" agent || lib.hasInfix "8443" agent);
+      no2381 = !(lib.hasInfix "2381" server);
+      agentNoApi = !(lib.hasInfix "6443" agent || lib.hasInfix "2379" agent || lib.hasInfix "9345" agent);
+      agentKubelet = lib.hasInfix "ip saddr { 10.42.0.1, 10.42.0.2 } tcp dport { 10250 } accept" agent;
+      guard = lib.hasInfix ''iifname { "fk-gamma-1", "fk-gamma-2", "lxc*", "cilium*" } ip saddr'' agent;
+      noBlanketPodAccept = !(lib.hasInfix ''iifname { "cilium*", "lxc*" } accept'' server);
+      trusted = alphaTransport.networking.firewall.trustedInterfaces;
     };
     expected = {
-      noEtcd = true;
-      ports = true;
-      supervisorFront = true;
-      supervisorFrontNoPods = true;
+      api = true;
+      api6 = true;
+      supervisor = true;
+      kubelet = true;
+      health = true;
+      etcd = true;
+      noFront = true;
+      no2381 = true;
+      agentNoApi = true;
+      agentKubelet = true;
       guard = true;
-      trusted = [
-        "cilium_host"
-        "cilium_net"
-        "lo"
-      ];
+      noBlanketPodAccept = true;
+      trusted = ["lo"];
+    };
+  };
+
+  # firewall.kubeletFromPods opens the kubelet to the pod CIDRs.
+  test_firewallKubeletFromPods = let
+    rules =
+      (mkEvaled (lib.recursiveUpdate pairInventory {
+        instances.rke2.roles.server.settings.firewall.kubeletFromPods = true;
+      })).config.nixosConfigurations.alpha.config.networking.firewall.extraInputRules;
+  in {
+    expr = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 10250 } accept" rules;
+    expected = true;
+  };
+
+  # L1 (specs/design-kube.md §3.3): on a fabric, a pod or Service
+  # address is reached only over the fabric links, the pod links and
+  # loopback; any other link is dropped and counted. Every member has
+  # fabric links (D76), so every member renders the table.
+  test_kubeIngressTable = let
+    content = gammaTransport.networking.nftables.tables."kube-rke2".content;
+  in {
+    expr = {
+      hook = lib.hasInfix "type filter hook prerouting priority raw; policy accept;" content;
+      inside = lib.hasInfix ''iifname { "fk-gamma-1", "fk-gamma-2", "lo", "cilium*", "lxc*" } accept'' content;
+      drop4 = lib.hasInfix ''ip daddr { 10.1.0.0/16, 10.2.0.0/16 } counter drop comment "outside to the cluster's pods and Services"'' content;
+      drop6 = lib.hasInfix ''ip6 daddr { fd10:1::/56, fd10:2::/112 } counter drop comment "outside to the cluster's pods and Services"'' content;
+      everyMember = alphaPair.networking.nftables.tables ? "kube-rke2";
+    };
+    expected = {
+      hook = true;
+      inside = true;
+      drop4 = true;
+      drop6 = true;
+      everyMember = true;
     };
   };
 
@@ -1902,7 +2035,7 @@ in {
   # K7: two servers are refused; one is fine.
   test_twoServersRefused = {
     expr = {
-      two = failedAssertion alphaExplicit "two servers is refused";
+      two = failedAssertion alphaPair "two servers is refused";
       one = failedAssertion modesSingle "two servers is refused";
     };
     expected = {
@@ -1915,20 +2048,17 @@ in {
   test_longInstanceNameRefused = {
     expr = let
       bad = mkEvaled {
+        instances.mesh = mkMesh ["alpha"];
         instances.a-cluster-name-that-is-longer-than-32 = {
           module.name = "rke2";
           module.input = "self";
           roles.server = {
             settings = {
-              network.fabric = null;
+              network.fabric = fakeFabric;
               cilium.id = 1;
             };
             machines.alpha.settings = {
               clusterInit = true;
-              network = {
-                ipv4 = "10.0.0.1";
-                ipv6 = "fd00::1";
-              };
             };
           };
         };
@@ -1941,7 +2071,7 @@ in {
   # K14: configOverrides cannot carry a token or replace a rendered key.
   test_configOverridesDenied = let
     evaled = mkEvaled (
-      lib.recursiveUpdate explicitInventory {
+      lib.recursiveUpdate pairInventory {
         instances.rke2.roles.server.settings.configOverrides = {
           token = "in-the-store";
           tls-san = ["elsewhere"];

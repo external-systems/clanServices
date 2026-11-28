@@ -2,12 +2,15 @@
 # FRR, per-pair WireGuard, Cilium native routing): the server is a spine,
 # the agent a leaf.
 # The agent joins through its LOCAL haproxy: the kubeapi FQDN resolves to
-# the agent's own node address (/etc/hosts), where its haproxy frontend
+# loopback (/etc/hosts), where its haproxy frontend (loopback only, D76)
 # balances to the server:
 # - k3s: kubeapi frontend (7443 = 7442 + cilium.id 1) to the server's
 #   kube-apiserver (6443) with TLS /readyz healthchecks;
-# - rke2: supervisor frontend (8443 = 7442 + cilium.id 1 + 1000) to the
-#   server's real supervisor (9345) with TLS /readyz healthchecks.
+# - rke2: the agent's supervisor frontend on 9345 (the supervisor's own
+#   port: the agent's tunnel dials the servers on the port of its join
+#   URL) to the server's real supervisor (9345) with TLS /readyz
+#   healthchecks. A server's supervisor front is 8443 (7442 + cilium.id
+#   1 + 1000): its own supervisor owns 9345.
 # Shared by the k3s and rke2 suites; every distro difference is a `k3s`
 # branch below.
 #
@@ -221,11 +224,12 @@
     then "k3s"
     else "rke2-agent";
   # The LB port the agent joins on: k3s joins on the kubeapi frontend,
-  # rke2 on the supervisor frontend.
+  # rke2 on the supervisor frontend, which has the supervisor's own port
+  # on an agent (specs/design-kube.md §3.6).
   joinPort =
     if k3s
     then "7443"
-    else "8443";
+    else "9345";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
 in {
   name = suiteName;
@@ -427,22 +431,27 @@ in {
             beta.wait_for_unit("${agentUnit}.service", timeout=600)
 
         # --- The agent joined through its OWN haproxy --------------------
-        # kubeapi FQDN -> own node address (/etc/hosts), join URL on the
-        ${
-      if k3s
-      then "# LB kubeapi port 7443 (the kube-apiserver owns 6443 itself)."
-      else "# LB supervisor port 8443 (the supervisor owns 9345 itself)."
-    }
+        # kubeapi FQDN -> loopback (/etc/hosts), join URL on the LB port;
+        # the fronts listen on loopback only (D76).
         with subtest("agent joined through its own haproxy"):
-            for m, ip in [(alpha, "192.168.77.1"), (beta, "192.168.77.2")]:
-                m.succeed(f"grep -q '^{ip} kubeapi-${distro}.test.clan$' /etc/hosts")
-                m.succeed("systemctl is-active haproxy")
-                for port in [${
+            fronts = {"alpha": [${
       if k3s
-      then ''"7443", "8404"''
-      else ''"7443", "8443", "8404"''
-    }]:
-                    m.succeed(f"ss -tln | grep ':{port}' >/dev/null")${lib.optionalString k3s "\n        alpha.succeed(\"ss -tln | grep ':6443' >/dev/null\")"}
+      then "7443"
+      else "7443, 8443"
+    }], "beta": [${
+      if k3s
+      then "7443"
+      else "7443, 9345"
+    }]}
+            for m in [alpha, beta]:
+                m.succeed("grep -q '^127.0.0.1 kubeapi-${distro}.test.clan$' /etc/hosts")
+                m.succeed("grep -q '^::1 kubeapi-${distro}.test.clan$' /etc/hosts")
+                m.succeed("systemctl is-active haproxy")
+                listeners = m.succeed("ss -Hltn | awk '{print $4}'").split()
+                for port in fronts[m.name] + [8404]:
+                    binds = sorted(l.rsplit(":", 1)[0] for l in listeners if l.endswith(f":{port}"))
+                    assert binds == ["127.0.0.1", "[::1]"], f"{m.name}: port {port} binds {binds}, not loopback only"
+            alpha.succeed("ss -tln | grep ':6443' >/dev/null")
             beta.succeed(
                 "grep -q '\"server\":\"https://kubeapi-${distro}.test.clan:${joinPort}\"' /etc/rancher/${distro}/config.yaml"
             )

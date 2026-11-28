@@ -14,6 +14,10 @@
 > `probes/kube/`, patches) is session evidence of 2026-11-27. It is not
 > in the repo; the session handoff maps it.
 > `probes/kube/prototype.patch` is the prototype.
+>
+> **Implemented:** step 1 (round 63, SPEC.md D74); steps 3 and 4
+> (round 67, SPEC.md D76: no manual mode, typed options, the README
+> test, HAProxy on loopback, the firewall matrix).
 
 Base: main at `deeaba4`. Paths are relative to the repo root.
 Builds on `reviews/kube.md` (K-A1..K-A10), the hostile verdicts in `runs/`, and the probe runs in `probes/kube/runs/`.
@@ -180,7 +184,7 @@ in {
 ```
 
 - Step 5 adds the row `state-beacon` (`ports = [beaconPort]; from = ["servers"]; on = true;`).
-- Step 3 deletes manual-address mode; then `guardInterfaces` is never empty: replace the `optionalString` by `assert guardInterfaces != []`.
+- Step 3 deletes manual-address mode; then `guardInterfaces` is never empty: replace the `optionalString` by `assert guardInterfaces != []`. **Done in round 67** (D76): `renderMatrix` asserts it, `mkInputRules` is deleted, and the matrix takes `kubeletFromPods` from the option `firewall.kubeletFromPods`.
 - Caller: `lib/kube-cluster/service.nix`, `networking.firewall.extraInputRules`. It builds `sources` from `roleMembers`/`memberAddr` and `resolvedCidrs` (prototype).
 - `trustedInterfaces = ["cilium_host" "cilium_net"]` is removed. A trusted link accepts every port. VERIFIED-VM: with it gone K20 is safe, and DNS, pod-to-pod, host-to-pod, logs, exec and node health work (`k3s-hostile`, `k3s-probe-net`, `k3s-clustermesh-nodeport`).
 
@@ -409,7 +413,7 @@ VERIFIED-VM `k3s-hostile` and `rke2-hostile` (K27, K41, K42, the join itself), `
   - `lib/kube-cluster/haproxy.nix`: every server line pins its source: `server <n>-4 <ip4>:<port> source <nodeIPv4>` and `server <n>-6 [<ip6>]:<port> source [<nodeIPv6>]`. The health check and the data path leave with the node address whatever the route says. The servers accept members only. In the VM a backend is `DOWN … Network is unreachable` until the fabric holds the address, then `UP`, with no restart.
   - `lib/kube-cluster/service.nix`: `extraHosts` maps the kubeapi name to `127.0.0.1` and `::1`.
   - `lib/kube-cluster/service.nix`: the two front ports have no firewall row (§3.2). This closes K-A2 by construction: the supervisor front is unreachable from anywhere but the node itself.
-  - Step 4 also drops `after = ["ifstate.service"]` and the comment about the bind race from the HAProxy unit: loopback always exists (T3). The prototype still has the ordering; removing it is NOT-RUN.
+  - Amended in round 67 (D76): the ordering `after = ["ifstate.service"]` **stays**. It orders and requires nothing, so T3 holds (loopback always exists, haproxy starts without the fabric); and the `source` of every server line is the fabric address that IfState creates, the cross-area contract of `specs/target-design.md` §3 (the index wins). The comment about the bind race is gone: the fronts bind loopback.
 - On the nodes: `ss -Hltn` shows `127.0.0.1:7443` and `[::1]:7443` only (rke2: also 8443 on a server, 9345 on an agent). A member, a pod and mallory do not connect to another node's front (K27, K20).
 - The derived ports (7442 + id, + 1000) stay. They keep `k8sServicePort` stable.
 - `tls-san` keeps the kubeapi name. Clients verify by name.
@@ -732,10 +736,10 @@ Each step: SPEC and `documentation/` first (hard rule 3), then code, `fmt`, `che
    The suite merges the kube prototype and the fabric prototype's additions (`mallory` as an `access = "client"` leaf, K40a, K40, K41, P5, P6). Every verdict group has a `control(...)` that gates the suite. What a later step closes is an `info` line naming the step, and that step turns it into a verdict: K10n, K13, K17, K18 (step 8); K11f to a pod on the spine, K41, K05d, K05o (step 7); K27 loopback binds, a member that reaches another member's front (step 4); K20 and K21 narrow from `[6443, 7443, 10250, 4240]` to `[6443]` (step 4); K34 (step 6); K50–K53 (step 9).
    Proof: `k3s-hostile`, `rke2-hostile` print no GAP and no failed control.
 2. **Probes.** Done on 2026-11-27; results in §9. Record the facts in `documentation/docs/reference/upstream-facts.md` (the wording is in the session report). The probe suites `<distro>-probe-net` and `<distro>-probe-rejoin` are throwaway: do not land them.
-3. **Delete manual mode, type the options** (f, h, K-A4, K-A5, K-A7, K-A8). Rewrite READMEs on a one-machine fabric; add the README-evaluates test.
+3. **Delete manual mode, type the options** (f, h, K-A4, K-A5, K-A7, K-A8). Rewrite READMEs on a one-machine fabric; add the README-evaluates test. **Done in round 67 (SPEC.md D76)**, in one PR with step 4. The quick start is `services/<distro>/tests/readme-inventory.nix`, shown verbatim in the README (`test_readmeQuickStart`). The kube guard table is rendered on every member.
    Files: `lib/kube-cluster/{cluster-interface,node-interface,service,assertions,firewall}.nix`, both READMEs, the nix-unit fixtures.
    Proof: `check`; every existing suite still passes (they all use a fabric).
-4. **HAProxy on loopback, the firewall matrix, kubelet and health rows, no 2381, no `trustedInterfaces`** (c, j, a, i).
+4. **HAProxy on loopback, the firewall matrix, kubelet and health rows, no 2381, no `trustedInterfaces`** (c, j, a, i). **Done in round 67 (SPEC.md D76).** `k3s-hostile` and `rke2-hostile`: K20 and K21 allow `[6443]` on a server and nothing on an agent; K27 is three verdict groups with controls (loopback binds, a member does not reach another member's front, a fabric leaf outside the cluster does not reach a front). The `ha` suite's "peers refuse" phase points the guard at a port the peers reset (2399) until step 5.
    Files: `lib/kube-cluster/haproxy.nix` (binds, `source`), `lib/kube-cluster/firewall.nix` (`matrix`, `renderMatrix`; delete `mkInputRules`), `lib/kube-cluster/default.nix` (exports), `lib/kube-cluster/service.nix` (`extraInputRules`, `extraHosts`, no `trustedInterfaces`, no `after = ["ifstate.service"]` on HAProxy, option `firewall.kubeletFromPods`), `lib/kube-cluster/tests/vm/{hostile,join}.nix`.
    Tests that change: the firewall, HAProxy and `extraHosts` rows of §5; the `ha.nix` phase on port 2381.
    Also in this step: the rke2 agent's supervisor front on 9345 (`haproxySupervisorPort` in `service.nix`, §3.6).

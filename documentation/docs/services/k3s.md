@@ -62,10 +62,18 @@ cluster holding the routed-fabric `spine` topology role with
 - **A machine holds only what its role reads.** An agent gets the agent
   token, never the server token (which joins the control plane); the
   ClusterMesh CA and keys stay on the `clusterInit` server.
-- **The cluster ports by source.** The API, the API's HAProxy front,
-  the kubelet and Cilium's health port answer the members and the
-  cluster's pods; etcd answers the servers only. A pod reaches no other host port,
-  and the service never trusts a fabric link (routed-fabric decides).
+- **The cluster ports by source, from one matrix (D76).** The API
+  answers the members and the cluster's pods; Cilium's health port answer the members; the kubelet answers the
+  servers (pods only with `firewall.kubeletFromPods`); etcd answers the
+  servers. A pod reaches the API on a server and nothing else of a node.
+  No link is trusted: not a fabric link, not Cilium's host links.
+- **HAProxy on loopback (D76).** The fronts listen on `127.0.0.1` and
+  `::1`; the kubeapi name resolves there. No other host and no pod
+  reaches them. Every backend connection leaves from the node's fabric
+  address.
+- **A fabric always (D76).** `network.fabric` is required; there are no
+  manual addresses. The README quick start is a one-machine fabric, and
+  a test evaluates it.
 - **Pods and Services only over the fabric (D74).** The table
   `inet kube-<instance>` drops and counts a packet for the cluster's
   pod or Service CIDRs that arrives on any link but a fabric link, a

@@ -12,7 +12,10 @@
   baseConfig = {
     inherit domain;
     network = {
-      fabric = null;
+      fabric = {
+        service = "routed-fabric";
+        instance = "fleet";
+      };
       podCIDRv4 = null;
       podCIDRv6 = null;
       serviceCIDRv4 = null;
@@ -283,10 +286,6 @@
       role = "server";
       settings = {
         clusterInit = true;
-        network = {
-          ipv4 = "10.0.0.1";
-          ipv6 = "fd00::1";
-        };
       };
     }
   ];
@@ -298,10 +297,6 @@
       role = "server";
       settings = {
         clusterInit = true;
-        network = {
-          ipv4 = "10.0.0.1";
-          ipv6 = "fd00::1";
-        };
       };
     }
     {
@@ -309,10 +304,6 @@
       role = "agent";
       settings = {
         clusterInit = false;
-        network = {
-          ipv4 = "10.0.0.2";
-          ipv6 = "fd00::2";
-        };
       };
     }
   ];
@@ -1299,10 +1290,6 @@ in {
             role = "server";
             settings = {
               clusterInit = false;
-              network = {
-                ipv4 = "10.0.0.1";
-                ipv6 = "fd00::1";
-              };
             };
           }
         ];
@@ -1312,64 +1299,33 @@ in {
     expected = true;
   };
 
-  test_missingTransportAddressesAssertion = {
-    expr = let
-      assertions = kube.assertions.mkClusterAssertions {
-        inherit instanceName;
-        settings = baseSettings;
-        transportFacts = null;
-        roleMembers = [
-          {
-            machineName = "alpha";
-            role = "server";
-            settings = {
-              clusterInit = true;
-              network = {
-                ipv4 = null;
-                ipv6 = "fd00::1";
-              };
-            };
-          }
-        ];
-      };
-    in
-      failedAssertion assertions "network.fabric is null";
+  # D76: a member without a node_transport export is named.
+  test_missingFabricExportAssertion = {
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      transportFacts = {};
+      roleMembers = oneServer;
+    }) "no node_transport export from network.fabric";
     expected = true;
   };
 
   test_uniqueAddressesAssertion = {
-    expr = let
-      assertions = kube.assertions.mkClusterAssertions {
-        inherit instanceName;
-        settings = baseSettings;
-        transportFacts = null;
-        roleMembers = [
-          {
-            machineName = "alpha";
-            role = "server";
-            settings = {
-              clusterInit = true;
-              network = {
-                ipv4 = "10.0.0.1";
-                ipv6 = "fd00::1";
-              };
-            };
-          }
-          {
-            machineName = "beta";
-            role = "agent";
-            settings = {
-              clusterInit = false;
-              network = {
-                ipv4 = "10.0.0.1";
-                ipv6 = "fd00::1";
-              };
-            };
-          }
-        ];
+    expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      inherit instanceName;
+      settings = baseSettings;
+      transportFacts = {
+        alpha = {
+          ipv4 = "10.0.0.1";
+          ipv6 = "fd00::1";
+        };
+        beta = {
+          ipv4 = "10.0.0.1";
+          ipv6 = "fd00::2";
+        };
       };
-    in
-      failedAssertion assertions "unique IPv4";
+      roleMembers = parityMembers;
+    }) "unique IPv4";
     expected = true;
   };
 
@@ -1597,17 +1553,21 @@ in {
         healthCheckSni = "kubeapi-test.example.org";
       };
     in {
-      bindsKubeapiLb = lib.hasInfix "bind 192.168.77.1:7443" cfg;
-      bindsSupervisorLb = lib.hasInfix "bind 192.168.77.1:8443" cfg;
+      # D76: the fronts bind loopback only
+      bindsKubeapiLb = lib.hasInfix "bind 127.0.0.1:7443" cfg && lib.hasInfix "bind [::1]:7443" cfg;
+      bindsSupervisorLb = lib.hasInfix "bind 127.0.0.1:8443" cfg && lib.hasInfix "bind [::1]:8443" cfg;
+      noNodeAddressBind = !(lib.hasInfix "bind 192.168.77.1" cfg) && !(lib.hasInfix "bind [fd00:77::1]" cfg);
+      # every connection to a server leaves with this node's address
+      sourcePinned = lib.hasInfix "server alpha-4 192.168.77.1:6443 source 192.168.77.1\n" cfg && lib.hasInfix "server alpha-6 [fd00:77::1]:6443 source [fd00:77::1]\n" cfg;
       # K15: the read-only stats page is on loopback, with no password
       bindsStats = lib.hasInfix "bind 127.0.0.1:8404" cfg && lib.hasInfix "bind [::1]:8404" cfg;
       statsNotOnNodeAddress = !(lib.hasInfix "bind [fd00:77::1]:8404" cfg);
       noStatsPassword = !(lib.hasInfix "userlist" cfg) && !(lib.hasInfix "stats admin" cfg);
       # K15: the health check names the kubeapi FQDN, on both backends
       verifyhost = builtins.length (lib.splitString "verify required verifyhost kubeapi-test.example.org ca-file" cfg) == 3;
-      backupFlag = lib.hasInfix "server beta-4 192.168.77.2:6443 backup" cfg;
-      noBackupOnSelf = !(lib.hasInfix "server alpha-4 192.168.77.1:6443 backup" cfg);
-      supervisorTargets9345 = lib.hasInfix "server beta-6 [fd00:77::2]:9345 backup" cfg;
+      backupFlag = lib.hasInfix "server beta-4 192.168.77.2:6443 source 192.168.77.1 backup" cfg;
+      noBackupOnSelf = !(lib.hasInfix "server alpha-4 192.168.77.1:6443 source 192.168.77.1 backup" cfg);
+      supervisorTargets9345 = lib.hasInfix "server beta-6 [fd00:77::2]:9345 source [fd00:77::1] backup" cfg;
       checkSslDataStaysRaw = lib.hasInfix "default-server check check-ssl verify required" cfg;
       supervisorChecksRealApiPort = lib.hasInfix "default-server check check-ssl port 6443" cfg;
       sni = lib.hasInfix "sni str(kubeapi-test.example.org)" cfg;
@@ -1615,6 +1575,8 @@ in {
     expected = {
       bindsKubeapiLb = true;
       bindsSupervisorLb = true;
+      noNodeAddressBind = true;
+      sourcePinned = true;
       bindsStats = true;
       statsNotOnNodeAddress = true;
       noStatsPassword = true;
@@ -1774,6 +1736,7 @@ in {
   # Explicit ids above 127 require explicit v4 CIDRs (§6.2).
   test_idAbove127RequiresCidrs = {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      transportFacts = {};
       inherit instanceName;
       settings = evalSettings {cilium.id = 200;};
       roleMembers = oneServer;
@@ -1783,6 +1746,7 @@ in {
 
   test_idAbove127WithCidrsAccepted = {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      transportFacts = {};
       inherit instanceName;
       settings = evalSettings {
         cilium.id = 200;
@@ -1800,6 +1764,7 @@ in {
       (
         settings:
           failedAssertion (kube.assertions.mkClusterAssertions {
+            transportFacts = {};
             inherit instanceName settings;
             roleMembers = oneServer;
           }) "NativeRoutingCIDR"
@@ -1819,32 +1784,10 @@ in {
     ];
   };
 
-  test_manualClusterBgpRequiresFabric = {
-    expr =
-      map
-      (
-        settings:
-          failedAssertion (kube.assertions.mkClusterAssertions {
-            inherit instanceName settings;
-            roleMembers = oneServer;
-          }) "requires network.fabric"
-      )
-      [
-        baseSettings
-        (evalSettings {
-          fabric.enable = false;
-          bgp.enable = false;
-        })
-      ];
-    expected = [
-      true
-      false
-    ];
-  };
-
   # All members must resolve the same id — per-member pin drift rejected.
   test_memberIdDriftRejected = {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      transportFacts = {};
       inherit instanceName;
       settings = baseSettings;
       roleMembers = [
@@ -1854,10 +1797,6 @@ in {
           settings = {
             clusterInit = true;
             cilium.id = 70;
-            network = {
-              ipv4 = "10.0.0.1";
-              ipv6 = "fd00::1";
-            };
           };
         }
       ];
@@ -1869,6 +1808,7 @@ in {
 
   test_topologyEmptyRejected = {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      transportFacts = {};
       inherit instanceName;
       settings = baseSettings;
       roleMembers = [
@@ -1877,10 +1817,6 @@ in {
           role = "server";
           settings = {
             clusterInit = true;
-            network = {
-              ipv4 = "10.0.0.1";
-              ipv6 = "fd00::1";
-            };
             topology.region = "";
           };
         }
@@ -1891,6 +1827,7 @@ in {
 
   test_topologyNullAndOverrideAccepted = {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
+      transportFacts = {};
       inherit instanceName;
       settings = baseSettings;
       roleMembers = [
@@ -1899,10 +1836,6 @@ in {
           role = "server";
           settings = {
             clusterInit = true;
-            network = {
-              ipv4 = "10.0.0.1";
-              ipv6 = "fd00::1";
-            };
             topology.region = "hel1";
           };
         }
@@ -1911,44 +1844,7 @@ in {
     expected = false;
   };
 
-  # --- all-or-none fabric posture (§6.3) ----------------------------------
-
-  test_postureMixedRejected = {
-    expr = failedAssertion (kube.assertions.mkClusterAssertions {
-      inherit instanceName;
-      settings = baseSettings;
-      roleMembers = [
-        {
-          machineName = "alpha";
-          role = "server";
-          settings = {
-            clusterInit = true;
-            network = {
-              fabric = {
-                service = "routed-fabric";
-                instance = "fleet";
-              };
-              ipv4 = "10.0.0.1";
-              ipv6 = "fd00::1";
-            };
-          };
-        }
-        {
-          machineName = "beta";
-          role = "agent";
-          settings = {
-            clusterInit = false;
-            network = {
-              fabric = null;
-              ipv4 = "10.0.0.2";
-              ipv6 = "fd00::2";
-            };
-          };
-        }
-      ];
-    }) "all-or-none fabric posture";
-    expected = true;
-  };
+  # --- every member rides the fabric (D76) --------------------------------
 
   test_postureMissingFactsRejected = {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
@@ -1984,7 +1880,7 @@ in {
           };
         }
       ];
-    }) "no export from the configured fabric source";
+    }) "no node_transport export from network.fabric";
     expected = true;
   };
 
@@ -2026,7 +1922,7 @@ in {
           };
         }
       ];
-    }) "fabric posture";
+    }) "no node_transport export from network.fabric";
     expected = false;
   };
 
@@ -2036,7 +1932,7 @@ in {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
       inherit instanceName;
       settings = baseSettings;
-      transportFacts = null;
+      transportFacts = {};
       roleMembers = parityMembers;
       roleSettings = [
         {
@@ -2059,7 +1955,7 @@ in {
       assertions = kube.assertions.mkClusterAssertions {
         inherit instanceName;
         settings = baseSettings;
-        transportFacts = null;
+        transportFacts = {};
         roleMembers = parityMembers;
         roleSettings = [
           {
@@ -2092,7 +1988,7 @@ in {
     expr = failedAssertion (kube.assertions.mkClusterAssertions {
       inherit instanceName;
       settings = baseSettings;
-      transportFacts = null;
+      transportFacts = {};
       roleMembers = parityMembers;
       roleSettings = [
         {
@@ -3399,6 +3295,7 @@ in {
       };
     in
       failedAssertion (kube.assertions.mkClusterAssertions {
+        transportFacts = {};
         inherit instanceName settings resolvedCidrs;
         roleMembers = oneServer;
       })
@@ -3422,6 +3319,7 @@ in {
         podCIDRv6 = "fd10:200::/72";
       } "smaller than the per-node /64";
       derivedClean = lib.all (item: item.assertion || !(lib.any (n: lib.hasInfix n item.message) ["together" "overlap" "per-node"])) (kube.assertions.mkClusterAssertions {
+        transportFacts = {};
         inherit instanceName;
         settings = baseSettings;
         roleMembers = oneServer;
@@ -3449,15 +3347,12 @@ in {
         role = "server";
         settings = {
           clusterInit = i == 0;
-          network = {
-            ipv4 = "10.0.0.${toString (i + 1)}";
-            ipv6 = "fd00::${toString (i + 1)}";
-          };
         };
       })
       n;
     refused = n:
       failedAssertion (kube.assertions.mkClusterAssertions {
+        transportFacts = {};
         inherit instanceName;
         settings = baseSettings;
         roleMembers = servers n;
@@ -3514,6 +3409,7 @@ in {
       map (
         name:
           failedAssertion (kube.assertions.mkClusterAssertions {
+            transportFacts = {};
             instanceName = name;
             settings = baseSettings;
             roleMembers = oneServer;
@@ -3600,55 +3496,70 @@ in {
     expected = false;
   };
 
-  # K2: the input rules name their sources. Manual: no interface guard;
-  # fabric: fabric links and local pod links only; etcd on servers from
-  # servers only.
-  test_firewallInputRules = let
-    members = [
-      {
-        role = "server";
-        ipv4 = "10.0.0.1";
-        ipv6 = "fd00::1";
-      }
-      {
-        role = "agent";
-        ipv4 = "10.0.0.2";
-        ipv6 = "fd00::2";
-      }
-    ];
-    render = transportInterfaces: isServer:
-      kube.render.mkInputRules {
-        inherit transportInterfaces isServer members;
-        podCIDRv4 = "10.1.0.0/16";
-        podCIDRv6 = "fd10:1::/56";
-        clusterPorts = [
-          6443
-          7443
-        ];
-        memberOnlyPorts = [9345];
+  # D76 (specs/design-kube.md §3.2): the matrix renders one rule per
+  # row and family, by source, guarded by the fabric links and the local
+  # pod links. A member without fabric links is refused.
+  test_firewallRenderMatrix = let
+    render = args:
+      kube.render.renderFirewallMatrix ({
+          guardInterfaces = ["wg0"];
+          sources = {
+            members = {
+              v4 = ["10.0.0.1" "10.0.0.2"];
+              v6 = ["fd00::1" "fd00::2"];
+            };
+            servers = {
+              v4 = ["10.0.0.1"];
+              v6 = ["fd00::1"];
+            };
+            pods = {
+              v4 = ["10.1.0.0/16"];
+              v6 = ["fd10:1::/56"];
+            };
+          };
+        }
+        // args);
+    rows = isServer:
+      kube.render.firewallMatrix {
+        inherit isServer;
+        supervisor = true;
+        kubeapiPort = 6443;
+        supervisorPort = 9345;
       };
+    guard = ''iifname { "wg0", "lxc*", "cilium*" } '';
   in {
     expr = {
-      manualServer = render [] true;
-      fabricAgent = render ["wg0"] false;
+      server = render {rows = rows true;};
+      agent = render {rows = rows false;};
+      noFabricLinks =
+        (builtins.tryEval (render {
+          guardInterfaces = [];
+          rows = rows false;
+        }))
+        .success;
     };
     expected = {
-      manualServer = lib.concatStringsSep "\n" [
-        "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443 } accept"
-        "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443 } accept"
-        "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept"
-        "ip6 saddr { fd00::1, fd00::2 } tcp dport { 9345 } accept"
-        "ip saddr { 10.0.0.1 } tcp dport { 2379, 2380, 2381 } accept"
-        "ip6 saddr { fd00::1 } tcp dport { 2379, 2380, 2381 } accept"
+      server = lib.concatStringsSep "\n" [
+        "${guard}ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443 } accept"
+        "${guard}ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443 } accept"
+        "${guard}ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept"
+        "${guard}ip6 saddr { fd00::1, fd00::2 } tcp dport { 9345 } accept"
+        "${guard}ip saddr { 10.0.0.1 } tcp dport { 10250 } accept"
+        "${guard}ip6 saddr { fd00::1 } tcp dport { 10250 } accept"
+        "${guard}ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 4240 } accept"
+        "${guard}ip6 saddr { fd00::1, fd00::2 } tcp dport { 4240 } accept"
+        "${guard}ip saddr { 10.0.0.1 } tcp dport { 2379, 2380 } accept"
+        "${guard}ip6 saddr { fd00::1 } tcp dport { 2379, 2380 } accept"
         ""
       ];
-      fabricAgent = lib.concatStringsSep "\n" [
-        ''iifname { "wg0", "lxc*", "cilium*" } ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443 } accept''
-        ''iifname { "wg0", "lxc*", "cilium*" } ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443 } accept''
-        ''iifname { "wg0", "lxc*", "cilium*" } ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept''
-        ''iifname { "wg0", "lxc*", "cilium*" } ip6 saddr { fd00::1, fd00::2 } tcp dport { 9345 } accept''
+      agent = lib.concatStringsSep "\n" [
+        "${guard}ip saddr { 10.0.0.1 } tcp dport { 10250 } accept"
+        "${guard}ip6 saddr { fd00::1 } tcp dport { 10250 } accept"
+        "${guard}ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 4240 } accept"
+        "${guard}ip6 saddr { fd00::1, fd00::2 } tcp dport { 4240 } accept"
         ""
       ];
+      noFabricLinks = false;
     };
   };
 

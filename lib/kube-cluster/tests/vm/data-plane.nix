@@ -1023,10 +1023,13 @@ in {
                 for port in ["6443", "${apiLbPort}", "10250", "2379", "2380", "83"]:
                     beta.fail(nc(address, port))
                     router.fail(nc(address, port))
-            # the same control-plane ports answer over the fabric
+            # over the fabric the API answers a member; the API's
+            # HAProxy front listens on loopback only and the kubelet
+            # answers the servers only (D76), so an agent reaches neither
             for address in FABRIC["alpha"]:
-                for port in ["6443", "${apiLbPort}", "10250"]:
-                    beta.succeed(nc(address, port))
+                beta.succeed(nc(address, "6443"))
+                for port in ["${apiLbPort}", "10250"]:
+                    beta.fail(nc(address, port))
             beta.succeed("systemctl stop probe-listener")
             # D69: a NodePort answers on the node addresses (the fabric)
             # and on no other address. eth1 is a Cilium device, and Cilium
