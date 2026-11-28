@@ -15,6 +15,29 @@ others have a phase.
 Each idea has a label (`H1` to `H12`). The agent version is
 `specs/netif.md` §11.
 
+## Threat model (2026-11-27)
+
+The target design (`specs/design-netif.md`) names who may attack a
+netif machine and what they must not achieve. It is decision N46.
+
+- A hostile host on a LAN of the machine may send any frame. It must
+  not move a route, add an address or a route, answer DNS for all
+  names, or open a port.
+- A rogue DHCP server or router-advertisement sender gets an address
+  and, on the link that owns the default route, the gateway. Nothing
+  more.
+- A guest on a guest-ports bridge gets nothing on the host.
+- A bad deploy must not lose the path that worked before it, also when
+  the machine is booted in another mode.
+
+Limits: on the link that owns the default route its DHCP server picks
+the gateway; a spoofed ARP answer passes a layer-2 check (a TCP target
+does not); ARP poisoning of the real gateway is the switch's to stop.
+
+The suite `netif-hostile` proves each part as it is built. The first
+part (N47): no link takes or sends an ICMP redirect or accepts a
+source-routed packet.
+
 ## Decisions with thin proof
 
 These hold today. Each has less proof behind it than the rest of the

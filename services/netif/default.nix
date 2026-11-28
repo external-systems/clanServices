@@ -6,6 +6,7 @@
 }: let
   inherit (lib) mkOption types;
   ip = import ../../lib/ip.nix {inherit lib;};
+  baseline = import ../../lib/sysctl-baseline.nix;
 
   # ---------------------------------------------------------------------
   # Link resolution (D50/D53): derive kind + interface names and the
@@ -1107,25 +1108,31 @@ in {
                 else "802.3ad";
               bond_miimon = 100;
             };
-          sysctl.ipv6 = {
-            accept_ra =
-              if r.ra
-              then
-                if forwarding
-                then 2
-                else 1
-              else 0;
-            autoconf =
-              if r.ra
-              then 1
-              else 0;
-            # Prefixes and addresses from an RA, but no default router,
-            # when the link may not own the IPv6 default (N21).
-            accept_ra_defrtr =
-              if r.ra && r.default6
-              then 1
-              else 0;
-          };
+          # The baseline (N47): no redirects, no source routes. IfState
+          # restores it on every apply. The RA keys stay as they are
+          # until design step 2.
+          sysctl.ipv4 = baseline.everyLink4;
+          sysctl.ipv6 =
+            baseline.everyLink6
+            // {
+              accept_ra =
+                if r.ra
+                then
+                  if forwarding
+                  then 2
+                  else 1
+                else 0;
+              autoconf =
+                if r.ra
+                then 1
+                else 0;
+              # Prefixes and addresses from an RA, but no default router,
+              # when the link may not own the IPv6 default (N21).
+              accept_ra_defrtr =
+                if r.ra && r.default6
+                then 1
+                else 0;
+            };
         }
         // lib.optionalAttrs (link.match.mac != null) {
           identify.perm_address = link.match.mac;

@@ -5,6 +5,7 @@
   ...
 }: let
   ip = import ./ip.nix {inherit lib;};
+  baseline = import ./sysctl-baseline.nix;
   # One manager per configuration (N2): IfState, or NetworkManager.
   inherit (config.clanServices.networking) mode;
   ifstateMode = mode.manager == "ifstate";
@@ -154,8 +155,22 @@ in {
     # DNS goes through systemd-resolved in every mode (specs/netif.md N9).
     services.resolved.enable = true;
 
-    boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," (
-      lib.unique (config.clanServices.networking.reservedPorts ++ map toString wireguardPorts)
+    # The sysctl baseline (specs/netif.md N47), in every mode: `all`
+    # and `default`, and the glob for links that exist before
+    # systemd-sysctl runs, belong to another owner or appear later (udev
+    # runs systemd-sysctl for each new link).
+    boot.kernel.sysctl = lib.mkMerge (
+      [
+        {
+          "net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," (
+            lib.unique (config.clanServices.networking.reservedPorts ++ map toString wireguardPorts)
+          );
+        }
+      ]
+      ++ lib.concatMap (scope: [
+        (lib.mapAttrs' (key: value: lib.nameValuePair "net.ipv4.conf.${scope}.${key}" (lib.mkDefault value)) baseline.everyLink4)
+        (lib.mapAttrs' (key: value: lib.nameValuePair "net.ipv6.conf.${scope}.${key}" (lib.mkDefault value)) baseline.everyLink6)
+      ]) ["all" "default" "*"]
     );
 
     networking = {

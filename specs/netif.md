@@ -6,10 +6,28 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N45` so they never collide with
+together.** Decisions are numbered `N1`–`N47` so they never collide with
 SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
+
+Round 64 (2026-11-27): **netif step 1 of the target design: the
+threat model, one sysctl baseline and `netif-hostile`** (SPEC.md round
+64; `specs/design-netif.md` §8.1 and §8.2). What changed:
+- **N46** the threat model (T1–T8) and the invariants (I1–I13,
+  S1–S5) of the target design are part of this contract. Each
+  invariant names the design step that implements it; N25, N31 and N36
+  are rewritten by step 6 (the transaction).
+- **N47** one sysctl baseline for every link: no ICMP redirects (taken
+  or sent) and no source routes, in every mode. `boot.kernel.sysctl`
+  writes `all`, `default` and the glob `*`; IfState writes the same keys
+  on each declared link and restores them on every apply.
+- **`netif-hostile`** puts an attacker beside a netif machine: a TCP
+  scan of every address, a router-advertisement fixture (radvd) beside
+  a static IPv6 gateway, a forged ICMP redirect, a spoofed source, and a
+  survey of every link. Every verdict group has a positive control that
+  gates the suite. What design step 2 closes (an RA default and a SLAAC
+  address beside a static gateway) is an `info` line naming the step.
 
 Round G11 (2026-11-26): **the guard judges only what it applied, and
 undoes a rollback that cannot help** (N25), from the hardening review of
@@ -1762,7 +1780,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   *(implemented, round P4a: `netif-modes`; eval tests
   `modes.mechanism.*`)*
 
-- **N25 Lockout guard.** IfState has no rollback, and a bad change on a
+- **N25 Lockout guard.** *(Rewritten by design step 6, N46.)* IfState has no rollback, and a bad change on a
   headless machine cuts the only way in.
   - **When.** After every IfState apply on a machine with the guard on.
     Default: on when the machine has no mode with a display manager or
@@ -2023,7 +2041,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   *(implemented: netif runs `pkgs.dhcpcd_latest` 10.5.2 and asserts
   the version; VM-proven by `netif-dhcp` `NETIF_DHCP_UNIT_OK`)*
 
-- **N31 dhcpcd is a supervised unit per link (was H1).**
+- **N31 dhcpcd is a supervised unit per link (was H1).** *(Rewritten
+  by design step 6, N46.)*
   - One unit per DHCP link, `netif-dhcpcd-<interface>.service`, runs
     `dhcpcd -B` in the foreground. No IfState hook starts dhcpcd.
   - It is bound to the link's device unit, so it stops when the link
@@ -2078,7 +2097,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   iwd and systemd join the list in phase P2.
   *(implemented)*
 
-- **N36 A wider lockout guard (was H5).** N25's guard also checks
+- **N36 A wider lockout guard (was H5).** *(Rewritten by design step
+  6, N46.)* N25's guard also checks
   optional `guard.targets` and runs after firewall changes.
   - A target is `{ address; port?; interface? }`: with `port` a TCP
     connection must open (the deployer's SSH port is the useful one);
@@ -2210,6 +2230,71 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   *(implemented, no code needed; suite `netif-v6only`,
   `NETIF_V6ONLY_OK`, also with the guard over IPv6)*
 
+- **N46 The threat model and the invariants of the target design.**
+  `specs/design-netif.md` §1 and §2 are normative (round 64; owner
+  decisions O5, O6). The design file holds the full text; this is the
+  contract.
+  - **Actors.** T1 a hostile host on a LAN of the machine (any frame:
+    ARP, ND, RA, ICMP redirect, DHCP, spoofed source); T2 a rogue DHCP
+    server on a declared DHCP link; T3 the same on a hot-plug link; T4
+    a rogue RA sender; T5 a hostile Wi-Fi access point (iwd's, residual);
+    T6 a guest on a guest-ports bridge; T7 the owner's bad deploy; T8 a
+    bad deploy while booted in another mode.
+  - **Stated limits.** On the link that owns the default route, its
+    DHCP server (and, with `ra`, any RA sender) chooses the gateway;
+    a spoofed ARP or ND answer passes a layer-2 probe (a TCP target does
+    not); the guard sees outbound reachability only; ARP poisoning of
+    the real gateway is a switch's to stop.
+  - **Invariants and the step that implements each.** I7 no redirect,
+    no source route on any link: **step 1, implemented (N47)**. I13 the
+    firewall stays closed: already true (N19). I8 RA only where
+    declared: step 2. I9 a lease sets a closed list, I11 DNS scope:
+    step 4. I1–I6 (no lockout by deploy, do no harm, only proven bundles
+    recorded, a bad bundle is not retried, own evidence only, a missing
+    NIC blocks nothing), I10, S1–S3: step 6. I12 one manager per boot:
+    step 7. S4 one writer per kernel object and per sysctl key: the
+    registry and N47. S5 stable source addresses: step 2.
+  - **Rewritten in step 6.** N25 (the guard), N31 (dhcpcd units) and
+    N36 (targets) stay as they are until the transaction lands; step 6
+    rewrites them to the design's §3.2.
+  - **Hostile verdicts.** `netif-hostile` holds design §6's verdicts as
+    each step makes them safe. Every verdict group has a positive
+    control; a missing control fails the suite (SPEC.md H19). A verdict
+    that needs a later step is an `info` line naming that step, never a
+    weakened verdict.
+  *(decided; I7 implemented by N47, the rest by the steps named)*
+
+- **N47 One sysctl baseline for every link.** No ICMP redirect is taken
+  or sent and no source-routed packet is accepted, on every link of the
+  machine, in every mode (I7; design §3.4).
+  - **Keys.** IPv4: `accept_redirects`, `secure_redirects`,
+    `send_redirects`, `accept_source_route`, all 0. IPv6:
+    `accept_redirects`, `accept_source_route`, 0. One source,
+    `lib/sysctl-baseline.nix`.
+  - **Sink 1, every link.** `lib/ifstate.nix` writes the keys into
+    `boot.kernel.sysctl` for `all`, `default` and the glob `*`, not gated
+    on the mode, so NetworkManager modes and links of other owners get
+    them too. The kernel copies `default` to a new link; udev runs
+    systemd-sysctl for each new link, so the glob reaches a link that
+    appears later even when `default` was changed by hand; the glob also
+    reaches a link that existed before systemd-sysctl ran (`eth0` in the
+    suites). Values are `mkDefault`: a service that needs another value
+    sets it and owns it.
+  - **Sink 2, declared links.** netif writes the same keys into each
+    declared link's IfState `sysctl.ipv4`/`sysctl.ipv6`, so every apply
+    restores them and `netif-drift` sees a change. IPv4 takes a redirect
+    when `all` OR the link says 1, so both sinks matter.
+  - **Not here.** IfState's top-level `sysctl.all`/`sysctl.default`
+    stays unused (two writers of one key). `rp_filter` is not rendered:
+    the firewall's reverse-path check owns it. The RA keys come with
+    design step 2, the ARP keys with step 8 (O6).
+  *(implemented round 64; suite `netif-hostile` `NETIF_HOSTILE_OK`:
+  H05 with its control (the same forged redirect moves the route when
+  the link's key is 1), H06–H08, H20 (every link: declared, VLAN, guest
+  port, hot-plug, veth, bridge, dummy, WireGuard) with its control;
+  `netif` `assert_ifstate_noop` with the new keys; nix-unit
+  `test_sysctlBaseline`)*
+
 
 ## 4. Invariants
 
@@ -2244,6 +2329,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
 18. One source names a machine's modes and their managers (N24).
 19. On a guarded machine, an apply that loses the gateways is rolled
     back (N25).
+20. No link of the machine takes or sends an ICMP redirect or accepts a
+    source-routed packet, in any mode (N47; design invariant I7).
 
 ## 5. What exists today (2026-11-16, after the proof round)
 
@@ -2361,6 +2448,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   | `netif-containers` | Docker and rootful Podman keep links, namespaces, default and user-defined networks and a published port reached from another machine across two applies, in an IfState mode; pool-overlap eval error | P7 |
   | `netif-vmhost` | bridge sends from the uplink's MAC; a bridge over a VLAN; guest ports with arbitrary names survive two applies and stay reachable | P7 |
   | `netif-guard` | a change that loses the gateway is rolled back and the unit fails; a good change is kept; a gateway that ignores ping passes; no previous configuration fails loudly | P8 |
+  | `netif-hostile` | an attacker beside the machine: no open TCP port on any address; a forged ICMP redirect moves no route and redirects and source routes are off on every link (with a positive control each); a spoofed source gets no answer; the RA fixture's advertisement arrives (control) and gives no route-information route. Later design steps add their verdicts (design §6) | round 64 (N46, N47) |
 
   Existing suites stay green throughout.
 
@@ -2706,7 +2794,7 @@ Terms as this file uses them. One term per thing.
   (`ifstate.service`). It converges the whole kernel network state to
   the configuration. A reapply is a run with an unchanged configuration.
 - **Contract gate, field gate** — the two conditions for "stable" (N14).
-- **Decision** — a numbered rule in §3, written `N1`…`N45`.
+- **Decision** — a numbered rule in §3, written `N1`…`N47`.
 - **Default route owner** — the one netif link per family that may
   install a main-table default route (N21).
 - **Deploy target** — `clan.core.networking.targetHost`: where clan

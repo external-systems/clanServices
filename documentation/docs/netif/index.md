@@ -76,6 +76,11 @@ passes the contract gate.
 
 ## Defaults worth knowing
 
+- **Redirects and source routes:** no link takes or sends an ICMP
+  redirect or accepts a source-routed packet, in every mode, also links
+  netif does not declare and links that appear later (N47). The suite
+  `netif-hostile` attacks a netif machine to prove it.
+
 - **Firewall:** a link is untrusted unless its segment or the link sets
   `firewall.trust = true` (from P3b). Services open their own ports.
 - **DNS:** each link's nameservers go to that link in systemd-resolved,
