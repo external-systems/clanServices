@@ -184,7 +184,8 @@
           if link.defaultRoute.ipv6 != null
           then link.defaultRoute.ipv6
           else site.defaultRoute.ipv6;
-        inherit (link.dhcp) prefixDelegation;
+        inherit (link.dhcp) prefixDelegation classlessRoutes;
+        dhcpDns = link.dhcp.dns;
         requiredForOnline =
           if link.requiredForOnline != null
           then link.requiredForOnline
@@ -437,6 +438,28 @@
         type = types.nullOr types.bool;
         default = null;
         description = "DHCPv6 on this link. Null inherits the segment default.";
+      };
+      classlessRoutes = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Install the routes a DHCPv4 lease carries (options 33, 121 and
+          249). Off by default: such a route can be more specific than a
+          route of another link, so this link's DHCP server could pull
+          that traffic to itself. A link whose provider hands out its
+          routes this way opts in; otherwise declare them in 'routes'
+          (specs/netif.md N50).
+        '';
+      };
+      dns = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = ''
+          Use the DNS servers and search domains of this link's DHCP
+          leases. Null means: only when the link owns a default route
+          (specs/netif.md N50). A link without one would otherwise let
+          its DHCP server answer names for the whole machine.
+        '';
       };
       prefixDelegation = {
         enable = mkOption {
@@ -792,6 +815,15 @@
           {
             assertion = memberOf == null || !link.ra;
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' is a member of '${toString memberOf}' and sets 'ra = true'; a member carries no addressing. Set 'ra' on '${toString memberOf}' instead (N48)";
+          }
+          # E6 (N50): the DHCP opt-ins need DHCP.
+          {
+            assertion = !(r.classlessRoutes && !r.dhcp4);
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'dhcp.classlessRoutes' without 'dhcp.ipv4'; only a DHCPv4 lease carries those routes (N50)";
+          }
+          {
+            assertion = r.dhcpDns == null || r.dhcp4 || r.dhcp6;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' sets 'dhcp.dns' without DHCP on the link; it only decides about lease DNS. Remove it, or enable 'dhcp.ipv4' or 'dhcp.ipv6' (N50)";
           }
           # E1 (N49): the kernel refuses a gateway on no subnet of the link.
           {
@@ -1695,8 +1727,15 @@ in {
                       ra
                       mtu
                       routes
+                      classlessRoutes
                       ;
                     trusted = r.trust;
+                    # Lease DNS only from a link that owns a default route,
+                    # unless declared (N50).
+                    dhcpDns =
+                      if r.dhcpDns != null
+                      then r.dhcpDns
+                      else v4Default r || v6Default r;
                     addresses = r.static4 ++ r.static6;
                     inherit (r) matchMac;
                     prefixDelegation = {

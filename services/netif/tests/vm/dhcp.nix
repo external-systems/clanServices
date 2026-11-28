@@ -147,7 +147,13 @@ in {
             zone = "private";
             # a prefix and an address from the advertisement, no router
             ra = true;
-            dhcp.ipv4 = true;
+            # the opt-ins of a link that owns no default (N50): its
+            # lease's DNS and classless routes
+            dhcp = {
+              ipv4 = true;
+              dns = true;
+              classlessRoutes = true;
+            };
             defaultRoute = {
               ipv4 = false;
               ipv6 = false;

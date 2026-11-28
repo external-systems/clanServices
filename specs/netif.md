@@ -6,7 +6,7 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N49` so they never collide with
+together.** Decisions are numbered `N1`–`N50` so they never collide with
 SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
@@ -33,6 +33,14 @@ Round 68 (2026-11-28): **netif steps 2 to 4 of the target design**
   guard with nothing to test and links with the firewall off are
   warnings. A guest-port name with regex characters is escaped (it was
   a broken regex).
+- **N50** DHCP is untrusted input: a lease sets a closed list. No
+  static or classless routes (options 33, 121, 249) unless the link
+  says `dhcp.classlessRoutes`; never an MTU (26); lease DNS only on a
+  link that owns a default route unless it says `dhcp.dns`; a hot-plug
+  link's DNS is no default route for names while a declared link has
+  DNS. `netif-hostile`'s `side` is a DHCP link now, beside `optin`
+  (eth4) and a rogue server behind the dock (H09–H13, H18a–c), and a
+  dhcpcd without `nooption` lines is the positive control.
 
 Round 64 (2026-11-27): **netif step 1 of the target design: the
 threat model, one sysctl baseline and `netif-hostile`** (SPEC.md round
@@ -2272,7 +2280,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
     no source route on any link: **step 1, implemented (N47)**. I13 the
     firewall stays closed: already true (N19). I8 RA only where
     declared: step 2, **implemented (N48)**. I9 a lease sets a closed list, I11 DNS scope:
-    step 4. I1–I6 (no lockout by deploy, do no harm, only proven bundles
+    step 4, **implemented (N50)**. I1–I6 (no lockout by deploy, do no harm, only proven bundles
     recorded, a bad bundle is not retried, own evidence only, a missing
     NIC blocks nothing), I10, S1–S3: step 6. I12 one manager per boot:
     step 7. S4 one writer per kernel object and per sysctl key: the
@@ -2396,6 +2404,44 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   `test_twoTargetHostsRejected`, `test_deployLinkOpensSsh`,
   `test_checkWarnings`; suite `netif-vmhost` with a guest port named
   `gp(1`)*
+
+- **N50 DHCP option policy and DNS scope.** A DHCP server on a link can
+  set the address, the mask and (only on the link that owns the IPv4
+  default) the router. Nothing else unless the link declares it (I9,
+  I11; design §3.5). Amends N9 (DNS) and N12 (hot-plug).
+  - **dhcpcd file of a declared link.** `nooption interface_mtu` always
+    (the MTU is `links.<n>.mtu`; dhcpcd wrote option 26 as the `mtu` of
+    every route of the lease). `nooption static_routes,
+    classless_static_routes, ms_classless_static_routes` unless
+    `dhcp.classlessRoutes = true` (then `option
+    classless_static_routes`). Lease DNS and search domains (`option
+    domain_name_servers, domain_name, domain_search` and the DHCPv6
+    pair) when the link owns a default route or `dhcp.dns = true`;
+    `nooption` for both otherwise. `nooption` is needed, not tidy: a
+    server's unrequested option is taken without it (design P6).
+  - **Hot-plug file.** No `hostname` sent to a stranger's server; DNS
+    options yes; no routes, no MTU. The router option at metric
+    `routeMetric + 100` as before (N18).
+  - **DNS scope (`dnsApply`).** A declared link with DNS gets
+    `resolvectl default-route yes` (explicit, never resolved's guess). A
+    hot-plug link gets `no` while any declared link has carrier and DNS,
+    `yes` otherwise; every run judges every present hot-plug link, and
+    with hot-plug prefixes every link event re-runs the writer.
+  - **Untrusted values.** `set -f` in the dhcpcd script and the DNS
+    writer: no globbing of what a server sent.
+  - **Options.** `links.<n>.dhcp.classlessRoutes` (bool, false) and
+    `links.<n>.dhcp.dns` (null = the link owns a default route). E6:
+    `classlessRoutes` needs `dhcp.ipv4`; `dns` needs DHCP. Host facts
+    `classlessRoutes` and `dhcpDns` in `clanServices.netif.links`.
+  - **Limit.** On the link that owns the default route, its DHCP server
+    picks the gateway and (unless `dhcp.dns = false`) the DNS servers.
+  *(implemented round 68; suite `netif-hostile`: H09–H12 with the
+  rogue lease as control and a plain dhcpcd that takes option 121 and
+  26 as the positive control, H13 (the opt-ins), H18a–c with the
+  dock's lease as control and the DNS default moving back to the dock
+  when no declared link has DNS; `netif-dhcp` (`private` opts in to
+  DNS and classless routes); nix-unit `test_dhcpOptionPolicy`,
+  `test_dhcpOptInsNeedDhcp`)*
 
 
 ## 4. Invariants

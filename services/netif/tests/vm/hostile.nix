@@ -1,16 +1,20 @@
 # netif-hostile: hostile neighbours on the links of a netif machine
-# (specs/netif.md N46, N47, N48; specs/design-netif.md §6). Hermetic:
-# test VLANs only, no real network.
+# (specs/netif.md N46-N50; specs/design-netif.md §6). Hermetic: test
+# VLANs only, no real network.
 #
 #   gw        192.168.1.1, 2001:db8:1::1: the real gateway (VLAN 1)
 #   victim    netif. eth1 `uplink` (static, owns both defaults); eth2
-#             `side` (static, no default); eth3 `ral` (`ra = true`, no
-#             default); eth5 `trunk` (a VLAN parent without addressing)
-#             and `v10` on it; `br0` (guest ports) with a guest port in
-#             a namespace; the hot-plug prefix `enx` with a veth "dock"
+#             `side` (DHCPv4, no default); eth3 `ral` (`ra = true`, no
+#             default); eth4 `optin` (DHCPv4 with `dhcp.dns` and
+#             `dhcp.classlessRoutes`, no default); eth5 `trunk` (a VLAN
+#             parent without addressing) and `v10` on it; `br0` (guest
+#             ports) with a guest port in a namespace; the hot-plug prefix
+#             `enx` with a veth "dock" whose rogue DHCP server sits in a
+#             namespace
 #   attacker  on VLANs 1 to 5: scans, a router-advertisement fixture
 #             (radvd) on eth1 and eth3, scapy advertisements, a forged
-#             ICMP redirect, spoofed sources
+#             ICMP redirect, spoofed sources, rogue DHCP servers (dnsmasq)
+#             on eth2 and eth4
 #
 # Every attack ends in one `verdict(id, safe, detail)`. The suite runs
 # all of them, prints a `HOSTILE SAFE|GAP <id>` line each, and fails at
@@ -64,9 +68,10 @@ in {
               ipv6 = "2001:db8:1::1";
             };
           };
+          # its DHCP server is the attacker's
           side = {
             interface = "eth2";
-            static.ipv4 = ["198.51.100.2/24"];
+            dhcp.ipv4 = true;
             defaultRoute = {
               ipv4 = false;
               ipv6 = false;
@@ -77,6 +82,19 @@ in {
             interface = "eth3";
             ra = true;
             defaultRoute.ipv6 = false;
+          };
+          # a link that asks for its lease's DNS and classless routes
+          optin = {
+            interface = "eth4";
+            dhcp = {
+              ipv4 = true;
+              dns = true;
+              classlessRoutes = true;
+            };
+            defaultRoute = {
+              ipv4 = false;
+              ipv6 = false;
+            };
           };
           trunk = {
             interface = "eth5";
@@ -118,12 +136,23 @@ in {
         memorySize = 1536;
         inherit vlans;
       };
-      environment.systemPackages = [
-        pkgs.tcpdump
-        pkgs.wireguard-tools
-        # the guest's advertisement (H15)
-        (pkgs.python3.withPackages (ps: [ps.scapy]))
-      ];
+      environment = {
+        systemPackages = [
+          pkgs.tcpdump
+          pkgs.wireguard-tools
+          # the rogue servers of the dock and of the P6 control
+          pkgs.dnsmasq
+          # the guest's advertisement (H15)
+          (pkgs.python3.withPackages (ps: [ps.scapy]))
+        ];
+        # H09-H11 control (P6): a dhcpcd with no `nooption` line
+        etc."probe/plain.conf".text = ''
+          noipv6rs
+          noipv4ll
+          ipv4only
+          script ${pkgs.coreutils}/bin/true
+        '';
+      };
       clanServices.netif.hotplug.interfaces = ["^enx"];
     };
     attacker = {pkgs, ...}: {
@@ -150,6 +179,13 @@ in {
               state = "up";
             };
           };
+          eth4 = {
+            addresses = ["10.4.0.66/24"];
+            link = {
+              kind = "physical";
+              state = "up";
+            };
+          };
           eth5.link = {
             kind = "physical";
             state = "up";
@@ -161,6 +197,7 @@ in {
       environment.systemPackages = [
         pkgs.nmap
         pkgs.iputils
+        pkgs.dnsmasq
         (pkgs.python3.withPackages (ps: [ps.scapy]))
       ];
       # The router-advertisement fixture of H02-H04 (eth1) and H16 (eth3).
@@ -203,7 +240,7 @@ in {
     RESULTS = []
     CONTROLS = []
     # boot links of the VM that no instance declares (design §3.4 residual)
-    UNDECLARED_AT_BOOT = ["eth0", "eth4"]
+    UNDECLARED_AT_BOOT = ["eth0"]
 
 
     def verdict(key, safe, detail=""):
@@ -292,6 +329,14 @@ in {
         )
 
 
+    def ensure_dock():
+        """A hot-plugged dock: the veth `enxdock`, its peer in a namespace."""
+        victim.succeed(
+            "ip netns list | grep -w dock >/dev/null || (ip netns add dock && ip link add dockpeer netns dock type veth peer name enxdock"
+            " && ip -n dock link set dockpeer up && ip -n dock link set lo up && udevadm settle)"
+        )
+
+
     def redirect_moves(route):
         """The forged redirect: the gateway's address tells the victim to
         reach 203.0.113.9 through the attacker. Its inner packet is a UDP
@@ -317,7 +362,25 @@ in {
         machine.wait_for_unit("multi-user.target", timeout=300)
     victim.wait_until_succeeds("ping -c 1 -W 2 192.168.1.1", timeout=120)
     victim.wait_until_succeeds("ping -6 -c 1 -W 2 2001:db8:1::1", timeout=120)
-    attacker.wait_until_succeeds("ping -c 1 -W 2 198.51.100.2", timeout=120)
+    # The rogue DHCP servers run from the start: `side` takes its only
+    # address from one, and the reverse-path check (H14) needs it.
+    attacker.succeed(
+        "systemd-run --unit rogue-side dnsmasq --keep-in-foreground --interface=eth2 --bind-interfaces"
+        " --dhcp-range=198.51.100.100,198.51.100.150,255.255.255.0,10m --dhcp-leasefile=/run/rogue-side.leases --pid-file=/run/rogue-side.pid"
+        " --dhcp-option-force=121,0.0.0.0/1,198.51.100.66,128.0.0.0/1,198.51.100.66,192.168.1.1/32,198.51.100.66"
+        " --dhcp-option-force=249,0.0.0.0/1,198.51.100.66,128.0.0.0/1,198.51.100.66"
+        " --dhcp-option-force=33,203.0.113.9,198.51.100.66"
+        " --dhcp-option-force=26,576 --dhcp-option-force=6,198.51.100.66 --address=/#/198.51.100.66"
+    )
+    attacker.succeed(
+        "systemd-run --unit rogue-optin dnsmasq --keep-in-foreground --port=0 --interface=eth4 --bind-interfaces"
+        " --dhcp-range=10.4.0.100,10.4.0.150,255.255.255.0,10m --dhcp-leasefile=/run/rogue-optin.leases --pid-file=/run/rogue-optin.pid"
+        " --dhcp-option-force=121,10.77.0.0/16,10.4.0.66 --dhcp-option-force=26,576 --dhcp-option-force=6,10.4.0.66"
+    )
+    victim.wait_until_succeeds("ip -4 -o addr show dev eth2 | grep 198.51.100.1 >/dev/null", timeout=120)
+    victim.wait_until_succeeds("ip -4 -o addr show dev eth4 | grep 10.4.0.1 >/dev/null", timeout=120)
+    side_ip = victim.succeed("ip -4 -o addr show dev eth2 | awk '{print $4}' | cut -d/ -f1").strip()
+    attacker.wait_until_succeeds(f"ping -c 1 -W 2 {side_ip}", timeout=60)
     link_local = victim.succeed("ip -6 -o addr show dev eth1 scope link | awk '{print $4}' | cut -d/ -f1").strip()
 
     with subtest("a full TCP scan of the netif machine, every address"):
@@ -326,7 +389,7 @@ in {
         for label, target in [("IPv4", "192.168.1.1"), ("IPv6", "2001:db8:1::1")]:
             found = scan(target, "8080")
             control(f"H01 the scan finds an open port on a legal target ({label})", found == [8080], f"open on the gateway: {found}")
-        for label, target in [("IPv4", "192.168.1.2"), ("IPv6", "2001:db8:1::2"), ("IPv6 link-local", f"{link_local}%eth1"), ("IPv4 of side", "198.51.100.2")]:
+        for label, target in [("IPv4", "192.168.1.2"), ("IPv6", "2001:db8:1::2"), ("IPv6 link-local", f"{link_local}%eth1"), ("IPv4 of side", side_ip)]:
             found = scan(target)
             verdict(f"H01 no TCP port open on an untrusted link ({label})", not found, f"open: {found}")
 
@@ -391,6 +454,57 @@ in {
         ra_keys("eth3", accept_ra_defrtr=0, accept_ra_rt_info_max_plen=0, accept_ra_mtu=0, accept_ra_min_hop_limit=64, mtu=1500, hop_limit=64)
         forget_ra("eth3")
 
+    with subtest("a rogue DHCP server on a link that does not own the default (options 121, 33, 249, 26, 6)"):
+        side = victim.succeed("ip -4 -o addr show dev eth2 | awk '{print $4}' | cut -d/ -f1").strip()
+        leases = attacker.succeed("cat /run/rogue-side.leases").strip()
+        control("H09-H12 the rogue lease is on eth2", side.startswith("198.51.100.1") and side in leases, f"{side}; server: {leases}")
+        routes = victim.succeed("ip -4 route show table all dev eth2 | grep -v '^local\\|^broadcast' || true").strip()
+        out = " | ".join(victim.succeed(f"ip route get {target}").strip() for target in ["203.0.113.9", "192.168.1.1", "10.200.0.1"])
+        only_connected = [line for line in routes.splitlines() if not line.startswith("198.51.100.0/24")] == []
+        verdict("H09 classless routes of a lease (option 121: two /1 and the gateway's /32) are not installed", only_connected and "eth2" not in out, f"routes on eth2: {routes!r}; {out}")
+        verdict("H10 static routes of a lease (options 33, 249) are not installed", "203.0.113.9" not in routes and only_connected, routes)
+        mtu = victim.succeed("cat /sys/class/net/eth2/mtu").strip()
+        # dhcpcd writes option 26 as the `mtu` of its routes, not of the link
+        verdict("H11 the lease sets no MTU (option 26)", mtu == "1500" and " mtu " not in routes + " ", f"link mtu {mtu}; routes: {routes}")
+        dns = victim.succeed("resolvectl dns eth2").strip()
+        default_route = victim.succeed("resolvectl default-route eth2").strip()
+        query = victim.execute("resolvectl query --legend=no example.test 2>&1")[1].strip()
+        verdict(
+            "H12 a link without a default route gives no DNS server",
+            "198.51.100.66" not in dns and default_route.endswith("no") and "198.51.100.66" not in query,
+            f"{dns!r} {default_route!r} {query!r}",
+        )
+
+    with subtest("the declared opt-in: lease DNS and classless routes on a link that asks for them"):
+        victim.wait_until_succeeds("resolvectl dns eth4 | grep 10.4.0.66 >/dev/null", timeout=60)
+        victim.wait_until_succeeds("ip -4 route show dev eth4 | grep 10.77.0.0/16 >/dev/null", timeout=30)
+        routes = victim.succeed("ip -4 route show dev eth4").strip().replace("\n", "; ")
+        default_route = victim.succeed("resolvectl default-route eth4").strip()
+        mtu = victim.succeed("cat /sys/class/net/eth4/mtu").strip()
+        verdict(
+            "H13 the opt-in is what the link declared: DNS as a default route, option 121, still no MTU",
+            "10.77.0.0/16 via 10.4.0.66" in routes and default_route.endswith("yes") and mtu == "1500" and " mtu " not in routes + " ",
+            f"declared: {routes}; {default_route}; mtu {mtu}",
+        )
+
+    with subtest("P6: the same kind of lease on a client without `nooption` lines"):
+        victim.succeed(
+            "ip netns list | grep -w ctl >/dev/null || (ip netns add ctl && ip link add ctlpeer netns ctl type veth peer name ctl0"
+            " && ip -n ctl addr add 10.8.0.1/24 dev ctlpeer && ip -n ctl link set ctlpeer up && ip link set ctl0 up)"
+        )
+        victim.succeed(
+            "systemd-run --unit rogue-ctl ip netns exec ctl /run/current-system/sw/bin/dnsmasq --keep-in-foreground --port=0 --interface=ctlpeer --bind-interfaces"
+            " --dhcp-range=10.8.0.100,10.8.0.150,255.255.255.0,10m --dhcp-leasefile=/run/rogue-ctl.leases --pid-file=/run/rogue-ctl.pid"
+            " --dhcp-option-force=121,10.66.0.0/16,10.8.0.1 --dhcp-option-force=3,10.8.0.1 --dhcp-option-force=26,576"
+        )
+        victim.succeed("systemd-run --unit probe-plain dhcpcd -B -f /etc/probe/plain.conf ctl0")
+        took = seconds_until(victim, "ip -4 route show dev ctl0 | grep 10.66.0.0/16", limit=120)
+        plain = victim.succeed("ip -4 route show dev ctl0").strip().replace("\n", "; ")
+        # unrequested options are taken without `nooption` (design P6)
+        control("H09 a dhcpcd without `nooption` lines installs the option-121 route of the same kind of lease", "10.66.0.0/16 via 10.8.0.1" in plain, f"{plain} after {took} s")
+        control("H11 a dhcpcd without `nooption` lines puts option 26 on the lease's routes", "mtu 576" in plain, plain)
+        victim.succeed("systemctl stop probe-plain rogue-ctl; ip link del ctl0; ip netns del ctl")
+
     with subtest("a forged ICMP redirect in the gateway's name"):
         moved, route = redirect_moves("203.0.113.9")
         verdict("H05 a forged IPv4 redirect does not move a route", not moved, route)
@@ -447,9 +561,9 @@ in {
         # a guest port, a hot-plugged dock, a veth pair with one end in a
         # bridge, a dummy and a WireGuard link, all added after boot
         ensure_guest()
+        ensure_dock()
         victim.succeed(
-            "ip netns add dock && ip link add dockpeer netns dock type veth peer name enxdock && ip -n dock link set dockpeer up"
-            " && ip link add vt0 type veth peer name vt1 && ip link add dm0 type dummy && ip link add brx type bridge"
+            "ip link add vt0 type veth peer name vt1 && ip link add dm0 type dummy && ip link add brx type bridge"
             " && ip link set vt1 master brx && ip link add wg9 type wireguard && udevadm settle"
         )
         for link in ["gp0", "enxdock", "vt0", "vt1", "dm0", "brx", "wg9"]:
@@ -491,6 +605,40 @@ in {
         state = victim.succeed("ip -6 addr show; ip -6 route show table all")
         parent = sysctl(victim, "ipv6/conf/eth5/accept_ra")
         verdict("H23 a VLAN parent without addressing takes nothing from an advertisement", "2001:db8:bad5" not in state and parent == "0", f"accept_ra {parent}")
+
+    with subtest("a rogue DHCP server on a hot-plugged link (options 121, 3, 26, 6)"):
+        ensure_dock()
+        victim.succeed("ip -n dock addr replace 10.9.0.1/24 dev dockpeer")
+        victim.succeed(
+            "systemd-run --unit rogue-dock ip netns exec dock /run/current-system/sw/bin/dnsmasq --keep-in-foreground --port=0 --interface=dockpeer --bind-interfaces"
+            " --dhcp-range=10.9.0.100,10.9.0.150,255.255.255.0,10m --dhcp-leasefile=/run/rogue-dock.leases --pid-file=/run/rogue-dock.pid"
+            " --dhcp-option-force=121,0.0.0.0/1,10.9.0.1,128.0.0.0/1,10.9.0.1 --dhcp-option-force=3,10.9.0.1"
+            " --dhcp-option-force=26,576 --dhcp-option-force=6,10.9.0.1"
+        )
+        took = seconds_until(victim, "ip -4 -o addr show dev enxdock | grep 10.9.0.1 && resolvectl dns enxdock | grep 10.9.0.1", limit=120)
+        control("H18 the hot-plugged link has the rogue lease and its DNS", took is not None, victim.succeed("ip -4 -o addr show dev enxdock; resolvectl dns enxdock").strip())
+        victim.wait_until_succeeds("resolvectl dns eth4 | grep 10.4.0.66 >/dev/null", timeout=60)
+        routes = victim.succeed("ip -4 route show dev enxdock").strip().replace("\n", "; ")
+        default_route = victim.succeed("resolvectl default-route enxdock").strip()
+        mtu = victim.succeed("cat /sys/class/net/enxdock/mtu").strip()
+        redirects = [sysctl(victim, "ipv4/conf/enxdock/accept_redirects"), sysctl(victim, "ipv6/conf/enxdock/accept_redirects")]
+        extra = [line for line in routes.split("; ") if not line.startswith(("10.9.0.0/24", "default via 10.9.0.1"))]
+        verdict("H18a a hot-plugged link takes the router at its metric and no other route", extra == [] and "metric 200" in routes, routes)
+        verdict("H18b a hot-plugged link's DNS is no default route while a declared link has DNS", default_route.endswith("no"), default_route)
+        verdict("H18c a hot-plugged link keeps its MTU and takes no redirects", mtu == "1500" and " mtu " not in routes + " " and redirects == ["0", "0"], f"mtu {mtu} redirects {redirects}")
+        finding("P4 hot-plug RA keys", {key: sysctl(victim, f"ipv6/conf/enxdock/{key}") for key in ["accept_ra", "autoconf", "accept_ra_defrtr", "accept_ra_rt_info_max_plen", "accept_ra_mtu"]})
+        # P7: after a carrier flap, and when no declared link has DNS
+        victim.succeed("ip -n dock link set dockpeer down && sleep 3 && ip -n dock link set dockpeer up")
+        victim.wait_until_succeeds("resolvectl dns enxdock | grep 10.9.0.1 >/dev/null", timeout=90)
+        finding("P7 default-route of the hot-plugged link after a carrier flap", victim.succeed("resolvectl default-route enxdock").strip())
+        victim.succeed("systemctl stop netif-dhcpcd-eth4.service")
+        took = seconds_until(victim, "resolvectl default-route enxdock | grep 'yes$'", limit=30)
+        # the control of H18b: the same link's DNS is the default once no
+        # declared link has DNS
+        control("H18b the hot-plugged link's DNS becomes the default when no declared link has DNS", took is not None, f"{victim.succeed('resolvectl default-route enxdock').strip()} after {took} s")
+        victim.succeed("systemctl start netif-dhcpcd-eth4.service")
+        victim.wait_until_succeeds("resolvectl dns eth4 | grep 10.4.0.66 >/dev/null", timeout=90)
+        victim.wait_until_succeeds("resolvectl default-route enxdock | grep 'no$' >/dev/null", timeout=30)
 
     with subtest("every link of the machine"):
         survey = (

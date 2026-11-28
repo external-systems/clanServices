@@ -468,6 +468,17 @@
   raKeys = machineConfig: interface:
     lib.getAttrs ["accept_ra" "autoconf" "accept_ra_pinfo" "accept_ra_defrtr" "accept_ra_rt_info_max_plen" "accept_ra_mtu" "accept_ra_min_hop_limit" "use_tempaddr"]
     machineConfig.networking.ifstate.settings.interfaces.${interface}.sysctl.ipv6;
+  # N50: the DHCP option policy.
+  privateOptIn = privateLink {
+    defaultRoute.ipv4 = false;
+    dhcp = {
+      ipv4 = true;
+      dns = true;
+      classlessRoutes = true;
+    };
+  };
+  hotplugKam = kamOf (withKamrui {clanServices.netif.hotplug.interfaces = ["^enx"];} baseInventory);
+  hotplugLines = lib.splitString "\n" hotplugKam.environment.etc."netif/dhcpcd/hotplug.conf".source.text;
   # N49: evaluation checks (design §3.9).
   e1 = link: failedAssertion (kamWithLinks {gw = {interface = "enp9s0";} // link;}) "outside its static subnets";
   e2 = route:
@@ -1991,6 +2002,54 @@ in {
           accept_source_route = 0;
         };
         kernel = lib.genAttrs baselineKeys (_: 0);
+      };
+    };
+    # N50: a lease sets a closed list.
+    test_dhcpOptionPolicy = let
+      has = config: interface: line: lib.elem line (confLines config interface);
+      routesOff = "nooption static_routes, classless_static_routes, ms_classless_static_routes";
+    in {
+      expr = {
+        # the default-owning link: DNS from the lease, never routes or MTU
+        owner = map (has kam "enp4s0") ["option domain_name_servers, domain_name, domain_search" routesOff "nooption interface_mtu"];
+        # a link without a default: no DNS, no router
+        private = map (has privateNoDefault "enp7s0") ["nooption domain_name_servers, domain_name, domain_search" "nooption dhcp6_name_servers, dhcp6_domain_search" routesOff "nogateway" "nooption interface_mtu"];
+        # the opt-ins
+        optIn = map (has privateOptIn "enp7s0") ["option domain_name_servers, domain_name, domain_search" "option classless_static_routes" "nogateway" "nooption interface_mtu"];
+        dhcpDns = [kam.clanServices.netif.links.enp4s0.dhcpDns privateNoDefault.clanServices.netif.links.enp7s0.dhcpDns privateOptIn.clanServices.netif.links.enp7s0.dhcpDns];
+        # a hot-plugged link: DNS (judged at runtime), no routes, no MTU,
+        # no hostname sent to a stranger's server
+        hotplug = map (line: lib.elem line hotplugLines) ["option domain_name_servers, domain_name, domain_search" routesOff "nooption interface_mtu" "hostname"];
+      };
+      expected = {
+        owner = [true true true];
+        private = [true true true true true];
+        optIn = [true true true true];
+        dhcpDns = [true false true];
+        hotplug = [true true true false];
+      };
+    };
+    # E6: the opt-ins need DHCP.
+    test_dhcpOptInsNeedDhcp = {
+      expr = {
+        routes = failedAssertion (kamWithLinks {
+          st = {
+            interface = "enp9s0";
+            static.ipv4 = ["192.168.50.2/24"];
+            dhcp.classlessRoutes = true;
+          };
+        }) "without 'dhcp.ipv4'";
+        dns = failedAssertion (kamWithLinks {
+          st = {
+            interface = "enp9s0";
+            static.ipv4 = ["192.168.50.2/24"];
+            dhcp.dns = true;
+          };
+        }) "sets 'dhcp.dns' without DHCP";
+      };
+      expected = {
+        routes = true;
+        dns = true;
       };
     };
     # N49 E1: a static gateway lies in a static subnet of its link.

@@ -47,13 +47,47 @@
   # revert the link otherwise.
   dnsApply = pkgs.writeShellScript "netif-dns-apply" ''
     export PATH=${path}
-    for l in ''${*:-${lib.escapeShellArgs dnsLinks}}; do
+    # lease values are untrusted: no globbing of what a server sent
+    set -f
+    declared=" ${lib.concatStringsSep " " dnsLinks} "
+    # Does a declared link have carrier and DNS? Then a hot-plugged
+    # link's DNS is no default route for names (N50, I11).
+    declared_dns=no
+    for l in ${lib.escapeShellArgs dnsLinks}; do
+      if [ "$(cat "/sys/class/net/$l/carrier" 2>/dev/null)" = 1 ] \
+        && [ -n "$(cat "/etc/netif/dns/$l.dns" "${runtimeDir}/$l.dhcp4.dns" "${runtimeDir}/$l.dhcp6.dns" 2>/dev/null)" ]; then
+        declared_dns=yes
+      fi
+    done
+    # every present hot-plugged link is judged again on every run
+    hotplugged=""
+    ${lib.optionalString (hotplugPrefixes != []) ''
+      set +f
+      for p in /sys/class/net/*; do
+        case "''${p##*/}" in
+          ${lib.concatMapStringsSep "|" (prefix: "${prefix}*") hotplugPrefixes}) hotplugged="$hotplugged ''${p##*/}" ;;
+        esac
+      done
+      set -f
+    ''}
+    # shellcheck disable=SC2086
+    for l in ''${*:-${lib.escapeShellArgs dnsLinks}} $hotplugged; do
       [ -e "/sys/class/net/$l" ] || continue
       dns="$(cat "/etc/netif/dns/$l.dns" "${runtimeDir}/$l.dhcp4.dns" "${runtimeDir}/$l.dhcp6.dns" 2>/dev/null | tr '\n' ' ')"
       dom="$(cat "${runtimeDir}/$l.dhcp4.domain" "${runtimeDir}/$l.dhcp6.domain" 2>/dev/null | tr '\n' ' ')"
       if [ "$(cat "/sys/class/net/$l/carrier" 2>/dev/null)" = 1 ] && [ -n "''${dns// }" ]; then
         # shellcheck disable=SC2086
         resolvectl dns "$l" $dns || true
+        # explicit, never resolved's guess
+        case "$declared" in
+          *" $l "*) resolvectl default-route "$l" yes || true ;;
+          *)
+            if [ "$declared_dns" = yes ]; then
+              resolvectl default-route "$l" no || true
+            else
+              resolvectl default-route "$l" yes || true
+            fi ;;
+        esac
         if [ -n "''${dom// }" ]; then
           # shellcheck disable=SC2086
           resolvectl domain "$l" $dom || true
@@ -66,12 +100,19 @@
   '';
 
   linkPattern = lib.concatMapStringsSep "|" (l: "*\" ${l}:\"*|*\" ${l}@\"*") dnsLinks;
+  # A carrier change of a declared link also moves the DNS default of the
+  # hot-plugged links: with hot-plug prefixes every link event re-runs
+  # the writer (N50).
+  watchPattern =
+    if hotplugPrefixes != []
+    then "*"
+    else linkPattern;
   dnsWatch = pkgs.writeShellScript "netif-dns-watch" ''
     export PATH=${path}
     ${dnsApply}
     ip -o monitor link | while read -r line; do
       case "$line" in
-        ${linkPattern}) ${dnsApply} ;;
+        ${watchPattern}) ${dnsApply} ;;
       esac
     done
     # `ip monitor` ended: fail, so systemd restarts the watcher.
@@ -82,6 +123,8 @@
   # stock hook runs. It hands the lease's DNS to the writer above.
   dhcpcdScript = pkgs.writeShellScript "netif-dhcpcd-exit" ''
     export PATH=${path}
+    # lease values are untrusted: no globbing of what a server sent
+    set -f
     d=${runtimeDir}
     # shellcheck disable=SC2154,SC2086
     case "$reason" in
@@ -138,9 +181,10 @@
           "# netif/${l.instance} link '${l.logical}' (specs/netif.md N16)"
           "duid"
           "hostname"
-          "option domain_name_servers, domain_name, domain_search, classless_static_routes"
-          "option dhcp6_name_servers, dhcp6_domain_search"
           "require dhcp_server_identifier"
+          # A lease sets a closed list (N50). `nooption` drops an option
+          # the server sends unasked too; the MTU is the link's own.
+          "nooption interface_mtu"
           # IfState owns router advertisements; dhcpcd never reads one.
           "noipv6rs"
           "noipv4ll"
@@ -148,7 +192,23 @@
           "backoff_cutoff ${toString cfg.dhcpBackoffCutoff}"
           "script ${dhcpcdScript}"
         ]
-        # Keep the lease and its classless routes, drop the router (N21).
+        ++ (
+          if l.dhcpDns
+          then [
+            "option domain_name_servers, domain_name, domain_search"
+            "option dhcp6_name_servers, dhcp6_domain_search"
+          ]
+          else [
+            "nooption domain_name_servers, domain_name, domain_search"
+            "nooption dhcp6_name_servers, dhcp6_domain_search"
+          ]
+        )
+        ++ (
+          if l.classlessRoutes
+          then ["option classless_static_routes"]
+          else ["nooption static_routes, classless_static_routes, ms_classless_static_routes"]
+        )
+        # Keep the lease, drop the router (N21).
         ++ lib.optional (!l.default4) "nogateway"
         ++ lib.optional (!l.dhcp6) "ipv4only"
         ++ lib.optional (!l.dhcp4) "ipv6only"
@@ -218,10 +278,13 @@
   hotplugMetric = cfg.routeMetric + 100;
   hotplugConf = pkgs.writeText "netif-dhcpcd-hotplug.conf" (
     lib.concatLines [
-      "# netif hot-plugged wired links (specs/netif.md N12)"
+      "# netif hot-plugged wired links (specs/netif.md N12, N50)"
       "duid"
-      "hostname"
-      "option domain_name_servers, domain_name, domain_search, classless_static_routes"
+      # no hostname sent to a stranger's server; its DNS (judged by the
+      # writer), never its routes or MTU
+      "option domain_name_servers, domain_name, domain_search"
+      "nooption static_routes, classless_static_routes, ms_classless_static_routes"
+      "nooption interface_mtu"
       "require dhcp_server_identifier"
       # the kernel reads router advertisements on these links
       "noipv6rs"
@@ -400,6 +463,8 @@ in {
             gateway6 = mkOption {type = types.nullOr types.str;};
             default6 = mkOption {type = types.bool;};
             ra = mkOption {type = types.bool;};
+            classlessRoutes = mkOption {type = types.bool;};
+            dhcpDns = mkOption {type = types.bool;};
             mtu = mkOption {type = types.nullOr types.int;};
             addresses = mkOption {type = types.listOf types.str;};
             matchMac = mkOption {type = types.nullOr types.str;};
