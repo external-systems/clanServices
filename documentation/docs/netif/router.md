@@ -154,11 +154,13 @@ wrong:
 - **A failed apply** is checked too, and a gateway or address written
   wrong (for example with a prefix length) fails at evaluation.
 
-## Planned later
+## Done since
 
-- the `router` service ([design](../gateway/router.md));
+- the `router` service ([design](../gateway/router.md)), with its RA
+  daemon CoreRAD (never radvd; radvd is only a test fixture);
 - a MAC override on the WAN port, so it can stand in for the ISP's
-  gateway, and a check of VLAN 0 on the WAN;
-- a full `netif-router` suite with a prefix change and a reboot.
+  gateway, and a check of VLAN 0 on the WAN (`gateway-wan`);
+- the `router` suite with a prefix change and a reboot. It replaces
+  the planned `netif-router` suite.
 
-Both are phase P5 of the [plan](plan.md).
+These were phase P5 of the [plan](plan.md).

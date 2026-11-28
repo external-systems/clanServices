@@ -1874,6 +1874,10 @@
           _networkFacts = {
             schemaVersion = 2;
             forwarding = lib.mkIf forwarding true;
+            # O7: forwarding over the fabric's links (and a transit link)
+            # is judged by the guard table `inet routed-fabric-<instance>`;
+            # a CLAT host leaves these links to it
+            forwardLinks = interfaceNames;
             node.name = machine.name;
             allocationPools."routed-fabric/${instanceName}" = allocationPools;
             fabric.${instanceName} = {

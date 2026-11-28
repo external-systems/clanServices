@@ -299,6 +299,12 @@ in {
       home = ["enp2s0"];
     };
   };
+  # O7 (specs/design-gateway.md §3.5): the router's links are forward
+  # links, judged by its own table, on a router that is a CLAT host too
+  test_forwardLinks = {
+    expr = lib.sort lib.lessThan base.clan.networkFacts.forwardLinks;
+    expected = ["enp1s0" "enp2s0" "enp3s0" "enp4s0"];
+  };
   test_unknownUnzoned = {
     expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.unzoned.zones = ["guest"];}) "'unzoned.zones' names unknown zones";
     expected = true;

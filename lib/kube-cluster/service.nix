@@ -846,6 +846,10 @@
           clan = {
             _networkFacts = {
               forwarding = true;
+              # O7: pods are forwarded. A CLAT host, which refuses other
+              # IPv6 forwarding, leaves these links to Cilium and the
+              # cluster's own rules
+              forwardLinks = ["cilium*" "lxc*"];
               # The cluster's ranges, for the overlap checks of
               # lib/ownership.nix (containers, the tailnet).
               clusters.${instanceName} = {

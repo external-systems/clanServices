@@ -6,7 +6,7 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G25`, so they never collide
+pages together.** Decisions are numbered `G1`–`G28`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
 `specs/netif.md` §2 (U3, U13–U18).
 
@@ -157,6 +157,26 @@ deployed, so no change is breaking (AGENTS.md rule 10).
 - **G25 amended:** the router takes `unzoned.source` from the
   machine's fabric export; the option is an override.
 - Evidence: §16.5.
+
+Round G11 (2026-11-26): **hardening of the gateway services** (§17).
+
+Round G12 (2026-11-28): **gateway steps 0 to 3 of the round-61 target
+design** (`specs/design-gateway.md` §8; SPEC.md round 65). §18 holds
+the evidence.
+- **The hostile suites are in the tree:** `nat-gateway-hostile` and
+  `hostile-router` (§5). Every verdict group has a positive control;
+  `hostile-router` R15's rogue RA now really runs (radvd needs
+  `MinRtrAdvInterval`), and a capture proves it.
+- **G26:** a default-deny guard table in each translator namespace,
+  forwarding off there, `unreachable` loop breakers; the health check
+  withdraws a gateway whose guard cannot be loaded.
+- **G27:** the gateway's host table refuses before translation (private
+  embedded IPv4, protocols, ICMPv6 types) and checks what comes back
+  out; the pool4 bound I7 is an eval assertion; Jool's timeouts are
+  pinned.
+- **G28 (SPEC.md H17, O7):** a CLAT host forwards IPv6 for its CLAT and
+  for declared forward links only (`clan.networkFacts.forwardLinks`,
+  set by k3s, rke2, routed-fabric and the router).
 
 
 
@@ -1107,6 +1127,125 @@ any code (AGENTS.md rule 3).
   *(implemented: `router`, `ROUTER_OK`; `router-kube`,
   `ROUTER_KUBE_OK`)*
 
+- **G26 The translator namespaces are default deny** (round G12,
+  2026-11-28; `specs/design-gateway.md` §3.2, §3.4, §3.7, I2, I3, I9,
+  I12, I28). `nat-gateway-hostile` found, on `main`, `127.0.0.1` of
+  the translator answering a client (N05) and one packet crossing the
+  veth 32 times (N06 CLAT, N07 NAT64): Jool hands back what it does not
+  translate, and the namespace kernel forwarded it back out.
+  - **A guard table `inet guard` in each namespace** (`nat64`, `clat`;
+    `lib/gateway/guard.nix`, checked at build time with `nft --check`
+    as NixOS checks the host's ruleset). Chain `leftover` at prerouting
+    priority 0 (after Jool's -75) drops what Jool handed back; chain
+    `leaving` at postrouting lets out only a translated packet (source
+    in pool4 or `pool6` on a gateway; the CLAT address, or IPv4 to the
+    host's `192.0.0.1`, on a client), ND and Jool's own ICMPv6 errors.
+    Both have `policy drop`. Multicast link chatter is counted apart
+    (`guard-noise-in`, `guard-noise-out`), so `guard-leftover` and
+    `guard-leaving` read 0 on a sound translator; a suite asserts it.
+    One exception, found by `k3s-clat` (round G12): on a kube node an
+    IPv4 reply to a pod address can take the node's IPv4 default route
+    into the CLAT (seen during cluster start: five retransmits of one
+    API server reply from `192.168.77.1:6443` to pod `10.1.0.178`).
+    Jool translates it with `pool6` on both sides and the CLAT guard's
+    `leaving` chain stops it at the client; on `main` it reached the
+    gateway, which refused it (`nat64-private`). `k3s-clat` logs every
+    packet the guard stops and asserts that none is CLAT traffic (source
+    the CLAT address) or has a public embedded destination.
+  - **The Jool unit loads the guard first**, in one `nft -f`
+    transaction, before an instance can exist; the same unit, not a
+    second one (§17 G1). The host's `nftables.service` does not touch
+    it (rulesets are per namespace).
+  - **Forwarding is off in both namespaces** (Jool translates in
+    prerouting and sends with `dst_output()`; probe P2). The unit writes
+    0 at every start.
+  - **Loop breakers:** `pool6` is an `unreachable` route in the
+    `nat64` namespace, the CLAT address one in the `clat` namespace,
+    and the CLAT namespace has no IPv4 default route. Each of the three
+    layers (host table, guard, routes with forwarding off) alone ends a
+    packet that must not pass.
+  - **The health check reads the guard** every ten rounds. A round is
+    good only while both chains are loaded. A missing guard is logged
+    once and the Jool unit is restarted (at most once a minute; it
+    loads the guard first). If it cannot be loaded, the bad rounds
+    withdraw the beacon after the `down` window. `health.json` gains
+    `guard` and `guard_dropped`.
+  - **I22:** `ifstate.service` is ordered after `nftables.service` on a
+    gateway and a client: links come up behind loaded tables.
+  *(implemented: `nat-gateway`, `NAT_GATEWAY_GUARD_RESTARTS_OK`;
+  `nat-gateway-hostile`, N06, N07, N10, N11, C06, N17)*
+
+- **G27 Policy before translation on the gateway** (round G12;
+  `specs/design-gateway.md` §3.3, §3.8, I1, I4 to I7). The host table
+  `inet nat64` refuses what must not be translated while the packet is
+  still IPv6, and checks what comes back out against what a translator
+  may emit.
+  - Chain `to_translator` (towards `jool0`): only `pool6` destinations
+    (`nat64-not-pool6`); undeclared sources (`nat64-undeclared`), with a
+    `related` ICMPv6 error accepted ahead of it; L4 other than TCP, UDP
+    and ICMPv6 (`nat64-protocol`, admin-prohibited) and ICMPv6 types
+    without an IPv4 twin (`nat64-icmp-type`); a `/96` destination whose
+    embedded IPv4 is private (`ip6 daddr & ::ffff:ffff @private6`,
+    `nat64-private`, admin-prohibited: the client fails at once and the
+    packet takes no pool4 port); IPv4 towards pool4 that answers no
+    masqueraded flow (`nat64-unsolicited4`); then the meters, unchanged.
+  - Chain `from_translator` (from `jool0`): back to declared clients
+    only (`nat64-return-undeclared`), from `pool6` or pool4 only, IPv4
+    out through an uplink only; `nat64-private-post` stays as a second
+    layer that reads 0.
+  - `input`: what reaches the gateway from `jool0` is an answer to the
+    health check's own pings or ND; IPv4 is refused (`nat64-host`: the
+    gateway's public IPv4 can be dynamic, so it cannot be in
+    `private6`), other IPv6 dropped (`nat64-host6`).
+  - One list (`lib/gateway/private.nix`) renders `private4` and
+    `private6` (an IPv4 range as the low 32 bits of a `/96` address).
+    Documentation ranges are not in it: suites use them as their
+    Internet.
+  - **I7, an eval assertion:** for `limits.default`, `limits.trusted`
+    and every client's own limits, `newFlowsBurst + newFlows × 300 ≤
+    64 436` (one protocol of pool4). Jool's `udp-timeout` (5 min) and
+    `icmp-timeout` (1 min) are pinned in the unit, with
+    `address-dependent-filtering` and `drop-externally-initiated-tcp`,
+    at every start.
+  - A full pool4: Jool drops a new flow in silence (no loop, no error
+    to the client; probe P3). "Fail fast" is not available from Jool
+    4.1.15.
+  *(implemented: `nat-gateway`, `NAT_GATEWAY_OK`;
+  `nat-gateway-hostile`, N05, N08, N09, N12 to N16; `nat-gateway-kube`;
+  `k3s-clat`)*
+
+- **G28 A CLAT host forwards IPv6 for its CLAT only** (round G12;
+  SPEC.md H17, owner decision O7; `specs/design-gateway.md` §3.5, I11,
+  I13, I29). The CLAT needs `net.ipv6.conf.all.forwarding = 1`, which
+  made every CLAT host an IPv6 router between all its links (C08's
+  negative proof).
+  - Table `inet clat` (`names.clat.table`; `clat.nix` turns
+    `networking.nftables` on). Chain `forward` (stateless: Cilium
+    attaches to `clat0` and the uplink, §16.4) passes IPv4 untouched,
+    judges IPv6 to and from `clat0` in `to_clat` and `from_clat`, and
+    drops other IPv6 (`clat-forward`) unless a **forward link** is one
+    of its two links.
+  - `to_clat`: only the CLAT address (`clat-not-address`), only from a
+    gateway's `/96` of the inventory (`clat-foreign-source`), never a
+    `/96` source that embeds a private IPv4 (`clat-private-source`). An
+    ICMPv6 error from any source is let in (path MTU discovery from a
+    router on the path). `from_clat`: only the CLAT address
+    (`clat-spoof`) towards a gateway's `/96` (`clat-not-gateway`).
+  - `input`: on `clat0` only answers to the host's own flows arrive as
+    IPv4 (`clat-unsolicited`), and only ND as other IPv6 (`clat-host6`).
+  - **Forward links:** the fact `clan.networkFacts.forwardLinks`
+    (`lib/kube-cluster/network-facts.nix`; nft interface names, a
+    trailing `*` is a wildcard), set by the service that forwards and
+    judges those links: k3s and rke2 `["cilium*" "lxc*"]`;
+    routed-fabric its fabric and transit links (its guard table judges
+    them, D73); the router its zone links and the WAN. The option
+    `clanServices.gateway.clat.forwardLinks` (default empty) names a
+    link no service declares (a container bridge). A service that
+    forwards IPv6 and does not set the fact is cut off on a CLAT host,
+    and `clat-forward` counts it.
+  *(implemented: `nat-gateway-hostile`, N06, C01, C02, C03, C07, C04,
+  C08; `nat-gateway`; `k3s-clat`)*
+
 ## 3. Invariants (target)
 
 1. Neither service declares a physical link, a VLAN, an address on one
@@ -1154,6 +1293,8 @@ any code (AGENTS.md rule 3).
   | `k3s-v6only`, `rke2-v6only` | SPEC.md D67: the `join` contract on IPv6-only NICs | `<DISTRO>_V6ONLY_OK` |
   | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric; since round G7 on the services (netif, `nat-gateway`, D71's rendered `devices`, a plain resolver) | `<DISTRO>_CLAT_OK` |
   | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative; since round G8 with a plain resolver (no DNS64) | `K3S_CLAT_MAPPED_OK` |
+  | `nat-gateway-hostile` (round G12; the third part of the `nat-gateway` file, `phases = "hostile"`) | G26, G27, G28 against an attacker: scans of both gateways and the beacon (N01–N04), private and loopback destinations (N05), loops through the CLAT and the translator (N06, N07), Jool instance and guard removed (N10, N11), ICMPv6 types, forged errors, the IPv4 side, fragments, a full pool4 (N12–N16), the guards' counters (N17), forged CLAT sources, rogue RA and PREF64 (C01–C07), a second link behind a CLAT host (C08). Every verdict group has a positive control (SPEC.md H19) | `NAT_GATEWAY_HOSTILE_OK` |
+  | `hostile-router` (round G12) | the router against a hostile ISP, a LAN intruder and a host of another zone: scans, zone crossing, forged sources, a rogue RA on a LAN link (R15, with a capture control: the rogue RA reaches the router's link and a neighbour takes its prefix) | `HOSTILE_ROUTER_OK` |
 
 - A suite asserts a bound with margin (about three times the measured
   sample), never the sample. It prints the measured value.
@@ -2893,3 +3034,72 @@ euc-hel-0 with `--rebuild`.
   assertion, no core dump.
 - **Not run:** `gateway-dual-wan`, `gateway-wan`, `netif-v6only`,
   `<distro>-v6only` use none of the changed code.
+
+## 18. Round G12 (2026-11-28): gateway steps 0 to 3
+
+Decisions G26, G27, G28 (§2); SPEC.md round 65;
+`specs/design-gateway.md` §8 rows 0 to 3.
+
+### 18.1 Evidence (2026-11-28, euc-hel-0)
+
+Each line is one run, a sample (§12.4). Every suite ran alone.
+
+- **`nat-gateway-hostile`** (`NAT_GATEWAY_HOSTILE_OK`, passed, 851 s):
+  41 verdicts safe, no gap. N05: every private embedding (also
+  `127.0.0.1`, `192.0.0.1`) ends `curl rc=7, ping rc=1`;
+  `nat64-private` 16, `nat64-private-post` 0. N06: one crossing; with
+  the client's table emptied the guard drops it (`guard-leftover` +1);
+  with the guard deleted too, still one crossing per packet. N07: one
+  crossing, `nat64-protocol` +1. N11: a deleted guard is back after
+  3.4 s with one journal line; a guard that cannot be loaded withdraws
+  the beacon after 38.9 s ("the namespace's guard is not loaded"), and
+  it is back 123.3 s after the guard returns. N16: 300 new flows on a
+  full pool4, 300 crossings, `guard-leftover` +0, no ICMPv6 error. C08:
+  a second link behind a CLAT host is unreachable both ways,
+  `clat-forward` +4.
+- **`hostile-router`** (`HOSTILE_ROUTER_OK`, passed, 1 058 s): 31
+  verdicts safe, no gap. R15 now runs: 5 rogue advertisements captured
+  on the router's home link, a LAN neighbour took `2001:db8:bad::/64`
+  and the rogue default route (R16 info), the router's routes and
+  addresses unchanged.
+- **`nat-gateway`** (`NAT_GATEWAY_OK`, passed, 596 s), with
+  `NAT_GATEWAY_GUARD_RESTARTS_OK` (the guard equal across restarts of
+  `nftables.service` and `nat64-jool.service` and an IfState apply),
+  `NAT_GATEWAY_IFSTATE_OK`, `NAT_GATEWAY_LIMITS_OK`.
+- **`nat-gateway-failover`** (passed, 2 308 s), **`nat-gateway-kube`**
+  (passed, 333 s), **`router`** (passed, 428 s), **`router-kube`**
+  (passed, 403 s).
+- **`routed-fabric`**: CACHED. The `forwardLinks` setter does not
+  change its node derivations (the fact is read only on a CLAT host).
+- **`k3s-clat`** (`K3S_CLAT_OK`, passed, 706 s), **`rke2-clat`**
+  (passed, 755 s), **`k3s-clat-mapped`** (passed, 318 s). The runs
+  before them failed and were fixed:
+- **`k3s-clat-mapped`**, first run: pod IPv4 failed. Its fixture CLAT
+  stands in for `clat.nix` but did not declare `clat0` inside (D73),
+  so the kube guard `inet kube-<instance>` dropped the gateway's
+  answers to the mapped pod addresses (33 packets). The fixture now
+  sets `clan._networkFacts.fabricInside = ["clat0"]`, as the service
+  does. Found here because `main` never ran this suite after D74.
+- **`k3s-clat`**: the first run failed in the O7 phase: the CLAT
+  guard's `guard-leaving` read 7 on alpha. Logged, the packet was an
+  API server reply from `192.168.77.1:6443` to pod `10.1.0.178`
+  (retransmitted) that took the node's IPv4 default route into the
+  CLAT during cluster start; Jool translated it with `pool6` on both
+  sides and the guard stopped it (G26 note). The second run failed in
+  the private-refusal phase: Cilium's health check from alpha to
+  beta's health endpoint (`10.1.1.123:4240` and its pings) reached the
+  gateway before beta's pod route arrived, the same convergence class
+  as the node-address strays of §10.11. The phase now also accepts the
+  other node's pod addresses, within the same 20 s window.
+- **R12, the 8 `clat-unsolicited` packets per kube node** (a log rule
+  for `ct state new,invalid,untracked` ahead of the table, in
+  `k3s-clat`): all 8 on each node are the host's own IPv4 multicast,
+  mDNS (`224.0.0.251:5353`) and LLMNR (`224.0.0.252:5355`) from
+  `192.0.0.1`, looped back on `clat0`. Dropping them is right. Still
+  not asserted 0 on a kube node (the count depends on the resolver).
+  A first probe that logged `ct state != established,related` also
+  matched established pod return traffic (nft reads `!=` with a flag
+  list as "not every flag set", so an `established` packet matches) and
+  flooded the console: BFD went down and two runs (`k3s-clat`,
+  `rke2-clat`) failed "after an IfState apply" on cluster DNS. With the
+  narrow probe the suites pass.

@@ -372,6 +372,9 @@ in {
       # through this machine only when the owner says so; routed-fabric's
       # guard reads the fact
       fabricInside = zonesOf (builtins.attrNames (lib.filterAttrs (_: zone: zone.fabric) lanZones));
+      # O7: the router's own table judges forwarding on its links (a
+      # router that is also a CLAT host)
+      forwardLinks = lanLinks ++ [cfg.wan];
     };
     boot.kernel.sysctl = {
       "net.ipv4.conf.all.forwarding" = 1;

@@ -24,7 +24,9 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   Auto-discovered via `flake-module.nix`; no central registration list.
 - `lib/gateway/` — the private implementation of `nat-gateway` and
   `router` (`specs/gateway.md` G1): NixOS modules under
-  `clanServices.gateway.*` (`nat64.nix`, `clat.nix`, `router.nix`), their
+  `clanServices.gateway.*` (`nat64.nix`, `clat.nix`, `router.nix`; the
+  namespace guard `guard.nix` and the private ranges `private.nix`,
+  G26–G27), their
   Python helpers (health check, CLAT follower, prefix hook) and the
   fixed names (`names.nix`). One translator, one CLAT and one router per
   machine; the services assert it. It also holds the fixture suites
@@ -64,7 +66,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `observe`, `print_versions`, `seconds_until`, `holds_for`,
   `state_dump_on_failure`; use them in new suites).
   Each service, and `lib/gateway`, registers its suites in its
-  `flake-module.nix` (51 in all; `vm-test --list` counts them)
+  `flake-module.nix` (55 in all; `vm-test --list` counts them)
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`

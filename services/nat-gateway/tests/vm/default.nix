@@ -22,6 +22,11 @@
 #                         allowlist, the limits, reconciliation;
 #   nat-gateway-failover  `phases = "failover"`: loss, flaps, dead
 #                         targets and gateways, restarts and reboots.
+#   nat-gateway-hostile   `phases = "hostile"`: hostile actors (an
+#                         undeclared host, a declared client, the IPv4
+#                         side) against the translator and the CLAT.
+#                         Every attack is one `verdict`; the suite
+#                         fails at the end when any is a gap.
 {phases}: {lib, ...}: let
   pool1 = "2001:db8:a1:0:64::/96";
   # Printed with `::` in the middle of every address inside it: the
@@ -284,14 +289,21 @@
       memorySize = 1024;
     };
     environment = {
-      systemPackages = [
-        pkgs.curl
-        pkgs.dig
-        pkgs.netcat
-        pkgs.tcpdump
-        pkgs.python3
-        pkgs.conntrack-tools
-      ];
+      systemPackages =
+        [
+          pkgs.curl
+          pkgs.dig
+          pkgs.netcat
+          pkgs.tcpdump
+          (
+            if phases == "hostile"
+            then pkgs.python3.withPackages (ps: [ps.scapy])
+            else pkgs.python3
+          )
+          pkgs.conntrack-tools
+        ]
+        # the other two suites' machines stay as they are
+        ++ lib.optional (phases == "hostile") pkgs.nmap;
       etc."suite/shapes.py".text = shapes;
     };
   };
@@ -462,14 +474,32 @@ in {
         return first_int(rf'{pattern} comment "{comment}"', table)
 
 
-    def counted(machine, chain, comment):
-        """Packets that a rule of the gateway's own table counted."""
-        rule = machine.succeed(f"nft list chain inet nat64 {chain} | grep '{comment}'")
+    def counted(machine, comment, table="nat64"):
+        """Packets that a rule of the machine's own table counted. The rule
+        is found by its comment, whichever chain holds it."""
+        rule = machine.succeed(f"nft list table inet {table} | grep -F 'comment \"{comment}\"'")
         return first_int(r"counter packets (\d+)", rule)
 
 
     def refused_private(machine):
-        return counted(machine, "forward", "nat64-private")
+        return counted(machine, "nat64-private")
+
+
+    def guard(machine, netns):
+        """The default-deny table inside a translator's namespace: its
+        counters by comment. It must hold both chains."""
+        shown = machine.succeed(f"ip netns exec {netns} nft list table inet guard")
+        assert "hook prerouting priority filter; policy drop;" in shown and "hook postrouting priority filter; policy drop;" in shown, shown
+        return {name: int(packets) for packets, name in re.findall(r'counter packets (\d+) bytes \d+ (?:drop )?comment "(guard-[a-z-]+)"', shown)}
+
+
+    def guard_quiet(machine, netns, when):
+        """Nothing legitimate ever meets the guard: after real traffic its
+        two counters are 0 (specs/design-gateway.md R1)."""
+        dropped = guard(machine, netns)
+        print(f"FINDING P6 {machine.name} {netns} guard counters {when}: {dropped}")
+        assert dropped["guard-leftover"] == 0 and dropped["guard-leaving"] == 0, f"{machine.name}: the {netns} guard dropped packets {when}: {dropped}\n" + machine.succeed(f"ip netns exec {netns} nft list table inet guard")
+        return dropped
 
 
     def names_prefix(gateway):
@@ -507,11 +537,12 @@ in {
         return client.succeed("systemctl show -p MainPID --value clat-follow.service").strip()
 
 
-    def ruleset(machine, table=None, handles=True):
+    def ruleset(machine, table=None, handles=True, netns=None):
         """The ruleset with handles, without the rate limit's dynamic sets:
         their elements come and go with the clients' flows."""
         flags = "-j -a" if handles else "-j"
-        listed = json.loads(machine.succeed(f"nft {flags} list ruleset" if table is None else f"nft {flags} list table inet {table}"))["nftables"]
+        nft = "nft" if netns is None else f"ip netns exec {netns} nft"
+        listed = json.loads(machine.succeed(f"{nft} {flags} list ruleset" if table is None else f"{nft} {flags} list table inet {table}"))["nftables"]
         dynamic = lambda item: "set" in item and item["set"]["name"].startswith(("flows_", "packets_"))
         kept = [item for item in listed if not dynamic(item) and "metainfo" not in item]
 
@@ -576,30 +607,39 @@ in {
         outsider.succeed(f"ping -c1 -W2 {gateway.addr}")
         dropped = {}
         for shape, cmd in [("ping", f"ping -c2 -W1 {server}"), ("tcp", http(server, limit=3)), ("udp", udp(server))]:
-            before = counted(machine, "forward", "nat64-undeclared")
+            before = counted(machine, "nat64-undeclared")
             outsider.fail(cmd)
-            dropped[shape] = counted(machine, "forward", "nat64-undeclared") - before
+            dropped[shape] = counted(machine, "nat64-undeclared") - before
         # G24: nor the beacon
         for shape, flags in [("beacon udp", ""), ("beacon tcp", "+tcp")]:
-            before = counted(machine, "input", "beacon-undeclared")
+            before = counted(machine, "beacon-undeclared")
             outsider.fail(f"dig {flags} +short +time=2 +tries=1 AAAA ipv4only.arpa @{gateway.addr}")
-            dropped[shape] = counted(machine, "input", "beacon-undeclared") - before
+            dropped[shape] = counted(machine, "beacon-undeclared") - before
         print(f"FINDING {machine.name} dropped from the undeclared source: {dropped}")
         # two echo requests, one datagram, one query; TCP repeats its SYN
         assert dropped["ping"] == 2 and dropped["udp"] == 1 and dropped["beacon udp"] == 1, dropped
         assert 1 <= dropped["tcp"] <= 6 and 1 <= dropped["beacon tcp"] <= 6, dropped
-        # G5: a private IPv4 destination is refused behind the translator
-        for private in PRIVATE:
+        # G5: a private IPv4 destination is refused, before the
+        # translator: loopback, Jool's own link and pool4 address too.
+        # The client is told at once (ICMPv6, not a timeout).
+        for private in PRIVATE + ["127.0.0.1", "192.0.0.1", "192.0.0.2"]:
             before = refused_private(machine)
             client.fail(f"ping -c1 -W2 {embed(gateway, private)}")
             assert refused_private(machine) == before + 1, f"{machine.name} did not refuse {private}"
+        status, _ = client.execute(http(embed(gateway, "10.0.0.1"), limit=5))
+        assert status == 7, f"{machine.name}: curl to a private destination ended with {status}, not with a refusal at once (7)"
+        # nothing private ever came out of the translator
+        assert counted(machine, "nat64-private-post") == 0
         # The translator is no way into the gateway's own IPv4 ports: a
-        # /96 destination that embeds Jool's link address or the public
-        # address is delivered to the gateway, and refused there
-        for own in ["192.0.0.1", gateway.v4]:
-            before = counted(machine, "input", "nat64-host")
-            client.fail(http(embed(gateway, own), limit=3))
-            assert counted(machine, "input", "nat64-host") > before, f"{machine.name} let {own} in through its translator"
+        # /96 destination that embeds the public address is translated,
+        # delivered to the gateway, and refused there
+        before = counted(machine, "nat64-host")
+        client.fail(http(embed(gateway, gateway.v4), limit=3))
+        assert counted(machine, "nat64-host") > before, f"{machine.name} let {gateway.v4} in through its translator"
+        # the namespace is default deny: the guard is loaded, and no
+        # packet was dropped on its way out
+        assert guard(machine, "nat64")["guard-leaving"] == 0
+        assert json.loads(machine.succeed("cat /run/nat64-gateway/health.json"))["guard"] is True
         # the gateway's own IPv4 traffic does not pass the translator
         out = machine.succeed(http("198.51.100.80")).strip()
         assert out == gateway.v4, out
@@ -613,6 +653,10 @@ in {
                 size = client.succeed(http(gateway.server, "big", 30) + " -o /dev/null -w '%{size_download}'").strip()
                 assert size == "2000000", size
             observe("gw2's own table", gw2, "nft list table inet nat64")
+            observe("gw2's namespace guard", gw2, "ip netns exec nat64 nft list table inet guard")
+            observe("the client's own table", client, "nft list table inet clat")
+            for gateway in [G1, G2]:
+                guard_quiet(gateway.machine, "nat64", "after every protocol from both tiers and a 2 MB download")
             print("NAT_GATEWAY_BASIC_OK")
 
         with subtest("G2: the forward chain and conntrack see a namespaced Jool"):
@@ -635,6 +679,10 @@ in {
             assert status != 0 and "ephemeral" in out, out
             out = gw1.succeed("ip netns exec nat64 sysctl -n net.ipv4.ip_local_port_range").split()
             assert out == ["1024", "1099"], out
+            # P2: Jool needs no forwarding in its namespace; it is off
+            for machine, netns in [(gw1, "nat64"), (gw2, "nat64"), (client, "clat")]:
+                out = machine.succeed(f"ip netns exec {netns} sysctl -n net.ipv4.conf.all.forwarding net.ipv6.conf.all.forwarding").split()
+                assert out == ["0", "0"], f"{machine.name}: {out}"
 
         with subtest("G2 negative proof: Jool in the host namespace bypasses the forward chain"):
             gw1.succeed("jool instance add hostns --netfilter --pool6 2001:db8:a1:0:65::/96")
@@ -652,14 +700,20 @@ in {
 
         with subtest("G2 negative proof: the NixOS forward chain alone lets an undeclared source ping through the translator"):
             # the allowlist goes, the masquerade of the same table stays
-            gw1.succeed("nft flush chain inet nat64 forward")
+            gw1.succeed("nft flush chain inet nat64 to_translator")
             try:
+                # the allowlist alone is gone: the translator's answers to
+                # a source that is not declared are still refused
+                before = counted(gw1, "nat64-return-undeclared")
+                outsider.fail(f"ping -c2 -W1 {G1.server}")
+                assert counted(gw1, "nat64-return-undeclared") == before + 2
+                gw1.succeed("nft flush chain inet nat64 from_translator")
                 outsider.succeed(f"ping -c2 -W2 {G1.server}")
             finally:
                 gw1.succeed("systemctl restart nftables.service")
-            before = counted(gw1, "forward", "nat64-undeclared")
+            before = counted(gw1, "nat64-undeclared")
             outsider.fail(f"ping -c2 -W1 {G1.server}")
-            assert counted(gw1, "forward", "nat64-undeclared") == before + 2
+            assert counted(gw1, "nat64-undeclared") == before + 2
             client.succeed(f"ping -c2 -W2 {G1.server}")
 
         with subtest("G23: the follower derives the /96 by address arithmetic and refuses what is not one"):
@@ -689,7 +743,10 @@ in {
             assert "${clatAddr}" in client.succeed("ip -6 neigh show proxy dev eth1")
             size = client.succeed(http("198.51.100.80", "big", 30) + " -o /dev/null -w '%{size_download}'").strip()
             assert size == "2000000", size
-            observe("client addresses and routes", client, "ip -br addr; ip -4 route; ip -6 route")
+            observe("client addresses and routes", client, "ip -br addr; ip -4 route; ip -6 route; ip netns exec clat ip -4 route; ip netns exec clat ip -6 route")
+            for machine in [client, trusted]:
+                guard_quiet(machine, "clat", "after pages, pings and a 2 MB download through the CLAT")
+            guard_quiet(G1.machine, "nat64", "after the CLAT clients' traffic")
 
         with subtest("traffic shapes: fragments and path MTU discovery through NAT64 and the CLAT"):
             gateway = clat_gateway()
@@ -731,31 +788,37 @@ in {
             }
             wrong = {shape: result for shape, result in shapes.items() if result != expected[shape]}
             assert not wrong, wrong
+            # P6: fragments, path MTU discovery and Jool's own ICMP errors
+            # pass the guard's two chains; nothing of them is dropped there
+            print(f"FINDING P6 {gateway.machine.name} guard after fragments and path MTU discovery: {guard(gateway.machine, 'nat64')}; Jool's own ICMPv6 errors forwarded: {counted(gateway.machine, 'nat64-jool-error')}")
+            print(f"FINDING P6 client CLAT guard after fragments and path MTU discovery: {guard(client, 'clat')}")
+            assert guard(gateway.machine, "nat64")["guard-leaving"] == 0
+            assert guard(client, "clat")["guard-leaving"] == 0
 
         with subtest("§14.1 point 4: a rate limit per source, two tiers"):
             # gw2's `default` tier: 5 new flows a second, a burst of 10.
             # The client opens 40 at once and loses most; the trusted
             # client does the same and loses none.
-            before = counted(gw2, "forward", "nat64-flows-default")
+            before = counted(gw2, "nat64-flows-default")
             got = int(client.succeed(f"python3 /etc/suite/shapes.py burst {G2.server} 9002 40").strip())
-            dropped = counted(gw2, "forward", "nat64-flows-default") - before
+            dropped = counted(gw2, "nat64-flows-default") - before
             print(f"FINDING default tier: {got} of 40 connections at once answered, {dropped} SYNs dropped")
             # dropped SYNs are sent again after 1 s and 3 s, and the limit
             # lets 5 a second through: about 25 of 40 get through in 3 s
             assert got <= 32 and dropped >= 10, (got, dropped)
-            before = counted(gw2, "forward", "nat64-flows-trusted")
+            before = counted(gw2, "nat64-flows-trusted")
             got = int(trusted.succeed(f"python3 /etc/suite/shapes.py burst {G2.server} 9002 40").strip())
-            assert got == 40 and counted(gw2, "forward", "nat64-flows-trusted") == before, got
+            assert got == 40 and counted(gw2, "nat64-flows-trusted") == before, got
             # packets: 2000 datagrams a second for 3 s, against a burst of
             # 1000 and 500 a second: about 3500 of 6000 must go
-            before = counted(gw2, "forward", "nat64-packets-default")
+            before = counted(gw2, "nat64-packets-default")
             sent = int(client.succeed(f"python3 /etc/suite/shapes.py flood {G2.server} 9001 2000 3").strip())
-            dropped = counted(gw2, "forward", "nat64-packets-default") - before
+            dropped = counted(gw2, "nat64-packets-default") - before
             print(f"FINDING default tier: {dropped} of {sent} datagrams dropped (2000/s for 3 s against 500/s, burst 1000)")
             assert sent >= 5000 and dropped >= 1500, (sent, dropped)
-            before = counted(gw2, "forward", "nat64-packets-trusted")
+            before = counted(gw2, "nat64-packets-trusted")
             sent = int(trusted.succeed(f"python3 /etc/suite/shapes.py flood {G2.server} 9001 2000 3").strip())
-            assert sent >= 5000 and counted(gw2, "forward", "nat64-packets-trusted") == before, sent
+            assert sent >= 5000 and counted(gw2, "nat64-packets-trusted") == before, sent
             # a minute of quiet later nothing is held against the client
             client.wait_until_succeeds(http(G2.server), timeout=30)
             # gw1 keeps the default limits: the same burst passes there
@@ -764,43 +827,63 @@ in {
             # §14.5 point 3: `capped` has a packet limit of its own (500 a
             # second, burst 1000) on gw1, where the tiers would let the
             # flood pass; its own meters count it, the tiers' do not
-            before = {name: counted(gw1, "forward", name) for name in ["nat64-packets-client-capped", "nat64-packets-default", "nat64-packets-trusted"]}
+            before = {name: counted(gw1, name) for name in ["nat64-packets-client-capped", "nat64-packets-default", "nat64-packets-trusted"]}
             sent = int(capped.succeed(f"python3 /etc/suite/shapes.py flood {G1.server} 9001 2000 3").strip())
-            grown = {name: counted(gw1, "forward", name) - value for name, value in before.items()}
+            grown = {name: counted(gw1, name) - value for name, value in before.items()}
             print(f"FINDING capped client: {grown} of {sent} datagrams dropped (2000/s for 3 s against its own 500/s, burst 1000)")
             assert sent >= 5000 and grown["nat64-packets-client-capped"] >= 1500, (sent, grown)
             assert grown["nat64-packets-default"] == grown["nat64-packets-trusted"] == 0, grown
             # its new flows keep the tier's numbers: a burst of 40 passes
             got = int(capped.succeed(f"python3 /etc/suite/shapes.py burst {G1.server} 9002 40").strip())
             assert got == 40, got
+            for gateway in [G1, G2]:
+                guard_quiet(gateway.machine, "nat64", "after the rate limit floods")
             print("NAT_GATEWAY_LIMITS_OK")
 
         with subtest("nftables ownership: a restart of the firewall or of Jool leaves other tables alone"):
             tables = sorted(gw2.succeed("nft list tables").strip().split("\n"))
             print(f"FINDING nftables tables on a gateway: {tables}")
             assert "table inet nat64" in tables, tables
-            assert gw2.succeed("ip netns exec nat64 nft list ruleset").strip() == ""
+            # the namespace holds the guard and nothing else
+            assert gw2.succeed("ip netns exec nat64 nft list tables").strip() == "table inet guard"
+            guarded = ruleset(gw2, "guard", handles=False, netns="nat64")
+            # a flow that is open across every restart below goes on
+            trusted.succeed(f"rm -f /tmp/talk-own; systemd-run --unit=talk-own python3 /etc/suite/shapes.py talk {G2.server} 9002 /tmp/talk-own")
+            trusted.wait_until_succeeds("test \"$(grep -c echo /tmp/talk-own)\" -ge 2", timeout=30)
             gw2.succeed("nft 'add table inet foreign; add chain inet foreign forward { type filter hook forward priority 10; }; add rule inet foreign forward ip6 daddr 2001:db8:ffff::/64 counter'")
             foreign = gw2.succeed("nft -a -s list table inet foreign")
             owned = ruleset(gw2, "nat64", handles=False)
             gw2.succeed("systemctl restart nftables.service")
             assert gw2.succeed("nft -a -s list table inet foreign") == foreign
             assert ruleset(gw2, "nat64", handles=False) == owned
+            # a restart of the host's firewall does not touch the namespace
+            assert ruleset(gw2, "guard", handles=False, netns="nat64") == guarded
             everything = ruleset(gw2)
             gw2.succeed("systemctl restart nat64-jool.service")
             assert ruleset(gw2) == everything
+            # a start of the Jool unit loads the same guard again
+            assert ruleset(gw2, "guard", handles=False, netns="nat64") == guarded
             gw2.succeed("nft delete table inet foreign")
+            heard = int(trusted.succeed("grep -c echo /tmp/talk-own").strip())
+            trusted.wait_until_succeeds(f"test \"$(grep -c echo /tmp/talk-own)\" -ge {heard + 3}", timeout=30)
+            trusted.fail("grep -E 'error|silent' /tmp/talk-own")
+            trusted.succeed("systemctl stop talk-own.service")
+            print("NAT_GATEWAY_GUARD_RESTARTS_OK")
             assert_gateway(G2)
 
         with subtest("G2: an IfState apply keeps the namespaces, the Jool instances and the units"):
+            guarded = ruleset(gw2, "guard", handles=False, netns="nat64")
             assert_ifstate_noop(gw2)
             gw2.wait_for_unit("nat64-jool.service", timeout=60)
+            assert ruleset(gw2, "guard", handles=False, netns="nat64") == guarded
             assert_gateway(G2)
+            guarded = ruleset(client, "guard", handles=False, netns="clat")
             before = moves()
             gateway = clat_gateway()
             assert_ifstate_noop(client)
             client.wait_for_unit("clat.service", timeout=60)
             client.wait_for_unit("clat-follow.service", timeout=60)
+            assert ruleset(client, "guard", handles=False, netns="clat") == guarded
             out = client.succeed(http("198.51.100.80")).strip()
             assert out == gateway.v4, out
             # the restarted follower keeps its gateway
@@ -867,7 +950,11 @@ in {
             machine.succeed("journalctl -b -u nat64-health -o cat --no-pager | grep -F 'pool4 below 50 %' >/dev/null")
             # ten UDP ports left; the trusted client opens twenty flows
             machine.succeed("ip netns exec nat64 jool pool4 remove 192.0.0.2 1100-65535 --udp && ip netns exec nat64 jool pool4 add 192.0.0.2 1100-1109 --udp")
+            guard_before = guard(machine, "nat64")
             trusted.succeed(f"for i in $(seq 20); do python3 /etc/suite/shapes.py udp {G2.server} 9001 10 || true; done")
+            # P3: what Jool does with a new flow on a full pool4
+            print(f"FINDING P3 gw2 guard before and after ten flows too many on a full pool4: {guard_before} -> {guard(machine, 'nat64')}")
+            assert guard(machine, "nat64")["guard-leaving"] == 0
             machine.wait_until_succeeds("journalctl -b -u nat64-health -o cat --no-pager | grep -F 'pool4 95 % or more' >/dev/null", timeout=30)
             full = pool4_state(machine)
             print(f"FINDING gw2's pool4 with ten UDP ports and twenty flows: {full}")
@@ -1199,6 +1286,370 @@ in {
             client.fail("systemctl --failed --no-legend | grep .")
 
 
+    def hostile_phases():
+        """Hostile actors against the translator and the CLAT. Every attack
+        ends in one verdict; all run, and any gap fails the suite. A new
+        attack is a new verdict; never delete one to make the suite pass."""
+        results = []
+
+        def verdict(key, safe, detail=""):
+            results.append((key, bool(safe), detail))
+            print(f"HOSTILE {'SAFE' if safe else 'GAP '} {key}: {detail}")
+
+        def scan(machine, target):
+            family = "-6" if ":" in target else ""
+            out = machine.succeed(f"nmap {family} -n -Pn -sS -p- --min-rate 3000 --max-retries 1 -oG - {target} 2>&1")
+            found = []
+            for line in out.splitlines():
+                if "Ports:" in line:
+                    found += [int(p.split("/")[0].strip()) for p in line.split("Ports:")[1].split(",") if "/open/" in p]
+            return sorted(found)
+
+        def count_on(machine, expr, hook="forward", priority=-300, name="hostile", netns=None):
+            """Count what matches `expr` at a hook of the machine (or of one
+            of its namespaces). Priority -300: before every other table
+            (what arrived). Priority -5: behind the machine's own table at
+            -10 (what it let through); in a translator's namespace, behind
+            Jool at -75 and before the guard at 0 (what Jool handed back)."""
+            nft = "nft" if netns is None else f"ip netns exec {netns} nft"
+            machine.succeed(
+                f"{nft} delete table inet {name} 2>/dev/null || true; {nft} add table inet {name}; "
+                f"{nft} 'add chain inet {name} c {{ type filter hook {hook} priority {priority}; }}'; "
+                f"{nft} 'add rule inet {name} c {expr} counter'"
+            )
+
+        def counted_on(machine, name="hostile", netns=None):
+            nft = "nft" if netns is None else f"ip netns exec {netns} nft"
+            return first_int(r"counter packets (\d+)", machine.succeed(f"{nft} list table inet {name}"))
+
+        def scapy(machine, packets, count=1):
+            """Send forged packets from a machine: Scapy expressions, on eth1."""
+            machine.succeed(f"cat > /tmp/forge.py <<'EOF'\nfrom scapy.all import *\nfor packet in [{packets}]:\n    send(packet, iface=\"eth1\", count={count}, verbose=False)\nEOF")
+            machine.succeed("python3 /tmp/forge.py")
+
+        def raw253(target):
+            return f"python3 -c 'import socket; s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, 253); s.sendto(b\"x\", (\"{target}\", 0))'"
+
+        def health(machine):
+            return json.loads(machine.succeed("cat /run/nat64-gateway/health.json"))
+
+        with subtest("hostile: full scans of a gateway, from every side"):
+            found = scan(outsider, G1.addr)
+            verdict("N01 an undeclared host finds no TCP port open on the gateway", not found, f"open: {found}")
+            found = scan(client, G1.addr)
+            verdict("N02 a declared client finds only the beacon (53) open on the gateway", [p for p in found if p != 53] == [], f"open: {found}")
+            found = scan(server4, G1.v4)
+            verdict("N03 the IPv4 side finds no TCP port open on the gateway", not found, f"open: {found}")
+            server4.succeed(f"ip route add 192.0.0.0/24 via {G1.v4}")
+            found = scan(server4, "192.0.0.2")
+            verdict("N04 the IPv4 side reaches no port of the translator's pool4 address", not found, f"open: {found}")
+            server4.succeed("ip route del 192.0.0.0/24")
+
+        with subtest("hostile: the translator is no relay to loopback, private or the gateway's own addresses"):
+            for target in ["127.0.0.1", "10.0.0.1", "169.254.169.254", "172.16.0.1", "192.168.1.1", "100.64.0.1", "192.0.0.1", G1.v4, "224.0.0.1"]:
+                code, _ = client.execute(http(embed(G1, target), limit=2))
+                ping, _ = client.execute(f"ping -c1 -W1 {embed(G1, target)}")
+                verdict(f"N05 a declared client reaches nothing at {target} through the translator", code != 0 and ping != 0, f"curl rc={code}, ping rc={ping}")
+            refused = {name: counted(gw1, name) for name in ["nat64-private", "nat64-private-post", "nat64-host"]}
+            leaving = guard(gw1, "nat64")
+            verdict("N05 every private destination was refused while the packet was IPv6: nothing private came out of the translator, the guard dropped nothing", refused["nat64-private"] >= 16 and refused["nat64-private-post"] == 0 and leaving["guard-leaving"] == 0 and leaving["guard-leftover"] == 0, f"{refused}, guard {leaving}")
+
+        with subtest("hostile: a packet the CLAT does not translate does not loop"):
+            count_on(client, "ip6 daddr ${clatAddr} icmpv6 type echo-request")
+            count_on(client, "ip6 daddr ${clatAddr} icmpv6 type echo-request", priority=-5, name="passed")
+            before = counted(client, "clat-foreign-source", table="clat")
+            outsider.execute("ping -c1 -W2 -t 64 ${clatAddr}")
+            crossings = counted_on(client)
+            assert crossings >= 1, "the echo request never reached the client: the attack did not run"
+            verdict("N06 a foreign packet to a CLAT address crosses the client once", crossings <= 1, f"{crossings} crossings of one echo request with hop limit 64")
+            verdict("N06 the client's own table refuses the foreign packet: it never enters the CLAT namespace", counted_on(client, "passed") == 0 and counted(client, "clat-foreign-source", table="clat") == before + 1, f"let through: {counted_on(client, 'passed')}, clat-foreign-source +{counted(client, 'clat-foreign-source', table='clat') - before}")
+            # the layers below, each alone: the client's table lets everything
+            # into the CLAT (an emptied chain would end at `clat-forward`)
+            client.succeed("nft flush chain inet clat to_clat; nft add rule inet clat to_clat accept")
+            try:
+                was = guard(client, "clat")["guard-leftover"]
+                outsider.execute("ping -c1 -W2 -t 64 ${clatAddr}")
+                verdict("N06 without the client's table the namespace guard drops the foreign packet: one more crossing, no loop", counted_on(client) == 2 and guard(client, "clat")["guard-leftover"] == was + 1, f"{counted_on(client)} crossings of two echo requests, guard-leftover +{guard(client, 'clat')['guard-leftover'] - was}")
+                client.succeed("ip netns exec clat nft delete table inet guard")
+                outsider.execute("ping -c1 -W2 -t 64 ${clatAddr}")
+                verdict("N06 without the table and without the guard the namespace still forwards nothing (forwarding is off there, and the CLAT address is an unreachable route): one more crossing, no loop", counted_on(client) == 3, f"{counted_on(client)} crossings of three echo requests")
+            finally:
+                client.succeed("systemctl restart nftables.service clat.service")
+            client.succeed("nft delete table inet passed")
+            guard(client, "clat")
+            client.wait_until_succeeds(http("198.51.100.80"), timeout=30)
+
+        with subtest("hostile: a protocol the translator does not translate does not loop"):
+            count_on(gw1, "ip6 daddr ${pool1} meta l4proto 253")
+            count_on(gw1, "ip6 daddr ${pool1} meta l4proto 253", priority=-5, name="passed")
+            before = counted(gw1, "nat64-protocol")
+            client.succeed(raw253(G1.server))
+            gw1.succeed("sleep 2")
+            crossings = counted_on(gw1)
+            assert crossings >= 1, "the packet never reached the gateway: the attack did not run"
+            verdict("N07 an untranslatable packet to pool6 crosses the gateway once", crossings <= 1, f"{crossings} crossings of one packet")
+            verdict("N07 the gateway's own table refuses the protocol: it never enters the translator namespace", counted_on(gw1, "passed") == 0 and counted(gw1, "nat64-protocol") == before + 1, f"let through: {counted_on(gw1, 'passed')}, nat64-protocol +{counted(gw1, 'nat64-protocol') - before}")
+            gw1.succeed("nft delete table inet passed")
+
+        with subtest("hostile: one client cannot inject into another client's mapping (hairpin)"):
+            trusted.succeed("rm -f /tmp/hairpin")
+            listener = (
+                "import socket, time\n"
+                "s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)\n"
+                "s.bind((\"::\", 40000))\n"
+                f"s.sendto(b\"hello\", (\"{G1.server}\", 9001))\n"
+                "s.settimeout(1)\n"
+                "end = time.time() + 25\n"
+                "out = open(\"/tmp/hairpin\", \"w\")\n"
+                "while time.time() < end:\n"
+                "    try:\n"
+                "        data, peer = s.recvfrom(100)\n"
+                "        out.write(f\"{data!r} from {peer[0]}\\n\")\n"
+                "        out.flush()\n"
+                "    except TimeoutError:\n"
+                "        pass\n"
+            )
+            trusted.succeed(f"cat > /tmp/listener.py <<'EOF'\n{listener}EOF")
+            trusted.succeed("systemd-run --unit=hairpin-listener python3 /tmp/listener.py")
+            trusted.wait_until_succeeds("grep hello /tmp/hairpin >/dev/null", timeout=15)
+            bib = gw1.succeed("ip netns exec nat64 jool bib display --udp --numeric --csv --no-headers")
+            lines = [line.split(",") for line in bib.splitlines() if "${trustedAddr}" in line and ",40000," in line]
+            assert lines, f"no mapping for the trusted client's flow:\n{bib}"
+            mapped = lines[0][4]
+            target = embed(G1, "192.0.0.2")
+            before = counted(gw1, "nat64-private")
+            client.execute(f"python3 -c 'import socket; s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM); [s.sendto(b\"evil\", (\"{target}\", {mapped})) for _ in range(3)]'")
+            trusted.succeed("sleep 3")
+            got = trusted.succeed("cat /tmp/hairpin")
+            verdict("N08 a client's datagram to another client's mapped port is not delivered", "evil" not in got, got.strip().replace("\n", " | "))
+            verdict("N09 the translator's own pool4 address is refused before translation (no hairpin inside Jool)", counted(gw1, "nat64-private") >= before + 3, f"nat64-private +{counted(gw1, 'nat64-private') - before} for three datagrams to {target}")
+            trusted.execute("systemctl stop hairpin-listener")
+
+        with subtest("hostile: the layers under the gateway's table, each alone; a gateway without its guard is not healthy"):
+            # N10: no Jool instance. The host table lets a declared
+            # client's ping pass; the guard ends it.
+            count_on(gw1, "ip6 daddr ${pool1} icmpv6 type echo-request ip6 saddr ${clientAddr}")
+            count_on(gw1, "ip6 saddr ${clientAddr}", hook="prerouting", priority=-5, name="handed", netns="nat64")
+            count_on(gw1, 'oifname "jool1"', hook="postrouting", priority=5, name="left", netns="nat64")
+            was = guard(gw1, "nat64")["guard-leftover"]
+            gw1.succeed("ip netns exec nat64 jool instance remove default")
+            try:
+                client.execute(f"ping -c1 -W1 -t 64 {G1.server}")
+                crossings, handed, left, grown = counted_on(gw1), counted_on(gw1, "handed", "nat64"), counted_on(gw1, "left", "nat64"), guard(gw1, "nat64")["guard-leftover"] - was
+            finally:
+                gw1.succeed("systemctl restart nat64-jool.service")
+            # the health check's own pings end at the guard too while there is no instance
+            verdict("N10 with no Jool instance a declared client's packet crosses the gateway once and ends at the guard", crossings == 1 and handed == 1 and left == 0 and grown >= 1, f"{crossings} crossings of one echo request; Jool handed {handed} packet of the client back to the kernel; {left} packets left the namespace behind the guard; guard-leftover +{grown} (with the health check's pings)")
+            gw1.succeed("ip netns exec nat64 nft delete table inet handed; ip netns exec nat64 nft delete table inet left")
+            client.wait_until_succeeds(f"ping -c1 -W2 {G1.server}", timeout=30)
+
+            # N11: the host table and the guard are taken away; the
+            # unreachable route alone ends an untranslatable packet. The
+            # health check sees the missing guard and has it loaded again.
+            count_on(gw1, "ip6 daddr ${pool1} meta l4proto 253")
+            gw1.succeed("nft flush chain inet nat64 to_translator")
+            removed = time.time()
+            gw1.succeed("ip netns exec nat64 nft delete table inet guard")
+            try:
+                client.succeed(raw253(G1.server))
+                gw1.succeed("sleep 2")
+                crossings = counted_on(gw1)
+            finally:
+                gw1.succeed("systemctl restart nftables.service")
+            verdict("N11 without the gateway's table and without the guard the namespace still forwards nothing (forwarding is off there, and pool6 is an unreachable route): one crossing", crossings == 1, f"{crossings} crossings of one packet")
+            seen = seconds_until(gw1, "grep -F '\"guard\": false' /run/nat64-gateway/health.json", limit=30, interval=0.2)
+            back = seconds_until(gw1, "ip netns exec nat64 nft list table inet guard", limit=75)
+            since = round(time.time() - removed, 1)
+            asked = gw1.succeed("journalctl -b -u nat64-health -o cat --no-pager | grep -cF 'is not loaded: the gateway is not healthy' || true").strip()
+            verdict("N11 a deleted guard shows in the health state and is loaded again without an operator", seen is not None and back is not None and asked == "1", f"health.json said guard false after {seen} s; the guard was back {since} s after it was deleted; journal lines: {asked}")
+            gw1.wait_until_succeeds("grep -F '\"guard\": true' /run/nat64-gateway/health.json", timeout=30)
+            verdict("N11 a guard that is back within the down window never withdraws the beacon", gw1.execute("systemctl is-active nat64-beacon.service")[0] == 0 and client.execute(names_prefix(G1))[0] == 0, f"health: {health(gw1)['state']}, bad rounds of the last 60: {health(gw1)['bad_of_last_2down']}")
+            gw1.succeed("nft delete table inet hostile")
+
+            # N11 on the other gateway (no client is on it): the Jool unit
+            # cannot start, so nobody loads the guard again
+            gw2.succeed("mkdir -p /run/systemd/system/nat64-jool.service.d && printf '[Service]\\nExecStartPre=/run/current-system/sw/bin/false\\n' > /run/systemd/system/nat64-jool.service.d/fail.conf && systemctl daemon-reload")
+            removed = time.time()
+            gw2.succeed("ip netns exec nat64 nft delete table inet guard")
+            try:
+                took = seconds_until(client, beacon_closed(G2), limit=DOWN + 60)
+                state = health(gw2)
+                words = gw2.succeed("journalctl -b -u nat64-health -o cat --no-pager | grep -F 'beacon withdrawn' | tail -n 1").strip()
+                verdict("N11 a gateway that cannot load its guard withdraws its beacon", took is not None and state["state"] == "down" and state["guard"] is False and "guard is not loaded" in words, f"beacon closed {took} s after the guard was deleted; health: state {state['state']}, guard {state['guard']}; journal: {words}")
+                # its translator still translates: only the beacon tells clients
+                verdict("N11 INFO the gateway without its guard still translates (the host table and the unreachable route remain)", True, f"ping through it: rc={client.execute(f'ping -c1 -W2 {G2.server}')[0]}")
+            finally:
+                gw2.succeed("rm -f /run/systemd/system/nat64-jool.service.d/fail.conf && systemctl daemon-reload")
+            # nobody starts the unit: Restart=on-failure does, the guard returns
+            gw2.wait_until_succeeds("ip netns exec nat64 nft list table inet guard >/dev/null", timeout=60)
+            took = seconds_until(client, names_prefix(G2), limit=UP + 90, interval=2)
+            verdict("N11 the gateway advertises itself again once its guard is back and UP rounds were good", took is not None, f"beacon back after {took} s")
+            assert moves() == 0, "a client moved during the hostile phases"
+
+        with subtest("hostile: what Jool cannot translate, forged errors, fragments and the IPv4 side"):
+            # N12: ICMPv6 types without an IPv4 twin, to a pool6 address
+            count_on(gw1, "ip6 daddr ${pool1} meta l4proto ipv6-icmp ip6 saddr ${clientAddr}", priority=-5, name="passed")
+            before = counted(gw1, "nat64-icmp-type")
+            scapy(client, ", ".join(f'IPv6(src="${clientAddr}", dst="{G1.server}", hlim=64)/{kind}' for kind in [f'ICMPv6ND_NS(tgt="{G1.server}")', "ICMPv6ND_RS()", "ICMPv6MLQuery()"]))
+            gw1.succeed("sleep 1")
+            grown = counted(gw1, "nat64-icmp-type") - before
+            verdict("N12 neighbour discovery and MLD towards pool6 never enter the translator", grown == 3 and counted_on(gw1, "passed") == 0, f"nat64-icmp-type +{grown}, let through: {counted_on(gw1, 'passed')}")
+
+            # N13: a forged ICMPv6 error about no flow, from an undeclared host
+            count_on(gw1, "ip6 daddr ${pool1} ip6 saddr ${outsiderAddr}", priority=-5, name="passed")
+            before = counted(gw1, "nat64-undeclared")
+            scapy(outsider, f'IPv6(src="${outsiderAddr}", dst="{G1.server}")/ICMPv6PacketTooBig(mtu=1280)/IPv6(src="{G1.server}", dst="${clientAddr}")/TCP(sport=80, dport=40000)')
+            gw1.succeed("sleep 1")
+            grown = counted(gw1, "nat64-undeclared") - before
+            verdict("N13 a forged ICMPv6 error from an undeclared host is not `related`: dropped", grown == 1 and counted_on(gw1, "passed") == 0, f"nat64-undeclared +{grown}, let through: {counted_on(gw1, 'passed')}")
+
+            # N15: fragments. An allowed destination is delivered; a
+            # private one is refused as one reassembled packet.
+            private = embed(G1, "10.0.0.1")
+            count_on(gw1, f"ip6 daddr {private}", priority=-5, name="passed")
+            before = refused_private(gw1)
+            delivered = client.execute(udp(G1.server, 3000))[0] == 0
+            client.execute(udp(private, 3000))
+            grown = refused_private(gw1) - before
+            verdict("N15 a fragmented datagram is delivered to an allowed destination and refused to a private one before translation", delivered and grown == 1 and counted_on(gw1, "passed") == 0, f"3000 bytes echoed: {delivered}; nat64-private +{grown}; let through: {counted_on(gw1, 'passed')}")
+            gw1.succeed("nft delete table inet passed")
+
+            # N14: the IPv4 side, from an address no flow goes to
+            trusted.succeed("rm -f /tmp/hairpin; systemd-run --unit=hairpin-listener2 python3 /tmp/listener.py")
+            trusted.wait_until_succeeds("grep hello /tmp/hairpin >/dev/null", timeout=15)
+            bib = gw1.succeed("ip netns exec nat64 jool bib display --udp --numeric --csv --no-headers")
+            mapped = [line.split(",") for line in bib.splitlines() if "${trustedAddr}" in line and ",40000," in line][0][4]
+            count_on(gw1, 'oifname "jool0" ip saddr 198.51.100.95', priority=-300)
+            server4.succeed(f"python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((\"198.51.100.95\", 9003)); [s.sendto(b\"evil4\", (\"{G1.v4}\", port)) for port in [{mapped}, *range(1100, 1200)]]'")
+            server4.succeed(f"nmap -n -Pn -sS -S 198.51.100.95 -e eth1 -p {mapped},1100-1120 --max-retries 0 {G1.v4} >/dev/null 2>&1 || true")
+            trusted.succeed("sleep 2")
+            got = trusted.succeed("cat /tmp/hairpin")
+            verdict("N14 the IPv4 side opens no flow into the translator: nothing unsolicited reaches the translator's link or a client's mapping", counted_on(gw1) == 0 and "evil4" not in got, f"IPv4 packets from the stranger towards jool0: {counted_on(gw1)}; nat64-unsolicited4: {counted(gw1, 'nat64-unsolicited4')}; the client heard: {got.strip()}")
+            trusted.execute("systemctl stop hairpin-listener2")
+            gw1.succeed("nft delete table inet hostile")
+
+        with subtest("hostile: a full pool4 (P3)"):
+            # N16: ten UDP ports, 300 new flows from the trusted client
+            # (its tier's flow limit is far above 300)
+            client.succeed(f"rm -f /tmp/talk-full; systemd-run --unit=talk-full python3 /etc/suite/shapes.py talk {G1.server} 9002 /tmp/talk-full")
+            client.wait_until_succeeds("test \"$(grep -c echo /tmp/talk-full)\" -ge 2", timeout=30)
+            gw1.succeed("ip netns exec nat64 jool pool4 remove 192.0.0.2 1100-65535 --udp && ip netns exec nat64 jool pool4 add 192.0.0.2 1100-1109 --udp")
+            count_on(gw1, "ip6 daddr ${pool1} ip6 saddr ${trustedAddr} udp dport 9001", priority=-5)
+            count_on(gw1, 'iifname "jool0" ip6 daddr ${trustedAddr} meta l4proto ipv6-icmp', name="errors")
+            stats = "ip netns exec nat64 jool -i default stats display --all --csv --no-headers"
+            numbers = lambda text: {line.split(",")[0]: int(line.split(",")[1]) for line in text.splitlines() if line.count(",") == 1 and line.split(",")[1].strip().isdigit()}
+            stats_before, guard_before = numbers(gw1.succeed(stats)), guard(gw1, "nat64")
+            try:
+                trusted.succeed(f"python3 -c 'import socket; [socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).sendto(b\"x\", (\"{G1.server}\", 9001)) for _ in range(300)]'")
+                gw1.succeed("sleep 2")
+                stats_after, guard_after = numbers(gw1.succeed(stats)), guard(gw1, "nat64")
+                grown = {key: value - stats_before.get(key, 0) for key, value in stats_after.items() if value != stats_before.get(key, 0)}
+                crossings, errors = counted_on(gw1), counted_on(gw1, "errors")
+                print(f"FINDING P3 a full pool4 (10 UDP ports) and 300 new flows: {crossings} packets crossed towards the translator; Jool counters that moved: {grown}; guard {guard_before} -> {guard_after}; ICMPv6 errors back to the client: {errors}")
+                heard = echoes("/tmp/talk-full")
+                client.wait_until_succeeds(f"test \"$(grep -c echo /tmp/talk-full)\" -ge {heard + 3}", timeout=30)
+                verdict("N16 on a full pool4 every new flow crosses the gateway once, an open flow of another client goes on, the beacon stays", crossings == 300 and guard_after["guard-leaving"] == 0 and client.execute("grep error /tmp/talk-full")[0] != 0 and gw1.execute("systemctl is-active nat64-beacon.service")[0] == 0, f"{crossings} crossings of 300 datagrams; guard-leftover +{guard_after['guard-leftover'] - guard_before['guard-leftover']}; ICMPv6 errors to the client: {errors}")
+            finally:
+                gw1.succeed("systemctl restart nat64-jool.service")
+                client.execute("systemctl stop talk-full.service")
+            gw1.succeed("nft delete table inet hostile; nft delete table inet errors")
+            client.wait_until_succeeds(f"ping -c1 -W2 {G1.server}", timeout=30)
+
+        with subtest("hostile: forged sources, forged router advertisements and other links against a CLAT host"):
+            target = "${clatAddr}"
+            # C01: a gateway's /96 with a private IPv4 address inside
+            count_on(client, f"ip6 daddr {target}", priority=-5, name="passed")
+            before = counted(client, "clat-private-source", table="clat")
+            scapy(outsider, f'IPv6(src="{embed(G1, "10.0.0.1")}", dst="{target}")/UDP(sport=53, dport=53)/b"x"')
+            client.succeed("sleep 1")
+            grown = counted(client, "clat-private-source", table="clat") - before
+            verdict("C01 a forged gateway source that embeds a private IPv4 address never enters the CLAT", grown == 1 and counted_on(client, "passed") == 0, f"clat-private-source +{grown}, let through: {counted_on(client, 'passed')}")
+
+            # C02, C03, C07: a forged gateway source that embeds a public
+            # IPv4 address is translated once; the host takes nothing
+            # unsolicited from it (TCP, UDP to an open port, a ping)
+            client.succeed("rm -f /tmp/heard; systemd-run --unit=udp-open python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((\"0.0.0.0\", 40001)); open(\"/tmp/heard\", \"w\").write(repr(s.recvfrom(100)))'")
+            client.wait_until_succeeds("ss -uln | grep ':40001 ' >/dev/null", timeout=15)
+            forged = embed(G1, "198.51.100.77")
+            count_on(client, 'iifname "clat0"', priority=-300)
+            count_on(client, 'oifname "clat0" ip daddr 198.51.100.77', hook="output", priority=-300, name="answers")
+            before = counted(client, "clat-unsolicited", table="clat")
+            scapy(outsider, f'IPv6(src="{forged}", dst="{target}")/TCP(sport=4444, dport=22, flags="S"), IPv6(src="{forged}", dst="{target}")/UDP(sport=4444, dport=40001)/b"evil", IPv6(src="{forged}", dst="{target}", hlim=64)/ICMPv6EchoRequest()')
+            client.succeed("sleep 2")
+            grown = counted(client, "clat-unsolicited", table="clat") - before
+            heard = client.execute("test -s /tmp/heard")[0] == 0
+            verdict("C02 C03 C07 forged packets from a gateway's /96 are translated once and the host takes nothing unsolicited: no answer, no datagram to an open port, no loop", grown == 3 and counted_on(client, "passed") == 3 and not heard and counted_on(client, "answers") == 0 and counted_on(client) == 0, f"let through to the CLAT: {counted_on(client, 'passed')}; clat-unsolicited +{grown}; the open UDP port heard something: {heard}; answers sent: {counted_on(client, 'answers')}; packets forwarded back from clat0: {counted_on(client)}")
+            client.execute("systemctl stop udp-open.service")
+            client.succeed("nft delete table inet passed; nft delete table inet answers; nft delete table inet hostile")
+
+            # C04: a forged router advertisement with a NAT64 prefix (PREF64)
+            # and a default route of high preference
+            pool_before = clat_gateway()
+            routes_before = client.succeed("ip -6 route show default").strip()
+            pref64 = "bytes([0x07, 0x08]) + bytes.fromhex(\"20010db80bad006400000000\")"
+            scapy(outsider, f'IPv6(dst="ff02::1")/ICMPv6ND_RA(prf=1, routerlifetime=1800)/ICMPv6NDOptSrcLLAddr(lladdr=get_if_hwaddr("eth1"))/ICMPv6NDOptUnknown(type=38, len=2, data={pref64})/ICMPv6NDOptPrefixInfo(prefix="2001:db8:bad::", prefixlen=64)', count=3)
+            holds_for(client, clat_on(pool_before), 20, interval=2)
+            routes_after = client.succeed("ip -6 route show default").strip()
+            verdict("C04 a forged router advertisement with a NAT64 prefix does not move the CLAT (20 s)", clat_gateway() is pool_before and moves() == 0, f"pool6 stays {pool_before.pool}")
+            print(f"HOSTILE INFO C04 the default route after the forged advertisement (netif's area): before [{routes_before}] after [{routes_after}]")
+
+            # C06: no CLAT instance: the host's IPv4 packet enters the
+            # namespace once and ends at the guard
+            count_on(client, 'oifname "clat0" ip daddr 198.51.100.80 icmp type echo-request', hook="output", priority=-300, name="sent")
+            count_on(client, 'iifname "clat0" ip daddr 198.51.100.80', hook="prerouting", priority=-300, name="returned")
+            was = guard(client, "clat")["guard-leftover"]
+            client.succeed("ip netns exec clat jool_siit instance remove clat")
+            try:
+                client.execute("ping -c1 -W1 198.51.100.80")
+                sent, returned, grown = counted_on(client, "sent"), counted_on(client, "returned"), guard(client, "clat")["guard-leftover"] - was
+            finally:
+                client.succeed("systemctl restart clat.service")
+            verdict("C06 with no CLAT instance the host's packet crosses the link once and ends at the guard", sent == 1 and returned == 0 and grown == 1, f"sent {sent}, came back {returned}, guard-leftover +{grown}")
+            client.succeed("nft delete table inet sent; nft delete table inet returned")
+            client.wait_until_succeeds(http("198.51.100.80"), timeout=FOLLOW_AFTER + 60)
+
+            # C08 (O7): the CLAT turns IPv6 forwarding on, machine-wide.
+            # A second link of the client (a namespace `lan` behind a
+            # veth) must not become reachable through it, either way.
+            client.succeed(
+                "ip netns add lan && ip link add lan0 type veth peer name lan1 netns lan && "
+                "ip addr add 2001:db8:d::1/64 dev lan0 nodad && ip link set lan0 up && "
+                "ip -n lan addr add 2001:db8:d::2/64 dev lan1 nodad && ip -n lan link set lan1 up && ip -n lan link set lo up && "
+                "ip -n lan -6 route add default via 2001:db8:d::1"
+            )
+            outsider.succeed("ip -6 route add 2001:db8:d::/64 via ${clientAddr}")
+            client.wait_until_succeeds("ping -c1 -W2 2001:db8:d::2", timeout=15)
+            before = counted(client, "clat-forward", table="clat")
+            inwards = outsider.execute("ping -c2 -W1 2001:db8:d::2")[0]
+            outwards = client.execute("ip netns exec lan ping -c2 -W1 ${outsiderAddr}")[0]
+            grown = counted(client, "clat-forward", table="clat") - before
+            verdict("C08 a CLAT host forwards IPv6 for its CLAT only: a second link is not reachable through it, in either direction", inwards != 0 and outwards != 0 and grown == 4, f"outsider to the second link: rc={inwards}; second link to the outsider: rc={outwards}; clat-forward +{grown}")
+            # the negative proof: without the client's table the same pings pass
+            client.succeed("nft delete table inet clat")
+            try:
+                opened = (outsider.execute("ping -c2 -W1 2001:db8:d::2")[0], client.execute("ip netns exec lan ping -c2 -W1 ${outsiderAddr}")[0])
+            finally:
+                client.succeed("systemctl restart nftables.service")
+            print(f"HOSTILE INFO C08 negative proof: without table inet clat the same pings end with rc={opened} (0, 0: the machine forwards between its links)")
+            assert opened == (0, 0), opened
+            client.succeed("ip link del lan0; ip netns del lan")
+            outsider.succeed("ip -6 route del 2001:db8:d::/64")
+            out = client.succeed(http("198.51.100.80")).strip()
+            verdict("C08 the CLAT still carries IPv4 with forwarding refused for every other link", out == clat_gateway().v4, f"the page says {out}")
+
+        with subtest("hostile: after every attack the guards let nothing leave that was not translated"):
+            # N17: the Jool units were started again above (their counters
+            # start at 0 then), so each attack read its own delta
+            final = {"gw1": guard(gw1, "nat64"), "gw2": guard(gw2, "nat64"), "client": guard(client, "clat"), "trusted": guard(trusted, "clat")}
+            verdict("N17 no guard dropped a packet on its way out of a namespace: the host tables refused every attack first", all(found["guard-leaving"] == 0 for found in final.values()), f"{final}")
+
+        print("HOSTILE SUMMARY")
+        for key, safe, detail in results:
+            print(f"  {'SAFE' if safe else 'GAP '} {key}" + (f" [{detail}]" if not safe else ""))
+        gaps = [key for key, safe, _ in results if not safe]
+        assert not gaps, f"{len(gaps)} gap(s): {gaps}"
+
+
     with state_dump_on_failure([client, gw1, gw2, server4], extra=["ip netns exec nat64 jool instance display", "ip netns exec nat64 jool pool4 display", "ip netns exec clat jool_siit -i clat global display", "journalctl -b --no-pager -u clat-follow -u nat64-health -u nat64-jool -u nat64-beacon | tail -n 80"]):
         with subtest("boot and versions"):
             start_all()
@@ -1221,10 +1672,6 @@ in {
             for gateway in [G1, G2]:
                 assert_gateway(gateway)
 
-    print("${
-      if phases == "function"
-      then "NAT_GATEWAY_OK"
-      else "NAT_GATEWAY_FAILOVER_OK"
-    }")
+    print("NAT_GATEWAY${lib.optionalString (phases != "function") "_${lib.toUpper phases}"}_OK")
   '';
 }

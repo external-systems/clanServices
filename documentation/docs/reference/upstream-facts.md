@@ -279,6 +279,15 @@ its lines are in `specs/probes/2026-11-27/`.
 - `jool -i <instance> global update` takes `udp-timeout 0:05:00`,
   `icmp-timeout 0:01:00`, `address-dependent-filtering true`,
   `drop-externally-initiated-tcp true`, and can be run at every start.
+- Jool SIIT translates an IPv4 packet whose source has no EAM entry
+  with `pool6` as the prefix of both addresses
+  (`pool6::<source>` to `pool6::<destination>`); the CLAT guard's
+  `leaving` chain stops it (`k3s-clat`, round 65).
+- `ct state != established,related` matches an `established` packet:
+  `!=` with a flag list means "not every flag set". Write the states to
+  match (`ct state new,invalid,untracked`) (`k3s-clat`, round 65).
+- `nft log` inside a network namespace writes to the kernel log only
+  with `net.netfilter.nf_log_all_netns=1` (`k3s-clat`, round 65).
 
 ### nftables
 

@@ -35,7 +35,14 @@ Each zone name is a netif zone label. From netif the router takes:
 DHCP hands out the upper half of the zone's IPv4 subnet. SSH to the
 router is open from every zone (`ssh = false` closes it for a zone).
 Proof: the suite `router` runs every check of the former stand-in
-suite `gateway-router` on the service.
+suite `gateway-router` on the service. The suite `hostile-router` puts
+a hostile ISP, an intruder in a zone and a host of another zone beside
+the router: scans, zone crossing, forged sources and a rogue router
+advertisement on a LAN link. Each attack has a control that proves it
+ran; the rogue advertisement is captured on the router's link and a
+LAN neighbour takes its prefix, while the router takes nothing. The
+router's own advertisements come from CoreRAD; radvd is only the
+attacker's tool in the test.
 
 ## A router that is also a Kubernetes node
 

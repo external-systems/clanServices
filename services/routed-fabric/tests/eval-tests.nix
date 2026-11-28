@@ -1936,6 +1936,18 @@ in {
         graphEdges = 2;
       };
     };
+    # O7 (specs/design-gateway.md §3.5): the fabric's links are forward
+    # links, judged by the guard table; a CLAT host leaves them to it
+    test_fabricLinksAreForwardLinks = {
+      expr = {
+        client = lib.sort lib.lessThan client.clan.networkFacts.forwardLinks;
+        spine = lib.sort lib.lessThan spine.clan.networkFacts.forwardLinks;
+      };
+      expected = {
+        client = lib.sort lib.lessThan (map (link: link.interface) (builtins.attrValues client.clan.networkFacts.fabric.fleet.adjacencies));
+        spine = lib.sort lib.lessThan (map (link: link.interface) (builtins.attrValues spine.clan.networkFacts.fabric.fleet.adjacencies));
+      };
+    };
   };
 
   vars = let

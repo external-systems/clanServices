@@ -44,6 +44,12 @@ STATE = config["state"]
 BEACON = config["beacon"]
 JOOL = ["ip", "netns", "exec", config["netns"], "jool", "-i", "default"]
 POOL_EVERY = 10
+# The namespace's default-deny table (specs/design-gateway.md §3.7): a
+# gateway without it is not healthy. The Jool unit loads it; the check
+# asks for that at most every GUARD_RETRY seconds.
+GUARD = ["ip", "netns", "exec", config["netns"], "nft", "list", "table", "inet", config["guard"]]
+RESTART = config["restart"]
+GUARD_RETRY = 60
 BANDS = [50, 80, 95]
 BEACON_RETRY = 10
 
@@ -112,6 +118,20 @@ def pool4():
     return usage
 
 
+def guard():
+    """The guard as it is loaded: None when a chain is missing, else the
+    packets its two counters dropped (0 on a sound gateway)."""
+    shown = lines(GUARD)
+    if shown is None or not any("hook prerouting" in line for line in shown) or not any("hook postrouting" in line for line in shown):
+        return None
+    dropped = {}
+    for line in shown:
+        for name in ["guard-leftover", "guard-leaving"]:
+            if f'comment "{name}"' in line and "packets" in line:
+                dropped[name] = int(line.split("packets")[1].split()[0])
+    return dropped
+
+
 def band(usage):
     """The highest band a protocol's use of pool4 has reached, 0 for none."""
     worst = max((entry["percent"] or 0 for key, entry in usage.items() if key != "sessions"), default=0)
@@ -131,7 +151,7 @@ def beacon(action):
         return False
 
 
-def save(state, since, alive, good, bad, usage, beacon_starts):
+def save(state, since, alive, good, bad, usage, beacon_starts, guarded):
     """The state for a restart and for an exporter, replaced whole.
     good: good rounds of the last `up`; bad: bad rounds of the last 2 x `down`."""
     record = {
@@ -144,6 +164,9 @@ def save(state, since, alive, good, bad, usage, beacon_starts):
         "bad_of_last_2down": bad,
         # pool4 and sessions (G4), read every POOL_EVERY rounds
         "pool4": usage,
+        # the namespace's guard: loaded, and what it dropped
+        "guard": guarded is not None,
+        "guard_dropped": guarded,
         # starts of a beacon that did not stay up, since the last up
         "beacon_restarts": beacon_starts,
     }
@@ -169,6 +192,7 @@ def main():
     rounds = collections.deque(maxlen=max(2 * DOWN, UP))  # True: a good round
     usage, shown, count = None, None, 0
     restarts, tried, told = 0, 0.0, 0.0
+    guarded, asked = {}, None
     if state == "up":
         write(RECORDS)
         beacon("start")
@@ -187,9 +211,19 @@ def main():
                     level = f"{now} % or more of a protocol's ports held" if now else f"below {BANDS[0]} % of every protocol's ports"
                     print(f"nat64-health: pool4 {level} ({summary}; {usage.get('sessions')} sessions); the beacon stays")
                     shown = now
+            was, guarded = guarded, guard()
+            if guarded is None:
+                if was is not None:
+                    print(f"nat64-health: the namespace's table inet {config['guard']} is not loaded: the gateway is not healthy; {RESTART} is asked to load it")
+                # the Jool unit loads the guard first; asked without waiting
+                if asked is None or time.monotonic() - asked >= GUARD_RETRY:
+                    subprocess.run(["systemctl", "--no-block", "restart", RESTART], capture_output=True, timeout=10, check=False)
+                    asked = time.monotonic()
+            elif was is None:
+                print(f"nat64-health: the namespace's table inet {config['guard']} is loaded again")
         count += 1
         alive = answering(TARGETS)
-        rounds.append(len(alive) >= QUORUM)
+        rounds.append(len(alive) >= QUORUM and guarded is not None)
         recent = list(rounds)[-2 * DOWN:]
         bad = recent.count(False)
         last = list(rounds)[-UP:]
@@ -199,7 +233,8 @@ def main():
             beacon("stop")
             state, since = "down", time.time()
             rounds.clear()
-            print(f"nat64-health: {bad} of the last {len(recent)} rounds bad (fewer than {QUORUM} of {len(TARGETS)} targets answer), beacon withdrawn")
+            why = f"fewer than {QUORUM} of {len(TARGETS)} targets answer" if guarded is not None else "the namespace's guard is not loaded"
+            print(f"nat64-health: {bad} of the last {len(recent)} rounds bad ({why}), beacon withdrawn")
         elif state != "up" and healthy:
             write(RECORDS)
             beacon("start")
@@ -215,7 +250,7 @@ def main():
             if time.monotonic() - told >= 60:
                 print(f"nat64-health: the beacon was not running, started ({restarts} starts since it was last up)")
                 told = time.monotonic()
-        save(state, since, alive, list(rounds)[-UP:].count(True), bad, usage, restarts)
+        save(state, since, alive, list(rounds)[-UP:].count(True), bad, usage, restarts, guarded)
         time.sleep(max(0.0, started + 1 - time.monotonic()))
 
 

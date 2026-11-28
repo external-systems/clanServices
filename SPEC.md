@@ -4,6 +4,44 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 65 (2026-11-28): gateway steps 0 to 3, the guards of the
+translators and of a CLAT host.** The gateway part of wave 1 of the
+round-61 target design (`specs/design-gateway.md` §8 rows 0 to 3). The
+contract is `specs/gateway.md` (round G12, decisions G26–G28):
+
+- **The hostile suites** `nat-gateway-hostile` and `hostile-router`
+  are in the tree. Every verdict group has a positive control that
+  gates the suite (H19). `hostile-router` R15 was empty on every run
+  before: the attacker's radvd refused its config (no
+  `MinRtrAdvInterval`) and sent nothing; now a capture on the router's
+  link and a LAN neighbour that takes the rogue prefix prove the attack
+  ran.
+- **G26** a default-deny table `inet guard` in the `nat64` and `clat`
+  namespaces, loaded by the Jool unit before an instance exists;
+  forwarding off in both; `pool6` and the CLAT address `unreachable`
+  there. A gateway whose guard cannot be loaded withdraws its beacon.
+  Closes N05 (`127.0.0.1` of the translator answered), N06 and N07 (one
+  packet crossed the veth 32 times).
+- **G27** the gateway's host table refuses while the packet is still
+  IPv6 (a private embedded IPv4, other protocols, untranslatable ICMPv6
+  types) and checks what leaves the namespace; eval assertion I7 (one
+  source /64 cannot fill pool4); Jool's timeouts pinned.
+- **G28 (H17, O7)** a CLAT host forwards IPv6 only for its CLAT and for
+  the links a service declares in the new fact
+  `clan.networkFacts.forwardLinks` (§6.15): k3s and rke2 `cilium*`,
+  `lxc*`; routed-fabric its fabric and transit links; the router its
+  links. The CLAT host's table `inet clat` also lets only a gateway's
+  `/96` with a public embedded IPv4 reach the CLAT.
+
+Not in this round (later gateway steps): the router's two firewalls
+from one value, ICMP limits and redirect sysctls (step 4), the prefix
+hook's validation and sandbox (step 5), `unzoned.zones` folded into
+`zones.<name>.fabric` (step 6).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| G26–G28 (`specs/gateway.md`) | Jool's hand-backs delivered and forwarded in its namespace (loopback answered, 32 crossings); private destinations refused after translation; a CLAT host an IPv6 router between all its links | guard table and forwarding off in both namespaces; refusal before translation; `inet clat` with forward links | `nat-gateway-hostile` (`NAT_GATEWAY_HOSTILE_OK`, no gap, every control works), `hostile-router` (`HOSTILE_ROUTER_OK`), `nat-gateway`, `nat-gateway-failover`, `nat-gateway-kube`, `k3s-clat`, `rke2-clat`, `k3s-clat-mapped`, `router`, `router-kube`; nix-unit `test_guardText`, `test_table`, `test_limitBound`, `test_forwardLinks`, `test_fabricLinksAreForwardLinks`, `test_forwardLinksFact` |
+
 **Round 64 (2026-11-27): netif steps 0 and 1, the threat model, one
 sysctl baseline and `netif-hostile`.** First netif step of the round-61
 target design (`specs/design-netif.md` §8.1, §8.2). The contract is
@@ -154,7 +192,7 @@ findings are `specs/probes/2026-11-27/`. The prototypes are not on
 | H14 | (O4) Pod Security default: enforce `baseline`, warn `restricted`; a namespace label opts out | decided, probed, not implemented |
 | H15 | (O5) netif: a new configuration must prove itself or the machine stays on the last good one; a declared one-shot override covers a planned move | decided, probed, not implemented |
 | H16 | (O6) No `accept_dad = 0`. `arp_ignore = 1` and `arp_announce = 2` on fabric members and netif links | decided, probed (k3s), not implemented |
-| H17 | (O7) A CLAT host forwards IPv6 only for the CLAT and for links a service declares (`forwardLinks`) | decided, probed, not implemented |
+| H17 | (O7) A CLAT host forwards IPv6 only for the CLAT and for links a service declares (`forwardLinks`) | implemented round 65 (`specs/gateway.md` G28) |
 | H18 | (O8) remote-builder is redesigned apart, with the matching change in external-systems/home; not before the owner schedules it | decided, not implemented |
 | H19 | Every hostile verdict has a positive control; a missing control fails the suite. Two RA verdicts were empty without one | active for new suites |
 | H20 | No GTSM on fabric sessions: on FRR 10.7.1 it turns the neighbor's BFD multihop. Sessions are pinned by link, peer address and own address | implemented round 62 (D73) |
@@ -3349,6 +3387,16 @@ services
 publish cluster identity, distro, node membership, pod/Service CIDRs,
 pools, mesh peers, and control-domain relationships. Nothing in the
 schema admits secret material.
+
+Two facts cross service boundaries as contracts (round-61 target
+design, `specs/target-design.md` §3): `fabricInside` (links, beside a
+fabric's own, whose hosts may reach fabric and pod addresses through
+the machine; set by the CLAT and NAT64 links and by a router zone with
+`fabric = true`; read by routed-fabric's and kube's guards, D73, D74)
+and `forwardLinks` (links between which the machine forwards IPv6 by
+its owner's rules; set by k3s and rke2, routed-fabric and the router;
+read by the CLAT host's table `inet clat`, round 65). A setter writes
+`clan._networkFacts.<fact>`; readers use `clan.networkFacts.<fact>`.
 
 A consumer-owned nix-topology wrapper imports its own NixOS module and
 translates these facts into `topology.networks`, `topology.nodes`,
