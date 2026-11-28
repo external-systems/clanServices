@@ -468,6 +468,43 @@
   raKeys = machineConfig: interface:
     lib.getAttrs ["accept_ra" "autoconf" "accept_ra_pinfo" "accept_ra_defrtr" "accept_ra_rt_info_max_plen" "accept_ra_mtu" "accept_ra_min_hop_limit" "use_tempaddr"]
     machineConfig.networking.ifstate.settings.interfaces.${interface}.sysctl.ipv6;
+  # N49: evaluation checks (design §3.9).
+  e1 = link: failedAssertion (kamWithLinks {gw = {interface = "enp9s0";} // link;}) "outside its static subnets";
+  e2 = route:
+    failedAssertion (kamWithLinks {
+      rt = {
+        interface = "enp9s0";
+        static.ipv4 = ["192.168.50.2/24"];
+        defaultRoute.ipv4 = false;
+        routes = [({destination = "10.9.0.0/16";} // route)];
+      };
+    }) "has a route whose gateway is outside";
+  e11 = address:
+    failedAssertion (kamWithLinks {
+      net = {
+        interface = "enp9s0";
+        static.ipv4 = [address];
+      };
+    }) "network or broadcast address";
+  guardEmptyEdge =
+    (mkEvaled {
+      instances.solo = {
+        module.name = "netif";
+        module.input = "self";
+        roles.default.machines.edge-1.settings.links.wan0 = {
+          interface = "enp9s0";
+          static.ipv4 = ["10.40.0.2/24"];
+        };
+      };
+    }).config.nixosConfigurations.edge-1.config;
+  sshdKam = openFirewall:
+    kamOf (withKamrui {
+        services.openssh = {
+          enable = true;
+          inherit openFirewall;
+        };
+      }
+      baseInventory);
   raOff = {
     accept_ra = 0;
     autoconf = 0;
@@ -1954,6 +1991,100 @@ in {
           accept_source_route = 0;
         };
         kernel = lib.genAttrs baselineKeys (_: 0);
+      };
+    };
+    # N49 E1: a static gateway lies in a static subnet of its link.
+    test_gatewayChecks = {
+      expr = {
+        outside4 = e1 {
+          static.ipv4 = ["192.168.50.2/24"];
+          gateway.ipv4 = "198.51.100.1";
+          defaultRoute.ipv4 = false;
+        };
+        inside4 = e1 {
+          static.ipv4 = ["192.168.50.2/24"];
+          gateway.ipv4 = "192.168.50.1";
+          defaultRoute.ipv4 = false;
+        };
+        onLink = e1 {
+          static.ipv4 = ["192.168.50.2/32"];
+          gateway = {
+            ipv4 = "172.31.1.1";
+            onLink = true;
+          };
+          defaultRoute.ipv4 = false;
+        };
+        outside6 = e1 {
+          static.ipv6 = ["2001:db8:50::2/64"];
+          gateway.ipv6 = "2001:db8:60::1";
+          defaultRoute.ipv6 = false;
+        };
+        linkLocal6 = e1 {
+          static.ipv6 = ["2001:db8:50::2/64"];
+          gateway.ipv6 = "fe80::1";
+          defaultRoute.ipv6 = false;
+        };
+      };
+      expected = {
+        outside4 = true;
+        inside4 = false;
+        onLink = false;
+        outside6 = true;
+        linkLocal6 = false;
+      };
+    };
+    # E2: the same for a route's gateway.
+    test_routeGatewayChecks = {
+      expr = {
+        outside = e2 {gateway = "192.168.60.1";};
+        inside = e2 {gateway = "192.168.50.1";};
+        onLink = e2 {
+          gateway = "192.168.60.1";
+          onLink = true;
+        };
+      };
+      expected = {
+        outside = true;
+        inside = false;
+        onLink = false;
+      };
+    };
+    # E11: no network or broadcast address as a host address.
+    test_networkAddressRejected = {
+      expr = map e11 ["192.168.50.0/24" "192.168.50.255/24" "192.168.50.7/24" "10.0.0.0/31"];
+      expected = [true true false false];
+    };
+    # E7: one instance names the deploy target.
+    test_twoTargetHostsRejected = {
+      expr = failedAssertion (kamOf (mkEvaled (lib.recursiveUpdate baseInventory {
+        instances.mgmt.roles.default.machines.kamrui-h1.settings.targetHost = true;
+      }))) "more than one netif instance";
+      expected = true;
+    };
+    # E10: the deploy link lets sshd in.
+    test_deployLinkOpensSsh = {
+      expr = {
+        closed = failedAssertion (sshdKam false) "opens no sshd port";
+        open = failedAssertion (sshdKam true) "opens no sshd port";
+      };
+      expected = {
+        closed = true;
+        open = false;
+      };
+    };
+    # E8, E9: warnings.
+    test_checkWarnings = {
+      expr = {
+        guardEmpty = lib.any (lib.hasInfix "guard has nothing to test") guardEmptyEdge.warnings;
+        guardBusy = lib.any (lib.hasInfix "guard has nothing to test") kam.warnings;
+        firewallOff = lib.any (lib.hasInfix "turns the NixOS firewall off") (kamOf (withKamrui {networking.firewall.enable = false;} baseInventory)).warnings;
+        firewallOn = lib.any (lib.hasInfix "turns the NixOS firewall off") kam.warnings;
+      };
+      expected = {
+        guardEmpty = true;
+        guardBusy = false;
+        firewallOff = true;
+        firewallOn = false;
       };
     };
     # N48: router advertisements only where declared.

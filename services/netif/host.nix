@@ -288,7 +288,8 @@
           n=$(basename "$p")
           case " ${lib.concatStringsSep " " members} " in *" $n "*) continue ;; esac
           echo "$n ${bridge}" >> ${guestPortsList}.new
-          names="$names|$(printf '%s' "$n" | sed 's/[.]/\\\\./g')"
+          # any kernel name: escape the regex, then the YAML string (N-A12)
+          names="$names|$(printf '%s' "$n" | sed -e 's/[][\\.^$*+?(){}|]/\\&/g' -e 's/[\\"]/\\&/g')"
         done
       '')
       cfg.guestBridges

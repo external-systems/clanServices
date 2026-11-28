@@ -19,9 +19,14 @@ commit per step (`specs/design-netif.md` §8.3 to §8.5,
   prefix and (only when it may own the IPv6 default and has no static
   gateway) the default router, never route information, an MTU or a
   low hop limit.
+- **N49** evaluation checks (design §3.9): gateways and route gateways
+  inside the link's subnets, no network or broadcast host address, one
+  deploy-target instance, an sshd port open on the deploy link (errors);
+  a guard with nothing to test, links with the firewall off (warnings).
 
 | ID | Was | Now | Proof |
 |---|---|---|---|
+| N49 | A wrong gateway, a network address, two deploy targets or a closed sshd port on the deploy link reached the machine | Build errors (warnings for an empty guard and a closed-off firewall) | nix-unit `test_gatewayChecks`, `test_routeGatewayChecks`, `test_networkAddressRejected`, `test_twoTargetHostsRejected`, `test_deployLinkOpensSsh`, `test_checkWarnings`; `netif-vmhost` (guest port `gp(1`) |
 | N48 | Every link took router advertisements, beside a static IPv6 gateway too; a guest port, a VLAN parent or a member took them | Only links with `ra = true` and hot-plug links; there no route information, MTU or hop limit | `netif-hostile` (H02, H03, H04, H15, H16a–d, H23 and the RA survey, each with a control), `netif`, `netif-dhcp`, `netif-v6only`, `netif-hotplug`, `router`, `hostile-router`, `gateway-wan`; nix-unit `test_raOffByDefault`, `test_raOptIn`, `test_raOnMember`, `test_dhcp6NeedsRouter` |
 
 **Round 67 (2026-11-28): kube steps 3 and 4, a fabric always, typed

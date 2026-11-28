@@ -7,6 +7,16 @@
   inherit (lib) mkOption types;
   ip = import ../../lib/ip.nix {inherit lib;};
   baseline = import ../../lib/sysctl-baseline.nix;
+  cidrLib = import ../../lib/kube-cluster/cidr.nix {inherit lib;};
+  # Is a bare address inside one of the static CIDRs of its family?
+  insideStatic = address: statics:
+    lib.any (static:
+      cidrLib.contains static "${address}/${
+        if isV6 address
+        then "128"
+        else "32"
+      }")
+    statics;
 
   # ---------------------------------------------------------------------
   # Link resolution (D50/D53): derive kind + interface names and the
@@ -191,12 +201,13 @@
   v4Default = r:
     r.memberOf == null && r.default4 && (r.dhcp4 || (r.gateway4 != null && r.policy.table == null));
   # An advertised default counts only where the link takes one: `ra`
-  # and no static IPv6 gateway (N48).
+  # and no static IPv6 gateway (N48). A static IPv6 gateway on a DHCPv6
+  # link without static addresses is not rendered (gatewayRoutes).
   v6Default = r:
     r.memberOf
     == null
     && r.default6
-    && ((r.gateway6 != null && r.policy.table == null) || (r.ra && r.gateway6 == null));
+    && ((r.gateway6 != null && (!r.dhcp6 || r.static6 != []) && r.policy.table == null) || (r.ra && r.gateway6 == null));
 
   # IPv4/IPv6 split helpers for export facts and endpoint selection.
   # Exported endpoints are bare host addresses: static inventory values
@@ -587,7 +598,7 @@
         }
       );
       default = [];
-      description = "Static routes on this link (main table unless 'routingPolicy.table' is set).";
+      description = "Static routes on this link, always in the main table (a 'routingPolicy.table' takes the link's default gateway only). A gateway must lie in a static subnet of the link unless the route sets 'onLink'.";
     };
     routingPolicy = {
       table = mkOption {
@@ -781,6 +792,46 @@
           {
             assertion = memberOf == null || !link.ra;
             message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' is a member of '${toString memberOf}' and sets 'ra = true'; a member carries no addressing. Set 'ra' on '${toString memberOf}' instead (N48)";
+          }
+          # E1 (N49): the kernel refuses a gateway on no subnet of the link.
+          {
+            assertion = memberOf != null || r.gateway4 == null || r.dhcp4 || r.onLink || insideStatic r.gateway4 r.static4;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' has IPv4 gateway ${toString r.gateway4} outside its static subnets (${lib.concatStringsSep ", " r.static4}); the kernel refuses that route. Fix the gateway, or set 'gateway.onLink = true' for a /32 on an L3-only segment (N49)";
+          }
+          {
+            assertion = memberOf != null || r.gateway6 == null || r.dhcp6 || r.onLink || lib.hasPrefix "fe80:" (lib.toLower r.gateway6) || insideStatic r.gateway6 r.static6;
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' has IPv6 gateway ${toString r.gateway6} outside its static subnets (${lib.concatStringsSep ", " r.static6}); the kernel refuses that route. Fix the gateway, use its link-local address, or set 'gateway.onLink = true' (N49)";
+          }
+          # E2 (N49): the same for the gateway of each route.
+          {
+            assertion = let
+              bad = route:
+                route.gateway
+                != null
+                && !route.onLink
+                && !r.onLink
+                && (
+                  if isV6 route.gateway
+                  then !(r.dhcp6 || r.ra || lib.hasPrefix "fe80:" (lib.toLower route.gateway) || insideStatic route.gateway r.static6)
+                  else !(r.dhcp4 || insideStatic route.gateway r.static4)
+                );
+            in
+              memberOf != null || !(lib.any bad r.routes);
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' has a route whose gateway is outside the link's static subnets; the kernel refuses that route. Fix the gateway, or set 'onLink = true' on the route (N49)";
+          }
+          # E11 (N49): a static IPv4 address that is its subnet's network or
+          # broadcast address (prefix below 31) is a typo.
+          {
+            assertion = let
+              edge = address: let
+                prefix = lib.toInt (lib.last (lib.splitString "/" address));
+                subnet = cidrLib.parse address;
+                host = (cidrLib.parse "${stripPrefix address}/32").start;
+              in
+                prefix < 31 && (host == subnet.start || host == subnet.end);
+            in
+              !(lib.any edge r.static4);
+            message = "netif/${instanceName}: link '${logical}' of machine '${machineName}' has a static IPv4 address that is the network or broadcast address of its subnet (${lib.concatStringsSep ", " r.static4}); pick a host address (N49)";
           }
           # E3 (N48): DHCPv6 carries no router, so a DHCPv6 link that may
           # own the IPv6 default needs a source for one.
@@ -1069,6 +1120,12 @@ in {
       # Deploy-target resolution: explicit endpoint, then
       # endpointSources, then the first (alphabetical) endpoint-enabled
       # link's static address (IPv4 preferred).
+      # The link the deploy address comes from, when netif knows it.
+      deployLink =
+        if machineEndpoint != null
+        then null
+        else lib.findFirst (_: true) null (lib.attrValues (lib.filterAttrs (_: r: r.endpoint) resolved));
+
       targetHostAddr =
         if machineEndpoint != null
         then machineEndpoint
@@ -1346,6 +1403,24 @@ in {
 
         assertions =
           [
+            # E10 (N49): the deploy link must let sshd in. The guard sees
+            # outbound reachability only; this is the static half.
+            {
+              assertion = let
+                fw = config.networking.firewall;
+                inherit (config.services.openssh) ports;
+                portsOf = open: open.allowedTCPPorts or [] ++ lib.concatMap (range: lib.range range.from range.to) (open.allowedTCPPortRanges or []);
+                open = portsOf fw ++ portsOf (fw.interfaces.${deployLink.interface} or {});
+              in
+                !settings.targetHost
+                || deployLink == null
+                || !config.services.openssh.enable
+                || !fw.enable
+                || deployLink.trust
+                || lib.elem deployLink.interface fw.trustedInterfaces
+                || lib.any (port: lib.elem port open) ports;
+              message = "netif/${instanceName}: machine '${machine.name}' deploys over link '${toString (deployLink.logical or null)}' and the firewall opens no sshd port (${toString config.services.openssh.ports}) there; a deploy would lock itself out. Open the port ('services.openssh.openFirewall' or 'networking.firewall.interfaces.<link>.allowedTCPPorts') (N49)";
+            }
             {
               assertion = !settings.targetHost || targetHostValue != null;
               message = "netif/${instanceName}: machine '${machine.name}' sets 'targetHost = true' but no deploy address resolves; set 'endpoint', matching 'endpointSources', or an endpoint-enabled link with static addresses";
@@ -1482,6 +1557,8 @@ in {
           )
         )
       );
+
+      targetInstances = lib.attrNames (lib.filterAttrs (_: instance: instance.roles.default.machines.${machine.name}.settings.targetHost) memberships);
 
       # instanceName -> resolved links of this machine in that instance.
       resolvedByInstance =
@@ -1647,11 +1724,15 @@ in {
       # ignores them and netif runs no daemon for them (N39). A machine
       # whose only way to the internet is an RA link, with no DNS server
       # from anywhere, would resolve nothing.
-      warnings = lib.optional (
-        lib.any (r: v6Default r && r.gateway6 == null && r.static6 == []) allResolved
-        && lib.all (r: r.nameservers == [] && !r.dhcp4 && !r.dhcp6) allResolved
-        && config.networking.nameservers == []
-      ) "netif: machine '${machine.name}' takes its IPv6 default from router advertisements and has no DNS source: no link sets 'nameservers' and none uses DHCP. DNS servers from advertisements (RDNSS) are not read; set 'nameservers' on a link or enable 'dhcp.ipv6' (N39)";
+      warnings =
+        # E9 (N49): netif declares links and the firewall is off.
+        lib.optional (allResolved != [] && !config.networking.firewall.enable)
+        "netif: machine '${machine.name}' declares links and turns the NixOS firewall off: every link is then open (specs/netif.md N19 assumes the firewall). Keep 'networking.firewall.enable' on and open what a link needs (N49)"
+        ++ lib.optional (
+          lib.any (r: v6Default r && r.gateway6 == null && r.static6 == []) allResolved
+          && lib.all (r: r.nameservers == [] && !r.dhcp4 && !r.dhcp6) allResolved
+          && config.networking.nameservers == []
+        ) "netif: machine '${machine.name}' takes its IPv6 default from router advertisements and has no DNS source: no link sets 'nameservers' and none uses DHCP. DNS servers from advertisements (RDNSS) are not read; set 'nameservers' on a link or enable 'dhcp.ipv6' (N39)";
 
       clanServices.netif = {
         links = hostLinks;
@@ -1671,6 +1752,11 @@ in {
       };
 
       assertions = [
+        # E7 (N49): one instance names the deploy target.
+        {
+          assertion = lib.length targetInstances <= 1;
+          message = "netif: machine '${machine.name}' sets 'targetHost = true' in more than one netif instance (${lib.concatStringsSep ", " targetInstances}); one instance names the deploy target. Keep it in one (N49)";
+        }
         {
           assertion = interfaceDuplicates == [];
           message = "netif: machine '${machine.name}' has links resolving to the same interface across netif instances: ${lib.concatStringsSep ", " interfaceDuplicates} (a link is owned by exactly one instance, D53)";

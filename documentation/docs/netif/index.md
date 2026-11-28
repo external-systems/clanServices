@@ -80,6 +80,11 @@ passes the contract gate.
   redirect or accepts a source-routed packet, in every mode, also links
   netif does not declare and links that appear later (N47). The suite
   `netif-hostile` attacks a netif machine to prove it.
+- **Build checks (N49):** the build fails when a gateway lies outside
+  its link's subnets, a static address is a network or broadcast
+  address, two instances name the deploy target, or the deploy link's
+  firewall lets no sshd port in. It warns when the lockout guard has
+  nothing to test or the firewall is off.
 - **Router advertisements:** off unless a link says `ra = true` (N48).
   Such a link takes prefixes and addresses; it takes the default
   router only when it may own the IPv6 default and has no static IPv6

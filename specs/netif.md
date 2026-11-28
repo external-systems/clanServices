@@ -6,7 +6,7 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N48` so they never collide with
+together.** Decisions are numbered `N1`–`N49` so they never collide with
 SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
@@ -26,6 +26,13 @@ Round 68 (2026-11-28): **netif steps 2 to 4 of the target design**
   advertisement (H15), the VLAN parent (H23) and the RA survey of every
   link; H02, H03 and the rogue prefix route are verdicts now, each with
   a control that turns the key on by hand and sees the effect.
+- **N49** evaluation checks: a gateway (of the link or of a route)
+  outside the link's static subnets, a network or broadcast address
+  as a host address, two instances naming the deploy target, and a
+  deploy link whose firewall lets no sshd port in are build errors; a
+  guard with nothing to test and links with the firewall off are
+  warnings. A guest-port name with regex characters is escaped (it was
+  a broken regex).
 
 Round 64 (2026-11-27): **netif step 1 of the target design: the
 threat model, one sysctl baseline and `netif-hostile`** (SPEC.md round
@@ -2357,6 +2364,38 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   `test_raBesideStaticGateway`, `test_raOffOnGuestBridgeAndMember`,
   `test_dhcp6NeedsRouter`, `test_dhcp6WithRa`, `test_raOnMember`,
   `test_raOnGuestBridgeWarns`)*
+
+- **N49 Evaluation checks.** A configuration that cannot work, or that
+  can lock its owner out, fails the build with a message that names the
+  instance, link, machine and fix (design §3.9). Errors:
+  - **E1** a static gateway outside the link's static subnets, unless
+    `gateway.onLink`, DHCP for that family, or an `fe80:` gateway;
+  - **E2** the same for each `routes[].gateway`, unless the route (or
+    the link's gateway) sets `onLink`;
+  - **E3, E4** (N48);
+  - **E7** more than one instance sets `targetHost` on one machine;
+  - **E10** netif names the deploy target from a link, sshd runs, the
+    firewall is on, and no rule lets an sshd port in on that link (the
+    link is not trusted, the port is in neither the global nor the
+    link's allowed ports): the guard sees outbound reachability only,
+    this is the static half of "no lockout";
+  - **E11** a static IPv4 address that is the network or broadcast
+    address of its subnet (prefix below 31).
+  Warnings: **E5** (N48); **E8** the guard has nothing to test (no
+  gateway, no DHCP or RA default, no target); **E9** netif declares
+  links and `networking.firewall.enable = false`.
+  - **Guest-port names (N-A12).** The ignore regex that keeps guest
+    ports escapes every regex character of a name, then the YAML
+    string; a name such as `gp(1` was a broken regex before.
+  - `routes` are always in the main table (option text; a
+    `routingPolicy.table` takes the link's default gateway only).
+  - E6 lands with the DHCP options (N50); E12 (the hot-plug prefix
+    pattern) is kept.
+  *(implemented round 68; nix-unit `test_gatewayChecks`,
+  `test_routeGatewayChecks`, `test_networkAddressRejected`,
+  `test_twoTargetHostsRejected`, `test_deployLinkOpensSsh`,
+  `test_checkWarnings`; suite `netif-vmhost` with a guest port named
+  `gp(1`)*
 
 
 ## 4. Invariants
