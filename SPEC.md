@@ -4,6 +4,55 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 66 (2026-11-28): fabric steps 3, 5 and 7, options and filters,
+link hardening, fail closed (D75).** Wave 2 of the round-61 target
+design for routed-fabric (`specs/design-routed-fabric.md` §8.2, §8.4,
+§8.6):
+
+- **Typed options.** `ipv4`, `ipv6`, the pools, `ownedPrefixes`,
+  `extraPrefixes` (renamed from `extraAllowedIPs`: it is a route, an ACL
+  entry and a contract entry) and an upstream's `address` are typed; an
+  `acceptedPrefixes` entry is asserted to be a prefix with optional
+  `ge`/`le`. `firewall.trust` is gone: the fabric is never a trust
+  zone.
+- **A pinned loopback lies in its pool** (A5). New member-uniform
+  `loopback6Pool` for pinned IPv6 loopbacks (the generated ULA cannot be
+  known in advance). The guard's fabric set is the pools and nothing
+  else: a member that joins changes no other member's table.
+- **`node-bgp` is owner-only in the fabric** (R-A5): only the owner may
+  originate the pool, so a spine imports it from the owner's link only,
+  no other member's WireGuard ACL carries it, and a non-owner's Cilium
+  session cannot hand it to FRR. Consumption is unchanged.
+- **Bug fixed on the way:** the `kube_cluster` export carried
+  `owner = null` for every pool (`resolvePools` keeps blocks and
+  selector only), so the fabric never knew a `node-bgp` pool's owner.
+  The export now takes the owner from the declared pool (nix-unit
+  `test_nodeBgpOwnerExported`; `k3s-data-plane` "node-bgp owner-only
+  delivery" failed without it).
+- **Owned prefixes** are no shorter than /8 or /16 and overlap neither
+  the fabric's pools nor a cluster's pod or Service CIDRs (A3, A4). A
+  warning names a pool in a private range on a DHCP underlay (A7).
+- **Link hardening.** Fabric links take no redirect, source route or
+  router advertisement (IfState per link, the netif N47 baseline plus
+  `accept_ra = 0`); every member sets `arp_ignore = 1`,
+  `arp_announce = 2` (`mkDefault`, the same values as netif's later
+  baseline, H16). On a member with a Cilium neighbor only root may open
+  BGP on the loopback.
+- **Fail closed.** The fabric's pools are `unreachable` in the main
+  table (metric 4294967000) until BGP or a link says otherwise. The new
+  suite `routed-fabric-fail-closed` boots a member without its guard:
+  no routing daemon, no BGP route, "No route to host", and FRR starts
+  by itself when the table loads.
+
+Not in this round (later fabric steps): transit tunnels, `border.transit`
+and the removal of `externalTransit`, `sourceReturn*` and
+`border.forwarding` (step 4); keys per adjacency (step 6); consumption by
+pool (step 8).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| D75 | Untyped addresses; pins anywhere, so `F` listed every member; any cluster member could originate a `node-bgp` pool into the fabric; `firewall.trust`; ARP answered for the loopback on the underlay; a withdrawn fabric route fell to the default route | typed options, pins in pools (`loopback6Pool`), `F` = the pools; `node-bgp` owner-only; no trust option; link sysctls and ARP keys; root-only BGP on the loopback; unreachable aggregates | `hostile-fabric` F20, F20c, F21, F21b, F26, F27; `routed-fabric-fail-closed` (`ROUTED_FABRIC_FAIL_CLOSED_OK`); `k3s-hostile` K43, K44; `k3s-data-plane`, `k3s-join`, `k3s-frr-failure`, `routed-fabric`, `routed-fabric-transit`; nix-unit `hardening.*` |
+
 **Round 65 (2026-11-28): gateway steps 0 to 3, the guards of the
 translators and of a CLAT host.** The gateway part of wave 1 of the
 round-61 target design (`specs/design-gateway.md` §8 rows 0 to 3). The
@@ -180,7 +229,7 @@ findings are `specs/probes/2026-11-27/`. The prototypes are not on
 | H2 | NodePorts answer cluster members only by default; an opt-in list names other sources. Published services use LB VIPs | decided, not implemented |
 | H3 | Links that may reach fabric and pod addresses through a machine: the fabric's own, the CLAT link and the NAT64 link always; a router zone only when it opts in (default off) | implemented round 62 (D73, `zones.<name>.fabric`) |
 | H4 | `access = client\|member` is enforced on the spine, not only by the leaf's imports | implemented round 62 (D73) for what a spine relays; a pod on a kube spine is H12's |
-| H5 | routed-fabric does not originate `ownedPrefixes` into the fabric: the upstream's route to them is the operator's (R7). Eval warning when a prefix is owned and no upstream is declared | decided, not implemented |
+| H5 | routed-fabric does not originate `ownedPrefixes` into the fabric: the upstream's route to them is the operator's (R7). Eval warning when a prefix is owned and no upstream is declared | no origination: as built (the option text says so since round 66); the warning comes with transit tunnels (fabric step 4) |
 | H6 | netif ignores DHCP classless routes (option 121) by default; a link may opt in | decided, not implemented |
 | H7 | The README quick start must evaluate (a nix-unit test evaluates it); its assertion stays | decided, not implemented |
 | H8 | A rogue router advertisement between two LAN neighbours is layer 2 and out of scope for the router; documented as a limit | active |
@@ -191,7 +240,7 @@ findings are `specs/probes/2026-11-27/`. The prototypes are not on
 | H13 | (O3, refines H2) No custom eBPF. Every outside-facing Service is type LoadBalancer with source ranges; Cilium guards every front by them; admission policies refuse NodePort Services, `externalIPs` and missing ranges, and fill in the default (members and pods) | decided, probed, not implemented |
 | H14 | (O4) Pod Security default: enforce `baseline`, warn `restricted`; a namespace label opts out | decided, probed, not implemented |
 | H15 | (O5) netif: a new configuration must prove itself or the machine stays on the last good one; a declared one-shot override covers a planned move | decided, probed, not implemented |
-| H16 | (O6) No `accept_dad = 0`. `arp_ignore = 1` and `arp_announce = 2` on fabric members and netif links | decided, probed (k3s), not implemented |
+| H16 | (O6) No `accept_dad = 0`. `arp_ignore = 1` and `arp_announce = 2` on fabric members and netif links | fabric members implemented round 66 (D75); netif links: netif step 8 |
 | H17 | (O7) A CLAT host forwards IPv6 only for the CLAT and for links a service declares (`forwardLinks`) | implemented round 65 (`specs/gateway.md` G28) |
 | H18 | (O8) remote-builder is redesigned apart, with the matching change in external-systems/home; not before the owner schedules it | decided, not implemented |
 | H19 | Every hostile verdict has a positive control; a missing control fails the suite. Two RA verdicts were empty without one | active for new suites |
@@ -1159,7 +1208,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D74)
+## 4. Decision record (D1–D75)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -2118,7 +2167,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   `firewall.trust` defaults to false: a fabric link opens 179 and BFD
   only, and each service opens its own ports there (k3s/rke2: the
   cluster's ports and Cilium health 4240). `trust = true` never reaches an
-  `externalTransit` link. Forwarding nodes carry a stateless forward
+  `externalTransit` link (D75 removed `firewall.trust`: the fabric is
+  never a trust zone). Forwarding nodes carry a stateless forward
   filter in their own table `inet routed-fabric-<instance>` (it only
   drops; stateless so ECMP that splits a flow over two spines passes): an
   `externalTransit` link forwards only to the border's `ownedPrefixes`, and
@@ -2175,8 +2225,8 @@ unless noted) — revoked entries keep one-line reasons for history.
   re-resolve timer is built only when a real case needs it.
   **Round G11 (R6): per-adjacency overrides bind both ends.** Two
   different `port` overrides are an eval error, the smaller `underlayMtu`
-  override of the two ends applies to both, and `extraAllowedIPs` is the
-  union of both ends' lists, in both ACLs and in both ends' import and
+  override of the two ends applies to both, and `extraAllowedIPs` (D75:
+  `extraPrefixes`, also a contract entry) is the union of both ends' lists, in both ACLs and in both ends' import and
   export prefix-lists (exact match). This is a
   declared-endpoint check, not the phase-5 per-host underlay reachability
   matrix. Wireguard-mesh rejects pairs with no endpoint on either side,
@@ -2577,8 +2627,8 @@ unless noted) — revoked entries keep one-line reasons for history.
     C01).
   - **Guard.** One table `inet routed-fabric-<instance>` on every
     member with an adjacency. `F` = loopback pool, transfer pool, ULA
-    /48 and every member's stable address (the member list goes when
-    pinned loopbacks must lie in their pool). Chains: `ingress` (filter,
+    /48 and every member's stable address (D75 removed the member
+    list: pinned loopbacks lie in their pool). Chains: `ingress` (filter,
     prerouting, priority raw) jumps each fabric link to its
     `link_<L>` chain (source not in `src_<L>` or destination not in
     `dst_<L>`: counted drop), accepts local links (`lo`, the fabric
@@ -2633,6 +2683,39 @@ unless noted) — revoked entries keep one-line reasons for history.
     `packages.rke2`, as k3s already did (K-A1).
   - **Suites.** `<distro>-hostile`, one body; every verdict group has a
     positive control that gates the suite like a verdict (H19).
+
+### Round 66 decisions (2026-11-28) — active
+
+- **D75 Fabric options, link hardening, fail closed** *(round 66;
+  design `specs/design-routed-fabric.md` §3.5 point 2, §3.6, §3.7,
+  §3.8, §3.10; owner H5, H16)*. Amends D73.
+  - **Options.** Addresses and prefixes typed (`lib/ip.nix` types).
+    `adjacencies.<r>.extraPrefixes` replaces `extraAllowedIPs`.
+    `firewall.trust` removed. `acceptedPrefixes` entries asserted:
+    `<prefix>( (ge|le) N){0,2}`.
+  - **Pins (A5).** A pinned `ipv4` lies in `loopback4Pool`; a pinned
+    `ipv6` lies in `loopback6Pool` (new, member-uniform, null = the
+    generated `<ula>:0::/64`). `F` = loopback4 pool, transfer4 pool,
+    ULA /48 and `loopback6Pool`: D73's member list is gone.
+  - **Origin (R-A5, I10).** What a member may originate
+    (`originRoutes`): every `shared-bgp` pool of its clusters and the
+    `node-bgp` pools it owns. It feeds the spine's import from a leaf,
+    the leaf's export, the spine pair, and the import from the local
+    Cilium session. Consumption reads every pool.
+  - **Owned prefixes (A3, A4).** No prefix shorter than /8 (IPv4) or
+    /16 (IPv6); no overlap with `F` or a cluster's pod or Service
+    CIDRs. A7 is a warning: a pool in 10/8, 172.16/12, 192.168/16 or
+    100.64/10 on a member whose underlay takes DHCP.
+  - **Link hardening.** Per fabric link (IfState `sysctl`): the netif
+    baseline (N47) and `accept_ra = 0`; no `rp_filter` (a per-link value
+    does not hold). Global `arp_ignore = 1`, `arp_announce = 2` with
+    `mkDefault`. On a member with a Cilium neighbor the guard has a
+    chain `local_out` (output): TCP to port 179 on `lo` from a non-root
+    user is a counted reject.
+  - **Fail closed.** IfState routes `type = "unreachable"`,
+    `preference = 4294967000`, for every prefix of `F`, main table, no
+    `dev`. Readers of `routing.routes` accept routes without `dev` and
+    `table`.
 
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
@@ -3273,7 +3356,7 @@ fabric links and the local pod links (`lxc*`, `cilium*`). The cluster's
 pod and Service CIDRs are reached only over the fabric links, the pod
 links, loopback and declared inside links (`inet kube-<instance>`,
 D74). The cluster services never
-trust a fabric link (routed-fabric's `firewall.trust` decides) and never
+trust a fabric link (routed-fabric has no option to trust one, D75) and never
 accept everything from a pod: a pod is a source like any other. Public
 ports only where exposed; WireGuard only on configured underlays;
 BGP/BFD only from a fabric link's peer address to this end's address on
@@ -3320,7 +3403,11 @@ a destination it sends a leaf no route for (`access` on the spine), a
 leaf's forged source, an outsider's packet to a fabric address or with a
 fabric source, and relaying by a leaf; a fabric destination never leaves
 by the underlay. Pods on a kube node are guarded by kube (L1). FRR does
-not start without the table. A spine can forge member sources (L3), so
+not start without the table, and the fabric's pools are `unreachable`
+until BGP or a link says otherwise (D75): a withdrawn route fails closed.
+Fabric links take no redirect, source route or router advertisement,
+members answer ARP only for a link's own addresses, and a `node-bgp`
+pool enters the fabric from its owner only. A spine can forge member sources (L3), so
 by-source rules above the fabric protect against leaves and outsiders
 only; against a rooted spine only TLS, tokens and mTLS help.
 

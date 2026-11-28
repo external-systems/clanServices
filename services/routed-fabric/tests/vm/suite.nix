@@ -109,6 +109,10 @@ in {
             # one LAN: the fast timers (the default between sites is `wan`)
             spine.settings.site = "lab";
             leaf.settings.site = "lab";
+            # D75 (A5): gamma pins its loopbacks inside their pools
+            # (IPv4 in the default pool); the others are generated
+            spine.settings.loopback6Pool = "fd77::/64";
+            leaf.settings.loopback6Pool = "fd77::/64";
             spine.machines = {
               spine-a.settings = {
                 endpointSources = [
@@ -142,7 +146,7 @@ in {
               alpha = {};
               beta = {};
               gamma.settings = {
-                ipv4 = "192.168.77.5";
+                ipv4 = "198.18.77.5";
                 ipv6 = "fd77::5";
                 spines = ["spine-a"];
               };

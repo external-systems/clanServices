@@ -276,7 +276,8 @@ in {
                 machine.name: machine.succeed("vtysh -c 'show running-config' | awk '/^router bgp/ {print $3; exit}'").strip()
                 for machine in fabric
             }
-            print(f"link-local: {link_local}; asn: {asn}")
+            link_local_outsider = outsider.succeed("ip -6 -o addr show dev eth1 scope link | awk '{print $4}' | cut -d/ -f1").strip()
+            print(f"link-local: {link_local}; outsider {link_local_outsider}; asn: {asn}")
 
         # ------------------------------------------------------------------
         # The outsider: on the underlay LAN, no key
@@ -504,6 +505,26 @@ in {
             rogue.succeed(f"ip route del {underlay['victim']}/32")
             verdict("F19 the spine is not a leaf's router to another member's underlay address", not leaked and after >= before + 3, f"{len(leaked)} leaked, hub dropped {after - before}")
 
+        with subtest("outsider: ARP for a fabric address on the underlay"):
+            # D75 (H16): arp_ignore = 1, arp_announce = 2 on every member
+            answers = {}
+            for name in stable:
+                code, out = outsider.execute(f"arping -c 3 -w 4 -I eth1 {stable[name]['ipv4']} 2>&1")
+                answers[name] = "Unicast reply" in out
+            code, own = outsider.execute(f"arping -c 2 -w 3 -I eth1 {underlay['hub']} 2>&1")
+            control("F20 a member still answers ARP for its underlay address", "Unicast reply" in own, own.strip().splitlines()[-1:] if own.strip() else code)
+            # control: the attack is real; with the kernel default the hub
+            # answers ARP for its fabric loopback on the underlay
+            hub.succeed("sysctl -w net.ipv4.conf.all.arp_ignore=0 net.ipv4.conf.eth1.arp_ignore=0")
+            code, without = outsider.execute(f"arping -c 3 -w 4 -I eth1 {stable['hub']['ipv4']} 2>&1")
+            hub.succeed("sysctl -w net.ipv4.conf.all.arp_ignore=1")
+            control("F20 with arp_ignore = 0 the hub answers ARP for its fabric loopback on the underlay", "Unicast reply" in without, without.strip().splitlines()[-1:] if without.strip() else code)
+            verdict("F20 no member answers ARP for its fabric address on the underlay", not any(answers.values()), f"answered: {answers}")
+            keys = ["net.ipv4.conf.{}.accept_redirects", "net.ipv4.conf.{}.send_redirects", "net.ipv4.conf.{}.accept_source_route", "net.ipv6.conf.{}.accept_ra", "net.ipv6.conf.{}.accept_redirects"]
+            values = {link: hub.succeed("sysctl -n " + " ".join(key.format(link) for key in keys)).split() for link in [hub_rogue]}
+            print(f"FINDING A8 sysctls IfState set on a fabric link of hub: {values}")
+            verdict("F20c a fabric link takes no redirect, no source route and no router advertisement", all(v == ["0"] * len(keys) for v in values.values()), f"{values}")
+
         with subtest("victim: a fabric destination never leaves by the underlay"):
             # what a rogue DHCP server would push: a more specific route
             victim.succeed(f"ip route add {stable['rogue']['ipv4']}/32 via {outsider_ip} metric 1")
@@ -526,19 +547,37 @@ in {
 
             # its fabric links are gone and the LAN offers a default route
             victim.succeed(f"ip route add default via {outsider_ip}")
+            victim.succeed(f"ip -6 route add default via {link_local_outsider} dev eth1")
             victim.succeed(f"ip link set {victim_hub} down; ip link set {victim_hub2} down")
             victim.wait_until_fails(f"ip route show {stable['rogue']['ipv4']} | grep via >/dev/null", timeout=30)
-            route = victim.succeed(f"ip route get {stable['rogue']['ipv4']} 2>&1 || true").strip()
-            # control: the kernel would send it to the LAN gateway
-            control("F21 with its fabric links down the member routes a fabric address to the LAN default route", f"via {outsider_ip}" in route, " ".join(route.split()))
+            victim.wait_until_fails(f"ip -6 route show {stable['rogue']['ipv6']} | grep via >/dev/null", timeout=30)
+            unreachable = victim.succeed("ip route show type unreachable; ip -6 route show type unreachable").strip().splitlines()
+            print("FINDING P2 unreachable routes on victim: " + " | ".join(unreachable))
+            # layer 1, the unreachable aggregates (D75): the lookup fails
             capture(outsider, "cap-f21", "eth1", "in", f"dst host {stable['rogue']['ipv4']} or dst host {stable['rogue']['ipv6']}")
+            route = victim.succeed(f"ip route get {stable['rogue']['ipv4']} 2>&1 || true").strip()
+            code4, out4 = victim.execute(f"ping -c 3 -W 1 {stable['rogue']['ipv4']} 2>&1")
+            code6, out6 = victim.execute(f"ping -6 -c 3 -W 1 {stable['rogue']['ipv6']} 2>&1")
+            print("FINDING P2 a ping to a withdrawn fabric address with a LAN default route: " + " | ".join((out4.strip().splitlines() + out6.strip().splitlines())[:4]))
+            leaked = captured(outsider, "cap-f21")
+            refused = lambda out: "unreachable" in out.lower() or "no route" in out.lower()
+            verdict("F21 with its fabric links down a member answers a fabric address with 'No route to host'", not leaked and code4 != 0 and code6 != 0 and refused(route) and refused(out4) and refused(out6), f"{len(leaked)} leaked; route: {' '.join(route.split())}; ping: {out4.strip().splitlines()[-1:]} {out6.strip().splitlines()[-1:]}")
+            # layer 2, and the control of layer 1: without the aggregates
+            # the kernel routes a fabric address to the LAN gateway, and
+            # the guard's egress chain drops it
+            for line in unreachable:
+                family = "-6" if ":" in line.split()[1] else "-4"
+                victim.succeed(f"ip {family} route del {line}")
+            route = victim.succeed(f"ip route get {stable['rogue']['ipv4']} 2>&1 || true").strip()
+            control("F21 without the unreachable aggregates the member routes a fabric address to the LAN default route", f"via {outsider_ip}" in route, " ".join(route.split()))
+            capture(outsider, "cap-f21b", "eth1", "in", f"dst host {stable['rogue']['ipv4']}")
             before = guard_drops(victim, "fabric destination on a link outside the fabric")
             code, out = victim.execute(f"ping -c 3 -W 1 {stable['rogue']['ipv4']} 2>&1")
-            print("FINDING F21 a ping to a withdrawn fabric address with a LAN default route: " + " | ".join(out.strip().splitlines()[:3]))
-            leaked = captured(outsider, "cap-f21")
+            leaked = captured(outsider, "cap-f21b")
             after = guard_drops(victim, "fabric destination on a link outside the fabric")
-            verdict("F21 with its fabric links down a member does not send fabric traffic to its default route", not leaked and after >= before + 3, f"{len(leaked)} leaked; victim dropped {after - before}; route: {' '.join(route.split())}; ping: {out.strip().splitlines()[-1] if out.strip() else code}")
+            verdict("F21b without the aggregates the guard still keeps fabric traffic off the default route", not leaked and after >= before + 3, f"{len(leaked)} leaked; victim dropped {after - before}; ping: {out.strip().splitlines()[-1] if out.strip() else code}")
             victim.succeed(f"ip route del default via {outsider_ip}")
+            victim.succeed(f"ip -6 route del default via {link_local_outsider} dev eth1")
             # a link that went down lost its IPv6 addresses: IfState puts them back
             victim.succeed("systemctl restart ifstate.service")
             victim.wait_until_succeeds(

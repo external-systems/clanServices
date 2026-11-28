@@ -189,7 +189,7 @@
               lib.optionalAttrs split {
                 isolated-b = {
                   role = "agent";
-                  ipv4 = "192.168.77.21";
+                  ipv4 = "198.18.77.21";
                   ipv6 = "fd77::21";
                 };
               }
@@ -198,30 +198,42 @@
                   role = "server";
                   ipv4 =
                     if second
-                    then "192.168.77.2"
-                    else "192.168.77.4";
+                    then "198.18.77.2"
+                    else "198.18.77.4";
                   ipv6 =
                     if second
                     then "fd77::2"
                     else "fd77::4";
                 };
               };
-            pools.fabric = {
-              scope = "cluster-global";
-              delivery = "shared-bgp";
-              blocks = [
-                (
-                  if second
-                  then "172.16.2.0/24"
-                  else "172.16.1.0/24"
-                )
-                (
-                  if second
-                  then "fd11:2::/64"
-                  else "fd11:1::/64"
-                )
-              ];
-            };
+            # D75: a node-bgp pool owned by isolated-a (the split cluster)
+            pools =
+              lib.optionalAttrs split {
+                owned = {
+                  scope = "cluster-global";
+                  delivery = "node-bgp";
+                  owner = "isolated-a";
+                  blocks = ["172.16.9.0/24" "fd11:9::/64"];
+                };
+              }
+              // {
+                fabric = {
+                  scope = "cluster-global";
+                  delivery = "shared-bgp";
+                  blocks = [
+                    (
+                      if second
+                      then "172.16.2.0/24"
+                      else "172.16.1.0/24"
+                    )
+                    (
+                      if second
+                      then "fd11:2::/64"
+                      else "fd11:1::/64"
+                    )
+                  ];
+                };
+              };
             bgp = {
               enabled = true;
               ciliumAsn =
@@ -245,33 +257,37 @@
         module.name = "routed-fabric";
         module.input = "self";
         roles = {
+          # D75 (A5): a pinned IPv6 loopback lies in loopback6Pool; the
+          # pinned IPv4 ones lie in the default loopback4Pool
+          spine.settings.loopback6Pool = "fd77::/64";
+          leaf.settings.loopback6Pool = "fd77::/64";
           spine.machines = {
             spine-a.settings = {
-              ipv4 = "192.168.77.1";
+              ipv4 = "198.18.77.1";
               ipv6 = "fd77::1";
               endpoint = "192.0.2.1";
             };
             spine-b.settings = {
-              ipv4 = "192.168.77.2";
+              ipv4 = "198.18.77.2";
               ipv6 = "fd77::2";
               endpoint = "192.0.2.2";
             };
           };
           leaf.machines = {
             client.settings = {
-              ipv4 = "192.168.77.10";
+              ipv4 = "198.18.77.10";
               ipv6 = "fd77::10";
               access = "client";
             };
             admin.settings = {
-              ipv4 = "192.168.77.11";
+              ipv4 = "198.18.77.11";
               ipv6 = "fd77::11";
               access = "admin";
               endpoint = "192.0.2.11";
               spines = ["spine-a"];
             };
             node-a.settings = {
-              ipv4 = "192.168.77.4";
+              ipv4 = "198.18.77.4";
               ipv6 = "fd77::4";
             };
           };
@@ -319,6 +335,8 @@
 
   failedAssertion = config: needle:
     lib.any (item: !item.assertion && lib.hasInfix needle item.message) config.assertions;
+  # a setting of the wrong type fails evaluation of what reads it
+  typeError = eval: name: read: !(builtins.tryEval (builtins.deepSeq (read eval.config.nixosConfigurations.${name}.config) true)).success;
   interfacesFor = config:
     lib.filterAttrs (
       name: _: lib.hasPrefix "rf" name && !lib.hasPrefix "rflo" name
@@ -534,6 +552,34 @@
     };
   };
   splitSpineA = splitEval.config.nixosConfigurations.spine-a.config;
+  splitNodeA = splitEval.config.nixosConfigurations.isolated-a.config;
+  splitNodeB = splitEval.config.nixosConfigurations.isolated-b.config;
+  # D75 (A5): the base fixture without its loopback6Pool, and with an
+  # IPv4 pin outside loopback4Pool
+  unpooledEval = mkEvaled (lib.recursiveUpdate baseInventory {
+    instances.fleet.roles = {
+      spine.settings.loopback6Pool = lib.mkForce null;
+      leaf.settings.loopback6Pool = lib.mkForce null;
+      leaf.machines.node-a.settings.ipv4 = lib.mkForce "203.0.113.4";
+    };
+  });
+  # D75: settings of the wrong type
+  badPinEval = overrideEval {leaf.machines.client.settings.ipv4 = "198.18.77.10/32";};
+  badExtraEval = overrideEval {leaf.machines.client.settings.adjacencies.spine-a.extraPrefixes = ["10.99.0.0"];};
+  ownedEval = prefixes:
+    mkEvaled (lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.border.ownedPrefixes = lib.mkForce prefixes;
+    });
+  acceptedEval = accepted:
+    mkEvaled (lib.recursiveUpdate borderInventory {
+      instances.fleet.roles.spine.machines.spine-a.settings.border.upstreamPeers = lib.mkForce [
+        {
+          address = "203.0.113.1";
+          asn = 64500;
+          acceptedPrefixes = accepted;
+        }
+      ];
+    });
   splitSpineB = splitEval.config.nixosConfigurations.spine-b.config;
   # R6: one-sided adjacency overrides
   overrideEval = settings: mkEvaled (lib.recursiveUpdate baseInventory {instances.fleet.roles = settings;});
@@ -544,8 +590,8 @@
   mtuOverrideEval = overrideEval {
     leaf.machines.client.settings.adjacencies.spine-a.underlayMtu = 1400;
   };
-  extraAllowedEval = overrideEval {
-    leaf.machines.client.settings.adjacencies.spine-a.extraAllowedIPs = [
+  extraPrefixesEval = overrideEval {
+    leaf.machines.client.settings.adjacencies.spine-a.extraPrefixes = [
       "10.99.0.0/24"
       "fd99::/64"
     ];
@@ -553,12 +599,6 @@
   maximumPathsEval = overrideEval {
     spine.machines.spine-a.settings.maximumPaths = 4;
   };
-  # R5: a trusted fabric beside an externalTransit adjacency
-  trustedBorderEval = mkEvaled (
-    lib.recursiveUpdate borderInventory {
-      instances.fleet.roles.spine.machines.spine-a.settings.firewall.trust = true;
-    }
-  );
   # R9: an upstream that sends a default route and speaks GTSM
   upstreamPolicyEval = mkEvaled (
     lib.recursiveUpdate borderInventory {
@@ -628,7 +668,6 @@
     "198.18.0.0"
     "198.18.0.0/33"
     "not-a-cidr"
-    "198.18.0.1/17"
   ];
   reservedPortRangeEval = mkEvaledWith (
     machineConfigs
@@ -837,9 +876,11 @@
           baseInventory.instances.fleet
           // {
             roles = {
+              spine.settings.loopback6Pool = "fd77::/64";
+              leaf.settings.loopback6Pool = "fd77::/64";
               spine.machines = {
                 spine-a.settings = {
-                  ipv4 = "192.168.77.1";
+                  ipv4 = "198.18.77.1";
                   ipv6 = "fd77::1";
                   endpointSources = [
                     {
@@ -849,7 +890,7 @@
                   ];
                 };
                 spine-b.settings = {
-                  ipv4 = "192.168.77.2";
+                  ipv4 = "198.18.77.2";
                   ipv6 = "fd77::2";
                   endpointSources = [
                     {
@@ -861,16 +902,16 @@
               };
               leaf.machines = {
                 client.settings = {
-                  ipv4 = "192.168.77.10";
+                  ipv4 = "198.18.77.10";
                   ipv6 = "fd77::10";
                 };
                 admin.settings = {
-                  ipv4 = "192.168.77.11";
+                  ipv4 = "198.18.77.11";
                   ipv6 = "fd77::11";
                   spines = ["spine-a"];
                 };
                 node-a.settings = {
-                  ipv4 = "192.168.77.4";
+                  ipv4 = "198.18.77.4";
                   ipv6 = "fd77::4";
                 };
               };
@@ -1124,7 +1165,7 @@
     ];
   targetHostFabricEval = mkEvaled (
     lib.recursiveUpdate baseInventory {
-      instances.deploy = deployInstance "192.168.77.10";
+      instances.deploy = deployInstance "198.18.77.10";
     }
   );
   clientTransfer = client.clan.networkFacts.fabric.fleet.adjacencies.spine-a.ipv4;
@@ -1304,7 +1345,7 @@ in {
     # carries it
     test_sharedHostPrefixList = {
       expr = builtins.length (
-        builtins.filter (lib.hasInfix "permit 192.168.77.10/32 ge 32 le 32") (lib.splitString "\n" spine.services.frr.config)
+        builtins.filter (lib.hasInfix "permit 198.18.77.10/32 ge 32 le 32") (lib.splitString "\n" spine.services.frr.config)
       );
       # every member's hosts, and the client's own on its session
       expected = 2;
@@ -1524,20 +1565,20 @@ in {
         bfdd = spine.services.frr.bfdd.enable;
         bfd = lib.hasInfix "bfd" spine.services.frr.config;
         originatesStable =
-          lib.hasInfix "network 192.168.77.1/32" spine.services.frr.config
+          lib.hasInfix "network 198.18.77.1/32" spine.services.frr.config
           && lib.hasInfix "network fd77::1/128" spine.services.frr.config;
         nextHopSelf = lib.hasInfix "next-hop-self" spine.services.frr.config;
         leafNextHopSelf = lib.hasInfix "next-hop-self" client.services.frr.config;
         ibgp = lib.hasInfix "route-reflector" spine.services.frr.config;
         preferredSource =
-          lib.hasInfix "set src 192.168.77.1" spine.services.frr.config
+          lib.hasInfix "set src 198.18.77.1" spine.services.frr.config
           && lib.hasInfix "set src fd77::1" spine.services.frr.config
           && lib.hasInfix "ip protocol bgp route-map rf_source4" spine.services.frr.config
           && lib.hasInfix "ipv6 protocol bgp route-map rf_source6" spine.services.frr.config;
       };
       expected = {
         addresses = [
-          "192.168.77.1/32"
+          "198.18.77.1/32"
           "fd77::1/128"
         ];
         bgpd = true;
@@ -1568,7 +1609,7 @@ in {
         extendedNextHop = lib.hasInfix "neighbor ::1 capability extended-nexthop" node.services.frr.config;
         bfd = lib.hasInfix "neighbor ::1 bfd" node.services.frr.config;
         nextHopRewrite =
-          lib.hasInfix "set ip next-hop 192.168.77.4" node.services.frr.config
+          lib.hasInfix "set ip next-hop 198.18.77.4" node.services.frr.config
           && lib.hasInfix "set ipv6 next-hop global fd77::4" node.services.frr.config;
         podPolicy = lib.hasInfix "10.1.0.0/16 ge 24 le 24" node.services.frr.config;
         vipPolicy = lib.hasInfix "172.16.1.0/24 ge 32 le 32" node.services.frr.config;
@@ -1647,7 +1688,8 @@ in {
     };
     test_borderCryptoAclAndSourceReturn = {
       expr = let
-        sourceRoutes = borderSpine.networking.ifstate.settings.routing.routes;
+        # the unreachable aggregates (D75, I8) are not source-return routes
+        sourceRoutes = builtins.filter (route: (route.type or "unicast") == "unicast") borderSpine.networking.ifstate.settings.routing.routes;
         sourceRules = borderSpine.networking.ifstate.settings.routing.rules;
       in {
         spineDefaultAcl = lib.hasInfix "0.0.0.0/0" (builtins.toJSON (allowedFor borderSpine));
@@ -1723,24 +1765,11 @@ in {
   };
 
   firewall = {
-    # R5: the fabric is no trust zone by default
-    test_fabricLinksUntrustedByDefault = {
-      expr = map (config: builtins.filter (lib.hasPrefix "rf") config.networking.firewall.trustedInterfaces) [spine client node];
-      expected = [[] [] []];
-    };
-    test_trustExcludesExternalTransit = {
-      expr = let
-        config = trustedBorderEval.config.nixosConfigurations.spine-a.config;
-        interfaceOf = remote: config.clan.networkFacts.fabric.fleet.adjacencies.${remote}.interface;
-        trusted = config.networking.firewall.trustedInterfaces;
-      in {
-        transit = builtins.elem (interfaceOf "client") trusted;
-        fabric = builtins.elem (interfaceOf "spine-b") trusted && builtins.elem (interfaceOf "admin") trusted;
-      };
-      expected = {
-        transit = false;
-        fabric = true;
-      };
+    # R5, D75: the fabric is no trust zone, and there is no option to
+    # make it one (`firewall.trust` is gone)
+    test_fabricLinksNeverTrusted = {
+      expr = map (config: builtins.filter (lib.hasPrefix "rf") config.networking.firewall.trustedInterfaces) [spine client node borderSpine];
+      expected = [[] [] [] []];
     };
     test_externalTransitHasOneOwner = {
       expr = let
@@ -1784,7 +1813,15 @@ in {
           spine = relays spine;
           leaf = relays client;
         };
-        fabricHasPools = lib.hasInfix "198.19.0.0/16" (table spine) && lib.hasInfix "192.168.77.10/32" border;
+        # D75 (A5): F is the pools and nothing else, so a member that
+        # joins changes no other member's sets
+        fabricIsPools = let
+          setOf = name: config: builtins.head (lib.splitString "}" (lib.last (lib.splitString "set ${name} {" (table config))));
+        in
+          map (config: {
+            four = lib.hasInfix "198.18.0.0/17, 198.19.0.0/16" (setOf "fabric4" config) && !(lib.hasInfix "/32" (setOf "fabric4" config));
+            six = lib.hasInfix "fd77::/64" (setOf "fabric6" config) && !(lib.hasInfix "/128" (setOf "fabric6" config));
+          }) [spine client];
         waitsForGuard = builtins.length spine.systemd.services.frr.serviceConfig.ExecStartPre >= 1;
         # R7, until step 4
         transitToOwnedOnly = lib.hasInfix ''iifname { "${transit}" } meta nfproto ipv4 ip daddr != @owned4 counter drop'' border;
@@ -1801,7 +1838,10 @@ in {
           spine = true;
           leaf = false;
         };
-        fabricHasPools = true;
+        fabricIsPools = lib.replicate 2 {
+          four = true;
+          six = true;
+        };
         waitsForGuard = true;
         transitToOwnedOnly = true;
         owned = true;
@@ -2088,10 +2128,10 @@ in {
       ];
       expected = lib.replicate 2 (fabric.adjacencyMtu 1400);
     };
-    test_extraAllowedIPsSymmetric = {
+    test_extraPrefixesSymmetric = {
       expr = let
-        clientConfig = extraAllowedEval.config.nixosConfigurations.client.config;
-        spineConfig = extraAllowedEval.config.nixosConfigurations.spine-a.config;
+        clientConfig = extraPrefixesEval.config.nixosConfigurations.client.config;
+        spineConfig = extraPrefixesEval.config.nixosConfigurations.spine-a.config;
         clientPolicy = sessionPolicy clientConfig "client" "spine-a";
         spinePolicy = sessionPolicy spineConfig "spine-a" "client";
         has = builtins.elem;
@@ -2104,10 +2144,19 @@ in {
           clientPolicy
           spinePolicy
         ];
+        # D75: a contract entry too, both directions on both ends
+        contract = map (link: has "10.99.0.0/24" link.sources && has "fd99::/64" link.destinations) [
+          clientConfig.clan.networkFacts.fabric.fleet.adjacencies.spine-a
+          spineConfig.clan.networkFacts.fabric.fleet.adjacencies.client
+        ];
         # this adjacency only
         otherAdjacency = has "10.99.0.0/24" (aclOf clientConfig "spine-b");
       };
       expected = {
+        contract = [
+          true
+          true
+        ];
         acl = [
           true
           true
@@ -2154,7 +2203,8 @@ in {
         config = sourceReturnPinEval.config.nixosConfigurations.spine-a.config;
       in {
         collision = failedAssertion config "source-return";
-        tables = lib.unique (map (route: route.table) config.networking.ifstate.settings.routing.routes);
+        # the unreachable aggregates (D75) have no table
+        tables = lib.unique (map (route: route.table) (builtins.filter (route: route ? table) config.networking.ifstate.settings.routing.routes));
         priorities = lib.unique (map (rule: rule.priority) config.networking.ifstate.settings.routing.rules);
       };
       expected = {
@@ -2163,10 +2213,12 @@ in {
         priorities = [12345];
       };
     };
+    # D75 (R-A9): the address is typed, so a hostname or a zoned
+    # address fails evaluation of the option
     test_nonLiteralUpstreamPeersRejected = {
       expr = {
-        hostname = failedAssertion upstreamHostnameEval.config.nixosConfigurations.spine-a.config "literal unzoned IPv4 or IPv6";
-        zoned = failedAssertion upstreamZonedEval.config.nixosConfigurations.spine-a.config "literal unzoned IPv4 or IPv6";
+        hostname = typeError upstreamHostnameEval "spine-a" (config: config.clan.networkFacts.fabric.fleet.border.upstreamPeers);
+        zoned = typeError upstreamZonedEval "spine-a" (config: config.clan.networkFacts.fabric.fleet.border.upstreamPeers);
       };
       expected = {
         hostname = true;
@@ -2324,13 +2376,17 @@ in {
       expr = failedAssertion canonicalPoolEval.config.nixosConfigurations.overlap-a.config "must be canonical IPv4 CIDRs with host bits clear";
       expected = true;
     };
-    test_malformedPoolsProduceCanonicalAssertion = {
-      expr =
-        lib.all (
-          eval: failedAssertion eval.config.nixosConfigurations.overlap-a.config "must be canonical IPv4 CIDRs with host bits clear"
-        )
-        malformedPoolEvals;
-      expected = true;
+    # D75: a pool that is no IPv4 prefix is a type error; one with host
+    # bits set is typed right and still fails the canonical assertion
+    test_malformedPoolsAreTypeErrors = {
+      expr = {
+        malformed = map (eval: typeError eval "overlap-a" (config: map (item: item.assertion) config.assertions)) malformedPoolEvals;
+        hostBits = failedAssertion canonicalPoolEval.config.nixosConfigurations.overlap-a.config "must be canonical IPv4 CIDRs with host bits clear";
+      };
+      expected = {
+        malformed = [true true true];
+        hostBits = true;
+      };
     };
     test_reservedPortRangeRejected = {
       expr = failedAssertion reservedPortRangeEval.config.nixosConfigurations.spine-a.config "portRange 10000-29999 overlaps reserved or Kubernetes NodePort ranges";
@@ -2355,10 +2411,173 @@ in {
         collision = failedAssertion portClient "collides with";
       };
       expected = {
-        ipv4 = "192.168.77.10";
+        ipv4 = "198.18.77.10";
         ipv6 = "fd77::10";
         port = 52820;
         collision = false;
+      };
+    };
+  };
+
+  # D75: fabric steps 3, 5 and 7 of the round-61 target design
+  hardening = {
+    # R-A5, I10: a node-bgp pool is originated by its owner only. The
+    # spine of a non-owner neither imports it from that leaf nor lets it
+    # in as a source; consumption still carries it everywhere.
+    test_nodeBgpOwnerOnly = let
+      owned4 = entries: lib.any (lib.hasPrefix "172.16.9.0/24") entries;
+      owned6 = entries: lib.any (lib.hasPrefix "fd11:9::/64") entries;
+      cilium = config: policyEntries config.services.frr.config "${frr.symbol "cilium:cluster-split"}_rin4";
+    in {
+      expr = {
+        ownerSpineImports = owned4 (sessionPolicy splitSpineA "spine-a" "isolated-a").rin4 && owned6 (sessionPolicy splitSpineA "spine-a" "isolated-a").rin6;
+        ownerExports = owned4 (sessionPolicy splitNodeA "isolated-a" "spine-a").rout4;
+        ownerAcl = builtins.elem "172.16.9.0/24" (aclOf splitSpineA "isolated-a");
+        ownerCilium = owned4 (cilium splitNodeA);
+        otherSpineImports = owned4 (sessionPolicy splitSpineB "spine-b" "isolated-b").rin4 || owned6 (sessionPolicy splitSpineB "spine-b" "isolated-b").rin6;
+        otherExports = owned4 (sessionPolicy splitNodeB "isolated-b" "spine-b").rout4;
+        otherAcl = builtins.elem "172.16.9.0/24" (aclOf splitSpineB "isolated-b");
+        otherSources = builtins.elem "172.16.9.0/24" splitSpineB.clan.networkFacts.fabric.fleet.adjacencies.isolated-b.sources;
+        otherCilium = owned4 (cilium splitNodeB);
+        # consumption: the non-owner leaf and the spine pair still get it
+        otherConsumes = owned4 (sessionPolicy splitNodeB "isolated-b" "spine-b").rin4;
+        spinePair = owned4 (sessionPolicy splitSpineB "spine-b" "spine-a").rin4;
+      };
+      expected = {
+        ownerSpineImports = true;
+        ownerExports = true;
+        ownerAcl = true;
+        ownerCilium = true;
+        otherSpineImports = false;
+        otherExports = false;
+        otherAcl = false;
+        otherSources = false;
+        otherCilium = false;
+        otherConsumes = true;
+        spinePair = true;
+      };
+    };
+    # A5: a pinned loopback lies in its pool
+    test_pinnedLoopbackInPool = {
+      expr = {
+        pooled = failedAssertion spine "pinned loopbacks must lie in their pool";
+        ipv6 = failedAssertion unpooledEval.config.nixosConfigurations.spine-a.config "spine-a/ipv6=fd77::1 outside the generated fd64:6464:6464:0::/64";
+        ipv4 = failedAssertion unpooledEval.config.nixosConfigurations.spine-a.config "node-a/ipv4=203.0.113.4 outside loopback4Pool=198.18.0.0/17";
+      };
+      expected = {
+        pooled = false;
+        ipv6 = true;
+        ipv4 = true;
+      };
+    };
+    # R-A9: addresses and prefixes are typed
+    test_typedAddresses = {
+      expr = {
+        pinWithLength = typeError badPinEval "client" (config: config.clan.networkFacts.fabric.fleet.ipv4);
+        extraWithoutLength = typeError badExtraEval "client" (config: config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.sources);
+        ownedWithoutLength = typeError (ownedEval ["172.16.0.0"]) "spine-a" (config: config.clan.networkFacts.fabric.fleet.border.ownedPrefixes);
+        good = typeError evaled "client" (config: config.clan.networkFacts.fabric.fleet.adjacencies.spine-a.sources);
+      };
+      expected = {
+        pinWithLength = true;
+        extraWithoutLength = true;
+        ownedWithoutLength = true;
+        good = false;
+      };
+    };
+    # A3, A4: an owned prefix is no split default route and overlaps
+    # neither the fabric nor a cluster
+    test_ownedPrefixShape = let
+      failed = prefixes: needle: failedAssertion (ownedEval prefixes).config.nixosConfigurations.spine-a.config needle;
+    in {
+      expr = {
+        halves = failed ["0.0.0.0/1" "128.0.0.0/1"] "must not be shorter than /8 (IPv4) or /16 (IPv6): 0.0.0.0/1, 128.0.0.0/1";
+        short6 = failed ["2000::/3"] "must not be shorter than /8 (IPv4) or /16 (IPv6): 2000::/3";
+        fabric = failed ["198.18.0.0/15"] "198.18.0.0/15 overlaps 198.18.0.0/17";
+        pods = failed ["10.1.0.0/24"] "10.1.0.0/24 overlaps 10.1.0.0/16";
+        good = failed ["172.16.0.0/12" "fd11::/16"] "border.ownedPrefixes";
+      };
+      expected = {
+        halves = true;
+        short6 = true;
+        fabric = true;
+        pods = true;
+        good = false;
+      };
+    };
+    # R-A9: an accepted prefix goes verbatim into frr.conf
+    test_acceptedPrefixShape = let
+      failed = accepted: failedAssertion (acceptedEval accepted).config.nixosConfigurations.spine-a.config "acceptedPrefixes entries must be a prefix";
+    in {
+      expr = {
+        injected = failed ["0.0.0.0/0\nip prefix-list x permit any"];
+        word = failed ["any"];
+        bare = failed ["10.0.0.0"];
+        good = failed ["0.0.0.0/0" "10.0.0.0/8 ge 16 le 24" "2001:db8::/32 le 48"];
+      };
+      expected = {
+        injected = true;
+        word = true;
+        bare = true;
+        good = false;
+      };
+    };
+    # I8: the fabric's pools are unreachable in the main table; a BGP
+    # /32 or a connected /31 is more specific. No dev, no table.
+    test_unreachableAggregates = {
+      expr = map (config: builtins.filter (route: (route.type or null) == "unreachable") config.networking.ifstate.settings.routing.routes) [spine client];
+      expected = lib.replicate 2 (map (to: {
+        inherit to;
+        type = "unreachable";
+        preference = 4294967000;
+      }) ["198.18.0.0/17" "198.19.0.0/16" "fd64:6464:6464::/48" "fd77::/64"]);
+    };
+    # design §3.8: every fabric link takes no redirect, no source route,
+    # no router advertisement; no rp_filter (it does not hold)
+    test_linkSysctls = {
+      expr = lib.unique (lib.mapAttrsToList (_: interface: interface.sysctl) (interfacesFor spine // interfacesFor client));
+      expected = [
+        {
+          ipv4 = {
+            accept_redirects = 0;
+            secure_redirects = 0;
+            send_redirects = 0;
+            accept_source_route = 0;
+          };
+          ipv6 = {
+            accept_redirects = 0;
+            accept_source_route = 0;
+            accept_ra = 0;
+          };
+        }
+      ];
+    };
+    # F20: no member answers ARP for its fabric loopback on the underlay
+    test_arpSysctls = {
+      expr = map (config: {
+        ignore = config.boot.kernel.sysctl."net.ipv4.conf.all.arp_ignore";
+        announce = config.boot.kernel.sysctl."net.ipv4.conf.all.arp_announce";
+      }) [spine client node];
+      expected = lib.replicate 3 {
+        ignore = 1;
+        announce = 2;
+      };
+    };
+    # probe P6: BGP on the loopback is for root, on a member with a
+    # Cilium neighbor only
+    test_bgpLoopbackForRoot = let
+      table = config: config.networking.nftables.tables."routed-fabric-fleet".content;
+      rule = ''oifname "lo" tcp dport 179 meta skuid != 0 counter reject'';
+    in {
+      expr = {
+        node = lib.hasInfix rule (table node);
+        client = lib.hasInfix "chain local_out" (table client);
+        spine = lib.hasInfix "chain local_out" (table spine);
+      };
+      expected = {
+        node = true;
+        client = false;
+        spine = false;
       };
     };
   };

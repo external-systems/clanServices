@@ -388,13 +388,17 @@
         name: p:
           {
             inherit (p) blocks serviceSelector;
-            owner = p.owner or null;
+            owner = null;
           }
           // (
             if dp.effectivePools ? ${name}
             then {
               scope = "cluster-global";
               inherit (dp.effectivePools.${name}) delivery;
+              # D75: routed-fabric lets only the owner originate a
+              # node-bgp pool. resolvePools keeps blocks and selector
+              # only, so the owner comes from the declared pool.
+              owner = dp.effectivePools.${name}.owner or null;
             }
             else {
               scope = "per-machine";
@@ -1083,8 +1087,8 @@
                 map (iface: ''iifname "${iface}" accept'') transportInterfaces
                 ++ ["meta mark and 0x0f00 == 0x0200 accept"]
               );
-              # The fabric links are not trusted here: routed-fabric owns
-              # their trust (firewall.trust), and the cluster opens only
+              # The fabric links are never trusted: routed-fabric has no
+              # option for it (D75), and the cluster opens only
               # its own ports, by source (K2, lib/kube-cluster/firewall.nix).
               # A pod's API traffic (ClusterIP translated to a server's
               # 6443) arrives with its pod source.

@@ -255,6 +255,30 @@
       }
       transportEvaled.config.exports).kube_cluster;
 
+  # D75: a node-bgp pool's owner reaches the export (routed-fabric lets
+  # only the owner originate it)
+  ownedPoolExport =
+    (clanLib.getExport {
+        serviceName = "k3s";
+        instanceName = "k3s";
+        roleName = "server";
+        machineName = "alpha";
+      }
+      (mkEvaled (lib.recursiveUpdate transportInventory {
+        instances.k3s.roles.server.settings.pools.owned = {
+          blocks = ["192.0.2.128/28"];
+          serviceSelector."clan.lol/pool" = "owned";
+          delivery = "node-bgp";
+          owner = "beta";
+        };
+        instances.k3s.roles.agent.settings.pools.owned = {
+          blocks = ["192.0.2.128/28"];
+          serviceSelector."clan.lol/pool" = "owned";
+          delivery = "node-bgp";
+          owner = "beta";
+        };
+      })).config.exports).kube_cluster.pools.owned;
+
   # All-or-none posture (§6.3): gamma is a cluster member but not a mesh
   # member — the cluster mixes transport-provided and manual addresses.
   postureInventory =
@@ -1178,6 +1202,15 @@ in {
         scope = "per-machine";
         delivery = "node-fate-bound";
       };
+    };
+  };
+
+  test_nodeBgpOwnerExported = {
+    expr = {inherit (ownedPoolExport) owner delivery scope;};
+    expected = {
+      owner = "beta";
+      delivery = "node-bgp";
+      scope = "cluster-global";
     };
   };
 

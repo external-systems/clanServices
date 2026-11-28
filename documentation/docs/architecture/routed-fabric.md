@@ -177,6 +177,15 @@ accepts as a source is what the other end is sent routes for. The guard
 table that enforces the contract, and the links it trusts, are described
 in the [service page](../services/routed-fabric.md).
 
+What may enter the contract is narrowed at its source (D75). A `node-bgp`
+pool is in the `import` of its owner's link only: a member that does not
+own it cannot announce it, and its WireGuard ACL does not carry it. The
+fabric's own addresses are its pools and nothing else, because a pinned
+loopback must lie in its pool; a member that joins changes no other
+member's guard. Those pools are `unreachable` in the kernel until BGP or
+a link says otherwise, so a withdrawn route fails closed instead of
+following the default route.
+
 Two consequences:
 
 - **External-transit links may carry default entries as a crypto ACL**

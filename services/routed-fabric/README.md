@@ -44,10 +44,17 @@ maximum. `access = member|client|admin` is orthogonal membership, not
 topology. Kubernetes machines consume their cluster's pod and VIP routes
 regardless of `access` on this native transport; ordinary clients
 receive only fabric pool VIP routes and admins additionally receive pod
-and ClusterIP routes. No member-facing DNS service is rendered.
+and ClusterIP routes. The spine enforces it: a member reaches only what it
+is sent routes for. A `node-bgp` pool is originated by its owner only.
+No member-facing DNS service is rendered.
 
 `border.ownedPrefixes` and `border.upstreamPeers` enable external BGP
-transit independently of spine membership. Per-adjacency
+transit independently of spine membership. Owned prefixes end on the
+border; nothing originates them into the fabric. They are no shorter than
+/8 or /16 and overlap neither the fabric's pools nor a cluster's pod or
+Service CIDRs. `adjacencies.<remote>.extraPrefixes` adds routed-only
+prefixes to one adjacency: a route, an ACL entry and a contract entry on
+both ends. Per-adjacency
 `externalTransit` permits default entries only in the WireGuard crypto
 ACL. `sourceReturn` adds policy-table defaults, never a main-table fabric
 default. Source-return tables avoid reserved kernel/Cilium owners and
@@ -71,12 +78,13 @@ deploy only reloads FRR.
 A leaf tags what it learns `no-export`. Plain `bfd` accompanies each profile, site defaults stay
 implicit, and `use-underlays-nexthop-weight` is explicit; unchanged reloads
 have an empty dry-run diff and preserve peer uptimes and the immediate RIB.
-BGP/BFD ports are scoped to fabric interfaces and declared literal
-upstream source addresses, never opened globally. The fabric links are not
-trusted interfaces unless `firewall.trust = true` (never an externalTransit
-link); forwarding nodes drop what an externalTransit link sends outside the
-border's `ownedPrefixes`, and borders drop traffic from outside the fabric
-to the fabric's own addresses. Endpoints must be IP literals: a side whose
+BGP/BFD answer a link's peer address only, and declared literal upstream
+source addresses, never globally. The fabric links are never trusted
+interfaces. Every member carries one guard table: a link carries only its
+contract, a fabric address never leaves by another link, and the fabric's
+pools are `unreachable` routes until BGP says otherwise. FRR waits for the
+guard. Fabric links take no redirect, source route or router
+advertisement, and members answer ARP only for a link's own addresses. Endpoints must be IP literals: a side whose
 address changes sets `endpoint = null` and dials out. All WireGuard listen
 ports are unique and reserved in `net.ipv4.ip_local_reserved_ports`;
 additional ports or ranges merge through `clanServices.networking.reservedPorts`.
@@ -93,10 +101,12 @@ node ASNs, and each adjacency's port and transfer prefixes. Defaults are
 only on their own pool, the ULA, or the port range from which each value is
 cut; the ASN is independent too. Thus an IPv4 pool, port range, or ULA edit
 cannot re-roll unrelated values.
-Member-uniform `loopback4Pool`, `transfer4Pool`, and `portRange` settings
-override those defaults; custom port ranges avoid reserved ports and
-Kubernetes NodePorts. Explicit `ipv4`, `ipv6`, and per-adjacency `port`
-settings win over vars.
+Member-uniform `loopback4Pool`, `transfer4Pool`, `loopback6Pool` and
+`portRange` settings override those defaults; custom port ranges avoid
+reserved ports and Kubernetes NodePorts. Explicit `ipv4`, `ipv6`, and
+per-adjacency `port` settings win over vars. A pinned `ipv4` lies in
+`loopback4Pool`; a pinned `ipv6` lies in `loopback6Pool` (the generated
+ULA cannot be known in advance, so pinning IPv6 needs that setting).
 
 Eval rejects missing or duplicate allocations and pool collisions with a
 targeted `clan vars generate <machine> --generator <generator> --regenerate`
@@ -125,6 +135,8 @@ deploy only to their owner.
 
 ```console
 vm-test routed-fabric --remote --quiet   # hermetic VM suite on euc-hel-0
+vm-test hostile-fabric --remote --quiet  # a hostile actor against the guard
+vm-test routed-fabric-fail-closed --remote --quiet
 nix build .#checks.x86_64-linux.coverage
 ```
 

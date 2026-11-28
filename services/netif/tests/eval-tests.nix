@@ -1015,7 +1015,7 @@ in {
     test_memberInheritsNoAddressing = {
       expr = {
         defaults = map (r: r.dev) (builtins.filter (r: r.to == "0.0.0.0/0") memberSiteEdge.networking.ifstate.settings.routing.routes);
-        memberRoutes = builtins.filter (r: r.dev == "enp9s0") memberSiteEdge.networking.ifstate.settings.routing.routes;
+        memberRoutes = builtins.filter (r: (r.dev or null) == "enp9s0") memberSiteEdge.networking.ifstate.settings.routing.routes;
         memberClient = memberSiteEdge.systemd.services ? netif-dhcpcd-enp9s0;
         bridgeClient = memberSiteEdge.systemd.services ? netif-dhcpcd-br0;
       };
@@ -1453,7 +1453,7 @@ in {
     };
     test_uplinkDefaultRoute = {
       expr = {
-        routes = builtins.filter (r: r.dev == "enp1s0f0np0") edgeIfstate.routing.routes;
+        routes = builtins.filter (r: (r.dev or null) == "enp1s0f0np0") edgeIfstate.routing.routes;
         sfp1Mtu = edgeInterfaces.enp1s0f1np1.link.mtu;
       };
       expected = {
@@ -1851,7 +1851,7 @@ in {
     test_staticGatewayWithoutDefault = {
       expr = {
         clean = !(failedAssertion staticNoDefaultEdge "netif");
-        routes = builtins.filter (r: r.dev == "enp1s0f1np1") staticNoDefaultEdge.networking.ifstate.settings.routing.routes;
+        routes = builtins.filter (r: (r.dev or null) == "enp1s0f1np1") staticNoDefaultEdge.networking.ifstate.settings.routing.routes;
       };
       expected = {
         clean = true;

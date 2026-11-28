@@ -1,8 +1,8 @@
 # The node firewall of a cluster member (SPEC.md §6.12): which hosts
 # may reach the Kubernetes ports in the input hook.
 #
-# Every rule names its sources, so it holds whether or not routed-fabric
-# trusts its links (`firewall.trust`) and in manual-address clusters,
+# Every rule names its sources, so it holds on fabric links (routed-fabric
+# never trusts them, D75) and in manual-address clusters,
 # where the node addresses sit on an underlay that may face the
 # Internet:
 #   - the cluster ports (the API, the API's HAProxy front, the kubelet,

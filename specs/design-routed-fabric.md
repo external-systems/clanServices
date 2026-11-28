@@ -836,6 +836,7 @@ In `roleInterface` and `adjacencyOptions` (`default.nix:35-248`).
 |---|---|---|
 | `ipv4` | typed | `nullOr ip.types.ipv4` |
 | `ipv6` | typed | `nullOr ip.types.ipv6` |
+| `loopback6Pool` | **add** (round 66): where pinned IPv6 loopbacks lie; null = `<ula>:0::/64` | `nullOr ip.types.ipv6Cidr` |
 | `loopback4Pool`, `transfer4Pool` | typed | `ip.types.ipv4Cidr` |
 | `adjacencies.<r>.extraAllowedIPs` | **rename** `extraPrefixes` (it is a route, an ACL and a contract entry) | `listOf ip.types.cidr` |
 | `adjacencies.<r>.externalTransit` | **remove** (→ `border.transit`) | |
@@ -908,7 +909,7 @@ NOT-RUN (steps 3 and 4). Add (in the list at `default.nix:1366-1579`):
   (replaces the string compare at 1512-1516).
 - **A4.** No owned prefix overlaps `F` or a cluster pod or service CIDR.
 - **A5.** A pinned `ipv4` lies in `loopback4Pool`; a pinned `ipv6` in
-  `<ula>:0::/64`. Then `F` needs no member list, and the nft sets of
+  `loopback6Pool` (round 66; null = `<ula>:0::/64`). Then `F` needs no member list, and the nft sets of
   the zone guard never change when a member joins. (Today the test
   fixtures pin `192.168.77.x` under the default pool; they set
   `loopback4Pool = "192.168.77.0/24"`.)
@@ -1299,7 +1300,8 @@ is server and spine, `beta` agent leaf, `mallory` leaf with
 | K40a | A2 | two probe counters on `alpha` (`ingress`, `forward`, `iifname <link to mallory>`); `mallory` pings `beta` | both counters +3: nft on a kube spine sees relayed fabric traffic | §9 A2 |
 | K40 | I6 | `mallory`: route the `web` pod **on beta** (v4, v6) to `alpha`, widen its ACL, `curl` and ping | no connection; `alpha` counter "mallory: destination outside its contract" moves | §9 A2 |
 | K41 | L1 | the same to the `hostile-alpha` pod **on alpha**; tcpdump inside the pod | reported with `info(...)`: the kube design's clusterwide policy decides | §9 P1 |
-| K42 | I10 | `mallory` announces a `node-bgp` VIP; a non-owner member does too | the spine's route to the VIP has the owner only | NOT-RUN (step 3) |
+| K43 (planned as K42) | I10 | a non-owner member (beta) exports everything and a VIP of alpha's `node-bgp` pool | the spine takes beta's own routes and not the VIP | in the tree (round 66); `mallory`'s hijacks are K14/K15 |
+| K44 (P6 rendered) | I9 | an unprivileged user on the kube spine connects to `::1:179` | refused, counted; Cilium's session back within 30 s | in the tree (round 66) |
 | P5, P6 | — | `FINDING` lines only | §9 | §9 |
 
 ## 7. Failure modes and stability
@@ -1401,11 +1403,11 @@ hunks from it; the lists below say which.
 |---|---|---|---|
 | 1 | Link contract, zone guard, session rules | **implemented** (SPEC.md round 62, D73) | `hostile-fabric` F01..F17, C01..C04, F23..F25 |
 | 2 | Link contracts in nft, topology, leak guard | **implemented** (round 62); K40 lands with the kube step | F18, F19, F21, F22, S01..S03, F26, F27; kube K40 |
-| 3 | Options and filters | NOT-RUN | nix-unit; K42 |
+| 3 | Options and filters | **implemented** (SPEC.md round 66, D75) | nix-unit `hardening.*`; kube K43 (was "K42" here; the kube suite used K42 first) |
 | 4 | Transit tunnels | probe ran (§3.4); service NOT-RUN | T00..T08 |
-| 5 | Link hardening (no GTSM) | prototype ran | F20; FINDING A8 |
+| 5 | Link hardening (no GTSM) | **implemented** (round 66, D75) | F20, F20c (A8 as a verdict); kube K44 (P6 rendered) |
 | 6 | Keys per adjacency | preshared key: probe P3; key pairs NOT-RUN | P3, P3b |
-| 7 | Fail closed | prototype ran | F21, F26, F26b, F27; P2 |
+| 7 | Fail closed | **implemented** (round 66, D75) | F21, F21b, F26, F26b, F27; P2; `routed-fabric-fail-closed` |
 | 8 | Consumption by pool | NOT-RUN | — |
 | 9 | Remaining probes | see §9 | `FINDING` lines |
 
@@ -1507,7 +1509,34 @@ inside. The prototype met no such flow in the eight suites.
 
 ### 8.2 Step 3: options and filters
 
-NOT-RUN. As §3.5 point 2 (`originRoutes`), §3.6 and §3.7 (A3..A5).
+**Implemented in round 66** (SPEC.md D75), in one PR with steps 5 and 7.
+What the PR decided beyond the list below:
+
+- **IPv6 pins: a new option, `loopback6Pool`** (member-uniform,
+  `nullOr ipv6Cidr`, null = the generated `<ula>:0::/64`). The ULA is
+  random, so a pin can never lie in it; allowing "any pinned ULA" would
+  bring the member list back into `F`. With the option, A5 holds for both
+  families and `F` = loopback4 pool, transfer4 pool, ULA /48 and
+  `loopback6Pool`. Unpinned members keep a generated address in the ULA
+  (inside the /48, so inside `F`). The kube fixtures set
+  `loopback4Pool = "192.168.77.0/24"` and `loopback6Pool` to their pin
+  prefix (`fd00:77::/64` or `fd77::/64`); `routed-fabric` pins gamma
+  inside the default IPv4 pool and `fd77::/64`. The eval fixtures moved
+  their pins from `192.168.77.x` into the default pool (`198.18.77.x`):
+  their committed pool records stay.
+- `border.forwarding`, `externalTransit` and `sourceReturn*` stay until
+  step 4 (forwarding is derived from the transit tunnel there).
+  A1, A2, A6 are step 4's. A7 is a warning (DHCP read from the member's
+  netif export).
+- The fabric's node-bgp verdict is **K43** in the kube hostile body
+  (K42 was taken by `kubectl exec`): alpha owns a node-bgp pool; beta (a
+  member, not the owner) exports everything and the VIP; the spine takes
+  beta's own routes (control) and not the VIP.
+- `originRoutes` also feeds the import from the local Cilium session, so
+  a non-owner's Cilium cannot hand the pool to FRR either.
+
+The original plan:
+ As §3.5 point 2 (`originRoutes`), §3.6 and §3.7 (A3..A5).
 Files: `services/routed-fabric/default.nix` (options, `originRoutes`,
 assertions, delete `clusterRoutesFor`, `firewall.trust`,
 `trustedInterfaces`), `routed-fabric-interface.nix` (schema 3),
@@ -1540,7 +1569,15 @@ the end of §3.4.
 
 ### 8.4 Step 5: link hardening
 
-Prototype ran. `services/routed-fabric/default.nix`: the
+**Implemented in round 66** (D75). The link sysctls are the netif
+baseline (`lib/sysctl-baseline.nix`, N47) plus `accept_ra = 0`, so the
+two never disagree; that adds `secure_redirects` and IPv6
+`accept_source_route` to the five keys of §3.8. FINDING A8 became the
+verdict F20c. The `local_out` rule is rendered; its proof is K44 in the
+kube hostile body (a control without the table, the verdict with it, and
+Cilium's session back within 30 s).
+
+The original plan: prototype ran. `services/routed-fabric/default.nix`: the
 `boot.kernel.sysctl` block and the per-link `sysctl` of §3.8. No FRR
 change. Proof: `hostile-fabric` F20; FINDING A8 prints the five link
 sysctls.
@@ -1572,7 +1609,14 @@ the eval fixture has no vars backend and reads a placeholder path).
 
 ### 8.6 Step 7: fail closed
 
-Prototype ran. `services/routed-fabric/default.nix`:
+**Implemented in round 66** (D75). The unreachable routes cover `F`
+(with `loopback6Pool` when set). F21 is now two verdicts: F21 (the
+aggregate answers "No route to host" in both families, 0 packets on the
+LAN) and F21b (with the aggregates deleted, the control shows the LAN
+default route, and the `egress` chain drops it). `probe-boot.nix` is
+`tests/vm/fail-closed.nix`, suite `routed-fabric-fail-closed`.
+
+The original plan: prototype ran. `services/routed-fabric/default.nix`:
 `unreachableRoutes` in front of `ifstateRoutes`; the
 `systemd.services.frr` block of §3.10.
 Tests that read `networking.ifstate.settings.routing.routes` must
@@ -1674,6 +1718,6 @@ Top risks, as they stand now:
    second tunnel between two machines that are also adjacent. The
    behaviour is proven by the probe; the service code is not written.
    Failover of a dead tunnel is still static (as today).
-4. **Fixtures pin loopbacks outside the pools.** Until step 3 the guard
-   keeps a member list in `fabric4`/`fabric6`, so a join changes every
-   member's nft table.
+4. ~~Fixtures pin loopbacks outside the pools.~~ Settled in round 66
+   (D75): pins lie in their pools (`loopback6Pool` for IPv6) and `F` is
+   the pools only.

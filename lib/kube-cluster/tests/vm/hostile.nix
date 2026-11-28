@@ -58,6 +58,16 @@
     };
   };
   outsider = "192.168.1.66";
+  # D75 (K43): a node-bgp pool owned by alpha; beta must not originate it
+  pools.owned = {
+    blocks = [
+      "192.0.2.144/28"
+      "fd20:db8:3::/112"
+    ];
+    serviceSelector."clan.lol/pool" = "owned";
+    delivery = "node-bgp";
+    owner = "alpha";
+  };
   adj = name: remote: nodes.${name}.clan.networkFacts.fabric.mesh.adjacencies.${remote};
   endpointSources = [
     {
@@ -124,6 +134,11 @@ in {
           module.input = "self";
           roles = {
             spine.settings.site = "lab";
+            # D75 (A5): the pinned loopbacks lie in their pools
+            spine.settings.loopback4Pool = "192.168.77.0/24";
+            spine.settings.loopback6Pool = "fd00:77::/64";
+            leaf.settings.loopback4Pool = "192.168.77.0/24";
+            leaf.settings.loopback6Pool = "fd00:77::/64";
             leaf.settings.site = "lab";
             spine.machines.alpha.settings = fabricAddress.alpha // {inherit endpointSources;};
             leaf.machines = {
@@ -148,6 +163,7 @@ in {
                 instance = "mesh";
               };
               cilium.id = 1;
+              inherit pools;
             };
             machines.alpha.settings.clusterInit = true;
           };
@@ -158,6 +174,7 @@ in {
                 instance = "mesh";
               };
               cilium.id = 1;
+              inherit pools;
             };
             machines.beta = {};
           };
@@ -232,6 +249,7 @@ in {
 
   testScript = ''
     import json
+    import re
 
     ${import ../../../../tests/suite-lib.nix}
 
@@ -253,6 +271,10 @@ in {
     alpha_mallory = "${(adj "alpha" "mallory").interface}"
     mallory_alpha = "${(adj "mallory" "alpha").interface}"
     alpha_beta = "${(adj "alpha" "beta").interface}"
+    alpha_on_beta_link4 = "${(adj "alpha" "beta").ipv4}"
+    alpha_on_beta_link6 = "${(adj "alpha" "beta").ipv6}"
+    beta_on_alpha_link4 = "${(adj "beta" "alpha").ipv4}"
+    beta_on_alpha_link6 = "${(adj "beta" "alpha").ipv6}"
     alpha_on_mallory_link4 = "${(adj "alpha" "mallory").ipv4}"
     alpha_on_mallory_link6 = "${(adj "alpha" "mallory").ipv6}"
     mallory_on_alpha_link4 = "${(adj "mallory" "alpha").ipv4}"
@@ -522,6 +544,39 @@ in {
             mallory.succeed("vtysh " + " ".join(f"-c '{c}'" for c in undo))
             mallory.wait_until_succeeds(f"ping -c 2 -W 2 {fabric['beta']['ipv4']}", timeout=60)
 
+        with subtest("beta: a node-bgp VIP of another owner is not accepted from a cluster member"):
+            # alpha owns the pool `owned`; beta is a member, not its owner
+            vip4, vip6 = "192.0.2.145/32", "fd20:db8:3::1/128"
+            beta_asn = beta.succeed("vtysh -c 'show running-config' | awk '/^router bgp/ {print $3; exit}'").strip()
+            running = beta.succeed("vtysh -c 'show running-config'")
+            out4 = re.findall(rf"neighbor {re.escape(alpha_on_beta_link4)} route-map (\S+) out", running)
+            out6 = re.findall(rf"neighbor {re.escape(alpha_on_beta_link6)} route-map (\S+) out", running)
+            assert out4 and out6, f"beta's export route-maps toward alpha not found: {out4} {out6}"
+            # a hostile root on beta: export everything, and the VIP
+            commands = ["conf t", "route-map EVIL permit 10", "exit", f"router bgp {beta_asn}", "no bgp network import-check"]
+            commands += ["address-family ipv4 unicast", f"neighbor {alpha_on_beta_link4} route-map EVIL out", f"network {vip4}", "exit-address-family"]
+            commands += ["address-family ipv6 unicast", f"neighbor {alpha_on_beta_link6} route-map EVIL out", f"network {vip6}", "exit-address-family"]
+            beta.succeed("vtysh " + " ".join(f"-c '{c}'" for c in commands))
+            beta.succeed("vtysh -c 'clear bgp * soft out'")
+            for family, neighbor, vip in [("ipv4", alpha_on_beta_link4, vip4), ("ipv6", alpha_on_beta_link6, vip6)]:
+                beta.wait_until_succeeds(
+                    f"vtysh -c 'show bgp {family} unicast neighbors {neighbor} advertised-routes json' | grep -F '\"{vip}\"' >/dev/null",
+                    timeout=60,
+                )
+            alpha.succeed("sleep 15")
+            got4 = bgp_routes(alpha, "ipv4", beta_on_alpha_link4)
+            got6 = bgp_routes(alpha, "ipv6", beta_on_alpha_link6)
+            control("K43 beta advertises the VIP to the spine, and the spine takes beta's own routes", fabric["beta"]["ipv4"] + "/32" in got4 and fabric["beta"]["ipv6"] + "/128" in got6, f"accepted from beta: {got4} {got6}")
+            kernel = alpha.succeed(f"ip route show {vip4}; ip -6 route show {vip6}").strip()
+            verdict("K43 the spine does not accept a node-bgp VIP from a member that does not own it", vip4 not in got4 and vip6 not in got6 and beta_on_alpha_link4 not in kernel, f"accepted from beta: {got4} {got6}; kernel: {kernel!r}")
+            undo = ["conf t", f"router bgp {beta_asn}"]
+            undo += ["address-family ipv4 unicast", f"no network {vip4}", f"neighbor {alpha_on_beta_link4} route-map {out4[0]} out", "exit-address-family"]
+            undo += ["address-family ipv6 unicast", f"no network {vip6}", f"neighbor {alpha_on_beta_link6} route-map {out6[0]} out", "exit-address-family"]
+            undo += ["bgp network import-check", "exit", "no route-map EVIL permit 10"]
+            beta.succeed("vtysh " + " ".join(f"-c '{c}'" for c in undo))
+            beta.succeed("vtysh -c 'clear bgp * soft out'")
+            beta.wait_until_succeeds(f"{in_pod} curl -s -m 5 -o /dev/null http://{alpha_pod4}:8080/", timeout=60)
+
         with subtest("mallory: a forced route to the pods through the spine"):
             def probe_counters():
                 # what nft sees of mallory's packets on the kube spine
@@ -610,24 +665,24 @@ in {
             print(f"FINDING P5 with notrack for fabric-link packets that are not local: conntrack entries for 2000 more flows: {flat}; relayed ping ok={relayed_ok}; pod->pod on beta ok={pod_path_ok}; pod on beta->API ClusterIP (on alpha) ok={api_ok}; pod on alpha->pod on beta ok={alpha_pod_ok}; rule {hits}")
             alpha.succeed("nft delete table inet probe-notrack")
 
-        with subtest("probe P6: who may open BGP on the node's loopback"):
+        with subtest("local user: BGP on the node's loopback is for root"):
             owner = alpha.succeed("ss -Htnp 'dport = :179 or sport = :179' | grep -F '[::1]' || true").strip()
             print(f"FINDING P6 the Cilium session to ::1:179 on alpha: {' '.join(owner.split())[:400]}")
-            unprivileged_before = alpha.execute("runuser -u nobody -- bash -c 'exec 3<>/dev/tcp/::1/179' 2>/dev/null")[0] == 0
-            alpha.succeed("nft add table inet probe-bgp-local")
-            alpha.succeed("nft add chain inet probe-bgp-local out '{ type filter hook output priority filter; }'")
-            alpha.succeed("nft add rule inet probe-bgp-local out oifname lo tcp dport 179 meta skuid != 0 counter reject")
-            unprivileged_after = alpha.execute("runuser -u nobody -- bash -c 'exec 3<>/dev/tcp/::1/179' 2>/dev/null")[0] == 0
+            connect = "bash -c 'exec 3<>/dev/tcp/::1/179' 2>/dev/null"
+            # control: FRR listens there, and without the guard table an
+            # unprivileged user gets in
+            root_ok = alpha.execute(connect)[0] == 0
+            table_off(alpha, FABRIC_TABLE)
+            open_without = alpha.execute(f"runuser -u nobody -- {connect}")[0] == 0
+            tables_on(alpha)
+            control("K44 root connects to ::1:179, and so does an unprivileged user without the fabric's guard table", root_ok and open_without, f"root {root_ok}, nobody without the table {open_without}")
+            before = drops(alpha, FABRIC_TABLE, "BGP on the loopback is for root")
+            open_with = alpha.execute(f"runuser -u nobody -- {connect}")[0] == 0
+            after = drops(alpha, FABRIC_TABLE, "BGP on the loopback is for root")
+            verdict("K44 an unprivileged local user cannot open BGP on the loopback", not open_with and after > before, f"connected {open_with}; rule counted {after - before}")
             alpha.succeed("vtysh -c 'clear bgp ::1'")
-            back = -1
-            for second in range(60):
-                state = alpha.succeed("vtysh -c 'show bgp neighbors ::1 json' | grep -o '\"bgpState\":\"[A-Za-z]*\"' || true").strip()
-                if "Established" in state:
-                    back = second
-                    break
-                alpha.succeed("sleep 1")
-            print(f"FINDING P6 an unprivileged user connects to ::1:179: before the rule {unprivileged_before}, with the rule {unprivileged_after}; Cilium's session re-established with the rule after {back} s")
-            alpha.succeed("nft delete table inet probe-bgp-local")
+            back = seconds_until(alpha, "vtysh -c 'show bgp neighbors ::1 json' | grep -F '\"bgpState\":\"Established\"'", limit=60, interval=1)
+            verdict("K44 Cilium's session on the loopback comes back within 30 s with the rule in place", back is not None and back <= 30, f"re-established after {back} s")
 
         # ------------------------------------------------------------------
         # A hostile pod: unprivileged, default service account
