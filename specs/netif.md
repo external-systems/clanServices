@@ -2304,7 +2304,8 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
 3. Every physical NIC is declared or registry-owned in IfState modes (N8).
 4. IfState never configures a Wi-Fi link; iwd owns Wi-Fi in every mode (N5).
 5. A reapply of an unchanged configuration changes nothing, including on
-   routers with dhcpcd, kea, radvd and NAT running (N8, N10). "Changes
+   routers with dhcpcd, kea, corerad and NAT running (N8, N10; corerad
+   is the router's RA daemon, SPEC.md H23). "Changes
    nothing" has the test definition in §7.
 6. Session daemons start after the mode's `network-online.target` (N7).
 7. Modes switch only by reboot; deploys keep the booted mode (N3).
@@ -2440,7 +2441,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   | `netif-modes` | gaming (NetworkManager + iwd + Tailscale) → developer (IfState + iwd + Tailscale) → gaming by reboot; known networks shared both ways | P2, P4 |
   | `netif-wifi` | ad hoc join, roaming between two APs, DNS from DHCP | P2 |
   | `netif-hotplug` | dock ethernet hot-plug in an IfState mode | P2 |
-  | `netif-router` | WAN DHCPv4 + DHCPv6-PD hook, kea, radvd, NAT, reapply no-op, prefix change, reboot | P5 |
+  | `netif-router` (**superseded**: never built; the `router` suite of `services/router`, `specs/gateway.md` §5, proves it on the service since gateway round G7) | WAN DHCPv4 + DHCPv6-PD hook, kea, corerad (SPEC.md H23), NAT, reapply no-op, prefix change, reboot | P5 |
   | `netif-match` | NIC found by permanent MAC under a different kernel name; missing NIC fails loudly | P3a (green) |
   | `netif-dhcp` (extended) | dhcpcd per-link config; DHCPv6 and a delegated prefix assigned to another instance's link; observed route protocols; per-link DNS in resolved across reapply, link down/up, a resolved restart and a lease renewal (N9); both DHCP protocols and the RA default back after a real carrier loss and after five `ip link set down`/`up` cycles, with no `eloop_event_add` line in the journal (N16); `addr_gen_mode` 0 on a DHCPv4-only link (N16); a forwarding RA server (§7); no IPv4 link-local; metric 100 defaults; an RA default on a forwarding link surviving two RA lifetimes; the no-op helper | P3b |
   | `netif` (extended) | live reconfiguration by generation switch; untrusted default with an explicitly trusted link; two DHCP links with one default (N21); the no-op helper | P3b |
@@ -2781,7 +2782,7 @@ decision. Phase numbers are labels, not the order.
 | P2 | **Renderer done** (round P4a, with P4a because a mode needs it). **Wi-Fi done** (round P2-wifi: iwd settings and metric per mode, `netif-wifi`). **Hot-plug done** (round P2-hotplug: the `wired-hotplug` owner, `netif-hotplug`). **To do:** the Deck check (owner, hardware). Original scope: NetworkManager renderer, iwd in both modes, `wired-hotplug` owner, Deck hardware check of Steam over iwd | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | **Done** (rounds P4a and P4b): the `modes` service, the base and netif follow the mode; `modes` on the other services with the spine/border/voter rules (`netif-modes`, `k3s-modes`). Original scope: The `modes` service (N24), `modes` on every networking/cluster service, mode-scoping eval rules, deploy guidance | eval tests; `netif-modes` extended with a fabric leaf |
 | P8 | **Done** (round P8). Lockout guard (N25, N36) | `netif-guard` green |
-| P5 | Router module in `modules` on the P3b seam | `netif-router` green |
+| P5 | **Done** as the `router` service of this repo (`specs/gateway.md`, round G7) on the P3b seam | `router` green (the planned `netif-router` was superseded by it) |
 | Contract gate | netif is stable (N14) | every phase above done; every probe-verified claim VM-proven; every §4 invariant asserted by a suite |
 | Field gate | home runs netif on each use case that exists (N14) | each use case live, recorded in §5 |
 | Later | VM-test fixture (N28); NetBird and WARP presets (N29); a NAT gateway service (N10); the roaming-node design in SPEC.md (N27) | each its own decision round |

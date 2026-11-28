@@ -10,6 +10,27 @@ breaks in the two setups you plan to run?**
 Stability counts more than fast failover. The contract version is
 `specs/gateway.md` §16.
 
+## Round G12 (2026-11-28): guards inside the translators
+
+The first gateway steps of the target design
+([plan](../plans/target-design.md)). An attacker suite,
+`nat-gateway-hostile`, found three gaps on `main`: a client reached
+`127.0.0.1` of the translator, and one packet crossed into a
+translator and out again 32 times, through a gateway and through a
+client's CLAT. All three are closed:
+
+- **Refused before translation.** A private IPv4 inside the IPv6
+  destination, other protocols and odd ICMPv6 types never reach Jool.
+- **A guard inside each translator.** It drops what Jool hands back
+  and lets out only translated packets. Forwarding is off there. A
+  gateway without its guard withdraws its beacon.
+- **A CLAT host is not a router.** It forwards IPv6 for its CLAT and
+  for the links a service declares (pods, a fabric, a router), and no
+  other.
+- **`hostile-router`** joins the tree. Its rogue router advertisement
+  now really runs; before, the attacker's radvd refused its config and
+  sent nothing.
+
 ## Round G11 (2026-11-26): the whole network stack
 
 A second review read netif, routed-fabric, k3s, rke2 and the gateway

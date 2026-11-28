@@ -27,8 +27,69 @@
   ip = import ../ip.nix {inherit lib;};
   sandbox = import ./sandbox.nix;
 
-  # IPv4 destinations the translator refuses (G5, `nat64-private`)
-  private = ["0.0.0.0/8" "10.0.0.0/8" "100.64.0.0/10" "127.0.0.0/8" "169.254.0.0/16" "172.16.0.0/12" "192.0.0.0/24" "192.168.0.0/16" "198.18.0.0/15" "224.0.0.0/3"];
+  # IPv4 destinations the translator refuses (G5, `nat64-private`), as
+  # IPv4 ranges and as the low 32 bits of a pool6 address
+  ranges = import ./private.nix {inherit lib;};
+  inherit (ranges) private;
+  # the translator's own addresses on its link (IfState, below)
+  inner4 = "192.0.0.2";
+  inner6 = "fd64::2";
+  quoted = links: "{ ${lib.concatMapStringsSep ", " (link: ''"${link}"'') links} }";
+  # a source that is in no set of the allowlist
+  undeclared = "ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom";
+  errors6 = "destination-unreachable, packet-too-big, time-exceeded, parameter-problem";
+  # specs/design-gateway.md I7: one protocol of pool4, and Jool's UDP
+  # session lifetime, which the unit pins
+  pool4Ports = 65535 - 1100 + 1;
+  udpTimeout = 300;
+  overBound = lib.filter (entry: entry.limits.newFlowsBurst + entry.limits.newFlows * udpTimeout > pool4Ports) (
+    [
+      {
+        name = "tier default";
+        limits = cfg.limits.default;
+      }
+      {
+        name = "tier trusted";
+        limits = cfg.limits.trusted;
+      }
+    ]
+    ++ map (client: {
+      name = "client ${client.name}";
+      inherit (client) limits;
+    })
+    cfg.custom
+  );
+
+  # The namespace's own ruleset (specs/design-gateway.md §3.4). Jool's
+  # hook is prerouting priority -75 (Jool 4.1.15, xlator.c); it steals
+  # what it translates. What reaches priority 0 is what Jool handed back
+  # to the kernel: nothing of it may be delivered or forwarded. Jool
+  # sends a translated packet with dst_output(): it passes postrouting
+  # only, and only a translated packet may leave. No conntrack.
+  guard = import ./guard.nix {inherit pkgs;} "nat64-guard.nft" ''
+    table inet ${names.guard}
+    delete table inet ${names.guard}
+    table inet ${names.guard} {
+      chain leftover {
+        type filter hook prerouting priority 0; policy drop;
+        iifname "${inside}" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
+        # link chatter (MLD, router solicitations, LLMNR): not addressed
+        # to the namespace, so not something Jool handed back
+        meta pkttype != host counter drop comment "guard-noise-in"
+        counter comment "guard-leftover"
+      }
+      chain leaving {
+        type filter hook postrouting priority 0; policy drop;
+        oifname "${inside}" ip saddr ${inner4} accept
+        oifname "${inside}" ip6 saddr ${cfg.pool6} accept
+        oifname "${inside}" ip6 saddr ${inner6} meta l4proto ipv6-icmp accept
+        oifname "${inside}" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+        # the namespace kernel's own MLD reports and router solicitations
+        ip6 daddr ff00::/8 counter drop comment "guard-noise-out"
+        counter comment "guard-leaving"
+      }
+    }
+  '';
   # G9: a pool6 is a /96 with no host bits, outside the special ranges
   pool6Parts = lib.splitString "/" cfg.pool6;
   pool6Valid = let
@@ -80,6 +141,8 @@
     inherit (cfg) pool6;
     inherit (cfg.health) targets quorum down up resume;
     inherit netns;
+    inherit (names) guard;
+    restart = "${names.nat64.jool}.service";
     hosts = "/run/${names.nat64.runtime}/ipv4only.hosts";
     state = "/run/${names.nat64.runtime}/health.json";
     beacon = "${names.nat64.beacon}.service";
@@ -179,9 +242,19 @@ in {
         description = "A restart of the health check alone resumes an `up` state written less than this many seconds before.";
       };
     };
+    files = mkOption {
+      type = types.attrsOf types.package;
+      internal = true;
+      readOnly = true;
+      description = "The rendered files of the translator (the namespace's guard, the health check's settings), for the eval tests.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    clanServices.gateway.nat64.files = {
+      inherit guard;
+      health = healthConfig;
+    };
     assertions = [
       {
         assertion = lib.hasSuffix "/96" cfg.pool6;
@@ -199,6 +272,11 @@ in {
       {
         assertion = privateTargets == [];
         message = "nat-gateway: health target(s) ${toString privateTargets} are not public IPv4 addresses: the translator refuses them (`nat64-private`), so the gateway would never be healthy (specs/gateway.md §14.3)";
+      }
+      {
+        # specs/design-gateway.md I7
+        assertion = overBound == [];
+        message = "nat-gateway: ${lib.concatMapStringsSep ", " (entry: entry.name) overBound}: newFlowsBurst + newFlows x ${toString udpTimeout} s is more than the ${toString pool4Ports} ports pool4 has per protocol; one source /64 could fill the pool (specs/gateway.md §17 G4)";
       }
       {
         assertion = cfg.uplinks != [];
@@ -246,7 +324,7 @@ in {
         # `inet nat64` let pass. They are not the allowlist.
         extraForwardRules = ''
           oifname "${host}" ip6 daddr ${cfg.pool6} accept
-          iifname "${host}" oifname { ${lib.concatMapStringsSep ", " (link: ''"${link}"'') cfg.uplinks} } accept
+          iifname "${host}" oifname ${quoted cfg.uplinks} accept
         '';
         extraInputRules = ''
           ip6 daddr ${cfg.address} meta l4proto { tcp, udp } th dport 53 accept
@@ -267,6 +345,7 @@ in {
             type ipv6_addr; flags interval; auto-merge;
             ${set (lib.concatMap (client: client.sources) cfg.custom)}
           }
+          ${ranges.sets}
           # One entry per source /64 (specs/gateway.md §17, G5), forgotten
           # after a minute of quiet. The source sets above merge what
           # overlaps: a CLAT address inside a declared prefix loads (G6).
@@ -280,12 +359,35 @@ in {
             '')
             cfg.custom}
 
+          # specs/design-gateway.md §3.3: policy before translation. What
+          # can be refused while the packet is IPv6 is refused here, and
+          # what comes back out of the namespace is checked against what
+          # a translator may emit.
           chain forward {
             type filter hook forward priority -10; policy accept;
+            oifname "${host}" jump to_translator
+            iifname "${host}" jump from_translator
+          }
+          chain to_translator {
+            # IPv4 towards pool4: answers to masqueraded flows only
+            meta nfproto ipv4 ct state established,related accept
+            meta nfproto ipv4 counter drop comment "nat64-unsolicited4"
+            ip6 daddr != ${cfg.pool6} counter drop comment "nat64-not-pool6"
             # Every protocol: nothing reaches the translator from a source
-            # that is not declared. An ICMPv6 error about an open flow is
-            # `related`.
-            oifname "${host}" ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom ct state != related counter drop comment "nat64-undeclared"
+            # that is not declared. An ICMPv6 error about an open flow may
+            # come from a router on the path: it is `related`.
+            ${undeclared} ct state related icmpv6 type { ${errors6} } accept
+            ${undeclared} counter drop comment "nat64-undeclared"
+            # Jool hands back to the kernel what it does not translate
+            # (another protocol, an ICMPv6 type without an IPv4 twin):
+            # that never enters the namespace
+            meta l4proto != { tcp, udp, ipv6-icmp } counter reject with icmpv6 type admin-prohibited comment "nat64-protocol"
+            icmpv6 type != { echo-request, echo-reply, ${errors6} } counter drop comment "nat64-icmp-type"
+            # A /96 destination that embeds a non-global IPv4 address is
+            # not the internet (G5): refused before translation, so it
+            # takes no pool4 port, and loopback and Jool's own pool4
+            # address (a hairpin to another client's mapping) are covered
+            ip6 daddr & ::ffff:ffff @private6 counter reject with icmpv6 type admin-prohibited comment "nat64-private"
             # A meter holds one entry per live source /64. When it is
             # full the `update` fails and its rule does not match: the
             # rule after each meter drops a source that has no entry, so
@@ -296,39 +398,49 @@ in {
               sources = "{ ${lib.concatStringsSep ", " client.sources} }";
               c = "c${toString index}";
             in ''
-              oifname "${host}" ip6 saddr ${sources} ct state new update @flows_${c} { ${per64} limit rate over ${toString client.limits.newFlows}/second burst ${toString client.limits.newFlowsBurst} packets } counter drop comment "nat64-flows-client-${client.name}"
-              oifname "${host}" ip6 saddr ${sources} ct state new ${per64} != @flows_${c} counter drop comment "nat64-flows-client-${client.name}-full"
-              oifname "${host}" ip6 saddr ${sources} update @packets_${c} { ${per64} limit rate over ${toString client.limits.packets}/second burst ${toString client.limits.packetsBurst} packets } counter drop comment "nat64-packets-client-${client.name}"
-              oifname "${host}" ip6 saddr ${sources} ${per64} != @packets_${c} counter drop comment "nat64-packets-client-${client.name}-full"
+              ip6 saddr ${sources} ct state new update @flows_${c} { ${per64} limit rate over ${toString client.limits.newFlows}/second burst ${toString client.limits.newFlowsBurst} packets } counter drop comment "nat64-flows-client-${client.name}"
+              ip6 saddr ${sources} ct state new ${per64} != @flows_${c} counter drop comment "nat64-flows-client-${client.name}-full"
+              ip6 saddr ${sources} update @packets_${c} { ${per64} limit rate over ${toString client.limits.packets}/second burst ${toString client.limits.packetsBurst} packets } counter drop comment "nat64-packets-client-${client.name}"
+              ip6 saddr ${sources} ${per64} != @packets_${c} counter drop comment "nat64-packets-client-${client.name}-full"
             '')
             cfg.custom}
             # specs/gateway.md §14.1 point 4: a limit per source, two tiers
-            oifname "${host}" ip6 saddr @trusted ct state new update @flows_trusted { ${per64} limit rate over ${toString cfg.limits.trusted.newFlows}/second burst ${toString cfg.limits.trusted.newFlowsBurst} packets } counter drop comment "nat64-flows-trusted"
-            oifname "${host}" ip6 saddr @trusted ct state new ${per64} != @flows_trusted counter drop comment "nat64-flows-trusted-full"
-            oifname "${host}" ip6 saddr @trusted update @packets_trusted { ${per64} limit rate over ${toString cfg.limits.trusted.packets}/second burst ${toString cfg.limits.trusted.packetsBurst} packets } counter drop comment "nat64-packets-trusted"
-            oifname "${host}" ip6 saddr @trusted ${per64} != @packets_trusted counter drop comment "nat64-packets-trusted-full"
-            oifname "${host}" ip6 saddr @default ct state new update @flows_default { ${per64} limit rate over ${toString cfg.limits.default.newFlows}/second burst ${toString cfg.limits.default.newFlowsBurst} packets } counter drop comment "nat64-flows-default"
-            oifname "${host}" ip6 saddr @default ct state new ${per64} != @flows_default counter drop comment "nat64-flows-default-full"
-            oifname "${host}" ip6 saddr @default update @packets_default { ${per64} limit rate over ${toString cfg.limits.default.packets}/second burst ${toString cfg.limits.default.packetsBurst} packets } counter drop comment "nat64-packets-default"
-            oifname "${host}" ip6 saddr @default ${per64} != @packets_default counter drop comment "nat64-packets-default-full"
-            # A /96 destination that embeds a non-global IPv4 address is
-            # not the internet (G5): refused after translation.
-            iifname "${host}" ip daddr { ${lib.concatStringsSep ", " private} } counter reject with icmp type net-prohibited comment "nat64-private"
+            ip6 saddr @trusted ct state new update @flows_trusted { ${per64} limit rate over ${toString cfg.limits.trusted.newFlows}/second burst ${toString cfg.limits.trusted.newFlowsBurst} packets } counter drop comment "nat64-flows-trusted"
+            ip6 saddr @trusted ct state new ${per64} != @flows_trusted counter drop comment "nat64-flows-trusted-full"
+            ip6 saddr @trusted update @packets_trusted { ${per64} limit rate over ${toString cfg.limits.trusted.packets}/second burst ${toString cfg.limits.trusted.packetsBurst} packets } counter drop comment "nat64-packets-trusted"
+            ip6 saddr @trusted ${per64} != @packets_trusted counter drop comment "nat64-packets-trusted-full"
+            ip6 saddr @default ct state new update @flows_default { ${per64} limit rate over ${toString cfg.limits.default.newFlows}/second burst ${toString cfg.limits.default.newFlowsBurst} packets } counter drop comment "nat64-flows-default"
+            ip6 saddr @default ct state new ${per64} != @flows_default counter drop comment "nat64-flows-default-full"
+            ip6 saddr @default update @packets_default { ${per64} limit rate over ${toString cfg.limits.default.packets}/second burst ${toString cfg.limits.default.packetsBurst} packets } counter drop comment "nat64-packets-default"
+            ip6 saddr @default ${per64} != @packets_default counter drop comment "nat64-packets-default-full"
+          }
+          chain from_translator {
+            # the translator talks back to declared clients only
+            ip6 daddr != @trusted ip6 daddr != @default ip6 daddr != @custom counter drop comment "nat64-return-undeclared"
+            ip6 saddr ${inner6} meta l4proto ipv6-icmp counter accept comment "nat64-jool-error"
+            ip6 saddr != ${cfg.pool6} counter drop comment "nat64-return-source"
+            ip saddr != ${inner4} counter drop comment "nat64-pool4-source"
+            meta nfproto ipv4 oifname != ${quoted cfg.uplinks} counter drop comment "nat64-not-uplink"
+            # the second layer: stays at 0, `nat64-private` refuses first
+            ip daddr @private4 counter reject with icmp type net-prohibited comment "nat64-private-post"
           }
           chain input {
             type filter hook input priority -10; policy accept;
             # the health beacon answers declared clients only (G24)
-            ip6 daddr ${cfg.address} meta l4proto { tcp, udp } th dport 53 ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom counter drop comment "beacon-undeclared"
-            # A /96 destination that embeds one of the gateway's own IPv4
-            # addresses (Jool's link or the public one) is delivered here,
-            # not forwarded: the translator is no way into the gateway
-            # itself. Nothing legitimate arrives as IPv4 on this link (the
-            # health check's answers are IPv6).
+            ip6 daddr ${cfg.address} meta l4proto { tcp, udp } th dport 53 ${undeclared} counter drop comment "beacon-undeclared"
+            # the answers to the health check's own pings
+            iifname "${host}" meta nfproto ipv6 ct state established,related accept
+            iifname "${host}" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+            # A /96 destination that embeds the gateway's public IPv4
+            # address is delivered here, not forwarded: the translator is
+            # no way into the gateway itself. Nothing legitimate arrives
+            # as IPv4 on this link.
             iifname "${host}" meta nfproto ipv4 counter reject with icmp type host-prohibited comment "nat64-host"
+            iifname "${host}" counter drop comment "nat64-host6"
           }
           chain postrouting {
             type nat hook postrouting priority srcnat; policy accept;
-            iifname "${host}" oifname { ${lib.concatMapStringsSep ", " (link: ''"${link}"'') cfg.uplinks} } masquerade comment "nat64-masquerade"
+            iifname "${host}" oifname ${quoted cfg.uplinks} masquerade comment "nat64-masquerade"
           }
         '';
       };
@@ -351,8 +463,8 @@ in {
         namespaces.${netns} = {
           interfaces.${inside} = {
             addresses = [
-              "192.0.0.2/30"
-              "fd64::2/64"
+              "${inner4}/30"
+              "${inner6}/64"
             ];
             link = {
               kind = "veth";
@@ -370,6 +482,12 @@ in {
               to = "0.0.0.0/0";
               via = "192.0.0.1";
             }
+            # The second layer under the guard: a packet to pool6 that
+            # Jool did not translate ends here, never back on the link
+            {
+              to = cfg.pool6;
+              type = "unreachable";
+            }
           ];
         };
         routing.routes = [
@@ -382,6 +500,8 @@ in {
     };
 
     systemd.services = {
+      # I22: the links come up behind loaded tables
+      ifstate.after = ["nftables.service"];
       # Idempotent: an IfState apply restarts it (PartOf), and the
       # instance is still there (`instance add` fails on an existing one).
       # Not `requires`: IfState's unit also fails when some other
@@ -401,6 +521,7 @@ in {
           pkgs.gnugrep
           pkgs.gnused
           pkgs.python3
+          pkgs.nftables
         ];
         # G8: a failure at boot (or one failed `jool` call) is tried
         # again; the script is idempotent
@@ -413,7 +534,13 @@ in {
         script = ''
           canon() { python3 -c 'import ipaddress, sys; print(ipaddress.IPv6Network(sys.argv[1], strict=False))' "$1"; }
           modprobe jool
-          ip netns exec ${netns} sysctl -w net.ipv4.conf.all.forwarding=1 net.ipv6.conf.all.forwarding=1
+          # The guard first, in one transaction: there is no moment with
+          # an instance and no guard, and a start replaces it whole
+          ip netns exec ${netns} nft -f ${guard}
+          # Jool translates in prerouting and sends with dst_output(): it
+          # needs no forwarding in the namespace (probe P2). Off, the
+          # namespace's kernel cannot forward what Jool hands back.
+          ip netns exec ${netns} sysctl -w net.ipv4.conf.all.forwarding=0 net.ipv6.conf.all.forwarding=0
           # Jool refuses a pool4 range that overlaps the namespace's
           # ephemeral ports; nothing opens a socket in the namespace.
           ip netns exec ${netns} sysctl -w net.ipv4.ip_local_port_range="1024 1099"
@@ -446,6 +573,13 @@ in {
               ip netns exec ${netns} jool pool4 add 192.0.0.2 1100-65535 --$proto
             done
           fi
+          # What the limits rest on (I7), and a second layer under the
+          # host's masquerade: no flow is opened from the IPv4 side, and
+          # a mapping answers only the address its client spoke to
+          ip netns exec ${netns} jool -i default global update udp-timeout 0:05:00
+          ip netns exec ${netns} jool -i default global update icmp-timeout 0:01:00
+          ip netns exec ${netns} jool -i default global update address-dependent-filtering true
+          ip netns exec ${netns} jool -i default global update drop-externally-initiated-tcp true
         '';
       };
 
@@ -463,6 +597,7 @@ in {
           pkgs.iputils
           pkgs.iproute2
           pkgs.jool-cli
+          pkgs.nftables
           config.systemd.package
         ];
         # G14: root for `systemctl` and `ip netns exec`, little else

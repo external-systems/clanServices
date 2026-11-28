@@ -80,6 +80,7 @@
   in {
     schemaVersion = fact t.ints.positive 2 "Network facts schema version.";
     forwarding = bool "Whether any declared service enables host packet forwarding.";
+    forwardLinks = strList "Links (nft interface names; a trailing `*` is a wildcard) between which this machine forwards IPv6 by its owner's rules: a cluster's pod links, a fabric's links, a router's links. A CLAT host forwards IPv6 for its CLAT and for these links only (specs/design-gateway.md O7, I29); the CLAT's table `inet clat` reads it. A service that forwards IPv6 and does not set it is cut off on a CLAT host.";
     fabricInside = strList "Links, beside a fabric's own, whose hosts may reach the fabric's addresses and a cluster's pod and Service addresses through this machine (SPEC.md D73; routed-fabric's guard and the kube guard `inet kube-<instance>` read it). Set by the service that owns the link: the CLAT and NAT64 host links always, a router zone only with `fabric = true`.";
     node = {
       name = str "Clan machine identity.";

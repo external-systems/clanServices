@@ -91,9 +91,18 @@ relayed traffic from a machine that was not a client.
   addresses: each client's CLAT address, the IPv6 addresses netif
   declares on its uplink, and its `sources`. Everything else is dropped
   and counted, for every protocol.
-- A destination inside a private IPv4 range is refused.
-- So is a destination that is the gateway's own IPv4 address: the
-  translator is no way into the gateway itself.
+- A destination inside a private IPv4 range is refused **before it is
+  translated** (round G12): the gateway reads the IPv4 address inside
+  the IPv6 destination. Loopback, Jool's own addresses and RFC 1918
+  are among them. The client gets an error at once and the packet
+  takes no port.
+- So is a protocol other than TCP, UDP and ICMP, and an ICMPv6 type
+  that has no IPv4 twin.
+- A destination that is the gateway's own public IPv4 address is
+  refused after translation: the translator is no way into the gateway
+  itself.
+- What comes back out of the translator goes to declared clients only,
+  and IPv4 leaves through an uplink only.
 - **A rate limit per client /64**, in two tiers:
 
   | Tier | New connections | Packets |
@@ -112,7 +121,8 @@ relayed traffic from a machine that was not a client.
   - **Why 200 new connections a second:** each gateway has one public
     IPv4, so about 64 000 ports per protocol. A UDP mapping lives 5
     minutes. 4 000 at once plus 200 a second for 5 minutes is 64 000:
-    one client cannot fill the pool alone.
+    one client cannot fill the pool alone. Evaluation refuses a limit
+    that breaks this bound, and the gateway pins Jool's 5 minutes.
 - **A full port pool is visible, not acted on.** The health check
   reads how many ports Jool holds per protocol every 10 s. It writes
   the numbers to its state file and logs when a protocol passes 50, 80
@@ -131,6 +141,46 @@ relayed traffic from a machine that was not a client.
   # one client, on every gateway (the other numbers stay its tier's)
   roles.client.machines.node1.settings.limits.packets = 5000;
   ```
+
+## Three layers inside the translator
+
+Jool hands back to the kernel every packet it does not translate. On
+`main` before round G12 that let a client reach `127.0.0.1` of the
+translator, and one packet crossed into the translator and out again
+32 times. Now three layers each stop such a packet alone:
+
+1. **The host's table** refuses it while it is still IPv6 (above).
+2. **A guard table inside each translator namespace** (the gateway's
+   and the client's CLAT) drops what Jool handed back, and lets out
+   only translated packets. The Jool unit loads it before Jool starts.
+3. **Forwarding is off** in the namespace, and the translated prefix is
+   an unreachable route there.
+
+The health check reads the guard. A gateway without its guard asks for
+it to be loaded again; if that fails, the gateway withdraws its beacon
+and its clients move.
+
+## A CLAT host is not a router
+
+A CLAT needs IPv6 forwarding on. Before round G12 that made every
+client an IPv6 router between all its links. Now a client forwards
+IPv6 only:
+
+- for its CLAT, and only from a gateway's prefix with a public IPv4
+  inside;
+- between links a service declares: the pod links of a k3s or rke2
+  node, a fabric's links, a router's links. Each judges them by its own
+  rules.
+
+Another link, such as a container bridge, needs the option
+`clanServices.gateway.clat.forwardLinks`:
+
+```nix
+clanServices.gateway.clat.forwardLinks = ["docker0"];
+```
+
+Unsolicited IPv4 never arrives through the CLAT: a NAT64 opens no
+connection inwards.
 
 ## Redundancy
 
@@ -201,6 +251,7 @@ which pod sent a packet.
 | `checks.clat-follow` | the follower's rule, simulated: a move about 60 s after its gateway went silent at 10 % loss towards the other, none at 4 answers of 10, a silent round does not restart the wait |
 | `nat-gateway-kube` | a gateway that is a k3s node, and a node behind it: pods on both reach IPv4; two masquerades share one public IPv4 under load; no NodePort on the public IPv4 |
 | `k3s-clat`, `rke2-clat` | a two-node cluster on IPv6-only cards behind the service: pods reach IPv4 through the node's CLAT, IPv6 through the card |
+| `nat-gateway-hostile` | an attacker against the same machines: private and loopback destinations, loops through both translators, a translator without Jool or without its guard, odd ICMPv6, forged sources, the IPv4 side, a full port pool, a rogue RA beside a client, a second link behind a client. Each verdict has a control that proves the attack ran |
 
 ## Not built yet
 

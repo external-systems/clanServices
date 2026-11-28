@@ -23,7 +23,7 @@ owner decides.
 | P2 | The NetworkManager part (2026-11-17, `netif-modes`) and Wi-Fi in both kinds of mode (2026-11-18, `netif-wifi`) are **done**. Hot-plugged dock Ethernet in an IfState mode is **done** too (2026-11-18, `netif-hotplug`). Still to do: the Deck check, on the hardware. Original scope: NetworkManager renderer, iwd in every mode, hot-plugged dock Ethernet, a check of Steam over the iwd backend on the Deck | `netif-modes`, `netif-wifi`, `netif-hotplug` green |
 | P4 | **Done** (2026-11-18; `netif-modes` and `k3s-modes` green): the `modes` service, netif follows the mode, and the fabric and cluster services take a `modes` setting. Original scope: The `modes` service; mode settings on every networking and cluster service, with the rules for spines, borders and voters | eval tests, `netif-modes` with a fabric leaf |
 | P8 | **Done** (2026-11-17, `netif-guard` green). The lockout guard | `netif-guard` green |
-| P5 | The `router` service in this repo, built on P3b's zones and link names ([design](../gateway/index.md)) | `netif-router` green |
+| P5 | **Done**: the `router` service in this repo, built on P3b's zones and link names ([design](../gateway/index.md)) | `router` green (replaces the planned `netif-router`) |
 | Contract gate | netif is stable in this repo | every phase above done, every probe-verified claim VM-proven, every invariant tested |
 | Field gate | home runs netif on each machine class that exists | each one live |
 | Later | a VM-test fixture for other repos; NetBird and Cloudflare WARP presets; a NAT gateway service; the design for a roaming Kubernetes node | each its own decision round |

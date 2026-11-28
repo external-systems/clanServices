@@ -97,6 +97,11 @@ Done so far:
   model and invariants are in the contract; no link takes or sends an
   ICMP redirect or accepts a source route, in any mode; the suite
   `netif-hostile` puts an attacker beside a netif machine.
+- Gateway steps 0 to 3 ([gateway](../gateway/hardening.md), round
+  G12): the suites `nat-gateway-hostile` and `hostile-router`; a guard
+  table and forwarding off inside each translator; the gateway refuses
+  private destinations before translation; a CLAT host forwards IPv6
+  for its CLAT and for declared links only (`forwardLinks`).
 
 Until the design is frozen, tests prove behaviour and may be rewritten
 (see [Testing](../reference/testing.md)).

@@ -4,6 +4,8 @@
 # fit 15 characters. Consumers (the kube services' Cilium `devices`,
 # SPEC.md D71) read the CLAT link from here or from the export.
 {
+  # the default-deny table inside a translator's namespace
+  guard = "guard";
   nat64 = {
     netns = "nat64";
     host = "jool0";
@@ -18,6 +20,7 @@
     netns = "clat";
     host = "clat0";
     inside = "clat1";
+    table = "clat";
     jool = "clat";
     follow = "clat-follow";
     instance = "clat";

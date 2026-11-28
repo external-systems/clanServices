@@ -24,10 +24,11 @@ in {
     };
   };
 
-  # The service on two gateways and four machines beside them, in two
+  # The service on two gateways and four machines beside them, in three
   # suites on one topology (specs/gateway.md §5): what the translator
-  # does, and what it does when something fails (§14.5 point 4).
-  clanTests = lib.genAttrs' ["function" "failover"] (phases:
+  # does, what it does when something fails (§14.5 point 4), and what
+  # an attacker cannot make it do (G26 to G28).
+  clanTests = lib.genAttrs' ["function" "failover" "hostile"] (phases:
     lib.nameValuePair (
       if phases == "function"
       then "nat-gateway"

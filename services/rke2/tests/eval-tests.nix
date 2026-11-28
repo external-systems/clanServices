@@ -1617,6 +1617,12 @@ in {
     expr = alphaExplicit.clan.networkFacts.forwarding;
     expected = true;
   };
+  # O7 (specs/design-gateway.md §3.5): pods are forwarded; a CLAT host
+  # leaves the pod links to Cilium
+  test_forwardLinksFact = {
+    expr = lib.all (link: lib.elem link alphaExplicit.clan.networkFacts.forwardLinks) ["cilium*" "lxc*"];
+    expected = true;
+  };
 
   # D69: NodePorts answer on the members' node addresses only, as host
   # prefixes, never on another address of a `devices` link.

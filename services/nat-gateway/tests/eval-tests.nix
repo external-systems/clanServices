@@ -92,6 +92,12 @@
   ours = message: lib.hasInfix "nat-gateway" message;
   clean = config: lib.all (item: item.assertion || !(ours item.message)) config.assertions;
   table = config: config.networking.nftables.tables.nat64.content;
+  # the body of one chain of a rendered table, up to the next chain
+  chain = text: name: builtins.head (lib.splitString "\n  chain " (lib.last (lib.splitString "chain ${name} {" text)));
+  ruleLines = text: lib.filter (line: line != "") (map lib.trim (lib.splitString "\n" text));
+  clatTable = config: config.networking.nftables.tables.clat.content;
+  ranges = import ../../../lib/gateway/private.nix {inherit lib;};
+  at = text: needle: lib.stringLength (builtins.head (lib.splitString needle text));
   units = config: builtins.filter (name: lib.elem name ["nat64-jool" "nat64-health" "nat64-beacon" "clat" "clat-follow"]) (builtins.attrNames config.systemd.services);
 
   with' = patch: mkEvaled (lib.recursiveUpdate baseInventory patch);
@@ -120,6 +126,8 @@ in {
         netns = builtins.attrNames gw1.networking.ifstate.settings.namespaces;
         host = gw1.networking.ifstate.settings.interfaces ? jool0;
         poolRoute = lib.any (route: route.to == "2001:db8:a1:0:64::/96" && route.via == "fd64::2") gw1.networking.ifstate.settings.routing.routes;
+        # the third layer: pool6 is unreachable inside the namespace
+        unreachable = lib.any (route: route.to == "2001:db8:a1:0:64::/96" && (route.type or null) == "unreachable") gw1.networking.ifstate.settings.namespaces.nat64.routing.routes;
         forward = gw1.networking.firewall.filterForward;
         clean = clean gw1;
       };
@@ -132,34 +140,52 @@ in {
         netns = ["nat64"];
         host = true;
         poolRoute = true;
+        unreachable = true;
         forward = true;
         clean = true;
       };
     };
-    # The table holds the allowlist, the tiers, the private refusal and
-    # the masquerade; the defaults and an override reach it.
-    test_table = {
+    # specs/design-gateway.md §3.3: policy before translation. The
+    # table's shape: what goes into the namespace is judged in
+    # `to_translator` (every meter among it), what comes back out in
+    # `from_translator`; the private refusal reads the embedded IPv4.
+    test_table = let
+      text = table gw1;
+      meters = lib.filter (line: lib.hasInfix "comment \"nat64-flows-" line || lib.hasInfix "comment \"nat64-packets-" line) (ruleLines text);
+      inside = ruleLines (chain text "to_translator");
+    in {
       expr = {
-        undeclared = lib.hasInfix ''comment "nat64-undeclared"'' (table gw1);
-        private = lib.hasInfix ''comment "nat64-private"'' (table gw1);
+        chains = map (name: lib.hasInfix "chain ${name} {" text) ["forward" "to_translator" "from_translator" "input" "postrouting"];
+        jumps = lib.hasInfix ''oifname "jool0" jump to_translator'' (chain text "forward") && lib.hasInfix ''iifname "jool0" jump from_translator'' (chain text "forward");
+        # every meter rule is judged before translation
+        meters = meters != [] && lib.all (line: lib.elem line inside) meters;
+        refusedBefore = map (name: lib.hasInfix ''comment "${name}"'' (chain text "to_translator")) ["nat64-undeclared" "nat64-protocol" "nat64-icmp-type" "nat64-private" "nat64-not-pool6" "nat64-unsolicited4"];
+        checkedAfter = map (name: lib.hasInfix ''comment "${name}"'' (chain text "from_translator")) ["nat64-return-undeclared" "nat64-return-source" "nat64-pool4-source" "nat64-not-uplink" "nat64-private-post"];
+        privateEmbedded = lib.hasInfix "ip6 daddr & ::ffff:ffff @private6" (chain text "to_translator");
+        sets = lib.hasInfix "elements = { ${lib.concatStringsSep ", " ranges.private6} }" text && lib.length ranges.private6 == lib.length ranges.private;
         # the translator is no way into the gateway's own IPv4 ports
-        host = lib.hasInfix ''iifname "jool0" meta nfproto ipv4 counter reject with icmp type host-prohibited comment "nat64-host"'' (table gw1);
-        masquerade = lib.hasInfix ''oifname { "eth1" } masquerade'' (table gw1);
+        host = lib.hasInfix ''comment "nat64-host"'' (chain text "input") && lib.hasInfix ''comment "nat64-host6"'' (chain text "input");
+        beacon = lib.hasInfix ''comment "beacon-undeclared"'' (chain text "input");
+        masquerade = lib.hasInfix ''oifname { "eth1" } masquerade'' text;
         # a full meter refuses a source it holds no entry for
-        full = lib.hasInfix ''ip6 saddr @default ct state new ip6 saddr & ffff:ffff:ffff:ffff:: != @flows_default counter drop comment "nat64-flows-default-full"'' (table gw1) && lib.hasInfix ''comment "nat64-packets-trusted-full"'' (table gw1);
-        beacon = lib.hasInfix ''comment "beacon-undeclared"'' (table gw1);
-        defaultRate = lib.hasInfix "limit rate over 50/second burst 200 packets" (table gw1);
-        trustedRate = lib.hasInfix "limit rate over 200/second burst 4000 packets" (table gw1);
+        full = lib.hasInfix ''ip6 saddr @default ct state new ip6 saddr & ffff:ffff:ffff:ffff:: != @flows_default counter drop comment "nat64-flows-default-full"'' text && lib.hasInfix ''comment "nat64-packets-trusted-full"'' text;
+        defaultRate = lib.hasInfix "limit rate over 50/second burst 200 packets" text;
+        trustedRate = lib.hasInfix "limit rate over 200/second burst 4000 packets" text;
         override = lib.hasInfix "limit rate over 5/second burst 200 packets" (table gw2);
-        trustedSet = lib.hasInfix "elements = { 2001:db8:d::c1a7, 2001:db8:d::/64 }" (table gw1);
+        trustedSet = lib.hasInfix "elements = { 2001:db8:d::c1a7, 2001:db8:d::/64 }" text;
       };
       expected = {
-        undeclared = true;
-        private = true;
+        chains = [true true true true true];
+        jumps = true;
+        meters = true;
+        refusedBefore = [true true true true true true];
+        checkedAfter = [true true true true true];
+        privateEmbedded = true;
+        sets = true;
         host = true;
+        beacon = true;
         masquerade = true;
         full = true;
-        beacon = true;
         defaultRate = true;
         trustedRate = true;
         override = true;
@@ -260,7 +286,8 @@ in {
         clean = clean alone;
         inherit (alone.clanServices.gateway.nat64) allow custom;
         undeclared = lib.hasInfix ''comment "nat64-undeclared"'' (table alone);
-        elements = lib.hasInfix "elements" (table alone);
+        # the allowlist's sets are empty (the private ranges are not)
+        elements = lib.any (name: lib.hasInfix "elements" (builtins.head (lib.splitString "}" (lib.last (lib.splitString "set ${name} {" (table alone)))))) ["trusted" "default" "custom"];
       };
       expected = {
         clean = true;
@@ -298,6 +325,14 @@ in {
         followerAfter = lib.elem "clat.service" node.systemd.services.clat-follow.after;
         clat = {inherit (node.systemd.services.clat.serviceConfig) Restart RestartSec;};
         jool = {inherit (gw1.systemd.services.nat64-jool.serviceConfig) Restart RestartSec;};
+        # specs/design-gateway.md §3.4: the guard is loaded before an
+        # instance can exist, and forwarding is off in both namespaces
+        joolGuardFirst = at gw1.systemd.services.nat64-jool.script "nft -f" < at gw1.systemd.services.nat64-jool.script "jool instance add";
+        clatGuardFirst = at node.systemd.services.clat.script "nft -f" < at node.systemd.services.clat.script "jool_siit instance add";
+        forwardingOff = map (config: lib.hasInfix "net.ipv4.conf.all.forwarding=0 net.ipv6.conf.all.forwarding=0" config) [gw1.systemd.services.nat64-jool.script node.systemd.services.clat.script];
+        forwardingOn = map (config: lib.hasInfix "forwarding=1" config) [gw1.systemd.services.nat64-jool.script node.systemd.services.clat.script];
+        # I22: links come up behind loaded tables
+        ifstateAfter = map (config: lib.elem "nftables.service" config.systemd.services.ifstate.after) [gw1 node];
       };
       expected = {
         followerRequires = [];
@@ -311,6 +346,11 @@ in {
           Restart = "on-failure";
           RestartSec = 5;
         };
+        joolGuardFirst = true;
+        clatGuardFirst = true;
+        forwardingOff = [true true];
+        forwardingOn = [false false];
+        ifstateAfter = [true true];
       };
     };
     # G3: pool4 is reconciled at every start, not only at the instance's
@@ -435,10 +475,15 @@ in {
           up = 90;
         };
       };
+      settings = builtins.fromJSON gw1.clanServices.gateway.nat64.files.health.text;
     in {
       expr = {
         inherit ((machine eval "gw1").clanServices.gateway.nat64.health) quorum down up;
         defaults = {inherit (gw1.clanServices.gateway.nat64.health) quorum down up;};
+        # specs/design-gateway.md §3.7: a round reads the namespace's
+        # guard, and a missing guard asks the Jool unit to load it
+        inherit (settings) guard restart netns;
+        nft = lib.any (package: lib.getName package == "nftables") gw1.systemd.services.nat64-health.path;
       };
       expected = {
         quorum = 3;
@@ -449,6 +494,10 @@ in {
           down = 30;
           up = 120;
         };
+        guard = "guard";
+        restart = "nat64-jool.service";
+        netns = "nat64";
+        nft = true;
       };
     };
     # G12: the CLAT route's MTU follows the uplink: 20 bytes less
@@ -497,6 +546,115 @@ in {
     };
   };
 
+  # Round G12: gateway steps 1 to 3 of the round-61 design
+  # (specs/gateway.md §18, specs/design-gateway.md §3.3 to §3.5)
+  guards = {
+    # the namespace's guard: two chains with policy drop, its link, the
+    # gateway's own pool6 and pool4 address as the only sources out
+    test_guardText = let
+      nat64 = gw1.clanServices.gateway.nat64.files.guard.text;
+      clat = node.clanServices.gateway.clat.files.guard.text;
+      shape = text: {
+        replaced = lib.hasPrefix "table inet guard\ndelete table inet guard\n" text;
+        leftover = lib.hasInfix "type filter hook prerouting priority 0; policy drop;" text && lib.hasInfix ''counter comment "guard-leftover"'' text;
+        leaving = lib.hasInfix "type filter hook postrouting priority 0; policy drop;" text && lib.hasInfix ''counter comment "guard-leaving"'' text;
+      };
+    in {
+      expr = {
+        nat64 = shape nat64;
+        clat = shape clat;
+        nat64Sources = lib.hasInfix ''oifname "jool1" ip saddr 192.0.0.2 accept'' nat64 && lib.hasInfix ''oifname "jool1" ip6 saddr 2001:db8:a1:0:64::/96 accept'' nat64;
+        clatSources = lib.hasInfix ''oifname "clat1" ip6 saddr 2001:db8:c::c1a7 accept'' clat && lib.hasInfix ''oifname "clat1" ip daddr 192.0.0.1 accept'' clat;
+        # the CLAT guard does not name pool6: the follower's moves need
+        # no reload
+        clatPool6 = lib.hasInfix "2001:db8:a1" clat;
+      };
+      expected = {
+        nat64 = {
+          replaced = true;
+          leftover = true;
+          leaving = true;
+        };
+        clat = {
+          replaced = true;
+          leftover = true;
+          leaving = true;
+        };
+        nat64Sources = true;
+        clatSources = true;
+        clatPool6 = false;
+      };
+    };
+    # The Jool globals the limits rest on are set at every start
+    test_joolGlobals = {
+      expr = map (global: lib.hasInfix "jool -i default global update ${global}" gw1.systemd.services.nat64-jool.script) ["udp-timeout 0:05:00" "icmp-timeout 0:01:00" "address-dependent-filtering true" "drop-externally-initiated-tcp true"];
+      expected = [true true true true];
+    };
+    # one list renders both sets: an IPv4 range as the low 32 bits of a
+    # /96 address (RFC 6052)
+    test_embedded = {
+      expr = map ranges.embedded ["127.0.0.0/8" "224.0.0.0/3" "0.0.0.0/8" "192.168.0.0/16" "100.64.0.0/10"];
+      expected = ["::7f00:0/104" "::e000:0/99" "::0:0/104" "::c0a8:0/112" "::6440:0/106"];
+    };
+    # I7: newFlowsBurst + newFlows x 300 s fits pool4 (64 436 ports per
+    # protocol) for every rendered limit; an override over it fails
+    test_limitBound = {
+      expr = {
+        defaults = clean gw1;
+        tier = failedAssertion (machine (with' {
+          instances.nat64.roles.gateway.machines.gw1.settings.limits.trusted.newFlows = 300;
+        }) "gw1") "tier trusted";
+        client = failedAssertion (machine (with' {
+          instances.nat64.roles.client.machines.node.settings.limits.newFlows = 250;
+        }) "gw1") "client node";
+      };
+      expected = {
+        defaults = true;
+        tier = true;
+        client = true;
+      };
+    };
+    # O7: a plain client forwards IPv6 for its CLAT only; the links a
+    # service declares (a kube node's `cilium*` and `lxc*`) and the
+    # option's links pass
+    test_forwardLinks = let
+      declared = machine (clanLib.clan {
+        self = {};
+        directory = ./.;
+        inherit exportInterfaces;
+        inventory = baseInventory;
+        machines =
+          machineConfigs
+          // {
+            node = {
+              nixpkgs.hostPlatform = "x86_64-linux";
+              clan._networkFacts.forwardLinks = ["cilium*" "lxc*"];
+              clanServices.gateway.clat.forwardLinks = ["docker0"];
+            };
+          };
+        modules = {
+          nat-gateway = module;
+          netif = netifModule;
+        };
+      }) "node";
+      forward = config: chain (clatTable config) "forward";
+    in {
+      expr = {
+        plain = lib.hasInfix "iifname {" (forward node) || lib.hasInfix "oifname {" (forward node);
+        declaredIn = lib.hasInfix ''iifname { "cilium*", "lxc*", "docker0" } accept'' (forward declared);
+        declaredOut = lib.hasInfix ''oifname { "cilium*", "lxc*", "docker0" } accept'' (forward declared);
+        # the accepts stand ahead of the drop
+        order = at (forward declared) "docker0" < at (forward declared) "clat-forward";
+      };
+      expected = {
+        plain = false;
+        declaredIn = true;
+        declaredOut = true;
+        order = true;
+      };
+    };
+  };
+
   client = {
     # D73: the CLAT and NAT64 host links are always inside a fabric:
     # routed-fabric's guard lets their hosts reach fabric addresses
@@ -518,6 +676,14 @@ in {
         netns = builtins.attrNames node.networking.ifstate.settings.namespaces;
         forwarding = node.boot.kernel.sysctl."net.ipv6.conf.all.forwarding";
         acceptRa = node.clan._networkFacts.forwarding;
+        # specs/design-gateway.md §3.5: only a gateway's /96 reaches the
+        # CLAT, and other IPv6 forwarding is refused (O7)
+        gateways = lib.hasInfix "elements = { 2001:db8:a1:0:64::/96, 2001:db8:a2::/96 }" (clatTable node);
+        clatForward = lib.hasInfix ''counter drop comment "clat-forward"'' (chain (clatTable node) "forward");
+        rules = map (name: lib.hasInfix ''comment "${name}"'' (clatTable node)) ["clat-not-address" "clat-foreign-source" "clat-private-source" "clat-spoof" "clat-not-gateway" "clat-unsolicited" "clat-host6"];
+        # the namespace: the CLAT address unreachable, no IPv4 default
+        routes = map (route: route.to) node.networking.ifstate.settings.namespaces.clat.routing.routes;
+        unreachable = lib.any (route: route.to == "2001:db8:c::c1a7/128" && (route.type or null) == "unreachable") node.networking.ifstate.settings.namespaces.clat.routing.routes;
         clean = clean node;
       };
       expected = {
@@ -540,6 +706,11 @@ in {
         netns = ["clat"];
         forwarding = 1;
         acceptRa = true;
+        gateways = true;
+        clatForward = true;
+        rules = [true true true true true true true];
+        routes = ["::/0" "2001:db8:c::c1a7/128"];
+        unreachable = true;
         clean = true;
       };
     };

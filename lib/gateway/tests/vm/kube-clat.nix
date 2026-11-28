@@ -175,6 +175,18 @@
     # a listener on the node itself: it answers with the source address
     # it saw, so the test can tell whether pod to node was masqueraded
     networking.firewall.allowedTCPPorts = [8099];
+    # specs/design-gateway.md R12: name the IPv4 packets that arrive on
+    # clat0 for no flow of the host (`clat-unsolicited`), from boot on.
+    # It logs only; the CLAT's own table drops them after it.
+    networking.nftables.tables.clat-probe = lib.mkIf service {
+      family = "inet";
+      content = ''
+        chain input {
+          type filter hook input priority -20; policy accept;
+          iifname "clat0" meta nfproto ipv4 ct state new,invalid,untracked log prefix "clat-unsolicited: " level info
+        }
+      '';
+    };
     systemd.services.echo = {
       wantedBy = ["multi-user.target"];
       serviceConfig.ExecStart = "${lib.getExe pkgs.python3} ${echo pkgs [8099]}";
@@ -195,6 +207,11 @@
       extraModulePackages = [config.boot.kernelPackages.jool];
       kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
     };
+    # The fixture stands in for lib/gateway/clat.nix, which declares its
+    # link inside (D73): the kube guard `inet kube-<instance>` then lets
+    # the gateway's answers to a mapped pod address in (round 65; without
+    # it the guard dropped them and pod IPv4 failed)
+    clan._networkFacts.fabricInside = ["clat0"];
     # G5: an IPv6-only machine has IPv6 nameservers only. The fixture's
     # IPv4 nameserver goes; the plain resolver is the only one.
     networking.nameservers = lib.mkForce [resolver];
@@ -499,6 +516,9 @@ in
 
       K = "KUBECONFIG=${kubeconfig}"
       MAPPED = ${python mapped}
+      # the services' gateway refuses a private destination while the
+      # packet is still IPv6; the fixture gateway behind its translator
+      SERVICE = ${python service}
       # the underlay NIC is one of Cilium's devices
       NIC_DEVICE = ${python nicDevice}
       NODES = {"alpha": alpha, "beta": beta}
@@ -808,7 +828,7 @@ in
 
       def private_refused():
           """Packets the gateway's firewall refused: a private IPv4 destination."""
-          rule = gw.succeed("nft list ruleset | grep nat64-private")
+          rule = gw.succeed("nft list ruleset | grep -F 'comment \"nat64-private\"'")
           match = re.search(r"counter packets (\d+)", rule)
           assert match is not None, rule
           return int(match.group(1))
@@ -967,7 +987,17 @@ in
           # every translated packet to a private IPv4 destination, from the
           # first one on: who sent what the gateway refuses
           gw.wait_for_unit("${gwJool}", timeout=300)
-          capture_start(gw, "${gwLink}", "private", expression="ip and not dst host ${gwPool4} and '(dst net 10.0.0.0/8 or dst net 100.64.0.0/10 or dst net 169.254.0.0/16 or dst net 172.16.0.0/12 or dst net 192.168.0.0/16)'", options="-Q in")
+          if SERVICE:
+              # before translation: the IPv4 address is the last four bytes
+              # of the IPv6 destination (bytes 36 to 39 of the header)
+              capture_start(gw, "eth1", "private", expression="ip6 and dst net ${pool} and '(ip6[36] = 10 or (ip6[36] = 100 and ip6[37] & 0xc0 = 64) or (ip6[36] = 169 and ip6[37] = 254) or (ip6[36] = 172 and ip6[37] & 0xf0 = 16) or (ip6[36] = 192 and ip6[37] = 168))'", options="-Q in")
+              # name every packet the CLAT guard stops on its way out
+              # (`guard-leaving` must read 0): a log rule behind its counter
+              for machine in NODES.values():
+                  machine.wait_for_unit("clat.service", timeout=300)
+                  machine.succeed("sysctl -w net.netfilter.nf_log_all_netns=1; ip netns exec clat nft add rule inet guard leaving log prefix '\"guard-leaving: \"' level info")
+          else:
+              capture_start(gw, "${gwLink}", "private", expression="ip and not dst host ${gwPool4} and '(dst net 10.0.0.0/8 or dst net 100.64.0.0/10 or dst net 169.254.0.0/16 or dst net 172.16.0.0/12 or dst net 192.168.0.0/16)'", options="-Q in")
 
           with subtest("versions"):
               for machine in [gw, server4]:
@@ -1201,12 +1231,22 @@ in
               # agent's SYN retries to 6443 and 9345). Bounded by the window,
               # not the count: the retries depend on the agent.
               targets = {match.group(1) for line in strays if (match := re.search(r" > (\S+)\.\d+: ", line)) is not None}
+              if SERVICE:
+                  # the embedded IPv4 address of each IPv6 destination
+                  targets = {str(ipaddress.IPv4Address(int(ipaddress.IPv6Address(target)) & 0xFFFFFFFF)) for target in targets}
               node_v4s = {ip for found in node_ips.values() for ip in found if ":" not in ip}
-              assert targets <= node_v4s, f"stray packets to private IPv4 addresses that are not node addresses: {strays}"
+              # Round 65: the other node's pod addresses are fabric routes
+              # too. Seen once: Cilium's health check from alpha to beta's
+              # health endpoint (port 4240, and its pings) before the pod
+              # route had arrived. The pods' range: the /16 of the pod
+              # addresses (the cluster's IPv4 pod CIDR in this suite)
+              pod_ranges = {ipaddress.ip_network(f"{ip}/16", strict=False) for found in ips.values() for ip in found if ":" not in ip}
+              targets = {target for target in targets if not any(ipaddress.ip_address(target) in pods for pods in pod_ranges)}
+              assert targets <= node_v4s, f"stray packets to private IPv4 addresses that are neither node nor pod addresses: {strays}"
               stamps = [sum(float(part) * 60 ** index for index, part in enumerate(reversed(line.split()[0].split(":")))) for line in strays]
               window = round(max(stamps) - min(stamps), 1) if stamps else 0.0
               print(f"FINDING the stray packets spanned {window} s")
-              assert window <= 20, f"stray packets to node addresses for {window} s, longer than the fabric takes to converge: {strays}"
+              assert window <= 20, f"stray packets to fabric routes for {window} s, longer than the fabric takes to converge: {strays}"
               for name, machine in NODES.items():
                   for private in ["172.20.0.1", "192.168.1.254"]:
                       observe(f"{name}: route to {private}", machine, f"ip route get {private}")
@@ -1218,12 +1258,48 @@ in
                       crossed = moved(before[1], jool_stats(gw, gw_stats))
                       print(f"FINDING {name}: {private}: CLAT counters that moved: {moved(before[0], jool_stats(machine, clat_stats))}")
                       print(f"FINDING {name}: {private}: gateway NAT64 counters that moved: {crossed}")
-                      # Jool itself translates the packet; the firewall behind it refuses
-                      assert crossed.get("JSTAT_SUCCESS", 0) > 0, f"the translator did not translate the packet to {private}: {crossed}"
+                      if SERVICE:
+                          # refused before translation: Jool holds no session
+                          # towards the address (its counters also move with
+                          # the health check's pings, so they prove nothing)
+                          sessions = gw.succeed(f"{gw_stats} session display --tcp --numeric --csv --no-headers")
+                          assert private not in sessions, f"the translator opened a session to {private}:\n{sessions}"
+                      else:
+                          # Jool itself translates the packet; the firewall behind it refuses
+                          assert crossed.get("JSTAT_SUCCESS", 0) > 0, f"the translator did not translate the packet to {private}: {crossed}"
                       now = private_refused()
                       assert now - refused == 1, f"{name}: one pod request to {private} moved the gateway's counter by {now - refused}"
                       refused = now
               print("CLAT_PRIVATE_REFUSED_OK")
+
+          if SERVICE:
+              with subtest("O7 on a kube node: the CLAT host's own table refused no forwarding the cluster needs, and its guard dropped nothing"):
+                  for name, machine in NODES.items():
+                      table = machine.succeed("nft list table inet clat")
+                      found = dict((comment, int(packets)) for packets, comment in re.findall(r'counter packets (\d+) bytes \d+ drop comment "(clat-[a-z-]+)"', table))
+                      shown = machine.succeed("ip netns exec clat nft list table inet guard")
+                      dropped = dict((comment, int(packets)) for packets, comment in re.findall(r'counter packets (\d+) bytes \d+ (?:drop )?comment "(guard-[a-z-]+)"', shown))
+                      links = re.search(r"iifname \{([^}]*)\} accept", table)
+                      print(f"FINDING O7 {name}: forward links {links.group(1).strip() if links is not None else None}; table inet clat counters {found}; CLAT guard {dropped}")
+                      # R12: what `clat-unsolicited` dropped on this boot
+                      unsolicited = machine.succeed("journalctl -k -b -o cat --no-pager | grep -F 'clat-unsolicited: ' || true").strip()
+                      print(f"FINDING R12 {name}: {len(unsolicited.splitlines()) if unsolicited else 0} unsolicited IPv4 packets on clat0 this boot:\n{unsolicited}")
+                      leaving = machine.succeed("journalctl -k -b -o cat --no-pager | grep -F 'guard-leaving: ' || true").strip().splitlines()
+                      print(f"FINDING guard-leaving {name}: " + "\n".join(leaving))
+                      assert dropped["guard-leftover"] == 0, f"{name}: Jool handed packets back to the CLAT namespace: {dropped}"
+                      # On a kube node a reply to a pod address can take the
+                      # node's IPv4 default route into the CLAT (seen during
+                      # cluster start): Jool translates it with pool6 on both
+                      # sides and the guard stops it. It is no CLAT traffic:
+                      # its source is not the CLAT address, and its
+                      # destination embeds a private IPv4 address the gateway
+                      # refuses anyway (`nat64-private`). Anything else the
+                      # guard stopped is a failure.
+                      stopped = [(match[0], match[1]) for line in leaving for match in re.findall(r"SRC=(\S+) DST=(\S+)", line)]
+                      assert len(stopped) >= dropped["guard-leaving"], f"{name}: the guard stopped {dropped['guard-leaving']} packets, {len(stopped)} logged"
+                      foreign = [(src, dst) for src, dst in stopped if ipaddress.IPv6Address(src) == ipaddress.IPv6Address(CLAT6[name]) or not ipaddress.IPv4Address(int(ipaddress.IPv6Address(dst)) & 0xFFFFFFFF).is_private]
+                      assert not foreign, f"{name}: the CLAT guard stopped CLAT traffic or a public destination: {foreign}"
+                      assert found["clat-spoof"] == 0 and found["clat-not-gateway"] == 0, f"{name}: {found}"
 
           with subtest("an IfState apply on each node changes nothing and leaves pod IPv4 egress and the pod network intact"):
               for name, machine in NODES.items():

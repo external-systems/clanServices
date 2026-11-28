@@ -319,8 +319,9 @@ in
           return sorted(device.strip() for device in match.group(1).split(","))
 
 
-      def counted(chain, comment):
-          rule = alpha.succeed(f"nft list chain inet nat64 {chain} | grep '{comment}'")
+      def counted(comment):
+          """A rule of the gateway's own table, found by its comment."""
+          rule = alpha.succeed(f"nft list table inet nat64 | grep -F 'comment \"{comment}\"'")
           match = re.search(r"counter packets (\d+)", rule)
           assert match is not None, rule
           return int(match.group(1))
@@ -440,15 +441,15 @@ in
           with subtest("the allowlist holds on a Cilium node: a machine that is no client does not reach the translator"):
               router.succeed("ip -6 route replace 2001:db8:64::/64 via ${underlay 1}")
               target = str(POOL[int(ipaddress.IPv4Address(SERVER4))])
-              before = counted("forward", "nat64-undeclared")
+              before = counted("nat64-undeclared")
               router.fail(f"ping -c2 -W2 {target}")
               router.fail(f"curl -sg --max-time 4 http://[{target}]/")
-              dropped = counted("forward", "nat64-undeclared") - before
+              dropped = counted("nat64-undeclared") - before
               print(f"FINDING alpha dropped {dropped} packets from the router towards the translator")
               assert dropped >= 3, dropped
-              before = counted("input", "beacon-undeclared")
+              before = counted("beacon-undeclared")
               router.fail("dig +short +time=2 +tries=1 AAAA ipv4only.arpa @${underlay 1}")
-              assert counted("input", "beacon-undeclared") == before + 1
+              assert counted("beacon-undeclared") == before + 1
 
           with subtest("a NodePort does not answer on the gateway's public IPv4 (D69)"):
               overrides = json.dumps({"spec": {"nodeSelector": {"kubernetes.io/hostname": "alpha"}}})

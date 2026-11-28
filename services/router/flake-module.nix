@@ -38,4 +38,18 @@ in {
       };
     };
   };
+
+  clanTests.hostile-router = {
+    imports = [./tests/vm/hostile.nix];
+    clan = {
+      modules = {
+        router = module;
+        inherit (self.clan.modules) netif;
+      };
+      exportInterfaces = {
+        netif = ../netif/netif-interface.nix;
+        router = ./router-interface.nix;
+      };
+    };
+  };
 }
