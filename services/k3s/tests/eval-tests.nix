@@ -647,6 +647,36 @@ in {
     expected = true;
   };
 
+  # K-A1: `packages.k3s` is the runtime and the source of the
+  # distro's airgap images (one package, so their tags match).
+  test_packageOverrideIsRuntime = let
+    fakeImages = {
+      type = "derivation";
+      name = "k3s-images-test";
+      outPath = "/nix/store/00000000000000000000000000000001-k3s-images-test";
+    };
+    fakePackage = {
+      type = "derivation";
+      name = "k3s-test-1.99.0";
+      version = "1.99.0";
+      outPath = "/nix/store/00000000000000000000000000000000-k3s-test-1.99.0";
+      airgap-images-amd64-tar-zst = fakeImages;
+    };
+    alpha =
+      (mkEvaled (lib.recursiveUpdate explicitInventory {
+        instances.k3s.roles.server.settings.packages.k3s = fakePackage;
+      })).config.nixosConfigurations.alpha.config;
+  in {
+    expr = {
+      runtime = alpha.services.k3s.package.outPath;
+      images = (builtins.head alpha.services.k3s.images).outPath;
+    };
+    expected = {
+      runtime = fakePackage.outPath;
+      images = fakeImages.outPath;
+    };
+  };
+
   test_roleServer = {
     expr = alphaExplicit.services.k3s.role;
     expected = "server";
@@ -1860,6 +1890,29 @@ in {
         "cilium_net"
         "lo"
       ];
+    };
+  };
+
+  # L1 (specs/design-kube.md §3.3): on a fabric, a pod or Service
+  # address is reached only over the fabric links, the pod links and
+  # loopback; any other link is dropped and counted. A manual-address
+  # node has no named fabric link and renders no table.
+  test_kubeIngressTable = let
+    content = gammaTransport.networking.nftables.tables."kube-k3s".content;
+  in {
+    expr = {
+      hook = lib.hasInfix "type filter hook prerouting priority raw; policy accept;" content;
+      inside = lib.hasInfix ''iifname { "fk-gamma-1", "fk-gamma-2", "lo", "cilium*", "lxc*" } accept'' content;
+      drop4 = lib.hasInfix ''ip daddr { 10.1.0.0/16, 10.2.0.0/16 } counter drop comment "outside to the cluster's pods and Services"'' content;
+      drop6 = lib.hasInfix ''ip6 daddr { fd10:1::/56, fd10:2::/112 } counter drop comment "outside to the cluster's pods and Services"'' content;
+      manual = alphaExplicit.networking.nftables.tables ? "kube-k3s";
+    };
+    expected = {
+      hook = true;
+      inside = true;
+      drop4 = true;
+      drop6 = true;
+      manual = false;
     };
   };
 

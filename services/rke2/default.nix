@@ -103,6 +103,7 @@ in
         nodeIPv4,
         nodeIPv6,
         computedNodeLabels,
+        effectivePackage,
         effectiveImages,
         configPath,
         adminKubeconfigPath,
@@ -110,6 +111,10 @@ in
       }: {
         services.rke2 = {
           enable = true;
+          # K-A1: `packages.rke2` is the runtime, not only the image
+          # source; a mismatch asks for image tags the preloaded tarball
+          # does not hold.
+          package = effectivePackage;
           inherit role;
           serverAddr =
             if isInit

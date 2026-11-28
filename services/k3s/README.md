@@ -197,6 +197,7 @@ bodies are shared with RKE2 in `lib/kube-cluster/tests/vm/`; the files in
 ```bash
 vm-test k3s-single --remote --quiet
 vm-test k3s-join --remote --quiet
+vm-test k3s-hostile --remote --quiet
 vm-test k3s-ha --remote --quiet
 vm-test k3s-data-plane --remote --quiet
 ```
@@ -207,6 +208,12 @@ vm-test k3s-data-plane --remote --quiet
   rewrite), a workload pod, and an etcd write/read smoke.
 - `k3s-join` — one server + one agent. The agent joins through its LOCAL haproxy,
   both nodes become Ready with mesh InternalIPs, and Cilium is healthy on both.
+- `k3s-hostile` — hostile actors: an outsider on the node LAN, a fabric
+  leaf outside the cluster (`access = "client"`), a pod and a local user
+  attack the cluster (scans, forced routes, BGP hijacks, the kubelet,
+  etcd, the supervisor, secrets on disk). Every verdict prints
+  `HOSTILE SAFE|GAP` with a positive control; any gap or failed control
+  fails the suite (`K3S_HOSTILE_OK`).
 - `k3s-ha` — three servers. All backends UP on every node's haproxy, three etcd
   voting members, then one manager is shut down: the survivors' healthchecks
   mark it DOWN, the API keeps answering through the local LB, fresh etcd writes

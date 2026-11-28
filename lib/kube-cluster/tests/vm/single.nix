@@ -319,12 +319,22 @@ in {
 
         # K10: the system:masters identity lives 365 days; the HAProxy
         # health-check certificate keeps a long life; serials are random.
+        # The lifetime is notAfter minus notBefore, never "from now": the
+        # test vars are generated once and reused while their inputs stay
+        # the same, so a check against the clock fails a day later.
         with subtest("certificate lifetimes and random serials"):
             admin = "grep client-certificate-data /etc/rancher/${distro}/admin-kubeconfig | awk '{print $2}' | base64 -d"
-            alpha.succeed(f"{admin} | openssl x509 -noout -checkend {364 * 86400}")
-            alpha.fail(f"{admin} | openssl x509 -noout -checkend {366 * 86400}")
+
+            def lifetime_days(cert):
+                start = alpha.succeed(f"date -d \"$({cert} | openssl x509 -noout -startdate | cut -d= -f2)\" +%s").strip()
+                end = alpha.succeed(f"date -d \"$({cert} | openssl x509 -noout -enddate | cut -d= -f2)\" +%s").strip()
+                return (int(end) - int(start)) / 86400
+
+            days = lifetime_days(admin)
+            assert 364 <= days <= 366, f"the admin certificate lives {days} days, not 365"
             pem = alpha.succeed("grep -o '/[^ ]*kubeapi-client.pem' /etc/haproxy.cfg | head -n1").strip()
-            alpha.succeed(f"openssl x509 -noout -checkend {9 * 365 * 86400} -in {pem}")
+            days = lifetime_days(f"cat {pem}")
+            assert days >= 9 * 365, f"the HAProxy health-check certificate lives {days} days"
             for cert in [admin, f"cat {pem}"]:
                 serial = alpha.succeed(f"{cert} | openssl x509 -noout -serial").strip().split("=")[1]
                 assert len(serial) >= 30, f"serial {serial!r} is not random"

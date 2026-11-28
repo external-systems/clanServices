@@ -80,7 +80,7 @@
   in {
     schemaVersion = fact t.ints.positive 2 "Network facts schema version.";
     forwarding = bool "Whether any declared service enables host packet forwarding.";
-    fabricInside = strList "Links, beside a fabric's own, whose hosts may reach the fabric's addresses through this machine (SPEC.md D73; routed-fabric's guard reads it). Set by the service that owns the link: the CLAT and NAT64 host links always, a router zone only with `fabric = true`.";
+    fabricInside = strList "Links, beside a fabric's own, whose hosts may reach the fabric's addresses and a cluster's pod and Service addresses through this machine (SPEC.md D73; routed-fabric's guard and the kube guard `inet kube-<instance>` read it). Set by the service that owns the link: the CLAT and NAT64 host links always, a router zone only with `fabric = true`.";
     node = {
       name = str "Clan machine identity.";
     };

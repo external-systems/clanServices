@@ -188,7 +188,7 @@ in {
 
 VERIFIED-VM `k3s-hostile` K05, K06, K07 and `k3s-probe-net` phase A (`blocked`, the drop counter counts).
 
-Take the minimal prototype as it is (`patches/fixes-fabric-kube.patch`: `lib/kube-cluster/service.nix` and `clan.networkFacts.fabricInside` in `lib/kube-cluster/network-facts.nix`). It renders:
+**Implemented in round 63 (SPEC.md D74, kube step 1)**, from the minimal prototype (`patches/fixes-fabric-kube.patch`: `lib/kube-cluster/service.nix`; the fact `clan.networkFacts.fabricInside` landed with fabric steps 1 and 2). It renders:
 
 ```
 table inet kube-<i> {
@@ -679,7 +679,7 @@ Positive controls: what shows that a `SAFE` above is not empty.
 | K27 | The node itself joined and runs through that front; `ss` shows the listener |
 | K34 | `k3s-probe-net` run 3: a pin that does not match is refused |
 | K50 | K51 and K52 in the same phase |
-| K08 | **None.** A NodePort never answered on an underlay address (D69 limits NodePorts to the node addresses). The verdict states a fact; it does not prove the source ranges |
+| K08 | In the suite since round 63: K13m and K13p (a member and a pod reach the same NodePort on a node address). A NodePort never answered on an underlay address (D69 limits NodePorts to the node addresses); the verdict does not prove the source ranges |
 | K20, K21 | The scan finds 6443 on a server, so the scan works |
 
 Still to add (NOT-RUN):
@@ -727,9 +727,10 @@ Every GAP in `runs/*-hostile.verdicts.txt` is SAFE on the prototype: K05, K06, K
 
 Each step: SPEC and `documentation/` first (hard rule 3), then code, `fmt`, `check`, the named suites with `--remote --rebuild`. One PR per step. `probes/kube/prototype.patch` holds working code for steps 1, 4, 6 (tokens), 7, 8 and 9 (Pod Security); cut each step out of it. The prototype did **not** run `check`: every step must fix the nix-unit tests of §5 that it breaks.
 
-1. **Land the hostile suites and the minimal prototype.** `patches/fixes-fabric-kube.patch` (L1, supervisor front member-only, routed-fabric H1) and `patches/fix-rke2-package.patch` (K-A1) with its nix-unit test from `reviews/kube.md`. Fix K-A10 text.
-   Files: `lib/kube-cluster/{service,network-facts}.nix`, `lib/gateway/{clat,nat64,router}.nix`, `services/routed-fabric/default.nix`, `services/rke2/default.nix`, the hostile suites.
-   Proof: `k3s-hostile`, `rke2-hostile` print no GAP (as `runs/*.with-fix.verdicts.txt`).
+1. **Land the hostile suites and the minimal prototype.** **Done in round 63 (SPEC.md D74).** `patches/fixes-fabric-kube.patch` (L1, supervisor front member-only; its routed-fabric and gateway parts landed with fabric steps 1 and 2 as D73) and `patches/fix-rke2-package.patch` (K-A1) with its nix-unit test from `reviews/kube.md` (both distros: `test_packageOverrideIsRuntime`). K-A10 text fixed (SPEC.md §6.6, §6.12, the two-server runbook line).
+   Files: `lib/kube-cluster/{service,network-facts,firewall}.nix`, `services/rke2/default.nix`, `lib/kube-cluster/tests/vm/hostile.nix`, `services/{k3s,rke2}/tests/vm/hostile.nix`.
+   The suite merges the kube prototype and the fabric prototype's additions (`mallory` as an `access = "client"` leaf, K40a, K40, K41, P5, P6). Every verdict group has a `control(...)` that gates the suite. What a later step closes is an `info` line naming the step, and that step turns it into a verdict: K10n, K13, K17, K18 (step 8); K11f to a pod on the spine, K41, K05d, K05o (step 7); K27 loopback binds, a member that reaches another member's front (step 4); K20 and K21 narrow from `[6443, 7443, 10250, 4240]` to `[6443]` (step 4); K34 (step 6); K50–K53 (step 9).
+   Proof: `k3s-hostile`, `rke2-hostile` print no GAP and no failed control.
 2. **Probes.** Done on 2026-11-27; results in §9. Record the facts in `documentation/docs/reference/upstream-facts.md` (the wording is in the session report). The probe suites `<distro>-probe-net` and `<distro>-probe-rejoin` are throwaway: do not land them.
 3. **Delete manual mode, type the options** (f, h, K-A4, K-A5, K-A7, K-A8). Rewrite READMEs on a one-machine fabric; add the README-evaluates test.
    Files: `lib/kube-cluster/{cluster-interface,node-interface,service,assertions,firewall}.nix`, both READMEs, the nix-unit fixtures.
@@ -816,7 +817,7 @@ Verified in code or source (no probe needed):
 Open risks:
 - **L2 changes how exposure works.** An unlabelled backend behind a Service whose ranges hold an outside source answers on some nodes only. The READMEs must lead with the label.
 - **The admission policy changes how Services are written.** `type: NodePort` is refused; charts that create one need `type: LoadBalancer` or a namespace labelled `clan.lol/service-sources=any`. List it beside the other switches.
-- **`cilium clustermesh status` does not work on node-port exposure** (§3.5). The alternative keeps a NodePort Service that answers every fabric member behind mTLS. The owner may prefer that; it is one line in `mesh.nix`.
+- **`cilium clustermesh status` does not work on node-port exposure** (§3.5). Owner decision O10 (SPEC.md H22): keep the LoadBalancer Service with ranges on every exposure mode; `cilium-dbg status` replaces it there. The plain NodePort behind mTLS is rejected.
 - **Spines.** A spine can forge member sources. No rule here stops it; TLS, tokens and mTLS do. State this in SPEC §6.12. A spine is also the node that answers a LoadBalancer address for a leaf's traffic and judges its ranges.
 - **Day-2 workloads** that need a privileged pod, the kubelet from a pod (metrics-server), a NodePort, or traffic from outside now need an explicit option or label. That is the intent; list the switches in one README table: `pod-security.kubernetes.io/enforce` (namespace), `firewall.kubeletFromPods` (option), `clan.lol/service-sources=any` (namespace), `nodePorts.allowedSources` (option), `clan.lol/outside=allow` (pod or namespace).
 - **k3s serves the supervisor on 6443**, which pods must reach for the API. The token is the only guard there (K29). No design here changes that.

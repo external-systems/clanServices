@@ -98,7 +98,7 @@ These cross a file boundary. Build them once, in the step named.
 | Manual-address mode is removed; `network.fabric` is required | kube | routed-fabric may drop `firewall.trust` | kube step 3, fabric step 3 |
 | Empty file under `/run/netif/pd/<link>` means "delegation lost"; no file means "no answer yet" | netif (N16 amended) | the router's prefix hook | gateway step 5 point 2, with the netif spec in the same PR |
 | A spine can forge member sources: by-source rules protect against leaves and outsiders only; TLS, tokens and mTLS cover the rest | — | SPEC.md §6.12 states it | kube step 4 |
-| The shared hostile suite `lib/kube-cluster/tests/vm/hostile.nix` was extended by two prototypes (kube: K05d..K53; fabric: `mallory` as `client`, K40a, K40, K41, P5, P6). Merge both sets; kube's file is the base | kube | routed-fabric | the later of kube step 1 and fabric steps 1 and 2 |
+| The shared hostile suite `lib/kube-cluster/tests/vm/hostile.nix` was extended by two prototypes (kube: K05d..K53; fabric: `mallory` as `client`, K40a, K40, K41, P5, P6). Merge both sets; kube's file is the base | kube | routed-fabric | kube step 1 (**done**, round 63: merged; verdicts that need a later kube step are `info` lines naming it) |
 
 Numbering: the area files suggest decision ids (D73, N45). Take the
 next free id at the time of the PR; `N45` is already used.
@@ -106,7 +106,7 @@ next free id at the time of the PR; `N45` is already used.
 ## 4. The owner's decisions
 
 All decided on 2026-11-27. None is open. H2–H10 are in SPEC.md round
-61; O1–O8 are below, with what the probe round showed.
+61; O1–O10 are below, with what the probe round showed.
 
 | # | Decision | Probe result | Where |
 |---|---|---|---|
@@ -119,13 +119,11 @@ All decided on 2026-11-27. None is open. H2–H10 are in SPEC.md round
 | O7 | Default-deny IPv6 forwarding on a CLAT host, opened by `forwardLinks` | VERIFIED-VM (`nat-gateway-hostile` C08 with negative proof; `k3s-clat` with pods) | design-gateway §3.5, step 3 |
 | O8 | remote-builder is redesigned apart, together with the change in external-systems/home | not probed. **Do not build gateway step 7 until the owner schedules it** | design-gateway §3.10, step 7 |
 | O9 | A router zone with `fabric = true` reaches only pods labelled `clan.lol/outside=allow` (or in a labelled namespace), through a Service whose source ranges hold it (SPEC.md H21) | the zone option landed with fabric steps 1 and 2 (round 62); the policy is NOT-RUN together with it | design-kube §3.4, step 7; gateway step 6 |
+| O10 | The ClusterMesh API Service is type LoadBalancer with source ranges on every exposure mode, node-port too; `cilium-dbg status` replaces `cilium clustermesh status` there (SPEC.md H22) | VERIFIED-VM on the prototype (`k3s-clustermesh-nodeport`); the NodePort answered the attacker on main | design-kube §3.5 part 4, step 8 |
 
-A design choice of the probe round, not an owner decision: the
-ClusterMesh API Service is type LoadBalancer with ranges on every
-exposure mode (its NodePort answered the attacker), so one rule holds
-for every Service. Cost: on node-port exposure `cilium clustermesh
-status` cannot read it; use `cilium-dbg status`. The owner may choose a
-plain NodePort behind mTLS there instead (design-kube §3.5).
+O10 began as a design choice of the probe round. The owner made it a
+decision: one rule holds for every Service, the ClusterMesh API
+included, and the plain NodePort behind mTLS is rejected.
 
 ## 5. What the probes showed
 
@@ -192,7 +190,7 @@ nix-unit tests that it lacks.
 
 | Wave | Steps | Why this order |
 |---|---|---|
-| 1 | The judges and the first guards: fabric steps 1 and 2 as one PR (with `fabricInside`); kube step 1 (with `packages.rke2`, K-A1); netif step 1 (sysctl baseline, `netif-hostile` with controls); gateway steps 0 to 3 (one PR or three; step 3 carries `forwardLinks` and its three setters); `hostile-router` with the R15 fix | Closes every proven gap. Puts the hostile suites in the tree |
+| 1 | The judges and the first guards: fabric steps 1 and 2 as one PR (with `fabricInside`; **done**, round 62); kube step 1 (with `packages.rke2`, K-A1; **done**, round 63); netif step 1 (sysctl baseline, `netif-hostile` with controls); gateway steps 0 to 3 (one PR or three; step 3 carries `forwardLinks` and its three setters); `hostile-router` with the R15 fix | Closes every proven gap. Puts the hostile suites in the tree |
 | 2 | The structural steps: fabric 5 and 7 (may ride with wave 1), fabric 3; kube 3 and 4; netif 2, 3, 4; gateway 4, 5 (points 1 and 3) | Each is independent of the other areas, except the contracts of §3 |
 | 3 | The large steps: netif 5, 6, 7 (the transaction; the unit renames reach the other areas' suites); kube 7 and 8 (policy and Service fronts; READMEs explain both gates together), kube 6; fabric 4 (transit, O1), 6; gateway 6 (zones; adds the zone-and-policy verdict) and 5 point 2 | Need the wave-2 structure |
 | 4 | kube 5 (beacon and decider: new code, prove first), kube 9; fabric 8; netif 8 (ARP keys); gateway 8 (after P4) | New code without a prototype, or optional |

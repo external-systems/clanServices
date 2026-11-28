@@ -5,12 +5,16 @@
 # trusts its links (`firewall.trust`) and in manual-address clusters,
 # where the node addresses sit on an underlay that may face the
 # Internet:
-#   - the cluster ports (the API, the HAProxy LB ports, the kubelet,
+#   - the cluster ports (the API, the API's HAProxy front, the kubelet,
 #     Cilium's health port) from the members' node addresses and the
 #     cluster's pod CIDRs (a pod's traffic to a node address keeps its
 #     pod source inside ipv4NativeRoutingCIDR);
-#   - etcd (2379-2381) on servers only, from the servers' node addresses;
-#   - `memberOnlyPorts` (the rke2 supervisor) from the members only.
+#   - etcd (2379, 2380) on servers only, from the servers' node
+#     addresses. 2381 (etcd metrics) listens on loopback only; its rule
+#     exists so the `ha` suite reads a refusal, and goes with kube step 4
+#     (specs/design-kube.md §3.2);
+#   - `memberOnlyPorts` (the rke2 supervisor and its HAProxy front) from
+#     the members only: a pod never joins (K-A2).
 # Nothing else from a pod reaches the host: a pod is a source like any
 # other. On a fabric the rules also require a fabric link or a local pod
 # link (`lxc*`, `cilium*`); a manual cluster has no named underlay.

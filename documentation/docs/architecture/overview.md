@@ -66,8 +66,9 @@ client-cert identities, in-spoke RBAC, and hub-side `gitops-spoke-<spoke>`
 kubeconfig Secrets. It installs no GitOps controller — Flux, Argo, or
 anything else is your day-2 choice. See [Multi-cluster](multi-cluster.md).
 
-**HAProxy kubeapi HA.** Every machine post-bootstrap runs clan-rendered
-HAProxy on loopback, load-balancing that cluster's API endpoints; the join
+**HAProxy kubeapi HA.** Every machine runs clan-rendered HAProxy on its
+own node addresses (loopback is a planned step), load-balancing that
+cluster's API endpoints; the join
 URL and agent kubeconfigs point at it, so server loss never strands
 machines. This is control-plane HA only — there is no edge proxy in the
 contract.

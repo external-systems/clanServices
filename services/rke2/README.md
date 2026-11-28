@@ -166,6 +166,8 @@ The service bundles the rke2 core image tarball from the pinned
 `pkgs.rke2` package plus the artifact flake's digest-pinned Cilium image
 tarballs (matching the bundle's manifest exactly). Override
 `packages.images` / `packages.rke2` to provide a custom airgap set.
+`packages.rke2` is also the runtime (`services.rke2.package`), so the
+binary and its core images always come from one package.
 
 ## Tests
 
@@ -179,6 +181,7 @@ bodies are shared with k3s in `lib/kube-cluster/tests/vm/`; the files in
 ```bash
 vm-test rke2-single --remote --quiet
 vm-test rke2-join --remote --quiet
+vm-test rke2-hostile --remote --quiet
 vm-test rke2-ha --remote --quiet
 vm-test rke2-data-plane --remote --quiet
 ```
@@ -192,6 +195,12 @@ vm-test rke2-data-plane --remote --quiet
 - `rke2-join` — one server + one agent. The agent joins through its LOCAL
   haproxy (kubeapi FQDN → own mesh address → LB supervisor port), both nodes
   Ready with mesh InternalIPs, Cilium healthy on both.
+- `rke2-hostile` — hostile actors: an outsider on the node LAN, a fabric
+  leaf outside the cluster (`access = "client"`), a pod and a local user
+  attack the cluster (scans, forced routes, BGP hijacks, the kubelet,
+  etcd, the supervisor, secrets on disk). Every verdict prints
+  `HOSTILE SAFE|GAP` with a positive control; any gap or failed control
+  fails the suite (`RKE2_HOSTILE_OK`).
 - `rke2-ha` — three servers. All backends UP on every node's haproxy, 3 etcd
   members, then one manager is shut down: the survivors' healthchecks mark it
   DOWN, the API keeps answering through the local LB, fresh etcd writes succeed

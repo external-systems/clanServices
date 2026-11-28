@@ -1,4 +1,4 @@
-# Decision record (D1–D73)
+# Decision record (D1–D74)
 
 Every normative choice in the project. SPEC.md §4 is authoritative; this is
 the human rendering. Revoked entries remain for history. D64 (allocations in
@@ -299,6 +299,26 @@ FRR is the only data plane.
   node addresses (D69). It also carries the tunnel suite's Kubernetes
   checks: cross-node pod traffic with a 200 KB body (the MTU proof),
   ClusterIP from pods, and Node IPAM dropping a dead node.
+
+### D74 — The kube guard table; the supervisor front for members (2026-11-27, implemented)
+
+The first kube step of the target design. It puts the cluster's hostile
+suites in the tree and closes what they found.
+
+- One table `inet kube-<instance>` on every cluster member with fabric
+  links. A packet for the cluster's pod or Service addresses that
+  arrives on any link but a fabric link, a pod link, loopback or a
+  declared inside link is dropped and counted. A host on the node LAN
+  that routes a pod address to a node gets nothing.
+- Limit: Cilium hands a packet for a local pod past nftables on its own
+  devices. The clusterwide policy of a later step guards that path.
+- The rke2 supervisor's HAProxy front answers members only, like the
+  supervisor itself. A pod never joins.
+- `packages.rke2` is the runtime, not only the source of the images.
+- Tested by `k3s-hostile` and `rke2-hostile`: an outsider, a fabric leaf
+  outside the cluster, a pod and a local user attack the cluster. Every
+  attack has a positive control. What later steps close is reported,
+  with the step's name, and does not fail the suite.
 
 ### D73 — Link contracts and one guard table (2026-11-27, implemented)
 

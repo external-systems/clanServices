@@ -40,6 +40,13 @@ in rec {
       imports = [./tests/vm/join.nix];
       inherit clan;
     };
+    # Hostile actors against the cluster: an outsider on the node LAN,
+    # a fabric leaf outside the cluster, a pod, a local user
+    # (specs/design-kube.md §6). Every verdict has a positive control.
+    rke2-hostile = {
+      imports = [./tests/vm/hostile.nix];
+      inherit clan;
+    };
     # The join suite on an underlay that netif renders (specs/netif.md N14).
     rke2-join-netif = {
       imports = [./tests/vm/join-netif.nix];

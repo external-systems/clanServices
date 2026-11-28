@@ -15,13 +15,18 @@ The firewall contract (SPEC.md §6.12): the API listens on the transport
 only, public ports open only where a Service exposes them, mesh and BGP
 traffic is restricted to expected peers, and mirror Services are reachable
 only from GitOps namespaces (D30). The cluster ports open by source: the
-API, the HAProxy LB ports, the kubelet and Cilium's health port to the
-members' node addresses and the cluster's pod CIDRs, etcd to the servers
-only; on a fabric only on the fabric links and the local pod links. A pod
-reaches no other port of its node, and the cluster services never trust a
-fabric link. VM tests assert positive connectivity *and* negative exposure
-(`<distro>-single`: an outside host reaches no cluster port, a pod no
-other host port).
+API, the API's HAProxy front, the kubelet and Cilium's health port to the
+members' node addresses and the cluster's pod CIDRs, the rke2 supervisor
+and its HAProxy front to the members only, etcd to the servers only; on a
+fabric only on the fabric links and the local pod links. A pod reaches no
+other port of its node, and the cluster services never trust a fabric
+link. The cluster's pod and Service addresses are reached only over the
+fabric links, the pod links and declared inside links (the table
+`inet kube-<instance>`, D74). VM tests assert positive connectivity *and*
+negative exposure (`<distro>-single`: an outside host reaches no cluster
+port, a pod no other host port; `<distro>-hostile`: an outsider, a fabric
+leaf outside the cluster, a pod and a local user attack the cluster, and
+every verdict has a positive control).
 
 A machine holds only the secrets its role reads: an agent has the agent
 token and the HAProxy health-check certificate, never the server token or

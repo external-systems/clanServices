@@ -1045,7 +1045,34 @@
           );
 
           networking = {
-            nftables.enable = true;
+            nftables = {
+              enable = true;
+              # L1 (specs/design-kube.md §3.3): the cluster's pods and
+              # Services are reached over the fabric's links, the pod
+              # links, or a link whose owner declared it inside
+              # (`clan.networkFacts.fabricInside`: a translator's link, a
+              # router zone with `fabric = true`). A host on any other
+              # link (the underlay LAN) that routes a pod or Service
+              # address to this node is dropped and counted. Limit: a
+              # packet that a Cilium device hands straight to a local pod
+              # never enters netfilter; the clusterwide policy (kube
+              # step 7) guards that path.
+              tables."kube-${instanceName}" = lib.mkIf (transportInterfaces != []) {
+                family = "inet";
+                content = let
+                  inside = lib.unique (transportInterfaces ++ ["lo" "cilium*" "lxc*"] ++ config.clan.networkFacts.fabricInside);
+                  names = lib.concatMapStringsSep ", " (name: ''"${name}"'') inside;
+                  set = cidrs: "{ ${lib.concatStringsSep ", " (lib.filter (cidr: cidr != null) cidrs)} }";
+                in ''
+                  chain ingress {
+                    type filter hook prerouting priority raw; policy accept;
+                    iifname { ${names} } accept
+                    ip daddr ${set [resolvedCidrs.podCIDRv4 resolvedCidrs.serviceCIDRv4]} counter drop comment "outside to the cluster's pods and Services"
+                    ip6 daddr ${set [resolvedCidrs.podCIDRv6 resolvedCidrs.serviceCIDRv6]} counter drop comment "outside to the cluster's pods and Services"
+                  }
+                '';
+              };
+            };
             firewall = {
               checkReversePath = "loose";
               extraReversePathFilterRules = lib.concatStringsSep "\n" (
@@ -1065,17 +1092,20 @@
                 inherit transportInterfaces isServer;
                 inherit (resolvedCidrs) podCIDRv4 podCIDRv6;
                 members = map (m: {inherit (m) role;} // memberAddr m.machineName) roleMembers;
-                # the API, the LBs, the kubelet, Cilium's health port
+                # the API, its LB front, the kubelet, Cilium's health port
                 clusterPorts =
                   lib.optional isServer kubeapiPort
-                  ++ [haproxyKubeapiPort]
-                  ++ lib.optional distro.supervisor haproxySupervisorPort
                   ++ [
+                    haproxyKubeapiPort
                     10250
                     4240
                   ];
-                # the supervisor: joins through the members' HAProxy
-                memberOnlyPorts = lib.optional (isServer && distro.supervisor) supervisorPort;
+                # the rke2 supervisor and its LB front: members only. A
+                # pod never joins; the front proxies to every server's
+                # supervisor with a member source (K-A2).
+                memberOnlyPorts =
+                  lib.optional distro.supervisor haproxySupervisorPort
+                  ++ lib.optional (isServer && distro.supervisor) supervisorPort;
               };
               extraForwardRules = ''
                 iifname { "cilium*", "lxc*" } accept
