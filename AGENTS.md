@@ -101,6 +101,9 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   sketches, probes and its PR steps. Read the index and the area file
   before a hardening change. A probe that disagrees amends the design
   file first. Its human page is `documentation/docs/plans/target-design.md`.
+  `specs/probes/<date>/` holds the findings of a probe round, one file
+  per area (VERIFIED-VM, REFUTED, NOT-RUN per line); the prototypes are
+  not in the repo.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
   record (D1–D72) and dated round summaries hold the history; read them

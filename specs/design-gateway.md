@@ -1,15 +1,22 @@
 # Target design: gateway services and remote-builder
 
-> **Status: target design, not implemented** (SPEC.md round 61). Nothing
-> here was run unless a line says "VERIFIED-VM" or names a suite verdict.
-> Parts marked "owner decides" are proposals. The index, the cross-area
-> contracts and the build order are in `specs/target-design.md`.
-> Evidence named here (`reviews/`, `runs/`, the `fix-probe` and
-> `fix-nat64` prototypes, patches) is session evidence of the review of
-> 2026-11-27. It is not in the repo; the session handoff maps it.
+> **Status: target design, steps 1 to 6 prototyped and probed on VMs on
+> 2026-11-27. Not implemented on `main`.** (SPEC.md round 61.) A line
+> that says **VERIFIED-VM** names the suite or verdict that showed it on
+> the remote builder, with the prototype applied to `origin/main`
+> `deeaba4`. A line that says **NOT-RUN** was not shown. §9 holds one row
+> per probe and assumption. The remote-builder part (§3.10, step 7) is
+> **owner-gated (O8) and was not probed**.
+> The index, the cross-area contracts and the build order are in
+> `specs/target-design.md`.
+> The findings are `specs/probes/2026-11-27/gateway.md`. The other
+> evidence named here (`probes/gateway/runs/`,
+> `probes/gateway/prototype.patch`, `reviews/`, `runs/`, `patches/`) is
+> session evidence of 2026-11-27. It is not in the repo; the session
+> handoff maps it.
 
 Area: `services/nat-gateway/`, `services/router/`, `lib/gateway/`, `services/remote-builder/`.
-Base: `main` at `4d9c1aa`. Line numbers are of that commit.
+Base: `main` at `deeaba4`. File and option names are of that commit.
 Written for the next implementer. Read §0 first, then implement §8 in order.
 
 Owner's rule for this round: no consumers, no deployed machines. Suites, eval
@@ -21,21 +28,24 @@ behaviour is fixed.
 ## 0. The design in one page
 
 1. **Keep Jool in a namespace behind a veth pair.** It is the best model here (§4b). Fix its two holes instead of replacing it.
-2. **Policy before translation.** The host's `inet nat64` table refuses what must not be translated while the packet is still IPv6: undeclared source, embedded private IPv4, protocols Jool cannot translate. Today the private check runs after translation and misses `127.0.0.0/8` (N05).
-3. **A default-deny guard inside each namespace.** A small nft table `inet guard` drops (a) everything Jool handed back to the kernel and (b) everything that would leave the namespace and is not a translated packet. This closes N05, N06, N07 by construction, also when no Jool instance exists.
-4. **Structural loop breakers stay as a second layer.** `unreachable` routes for `pool6` and the CLAT address inside the namespaces (the prototype). No IPv4 default route in the CLAT namespace.
-5. **A CLAT host gets its own table `inet clat`.** Only a gateway's `/96` with a public embedded IPv4 may reach the CLAT. Nothing unsolicited arrives as IPv4.
-6. **The health check also checks the guard.** A gateway without its guard withdraws its beacon.
-7. **Router: one function renders both firewalls.** The ports the router's table accepts on a link are the ports the NixOS firewall opens on that link. `wanPorts` then works (G-A3). A zone reaches the fabric only with `zones.<name>.fabric = true` (default false).
-8. **Prefix hook: no boot marker.** netif writes an empty file for "delegation lost". An absent file means "no answer yet". A static timer rechecks once after boot. The hook is sandboxed and validates prefixes.
-9. **remote-builder: a build sshd of its own.** One dedicated `sshd` per machine, own port, own host key, only the `nix-ssh` user, keys only. The machine's admin sshd is not touched.
-10. **Rate limits: assert the pool4 bound at eval** for every rendered limit, pin Jool's timeouts, fail fast on exhaustion.
+2. **Policy before translation.** The host's `inet nat64` table refuses what must not be translated while the packet is still IPv6: undeclared source, embedded private IPv4, protocols and ICMPv6 types Jool cannot translate. What comes back out of the namespace is checked against what a translator may emit. **VERIFIED-VM.**
+3. **A default-deny guard inside each namespace.** A small nft table `inet guard` drops (a) everything Jool handed back to the kernel and (b) everything that would leave the namespace and is not a translated packet. The Jool unit loads it before an instance exists. **VERIFIED-VM.**
+4. **The namespace forwards nothing.** Forwarding is off in both namespaces (Jool does not need it), and `pool6` and the CLAT address are `unreachable` routes there. No IPv4 default route in the CLAT namespace. **VERIFIED-VM.**
+5. **A CLAT host gets its own table `inet clat`.** Only a gateway's `/96` with a public embedded IPv4 may reach the CLAT. Nothing unsolicited arrives as IPv4. **The host forwards IPv6 for its CLAT only (O7)**; other links forward only where a service declared them (`clan.networkFacts.forwardLinks`). **VERIFIED-VM.**
+6. **The health check also checks the guard.** A gateway without its guard asks the Jool unit to load it; if that fails it withdraws its beacon after the `down` window. **VERIFIED-VM.**
+7. **Router: one value renders both firewalls.** The ports the router's table accepts on a link are the ports the NixOS firewall opens on that link. `wanPorts` then works (G-A3). A zone reaches the fabric only with `zones.<name>.fabric = true` (default false).
+8. **Prefix hook: validated and sandboxed.** A delegation is global unicast, a /32 to a /64, none of the router's own prefixes. The boot grace without a marker (an empty file means "delegation lost") waits for netif's N16 amendment: NOT-RUN.
+9. **remote-builder: a build sshd of its own.** Owner-gated (O8), not probed.
+10. **Rate limits: the pool4 bound is asserted at eval** for every rendered limit, and Jool's timeouts are pinned. On a full pool4 Jool drops a new flow in silence (no loop, no error to the client): "fail fast" is not available from Jool 4.1.15.
 
 Status words used below:
 - **VERIFIED-SRC**: read in Jool 4.1.15 source (`NICMx/Jool` tag `v4.1.15`, files named).
 - **VERIFIED-CODE**: read in this repo.
-- **VERIFIED-VM**: shown by the hostile runs in `runs/`.
-- **ASSUMED**: kernel or tool behaviour not run. Has a probe in §9.
+- **VERIFIED-VM**: shown by a VM suite on the remote builder; the suite, verdict or marker is named.
+- **REFUTED**: a probe disagreed; the text was changed to what works.
+- **NOT-RUN**: not shown by a run. Still an assumption.
+- **NOT-BUILT**: designed here, not in the prototype.
+- **ASSUMED**: only in §3.10 (remote-builder, not probed): behaviour that was not run.
 
 ---
 
@@ -67,13 +77,13 @@ Each one names its test in §6 or §8.
 
 - **I1** A packet enters the translator namespace only if: IPv6, destination in `pool6`, source declared (or an ICMPv6 error `related` to an open flow), L4 is TCP, UDP or a translatable ICMPv6 type, and the embedded IPv4 is public. Everything else is refused on the host, in IPv6, before translation.
 - **I2** Any single packet crosses the `jool0`/`jool1` link at most once per direction. True with a Jool instance, without one, and while it is replaced.
-- **I3** The namespace kernel never answers, forwards or delivers a packet. Only ND on `jool1` and Jool's own ICMP errors exist besides translated packets.
+- **I3** The namespace kernel never answers, forwards or delivers a packet: the guard drops what Jool handed back, and forwarding is off in the namespace. Only ND on `jool1` and Jool's own ICMP errors exist besides translated packets.
 - **I4** Only two kinds of packet leave the namespace: IPv4 with source in pool4, IPv6 with source in `pool6`. (Plus ND and Jool's ICMP errors.)
 - **I5** The translator is no way into the gateway itself: nothing that left the namespace is delivered to a local socket of the gateway, except replies to the gateway's own health pings.
 - **I6** Translated IPv4 leaves through an uplink only, masqueraded.
 - **I7** One source /64 cannot exhaust pool4: for every rendered limit, `newFlowsBurst + newFlows × udpTimeout ≤ pool4 ports`. Checked at eval.
 - **I8** A full pool4 never withdraws the beacon, and never makes a packet loop.
-- **I9** A gateway is advertised (beacon up) only while: its health rounds are good, the guard table is loaded in the namespace, and pool4 is whole.
+- **I9** A gateway is advertised (beacon up) only while its health rounds are good, and a round is good only while the guard table is loaded in the namespace. (pool4 wholeness is repaired by every start of the Jool unit; it is not part of a round.)
 - **I10** A restart of `nftables.service`, an IfState apply, or a restart of `nat64-jool` never leaves a moment in which I1 to I5 do not hold.
 
 ### CLAT (client)
@@ -82,6 +92,8 @@ Each one names its test in §6 or §8.
 - **I12** Any single packet crosses `clat0`/`clat1` at most once per direction.
 - **I13** Nothing unsolicited arrives as IPv4 from `clat0` on a host socket.
 - **I14** The CLAT's `pool6` is always one of the inventory's gateways. Only `clat-follow` changes it. RAs, PREF64 and resolvers are never read.
+- **I28** The CLAT namespace kernel never answers, forwards or delivers a packet (as I3: the guard, forwarding off).
+- **I29** (O7) A CLAT host forwards IPv6 between `clat0` and its uplink for the CLAT's own packets only. Between two other links it forwards IPv6 only when one of them is a forward link (`clan.networkFacts.forwardLinks`, option `forwardLinks`).
 - **I15** The follower moves only after `followAfter` seconds of silence from its gateway, only to a gateway that named its own `/96` in 5 of the last 10 rounds, never back on its own. (Unchanged.)
 
 ### Router
@@ -106,27 +118,34 @@ Each one names its test in §6 or §8.
 
 ## 3. Target design
 
+§3.1 to §3.9 describe what the prototype builds and what the suites
+proved. Rule sets are the rendered text of a run, not sketches. §3.10 is
+unchanged and owner-gated.
+
 ### 3.1 Why packets behave as they do (facts the design rests on)
 
 - **VERIFIED-SRC** Jool registers one netfilter hook per family at `NF_INET_PRE_ROUTING`, priority `NF_IP_PRI_NAT_DST + 25` and `NF_IP6_PRI_NAT_DST + 25`, that is **-75** (`src/mod/common/xlator.c:28-34`).
-- **VERIFIED-SRC** A packet Jool does not translate gets `NF_ACCEPT`: "Returning the packet to the kernel" (`kernel_hook_netfilter.c`, `verdict2netfilter`). No ICMP error is sent for `VERDICT_UNTRANSLATABLE` (`core.c`, `send_icmp6_error`: "Linux will decide what to do").
-- **VERIFIED-SRC** Unknown L4 protocol in NAT64 is `untranslatable_icmp` (`determine_incoming_tuple.c:328-331`). So protocol 253 goes back to the kernel. This is N07.
-- **VERIFIED-SRC** No instance in the namespace is `VERDICT_UNTRANSLATABLE` too (`find_instance`, `-ESRCH`). So "instance missing" behaves like "untranslatable".
-- **VERIFIED-SRC** A translated packet is sent with `dst_output()` (`send_packet.c`). It passes the namespace's **POSTROUTING** hook only. It never passes FORWARD or OUTPUT there.
-- **VERIFIED-SRC** NAT64 hairpinning exists (`handling_hairpinning_nat64.c`): a 6→4 result whose destination is in pool4 is turned around inside Jool.
-- **VERIFIED-VM** N05: `pool6::7f00:1` is translated to `127.0.0.1`, the namespace's loopback answers, Jool translates the answer back. N06 and N07: 32 crossings.
-- **VERIFIED-CODE** The host's `nat64-private` rule matches `iifname jool0 ip daddr …` (`nat64.nix:311`), after translation. A packet to `127.0.0.0/8` never leaves the namespace, so the rule never sees it.
+- **VERIFIED-SRC, VERIFIED-VM (N10, C06)** A packet Jool does not translate gets `NF_ACCEPT`. With no instance in the namespace every packet is handed back: a counter at prerouting priority -5 in the namespace saw the client's one packet, and `guard-leftover` moved.
+- **VERIFIED-SRC** Unknown L4 protocol in NAT64 is untranslatable (`determine_incoming_tuple.c:328-331`). No ICMP error is sent.
+- **VERIFIED-SRC, VERIFIED-VM (P6)** A translated packet is sent with `dst_output()`. It passes the namespace's **postrouting** hook only. With both guard chains at `policy drop`, every traffic shape of `nat-gateway` passes (TCP, UDP, ICMP, 2 MB down, 300 kB up, fragments of 3000 bytes, path MTU discovery across a 1400 byte hop) and the guard's two counters stay 0.
+- **VERIFIED-VM (P2)** Jool translates with `net.ipv4.conf.all.forwarding=0` and `net.ipv6.conf.all.forwarding=0` in its namespace, NAT64 and SIIT, every shape above. The namespaces run with forwarding off.
+- **VERIFIED-VM (P3, N16)** A new flow on a full pool4 is dropped by Jool itself (`JSTAT_BIB6_NOT_FOUND`). It is not handed back (`guard-leftover` +0), it does not loop (one crossing each), and the client gets no ICMPv6 error: it times out.
+- **VERIFIED-VM (P1)** `ip6 daddr & ::ffff:ffff @private6` loads (build-time `nft --check` and at boot) and matches: `pool6::7f00:1` and eleven other private embeddings move the `nat64-private` counter by one each.
+- **VERIFIED-VM** nft rulesets are per network namespace: `systemctl restart nftables.service` on the host leaves the namespace's `inet guard` byte-equal (JSON, without counters).
+- **VERIFIED-VM** A veth end receives link chatter that nobody sent to the namespace (MLD reports, LLMNR, router solicitations: about 14 to 19 packets in the first minute). It is multicast. The guard counts it apart (`guard-noise-in`), so `guard-leftover` counts only what Jool handed back.
+- **VERIFIED-VM (N05 on `main`)** `pool6::7f00:1` was translated to `127.0.0.1` and answered by the namespace's loopback. N06 and N07 on `main`: 32 crossings.
 
-Consequence: an nft base chain in the namespace at **prerouting, priority 0** sees exactly the packets Jool gave back. A base chain at **postrouting** sees exactly what leaves (translated packets, ND, Jool's ICMP errors). Two small chains with `policy drop` make the namespace default-deny without touching translated traffic and without conntrack.
+Consequence: a base chain in the namespace at **prerouting, priority 0** sees exactly the packets Jool gave back. A base chain at **postrouting** sees exactly what leaves. Two small chains with `policy drop` make the namespace default deny without conntrack.
 
-### 3.2 Namespace layout (unchanged shape)
+### 3.2 Namespace layout
 
 ```
 gateway host                              namespace "nat64"
   jool0  192.0.0.1/30  fd64::1/64  <veth>  jool1  192.0.0.2/30  fd64::2/64
   route  <pool6> via fd64::2               route ::/0 via fd64::1
-                                           route 0.0.0.0/0 via 192.0.0.1
+  table inet nat64 (reworked)              route 0.0.0.0/0 via 192.0.0.1
                                            route <pool6> unreachable      (new)
+                                           forwarding 0, both families    (new)
                                            nft table inet guard           (new)
                                            Jool instance "default", pool4 192.0.0.2 1100-65535
 
@@ -134,29 +153,36 @@ client host                               namespace "clat"
   clat0  192.0.0.1/29  fd00:c1a7::1/64 <veth> clat1  192.0.0.2/29  fd00:c1a7::2/64
   route  0.0.0.0/0 via 192.0.0.2 mtu N     route ::/0 via fd00:c1a7::1
   route  <clat address>/128 via fd00:c1a7::2   route <clat address>/128 unreachable (new)
-  nft table inet clat (new)                (IPv4 default route removed)
+  table inet clat (new)                    (IPv4 default route removed)
+                                           forwarding 0, both families    (new)
                                            nft table inet guard           (new)
                                            Jool SIIT instance "clat"
 ```
 
-Not kept from the prototype: the namespace loopback with only `::1/128`. The pre-translation refusal (§3.3) and the guard's postrouting chain (§3.4) both stop `127.0.0.0/8`. One mechanism less for IfState to own.
+Layers, outermost first. Each one alone ends a packet that must not pass (VERIFIED-VM, N06, N07, N10, N11, C06):
 
-### 3.3 Host table `inet nat64` (gateway), as it should render
+1. the host table (`inet nat64`, `inet clat`) refuses it while it is IPv6;
+2. the namespace guard drops what Jool handed back;
+3. forwarding is off in the namespace, and the destination (`pool6`, the CLAT address) is an `unreachable` route there.
 
-Replace `nat64.nix:250-329`. New names in `names.nix`: none needed.
+Not taken over from the minimal fix: the namespace loopback without IPv4. `127.0.0.0/8` is refused by layer 1 (`nat64-private`) and by the guard's `leaving` chain.
+
+### 3.3 Host table `inet nat64` (gateway)
+
+In `lib/gateway/nat64.nix`. The ranges come from `lib/gateway/private.nix` (`private`, `embedded`, `private6`, `sets`): one list renders `private4` and `private6`. Rendered on gw2 of `nat-gateway` (sets shortened):
 
 ```nft
 table inet nat64 {
   set trusted { type ipv6_addr; flags interval; auto-merge; elements = { … } }
   set default { type ipv6_addr; flags interval; auto-merge; elements = { … } }
   set custom  { type ipv6_addr; flags interval; auto-merge; elements = { … } }
-  # the embedded IPv4 of a pool6 destination, as the low 32 bits
-  set private6 { type ipv6_addr; flags interval;
-    elements = { ::/104, ::a00:0/104, ::6440:0/106, ::7f00:0/104, ::a9fe:0/112,
-                 ::ac10:0/108, ::c000:0/120, ::c0a8:0/112, ::c612:0/111, ::e000:0/99 } }
   set private4 { type ipv4_addr; flags interval;
     elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
                  172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 } }
+  # the same ranges as the low 32 bits of a pool6 destination
+  set private6 { type ipv6_addr; flags interval;
+    elements = { ::0:0/104, ::a00:0/104, ::6440:0/106, ::7f00:0/104, ::a9fe:0/112,
+                 ::ac10:0/108, ::c000:0/120, ::c0a8:0/112, ::c612:0/111, ::e000:0/99 } }
   # meters: unchanged (flows_*, packets_*, per /64, fail closed)
 
   chain forward {
@@ -164,43 +190,34 @@ table inet nat64 {
     oifname "jool0" jump to_translator
     iifname "jool0" jump from_translator
   }
-
   chain to_translator {
-    # IPv4 towards pool4: only answers to masqueraded flows
     meta nfproto ipv4 ct state established,related accept
     meta nfproto ipv4 counter drop comment "nat64-unsolicited4"
     ip6 daddr != <pool6> counter drop comment "nat64-not-pool6"
-    # an ICMPv6 error about an open flow may come from a router on the path
     ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom ct state related icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
     ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom counter drop comment "nat64-undeclared"
-    # before translation: what Jool cannot translate never enters (I1, N07)
-    meta l4proto != { tcp, udp, ipv6-icmp } counter reject with icmpv6 admin-prohibited comment "nat64-protocol"
-    meta l4proto ipv6-icmp icmpv6 type != { echo-request, echo-reply, destination-unreachable, packet-too-big, time-exceeded, parameter-problem } counter drop comment "nat64-icmp-type"
-    # before translation: the embedded IPv4 is public (I1, N05, hairpin G-A2)
-    ip6 daddr & ::ffff:ffff @private6 counter reject with icmpv6 admin-prohibited comment "nat64-private"
-    # the meters, unchanged text, in this chain (custom clients, trusted, default)
+    meta l4proto != { tcp, udp, ipv6-icmp } counter reject with icmpv6 type admin-prohibited comment "nat64-protocol"
+    icmpv6 type != { echo-request, echo-reply, destination-unreachable, packet-too-big, time-exceeded, parameter-problem } counter drop comment "nat64-icmp-type"
+    ip6 daddr & ::ffff:ffff @private6 counter reject with icmpv6 type admin-prohibited comment "nat64-private"
+    # the meters, unchanged text, without `oifname "jool0"`
     …
   }
-
   chain from_translator {
-    ip6 saddr fd64::2 meta l4proto ipv6-icmp accept comment "Jool's own errors"
-    ip6 saddr != <pool6> counter drop comment "nat64-return-source"
     ip6 daddr != @trusted ip6 daddr != @default ip6 daddr != @custom counter drop comment "nat64-return-undeclared"
+    ip6 saddr fd64::2 meta l4proto ipv6-icmp counter accept comment "nat64-jool-error"
+    ip6 saddr != <pool6> counter drop comment "nat64-return-source"
     ip saddr != 192.0.0.2 counter drop comment "nat64-pool4-source"
-    oifname != { <uplinks> } meta nfproto ipv4 counter drop comment "nat64-not-uplink"
-    # second layer; stays at 0 because "nat64-private" refuses first
+    meta nfproto ipv4 oifname != { <uplinks> } counter drop comment "nat64-not-uplink"
     ip daddr @private4 counter reject with icmp type net-prohibited comment "nat64-private-post"
   }
-
   chain input {
     type filter hook input priority -10; policy accept;
     ip6 daddr <address> meta l4proto { tcp, udp } th dport 53 ip6 saddr != @trusted ip6 saddr != @default ip6 saddr != @custom counter drop comment "beacon-undeclared"
-    iifname "jool0" ct state established,related accept comment "answers to the health check"
+    iifname "jool0" meta nfproto ipv6 ct state established,related accept
     iifname "jool0" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
     iifname "jool0" meta nfproto ipv4 counter reject with icmp type host-prohibited comment "nat64-host"
     iifname "jool0" counter drop comment "nat64-host6"
   }
-
   chain postrouting {
     type nat hook postrouting priority srcnat; policy accept;
     iifname "jool0" oifname { <uplinks> } masquerade comment "nat64-masquerade"
@@ -208,131 +225,141 @@ table inet nat64 {
 }
 ```
 
+What the suites proved of it:
+
+- `nat64-private` refuses before translation: loopback, RFC 1918, link-local, CGN, Jool's own link (`192.0.0.1`) and pool4 address (`192.0.0.2`, the hairpin of G-A2), multicast. The client's `curl` ends with code 7 at once, not with a timeout. `nat64-private-post` stays 0. A refused packet takes no pool4 port (`k3s-clat`: `JSTAT_SUCCESS` does not move).
+- The gateway's public IPv4 cannot be in `private6` (it can be dynamic). It is translated, delivered to the host and refused by `nat64-host` (N05, 10 packets).
+- `nat64-return-undeclared` is a layer of its own: with `to_translator` emptied, an undeclared source's ping is translated and the answer is dropped (`nat-gateway`, the second negative proof).
+- `nat64-jool-error` stayed 0 in every run. Kept: it costs one rule and names what may leave with Jool's own address.
+- Fragments are judged as one reassembled packet (N15: 3000 bytes to a private destination move `nat64-private` by 1).
+- The accept of the established input is IPv6 only. The design draft accepted both families; nothing legitimate arrives as IPv4 on `jool0`.
+
 Notes for the implementer:
-- `ip6 daddr & ::ffff:ffff @private6` uses the same bitwise-then-lookup form the meters already use (`nat64.nix:295`, `${per64} != @flows_…`). **VERIFIED-CODE** for the form; **ASSUMED** for this exact mask with an interval set. Check with `nft -c` first (probe P1).
-- Render `private6` from the existing `private` list (`nat64.nix:31`), so the two sets cannot drift:
-  ```nix
-  # nat64.nix, beside `private`
-  embedded = range: let
-    p = c.parse range;                       # p.start is the IPv4 as an integer
-    length = lib.toInt (lib.last (lib.splitString "/" range));
-    hex = n: lib.toLower (lib.toHexString n);
-  in "::${hex (p.start / 65536)}:${hex (lib.mod p.start 65536)}/${toString (96 + length)}";
-  private6 = map embedded private;
-  ```
-  nix-unit: `embedded "127.0.0.0/8" == "::7f00:0/104"`, `embedded "224.0.0.0/3" == "::e000:0/99"`, `embedded "0.0.0.0/8" == "::0:0/104"`.
-- The NixOS forward rules (`nat64.nix:242-245`) and `filterForward = true` stay. They accept what this table let pass.
-- The health check's pings leave through OUTPUT, not FORWARD. They are not judged here. Their answers match `ct state established` in `input`.
-- Documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) are **not** added to `private`: every suite uses them as its "Internet". Add them only with a suite-wide change of address plan.
+
+- The NixOS forward rules and `filterForward = true` stay. They accept what this table let pass.
+- The health check's pings leave through OUTPUT. They are not judged here. Their answers match `ct state established` in `input`.
+- Documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) are **not** in `private`: every suite uses them as its "Internet".
+- nix-unit to add (NOT-RUN, `check` was not run in the probe round): `embedded "127.0.0.0/8" == "::7f00:0/104"`, `embedded "224.0.0.0/3" == "::e000:0/99"`, `embedded "0.0.0.0/8" == "::0:0/104"`.
 
 ### 3.4 Namespace table `inet guard` (gateway)
 
-A plain file, loaded with `ip netns exec nat64 nft -f`. One transaction, so there is never a moment without it once it was loaded.
+`lib/gateway/guard.nix` writes the file and checks it at build time the way NixOS checks the host's ruleset (`nft --check` under `lklWithFirewall`). `names.nix` gains `guard = "guard"`.
 
-```nix
-# nat64.nix, in `let`
-guard = pkgs.writeText "nat64-guard.nft" ''
-  table inet guard
-  delete table inet guard
-  table inet guard {
-    # Jool's hook is prerouting priority -75 (Jool 4.1.15 xlator.c). What
-    # reaches priority 0 is what Jool handed back: nothing may go on.
-    chain leftover {
-      type filter hook prerouting priority 0; policy drop;
-      iifname "${inside}" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
-      counter comment "guard-leftover"
-    }
-    # Jool sends a translated packet with dst_output(): postrouting only.
-    chain leaving {
-      type filter hook postrouting priority 0; policy drop;
-      oifname "${inside}" ip saddr 192.0.0.2 accept
-      oifname "${inside}" ip6 saddr ${cfg.pool6} accept
-      oifname "${inside}" ip6 saddr fd64::2 meta l4proto ipv6-icmp accept
-      oifname "${inside}" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
-      counter comment "guard-leaving"
-    }
+```nft
+table inet guard
+delete table inet guard
+table inet guard {
+  chain leftover {
+    type filter hook prerouting priority 0; policy drop;
+    iifname "jool1" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
+    meta pkttype != host counter drop comment "guard-noise-in"
+    counter comment "guard-leftover"
   }
-'';
+  chain leaving {
+    type filter hook postrouting priority 0; policy drop;
+    oifname "jool1" ip saddr 192.0.0.2 accept
+    oifname "jool1" ip6 saddr <pool6> accept
+    oifname "jool1" ip6 saddr fd64::2 meta l4proto ipv6-icmp accept
+    oifname "jool1" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+    ip6 daddr ff00::/8 counter drop comment "guard-noise-out"
+    counter comment "guard-leaving"
+  }
+}
 ```
 
-What each chain stops:
-- `leftover`: protocol 253 to `pool6` (N07), every packet while no instance exists, an IPv4 packet that is not for pool4, the `127.0.0.1` packet when it comes back in on `lo` (N05).
-- `leaving`: anything towards `lo` (the first hop of N05), any source that is not pool4 or `pool6`.
+- `guard-leftover`: what Jool handed back. 0 in every function run. It moves only when an attack got past the host table (N10: no instance).
+- `guard-leaving`: 0 in every run, also after every attack (N17).
+- `guard-noise-in`, `guard-noise-out`: link chatter and the namespace kernel's own MLD. Not a signal.
+- A suite asserts `guard-leftover == 0 and guard-leaving == 0` after real traffic. A value that is not 0 is a failure: find the packet.
 
-No conntrack is used, so no conntrack hooks are registered in the namespace. ARP is not in the `inet` family and is not filtered.
-
-Who loads it, in `nat64-jool` (`nat64.nix:408-444`), as the **first** command after `modprobe`:
+The unit `nat64-jool` (`pkgs.nftables` in its `path`), in this order:
 
 ```sh
 modprobe jool
-ip netns exec ${netns} nft -f ${guard}          # new: before any instance exists
-ip netns exec ${netns} sysctl -w …              # as today
+ip netns exec nat64 nft -f <guard>          # first: no moment with an instance and no guard
+ip netns exec nat64 sysctl -w net.ipv4.conf.all.forwarding=0 net.ipv6.conf.all.forwarding=0
+ip netns exec nat64 sysctl -w net.ipv4.ip_local_port_range="1024 1099"
+# instance, pool4: as before
+ip netns exec nat64 jool -i default global update udp-timeout 0:05:00
+ip netns exec nat64 jool -i default global update icmp-timeout 0:01:00
+ip netns exec nat64 jool -i default global update address-dependent-filtering true
+ip netns exec nat64 jool -i default global update drop-externally-initiated-tcp true
 ```
 
-Add `pkgs.nftables` to the unit's `path`. Same unit, not a new one: a second oneshot with `Requires=` brings back the "dependency failed is not retried" trap of §17 G1.
+- **VERIFIED-VM** The four `global update` lines run on Jool 4.1.15 at every start (the suites boot through them; a restart with them is in the ownership phase).
+- Same unit, not a new one: a second oneshot with `Requires=` brings back the "dependency failed is not retried" trap of §17 G1.
+- Robustness, **VERIFIED-VM** (`nat-gateway`, marker `NAT_GATEWAY_GUARD_RESTARTS_OK`, and the IfState phase): the guard is byte-equal after `systemctl restart nftables.service`, after `systemctl restart nat64-jool.service` and after an IfState apply, and a TCP flow that is open across the first two goes on without an error line.
 
-Also in the script, after pool4 is whole (after `nat64.nix:443`), pin what the limits rest on (idempotent):
+Route, in `namespaces.nat64.routing.routes`: `{ to = cfg.pool6; type = "unreachable"; }`. **VERIFIED-VM**: IfState 2.5.1 applies it and `assert_ifstate_noop` holds.
 
-```sh
-ip netns exec ${netns} jool -i default global update udp-timeout 0:05:00
-ip netns exec ${netns} jool -i default global update icmp-timeout 0:01:00
-ip netns exec ${netns} jool -i default global update address-dependent-filtering true
-ip netns exec ${netns} jool -i default global update drop-externally-initiated-tcp true
-```
+### 3.5 Client: table `inet clat`, the CLAT guard, and forwarding (O7)
 
-- The two timeouts are Jool's defaults; they are written so that I7's number is the configured one. **ASSUMED**: option spelling and time format of 4.1.15 (`jool global update --help` in the suite's `print_versions`).
-- The two filtering flags cost nothing: the host's masquerade is already address-and-port restricted. They are a second layer for G-A2, which the hostile run did not reproduce.
-
-Routes, in `namespaces.${netns}.routing.routes` (`nat64.nix:359-368`), add (the prototype's line):
-
-```nix
-{ to = cfg.pool6; type = "unreachable"; }
-```
-
-### 3.5 Client: table `inet clat` and the CLAT guard
-
-New in `clat.nix`. `names.nix` gains `clat.table = "clat"`.
-
-```nix
-# clat.nix `let`
-pool6s = lib.unique (map (b: b.pool6) cfg.beacons);
-private6 = …;   # same helper as nat64.nix; move `private` and `embedded` to lib/gateway/private.nix
-```
+`names.nix` gains `clat.table = "clat"`. `clat.nix` sets `networking.nftables.enable = true`. Rendered on the client of `nat-gateway`:
 
 ```nft
 table inet clat {
   set gateways { type ipv6_addr; flags interval; auto-merge; elements = { <every gateway's pool6> } }
+  set private4 { … as §3.3 … }
   set private6 { … as §3.3 … }
   chain forward {
     type filter hook forward priority -10; policy accept;
-    oifname "clat0" meta nfproto ipv6 jump to_clat
-    iifname "clat0" meta nfproto ipv6 jump from_clat
+    meta nfproto != ipv6 accept
+    oifname "clat0" jump to_clat
+    iifname "clat0" jump from_clat
+    # only when the machine has links in `clan.networkFacts.forwardLinks` or `forwardLinks`
+    iifname { <forward links> } accept
+    oifname { <forward links> } accept
+    counter drop comment "clat-forward"
   }
   chain to_clat {
     ip6 daddr != <clat address> counter drop comment "clat-not-address"
+    ip6 saddr != @gateways icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
     ip6 saddr != @gateways counter drop comment "clat-foreign-source"
     ip6 saddr & ::ffff:ffff @private6 counter drop comment "clat-private-source"
+    accept
   }
   chain from_clat {
     ip6 saddr != <clat address> counter drop comment "clat-spoof"
     ip6 daddr != @gateways counter drop comment "clat-not-gateway"
+    accept
   }
   chain input {
     type filter hook input priority -10; policy accept;
     iifname "clat0" ct state established,related accept
     iifname "clat0" meta nfproto ipv4 counter drop comment "clat-unsolicited"
     iifname "clat0" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
-    iifname "clat0" meta nfproto ipv6 counter drop comment "clat-host6"
+    iifname "clat0" counter drop comment "clat-host6"
   }
 }
 ```
 
 - The forward chain is **stateless** on purpose: Cilium attaches to `clat0` and the uplink, and conntrack in FORWARD is not reliable there (§16.4).
-- The `input` chain uses conntrack for the host's own sockets only. A stateful NAT64 never opens a flow inwards, so "nothing unsolicited as IPv4" is true by design. **ASSUMED** to hold with Cilium's eBPF masquerade (pod answers are redirected by eBPF before INPUT). Proof: `k3s-clat` and `rke2-clat` must pass unchanged (§8 step 3). If they do not, drop the `clat-unsolicited` line of `input`, keep the rest, and write the finding into `upstream-facts.md`.
-- `clat-private-source` matters: a spoofed `pool6::10.x.y.z` source would arrive on the host as IPv4 from a pod or node range (T5).
-- Set `networking.nftables.enable = true` in `clat.nix`.
+- Changed against the draft: an ICMPv6 error from a source outside every gateway's `/96` is let in. A router on the path to a gateway answers "packet too big" with its own address; without the rule the CLAT has no path MTU discovery beyond the first hop. Any IPv6 host takes such errors; the host's stack checks them against its flows. **VERIFIED-VM** for one such error: the gateway's own refusal (`nat64-private`, ICMPv6 admin-prohibited from the gateway's link address, which is outside its `/96`) passes the rule, is translated by the CLAT (`JSTAT_RECEIVED6: 1`) and reaches a pod at once (`k3s-clat`: `wget: can't connect to remote host (172.20.0.1): No route to host`). "Packet too big" from a router between client and gateway is NOT-RUN (no suite has such a router).
+- `clat-private-source`: a forged `/96` source that embeds a private IPv4 address would arrive on the host as a pod or a LAN address (C01).
+- `input`: a stateful NAT64 opens no flow inwards. Forged packets from a gateway's `/96` are translated once and dropped as `clat-unsolicited`: no answer, no datagram at an open UDP port, no loop (C02, C03, C07).
 
-CLAT namespace guard, loaded first in the `clat` unit (`clat.nix:172-191`):
+**O7, decided by the owner: a CLAT host does not forward IPv6 machine-wide.** The CLAT needs `net.ipv6.conf.all.forwarding = 1` (packets between `clat0` and the uplink are forwarded). The table makes that the only forwarding:
+
+- IPv6 between `clat0` and another link passes only by `to_clat` and `from_clat`.
+- IPv6 between two other links is dropped (`clat-forward`), unless one of the two links is a **forward link**: a link whose owner declared that it forwards there and judges it by its own rules.
+- IPv4 is not touched (a plain client has IPv4 forwarding off; a kube node's pods need it).
+
+New fact `clan.networkFacts.forwardLinks` (`lib/kube-cluster/network-facts.nix`, a list of nft interface names, a trailing `*` is a wildcard). Who sets it in the prototype:
+
+| Owner | Value | File |
+|---|---|---|
+| k3s, rke2 | `["cilium*" "lxc*"]` | `lib/kube-cluster/service.nix` |
+| routed-fabric, when it forwards | its fabric interfaces | `services/routed-fabric/default.nix` |
+| router | its zone links and the WAN | `lib/gateway/router.nix` |
+
+New option `clanServices.gateway.clat.forwardLinks` (list of links, default `[]`) for a link no service declares (a container bridge). Docker with IPv6 on a CLAT host needs it; **NOT-RUN**.
+
+Proof:
+
+- C08 (`nat-gateway-hostile`): a second link behind the client (a namespace on a veth). From the outsider to it and from it to the outsider: both fail, `clat-forward` +4. Negative proof in the same phase: with `table inet clat` deleted both pings pass, so on `main` a CLAT host is an IPv6 router between all its links. The CLAT still carries IPv4.
+- `k3s-clat` passes on nodes that are CLAT hosts (alpha is a fabric spine, beta a leaf). After pod traffic in both families, the pod network between the nodes, ClusterIP and NodePort: `FINDING O7 alpha: forward links "cilium*", "lxc*", "rf66cac445797bf"; table inet clat counters {'clat-forward': 0, 'clat-not-address': 0, 'clat-foreign-source': 0, 'clat-private-source': 0, 'clat-spoof': 0, 'clat-not-gateway': 0, 'clat-unsolicited': 8}; CLAT guard {… 'guard-leftover': 0, … 'guard-leaving': 0}` (beta the same). Nothing the cluster needs was refused. The 8 `clat-unsolicited` packets per node were not captured: IPv4 that arrived on `clat0` for no flow of the host and that Cilium did not hand to a pod. Every pod and node check passes with them dropped.
+
+CLAT namespace guard, loaded first in the `clat` unit, then forwarding off (as §3.4):
 
 ```nft
 table inet guard
@@ -341,233 +368,194 @@ table inet guard {
   chain leftover {
     type filter hook prerouting priority 0; policy drop;
     iifname "clat1" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
+    meta pkttype != host counter drop comment "guard-noise-in"
     counter comment "guard-leftover"
   }
   chain leaving {
     type filter hook postrouting priority 0; policy drop;
-    oifname "clat1" ip6 saddr <clat address> accept          # 4→6
-    oifname "clat1" ip daddr 192.0.0.1 accept                # 6→4
-    oifname "clat1" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+    oifname "clat1" ip6 saddr <clat address> accept          # IPv4 that became IPv6
+    oifname "clat1" ip daddr 192.0.0.1 accept                # IPv6 that became IPv4
     oifname "clat1" ip6 saddr fd00:c1a7::2 meta l4proto ipv6-icmp accept
-    oifname "clat1" ip saddr 192.0.0.2 meta l4proto icmp accept
+    oifname "clat1" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+    ip6 daddr ff00::/8 counter drop comment "guard-noise-out"
     counter comment "guard-leaving"
   }
 }
 ```
 
-The guard does not name `pool6`, so the follower's moves need no reload.
+The guard does not name `pool6`, so the follower's moves need no reload. The draft's rule `ip saddr 192.0.0.2 meta l4proto icmp accept` is covered by `ip daddr 192.0.0.1 accept`.
 
-Routes in `clat.nix:124-133`:
-- add `{ to = "${cfg.address}/128"; type = "unreachable"; }` (prototype);
-- **remove** `{ to = "0.0.0.0/0"; via = "192.0.0.1"; }`. The only IPv4 destination Jool SIIT emits is the on-link `192.0.0.1`. `k3s-clat-mapped` runs on fixtures and keeps its own routes.
+Routes in the CLAT namespace:
+
+- added: `{ to = "${cfg.address}/128"; type = "unreachable"; }`;
+- **removed**: `{ to = "0.0.0.0/0"; via = "192.0.0.1"; }`. **VERIFIED-VM**: every CLAT shape of `nat-gateway` passes without it. `k3s-clat-mapped` runs on fixtures and keeps its own routes.
 
 ### 3.6 Units and ordering
 
 | Piece | Owner | Ordering | Survives |
 |---|---|---|---|
-| namespace, veth, addresses, routes (incl. `unreachable`) | IfState (`ifstate.service`) | after `nftables.service` (new, I22) | an apply keeps them |
+| namespace, veth, addresses, routes (incl. `unreachable`) | IfState (`ifstate.service`) | after `nftables.service` (stated; see P5) | an apply keeps them |
 | host tables `inet nat64`, `inet clat`, `inet router` | NixOS `nftables.service` | before `network-pre.target` | atomic reload per table; meters reset (accepted) |
-| `inet guard` in `nat64` | `nat64-jool.service`, first step | `After=ifstate`, `PartOf=ifstate`, `Restart=on-failure` | firewall restart does not touch a namespace's ruleset; reloaded atomically on every start |
+| `inet guard` in `nat64` | `nat64-jool.service`, first step | `After=ifstate`, `PartOf=ifstate`, `Restart=on-failure` | a firewall restart does not touch it; reloaded atomically on every start |
 | Jool instance, pool4, globals | `nat64-jool.service` | after the guard, same script | idempotent |
 | `inet guard` in `clat` | `clat.service`, first step | same | same |
 | health check | `nat64-health.service` | `After=`/`Wants=nat64-jool` | resumes state younger than `resume` |
 | beacon | `nat64-beacon.service` | `BindsTo=nat64-health` | stops with the check |
 | follower | `clat-follow.service` | `Wants=clat` (never `Requires`) | waits while no instance |
-| hook tables `router_svc`, `router_src` | `router-prefix.service` | after `nftables`, `ifstate` | each in its own transaction |
-| recheck after boot | `router-prefix-recheck.timer` (new, static) | `OnBootSec` | no runtime `systemd-run` |
-| build sshd | `remote-builder-sshd.service` (new) | `After=network.target` | independent of `sshd.service` |
+| hook tables `router_svc`, `router_src` | `router-prefix.service` (sandboxed) | after `nftables`, `ifstate` | each in its own transaction |
+| build sshd | owner-gated (O8) | | |
 
-New on gateway, client and router machines:
+On gateway, client and router machines, inside the existing `systemd.services` block (a second `systemd.services.…` attribute path beside it is a duplicate for `nixf-diagnose`):
 
 ```nix
-# nat64.nix, clat.nix, router.nix
-systemd.services.ifstate.after = ["nftables.service"];
+ifstate.after = ["nftables.service"];
 ```
 
-nix-unit: `lib.elem "nftables.service" config.systemd.services.ifstate.after` for one machine of each role.
+### 3.7 Health check (`nat64-health.py`)
 
-### 3.7 Health check additions (`nat64-health.py`)
-
-In the `count % POOL_EVERY == 0` block (`nat64-health.py:180-189`), add a guard check and a pool4 wholeness check. Both make the **round bad**, so the existing windows decide (no new state machine):
+Built as drafted, with one function that reads the guard and its counters:
 
 ```python
-def guarded():
-    """The namespace's guard table is loaded with both chains."""
-    shown = lines(["ip", "netns", "exec", config["netns"], "nft", "list", "table", "inet", "guard"])
-    return shown is not None and any("hook prerouting" in l for l in shown) and any("hook postrouting" in l for l in shown)
+GUARD = ["ip", "netns", "exec", config["netns"], "nft", "list", "table", "inet", config["guard"]]
+RESTART = config["restart"]          # "nat64-jool.service"
+GUARD_RETRY = 60
+
+def guard():
+    """None when a chain is missing, else what the two counters dropped."""
+    shown = lines(GUARD)
+    if shown is None or not any("hook prerouting" in line for line in shown) or not any("hook postrouting" in line for line in shown):
+        return None
+    dropped = {}
+    for line in shown:
+        for name in ["guard-leftover", "guard-leaving"]:
+            if f'comment "{name}"' in line and "packets" in line:
+                dropped[name] = int(line.split("packets")[1].split()[0])
+    return dropped
 ```
 
-- `sound = guarded()` is read every `POOL_EVERY` rounds and kept between reads.
-- `rounds.append(len(alive) >= QUORUM and sound)`.
-- When `sound` turns false: log once, and `subprocess.run(["systemctl", "--no-block", "restart", "nat64-jool.service"])` at most every 60 s. The unit reloads the guard.
-- Write `"guard": sound` into `health.json`.
-- Add `pkgs.nftables` to the unit's `path` (`nat64.nix:457-462`).
+- Read every `POOL_EVERY` (10) rounds, in the pool4 block.
+- A round is good when `len(alive) >= QUORUM and guarded is not None`. The existing windows decide; there is no new state machine.
+- When the guard is missing: one journal line, and `systemctl --no-block restart nat64-jool.service`, at most every 60 s. The unit loads the guard first.
+- `health.json` gains `"guard": true|false` and `"guard_dropped": {"guard-leftover": n, "guard-leaving": n}` (risk R1: an exporter sees a guard that drops).
+- `pkgs.nftables` in the unit's `path`; the health config gains `guard` and `restart`.
 
-A full pool4 still never withdraws the beacon (I8).
+**VERIFIED-VM** (`nat-gateway-hostile`, N11):
+
+- guard deleted by hand: `health.json` says `"guard": false`, the guard is back 2.3 s after the deletion, one journal line, 12 bad rounds of the last 60, the beacon stays;
+- guard deleted and the Jool unit unable to start: the beacon is closed 29.9 s later, state `down`, journal `30 of the last 60 rounds bad (the namespace's guard is not loaded), beacon withdrawn`. The translator still translates meanwhile (the host table and layer 3 remain). When the unit can start again, `Restart=on-failure` loads the guard and the beacon returns after `up` good rounds.
+
+A full pool4 still never withdraws the beacon (I8, N16).
 
 ### 3.8 Option surface, nat-gateway
 
-| Change | Where | Type / default | Why |
+| Change | Where | Type / default | Status |
 |---|---|---|---|
-| **add** eval assertion I7 | `nat64.nix` assertions | for `limits.default`, `limits.trusted`, each `custom[].limits`: `newFlowsBurst + newFlows * 300 <= 64436` | today only the default numbers satisfy it; an override can break it silently |
-| **add** `clanServices.gateway.clat.table` | `names.nix` | `"clat"` | the new table |
-| **remove** CLAT namespace IPv4 default route | `clat.nix:129-132` | | no loop surface |
-| **keep** `address`, `allow`, `custom`, `limits`, `health.*` | | | no reason to rename |
-| **later (step 8, optional)** remove role option `address`; the beacon listens at `pool6::192.0.0.170` | `services/nat-gateway/default.nix:107-111` | | beacon reachability then proves the `pool6` route (§4d) |
-
-Eval assertion sketch (`nat64.nix`, in `assertions`):
-
-```nix
-(let
-  ports = 65535 - 1100 + 1;
-  udpTimeout = 300;
-  over = lib.filter (l: l.limits.newFlowsBurst + l.limits.newFlows * udpTimeout > ports) (
-    [{name = "tier default"; limits = cfg.limits.default;} {name = "tier trusted"; limits = cfg.limits.trusted;}]
-    ++ map (client: {name = "client ${client.name}"; inherit (client) limits;}) cfg.custom
-  );
-in {
-  assertion = over == [];
-  message = "nat-gateway: ${lib.concatMapStringsSep ", " (l: l.name) over}: newFlowsBurst + newFlows x ${toString udpTimeout} s is more than pool4's ${toString ports} ports of a protocol; one source could fill the pool (specs/gateway.md §17 G4)";
-})
-```
+| **add** eval assertion I7 | `nat64.nix` assertions | for `limits.default`, `limits.trusted`, each `custom[].limits`: `newFlowsBurst + newFlows * 300 <= 64436` | built; every suite's limits pass it; the failing case is a nix-unit test to add (`test_limitBound`, NOT-RUN) |
+| **add** `names.guard`, `names.clat.table` | `names.nix` | `"guard"`, `"clat"` | built |
+| **add** `clanServices.gateway.clat.forwardLinks` | `clat.nix` | `listOf str`, `[]` | built (O7) |
+| **add** fact `clan.networkFacts.forwardLinks` | `lib/kube-cluster/network-facts.nix` | `listOf str`, `[]` | built (O7); a cross-area contract |
+| **remove** CLAT namespace IPv4 default route | `clat.nix` | | built |
+| **keep** `address`, `allow`, `custom`, `limits`, `health.*` | | | |
+| **later (step 8, optional)** the beacon at `pool6::192.0.0.170` | `services/nat-gateway/default.nix` | | NOT-RUN (P4) |
 
 ### 3.9 Router changes (`router.nix`, `services/router/default.nix`)
 
-**(a) One renderer for both firewalls (G-A3, I19).** Replace `wanPortRules`, `dnsRules`, the DHCP line, the SSH line and `firewall.interfaces` (`router.nix:52-58,154-163,389-395,423-427`) with one data structure:
+**(a) One renderer for both firewalls (G-A3, I19).** Built. `wanPortRules`, the DHCP line, the SSH line and the old `firewall.interfaces` are gone:
 
 ```nix
-# link -> what the router itself offers on that link
-offered = let
-  zoneOf = link: lib.findFirst (zone: lib.elem link zone.interfaces) null (builtins.attrValues lanZones);
-  lan = link: let zone = zoneOf link; dns = zone.dns.ipv4 != null || zone.dns.ipv6 != null; in {
+zoneOf = link: lib.findFirst (zone: lib.elem link zone.interfaces) null (builtins.attrValues lanZones);
+offered =
+  lib.genAttrs lanLinks (link: let
+    zone = zoneOf link;
+    dns = zone.dns.ipv4 != null || zone.dns.ipv6 != null;
+  in {
     tcp = lib.optional dns 53 ++ lib.optional zone.ssh 22;
     udp = lib.optional dns 53 ++ lib.optional (zone.dhcp4 != null) 67;
-  };
-in
-  lib.genAttrs lanLinks lan // {${cfg.wan} = {inherit (cfg.wanPorts) tcp udp;};};
+  })
+  // {${cfg.wan} = {inherit (cfg.wanPorts) tcp udp;};};
+# NixOS side
+networking.firewall.interfaces = lib.mapAttrs (_: offer: {allowedTCPPorts = offer.tcp; allowedUDPPorts = offer.udp;}) offered;
+# router table side: one rule per link and protocol; DNS keeps its `ip daddr <zone address>` rule (`dnsRules`)
+offeredRules = … ''iifname "<link>" tcp dport { … } accept comment "offered on <link>"'' …;
 ```
 
-- NixOS side: `firewall.interfaces = lib.mapAttrs (_: p: {allowedTCPPorts = p.tcp; allowedUDPPorts = p.udp;}) offered;`
-- Router table side: one rule per link and protocol from `offered` (`iifname "<link>" tcp dport { … } accept`). The DNS rules keep their `ip daddr <zone address>` match: render them from `offered` plus the zone's address, as today.
-- nix-unit `test_bothFirewallsAgree`: for every link, the ports in `firewall.interfaces.<link>` equal the ports of that link's accept rules. `test_wanPortsBothFirewalls` from the review.
+On `main` a zone's SSH worked only because `services.openssh.openFirewall` opens 22 on every link; `wanPorts` did not work at all (G-A3).
 
-**(b) Zones reach the fabric by opt-in (owner decision).**
+**(b) Zones reach the fabric by opt-in (owner decision H3).** Built.
 
 | Change | Where | Type / default |
 |---|---|---|
-| **add** `zones.<name>.fabric` | `services/router/default.nix:42-69` and `router.nix:213-247` | `bool`, default `false`: "The zone exchanges flows with the machine's links that are in no zone (a fabric, a cluster's pods), in both directions." |
-| **remove** `unzoned.zones` | `services/router/default.nix:101-113`, `router.nix:262-266` | replaced by the per-zone option |
-| **rename** `unzoned.source.{ipv4,ipv6}` → `fabricSource.{ipv4,ipv6}` | same files | unchanged type and default |
-| **add** fact `clan._networkFacts.fabricInside` | `lib/kube-cluster/network-facts.nix` (beside the other `strList` facts) | `strList "Links whose hosts count as inside the fabric: a router's zones with fabric = true."` |
+| **add** `zones.<name>.fabric` | `services/router/default.nix`, `router.nix` | `bool`, default `false` |
+| **remove** `unzoned.zones` and its assertion | same | replaced by the per-zone option |
+| **rename** `unzoned.source.{ipv4,ipv6}` → `fabricSource.{ipv4,ipv6}` | same | unchanged type and default |
+| **set** fact `clan._networkFacts.fabricInside = zonesOf fabricZones` | `router.nix` | the fact itself is fabric step 1 |
 
-```nix
-# router.nix
-fabricZones = lib.attrNames (lib.filterAttrs (_: zone: zone.fabric) lanZones);
-# replaces every `cfg.unzoned.zones` (lines 68-93, 339-341)
-clan._networkFacts.fabricInside = zonesOf fabricZones;
-```
-
-- The consumer is routed-fabric's border guard (`services/routed-fabric/default.nix:1332-1336`): it accepts `iifname` in `fabricInside` beside `cilium*` and `lxc*`. That edit belongs to the routed-fabric design; this design only publishes the fact.
+- The consumers are routed-fabric's border guard and the kube ingress chain (`patches/fixes-fabric-kube.patch`, applied in the prototype). They belong to those designs.
 - "Unzoned links always reach the WAN" stays (owner-accepted, G25).
-- Delete eval test `test_unknownUnzoned`; add `test_fabricZoneFact` (a zone with `fabric = true` → its link in `config.clan.networkFacts.fabricInside`; default → `[]`) and `test_fabricDefaultOff` (no `zone to unzoned` rule renders).
 
-**(c) Empty LAN (G-A7, I23).**
-- `services/router/default.nix` assertions: `settings.zones != {}` with "router/<instance>: a router needs one LAN zone or more".
-- `router.nix:388`: `extraReversePathFilterRules = lib.optionalString (lanLinks != []) "iifname ${lans} accept";`
+**(c) Empty LAN (G-A7, I23).** NOT-BUILT in the prototype. As drafted: `settings.zones != {}` assertion in `services/router/default.nix`; `extraReversePathFilterRules = lib.optionalString (lanLinks != []) "iifname ${lans} accept";`.
 
-**(d) `servicePrefix` without an advertised zone (G-A8).** Replace the three `lib.mkIf (advertised != {})` at `router.nix:502,512,537` by `lib.mkIf (advertised != {} || cfg.servicePrefix.subnet != null)`. `corerad` keeps `advertised != {}`.
+**(d) `servicePrefix` without an advertised zone (G-A8).** NOT-BUILT. As drafted: `hookWanted = advertised != {} || cfg.servicePrefix.subnet != null` in place of the three `lib.mkIf (advertised != {})` of the hook's path unit, tables unit and service. `corerad` keeps `advertised != {}`.
 
-**(e) ICMP from router links (I16).** Replace `meta l4proto { icmp, ipv6-icmp } accept` (`router.nix:421`):
+**(e) ICMP from router links (I16).** Built, in the router table's `input` chain in place of `meta l4proto { icmp, ipv6-icmp } accept`. The two limit rules stand **ahead of** `ct state established,related accept`:
 
 ```nft
-ip protocol icmp icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
-ip protocol icmp icmp type echo-request limit rate 20/second burst 40 packets accept
-icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem,
+icmp type echo-request limit rate over 20/second burst 40 packets counter drop comment "input echo over the rate"
+icmpv6 type echo-request limit rate over 20/second burst 40 packets counter drop comment "input echo over the rate"
+ct state established,related accept
+icmp type { destination-unreachable, time-exceeded, parameter-problem, echo-request } accept
+icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request,
               nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit,
               mld-listener-query, mld-listener-report, mld-listener-done, mld2-listener-report } accept
-icmpv6 type echo-request limit rate 20/second burst 40 packets accept
+meta l4proto { icmp, ipv6-icmp } counter drop comment "input icmp dropped"
 ```
 
-And pin, in `boot.kernel.sysctl` (`router.nix:365-370`):
-
-```nix
-"net.ipv4.conf.all.accept_redirects" = 0;
-"net.ipv4.conf.default.accept_redirects" = 0;
-"net.ipv4.conf.all.secure_redirects" = 0;
-"net.ipv4.conf.all.send_redirects" = 0;
-"net.ipv6.conf.all.accept_redirects" = 0;
-"net.ipv6.conf.default.accept_redirects" = 0;
-```
-
-A forwarding machine ignores redirects by default. The lines make it a stated fact, not a kernel default.
+- **REFUTED**: the draft's `icmp type echo-request limit rate 20/second burst 40 packets accept` behind the `established` accept. The echo requests of one flood are one tracked flow: after the first they are `established` and never meet the limit (`hostile-router`, first run: 200 of 200 answered).
+- The limit is one bucket for all router links, not per source.
+- And the six redirect sysctls of the draft in `boot.kernel.sysctl` (`accept_redirects` for `all` and `default`, `secure_redirects`, `send_redirects` for IPv4; `accept_redirects` for `all` and `default` for IPv6).
 
 **(f) Prefix hook.**
 
-1. *Validation (G-A6, I20)*, `router-prefix.py:104-114`:
+1. *Validation (G-A6, I20).* Built in `router-prefix.py`; `hookConfig` gains `own = ownPrefixes "ipv6"`:
    ```python
    GLOBAL = ipaddress.IPv6Network("2000::/3")
-   OWN = [ipaddress.ip_network(p) for p in CONFIG["own"] if ":" in p]   # zone prefixes + stable, from Nix
+   OWN = [ipaddress.IPv6Network(prefix, strict=False) for prefix in CONFIG["own"]]
    MAX_PREFIXES = 8
 
    def delegated(text):
        found = []
        for word in (text or "").split():
            try:
-               net = ipaddress.IPv6Network(word)
-           except ValueError:
+               network = ipaddress.IPv6Network(word)
+           except ValueError:          # also a prefix with host bits set
+               print(f"router-prefix: {word[:64]!r} is not a delegation to use (…): skipped", flush=True)
                continue
-           if not net.subnet_of(GLOBAL) or not 32 <= net.prefixlen <= 64 or any(net.overlaps(own) for own in OWN):
-               print(f"router-prefix: {word} is not a delegation to use (not global unicast, not /32 to /64, or one of the router's own prefixes): skipped", flush=True)
+           if not network.subnet_of(GLOBAL) or not 32 <= network.prefixlen <= 64 or any(network.overlaps(own) for own in OWN):
+               print(f"router-prefix: {word} is not a delegation to use (…): skipped", flush=True)
                continue
-           if str(net) not in found:
-               found.append(str(net))
+           if str(network) not in found:
+               found.append(str(network))
        return found[:MAX_PREFIXES]
    ```
-   `hookConfig` (`router.nix:117-134`) gains `own = ownPrefixes "ipv6";`.
-
-2. *Boot grace without a marker (G-A4, I21).* Two changes.
-   - **netif (N16 amendment, `services/netif/host.nix:117-125`)**: on "no preferred prefix in the reply" and on `EXPIRE6`, write an **empty file** by rename. Never remove it. Meaning: absent = no answer since boot (`/run` is new); empty = the ISP says none.
-   - **hook** (`router-prefix.py:141-158`): delete `BOOT`, `GRACE`, the `systemd-run` call and its two branches. Replace with:
-     ```python
-     def handle(text):
-         state = load_state()
-         if text is None and state["current"] and uptime() < WAIT:
-             # no answer yet since the boot: the prefix on disk stays (I21)
-             prefixes = [state["current"]]
-         else:
-             prefixes = delegated(text)
-         …
-     def uptime():
-         return time.clock_gettime(time.CLOCK_BOOTTIME)
-     WAIT = 120
-     ```
-   - **static timer** in `router.nix` (replaces the runtime `systemd-run`):
-     ```nix
-     # hookWanted = advertised != {} || cfg.servicePrefix.subnet != null   (see d)
-     systemd.timers.router-prefix-recheck = lib.mkIf hookWanted {
-       wantedBy = ["timers.target"];
-       timerConfig = { OnBootSec = "125s"; Unit = "router-prefix.service"; };
-     };
-     ```
-   - Why this is better: the grace no longer depends on which run was "first". A retry (`Restart=on-failure`), a deploy or a manual start inside the window all keep the prefix. A real loss is explicit (empty file), so the window can be long without delaying a real change.
-   - If the netif change is refused: keep "absent = none after `WAIT`". The uptime rule and the static timer still fix G-A4.
-
-3. *Sandbox (G-A5)*, `router.nix:554-559`:
+2. *Boot grace without a marker (G-A4, I21).* **NOT-BUILT, NOT-RUN.** It needs the netif N16 amendment (an empty file means "delegation lost"), which is netif's. The draft stands:
+   - netif (`services/netif/host.nix`): on "no preferred prefix in the reply" and on `EXPIRE6`, write an **empty file** by rename; never remove it;
+   - hook: delete `BOOT`, `GRACE` and the `systemd-run` call; keep the prefix on disk while the file is absent and `time.clock_gettime(time.CLOCK_BOOTTIME) < 120`;
+   - a static `router-prefix-recheck.timer` with `OnBootSec = "125s"`.
+3. *Sandbox (G-A5).* Built:
    ```nix
    serviceConfig = (import ./sandbox.nix) // {
-     Type = "oneshot";
-     ExecStart = "${hook} ${hookConfig}";
-     Restart = "on-failure";
-     RestartSec = 10;
      ReadWritePaths = ["/run/router" "/var/lib/router"];
      CapabilityBoundingSet = ["CAP_NET_ADMIN"];
      RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
      IPAddressDeny = "any";
+     Type = "oneshot"; ExecStart = "${hook} ${hookConfig}"; Restart = "on-failure"; RestartSec = 10;
    };
    ```
-   The hook still calls `systemctl --no-block try-restart corerad.service` (AF_UNIX). Keep that: a path unit for corerad would lose a change that lands while it runs; the digest file is self-healing.
+   The hook still calls `systemctl` and, until point 2 is built, `systemd-run` (both AF_UNIX).
 
 ### 3.10 remote-builder: target shape
+
+> **Owner-gated (O8), not probed.** external-systems/home consumes this service. Nothing below was built or run in the probe round. Do not build it until the owner schedules it with `home`.
 
 Replace `services/remote-builder/default.nix` roles' modules. Keep the role names and the trust model.
 
@@ -695,9 +683,10 @@ Note for the owner: external-systems/home uses this service today. After this ch
 - Refined shape: not `input`/`forward`/`output` with policy drop. Two chains: **prerouting at priority 0** (after Jool's -75) and **postrouting**. Reason: translated packets pass POSTROUTING only (**VERIFIED-SRC**), and one prerouting chain stops delivery and forwarding in one place.
 - Who loads it: the Jool unit itself, first step, one atomic `nft -f` (§3.4). Not IfState (it has no nft). Not NixOS nftables (host namespace only).
 - IfState apply: does not touch nft. The Jool unit is `PartOf=ifstate.service`, so it reruns and reloads the guard atomically. A namespace made again loses instance and guard together; the unit makes the guard first.
-- Firewall restart: `nftables.service` acts in the host namespace. **ASSUMED** (netfilter tables are per network namespace); the suite asserts it (§5).
+- Firewall restart: `nftables.service` acts in the host namespace. **VERIFIED-VM**: the guard is byte-equal after it (`nat-gateway`, `NAT_GATEWAY_GUARD_RESTARTS_OK`).
 - Hook priority: guard at 0, Jool at -75. Never use -75 itself: the order of equal priorities is not defined.
 - Cost: about 40 lines of Nix, one health-check function, one suite assertion flipped. No conntrack in the namespace, so no new state.
+- Result: built and **VERIFIED-VM** (§3.4, §9 P6). One rule was added: link chatter is counted apart from what Jool handed back.
 - The earlier rejection ("the suite asserts the namespace ruleset is empty") was a test protecting a mechanism. Replaced in §5.
 
 ### (b) Is namespace + veth the best model? **KEEP it**
@@ -707,7 +696,7 @@ Note for the owner: external-systems/home uses this service today. After this ch
 | Jool in the host namespace, netfilter mode | reject | It steals in PREROUTING and emits in POSTROUTING: the forward chain never sees it (§10.1, proven by the suite's negative proof). A prerouting filter would see every packet of a flow as `new` (the entry is never confirmed), so the flow meters break. pool4 would be the host's public IPv4: port clashes with Cilium's eBPF SNAT on a gateway that is a node (§14.5 point 5). |
 | Jool iptables mode (`-j JOOL`) | reject | Same PREROUTING steal. Needs xtables rules beside nftables: a second rule language on the machine. Solves neither gap. |
 | A VRF | reject | Jool instances are per network namespace (`xlator_find_netfilter(dev_net(skb->dev))`, **VERIFIED-SRC**), not per VRF. A VRF gives no hook separation. |
-| nftables-native NAT64 | not available | Linux 6.18 has no NAT64/SIIT expression in nf_tables. The kernel config was not in the store to grep; **ASSUMED** from upstream. Re-check on each kernel bump. |
+| nftables-native NAT64 | not available | Linux 6.18 has no NAT64/SIIT expression in nf_tables. The kernel config was not in the store to grep; **NOT-RUN**, taken from upstream. Re-check on each kernel bump. |
 | tayga (userspace, tun) + conntrack masquerade | reject for now, keep as the named fallback | For: no out-of-tree module, a crash fails closed, packets pass FORWARD on both sides so no namespace is needed. Against: single-threaded userspace on the path of every cluster image pull; one private IPv4 per client address from a dynamic pool; no BIB to read for pool accounting; it was rejected before (§12.2) and every failover suite is built on Jool. |
 | eBPF CLAT/NAT64 | reject | Nothing packaged in the pinned set; Cilium's NAT46x64 is for services only. |
 
@@ -763,7 +752,7 @@ Cost of keeping: zero migration. The guard and the pre-translation rules are the
 - Keep: per-/64 meters, fail closed when a meter is full.
 - Add I7 as an eval assertion for every rendered limit (§3.8). Today a client override can break the bound with no message.
 - Pin Jool's `udp-timeout` and `icmp-timeout` in the unit, so the assertion's 300 s is the configured value.
-- Exhaustion behaviour, target: existing flows continue; new flows fail; the beacon stays; nothing loops. Whether Jool answers a new flow on a full pool4 with `drop` or `untranslatable` is **ASSUMED** unknown; with the guard both end at one crossing (probe P3 records which).
+- Exhaustion behaviour, **VERIFIED-VM** (P3, N16): existing flows continue; new flows are dropped by Jool in silence (`JSTAT_BIB6_NOT_FOUND`, no ICMPv6 error, not handed back); the beacon stays; nothing loops.
 - Limit of the model, stated: several sources together can still fill one pool4 address (5 default sources at full rate). The scale knob, if ever needed, is more pool4 addresses on `jool1` (`192.0.0.2` to `192.0.0.6` with a `/29`), not higher limits. Not built now (owner decision §17 G4: one address).
 
 ### Own ideas
@@ -772,8 +761,8 @@ Cost of keeping: zero migration. The guard and the pre-translation rules are the
 - **(j) `from_translator` and `nat64-return-undeclared`**: the translator only ever talks back to declared clients. Stateless, cheap, symmetric with the allowlist.
 - **(k) No IPv4 default route in the CLAT namespace.**
 - **(l) `ifstate` after `nftables`** on every machine of this area (I22).
-- **(m) Probe: `forwarding=0` inside both namespaces** (P2). If Jool still translates, the namespace kernel cannot forward at all: a third, independent loop breaker, and two `sysctl -w` lines go.
-- **(n) A CLAT turns a client into an IPv6 router** (`clat.nix:92`, `forwarding=1` machine-wide). A two-NIC client then forwards between its NICs. Target: on a client that sets no forwarding fact of its own, `networking.firewall.filterForward = lib.mkDefault true` with accepts for `clat0` only. Needs a look at Docker and kube clients first (open risk R5).
+- **(m) `forwarding=0` inside both namespaces**: **VERIFIED-VM** (P2) and built. Jool translates; the namespace kernel cannot forward at all. The `sysctl -w` lines stay and write 0 (a namespace of an older generation may hold 1).
+- **(n) A CLAT turns a client into an IPv6 router** (`forwarding=1` machine-wide): **decided by the owner (O7) and built** (§3.5, C08). Not `filterForward`: that is stateful and covers IPv4 too, and conntrack in FORWARD is not reliable beside Cilium. The CLAT's own stateless chain drops IPv6 between links nobody declared.
 
 ---
 
@@ -812,6 +801,24 @@ Cost of keeping: zero migration. The guard and the pre-translation rules are the
 | eval `test_generatorsNamespacedByInstance`, `test_sshServe`, `test_buildMachine`, `test_sshAliasFailsFast` | `services/remote-builder/tests/eval-tests.nix` | `test_oneHostKey`, `test_oneDaemonTwoInstances`, `test_mainSshdUntouched` (`services.openssh.hostKeys` and `.enable` not defined by the service), `test_aliasNamespaced`, `test_noBareAlias`, `test_keysOnly`. |
 
 Checks that pin behaviour and must stay as they are: the two "G2 negative proof" subtests, PMTUD and fragments, the limits phase, every failover phase, `checks.clat-follow`.
+
+### Status after the probe round (2026-11-27)
+
+Rewritten in the prototype's suites, and passing:
+
+| Check | File | Now |
+|---|---|---|
+| namespace ruleset is empty | `services/nat-gateway/tests/vm/default.nix`, ownership phase | `nft list tables` in the namespace is exactly `table inet guard`; its JSON without counters is equal before and after a restart of `nftables.service`, a restart of `nat64-jool.service` and an IfState apply (gateway and client); a TCP flow open across the restarts gets its echoes and no error line. Marker `NAT_GATEWAY_GUARD_RESTARTS_OK` |
+| `counted(machine, chain, comment)` | same; `lib/gateway/tests/vm/kube-gateway.nix` | `counted(machine, comment, table="nat64")`: a rule is found by its comment (with its quotes) in the whole table |
+| private destinations move `nat64-private` in chain `forward` | same, `assert_gateway` | twelve embeddings (the five of before, `127.0.0.1`, `192.0.0.1`, `192.0.0.2` among them) move `nat64-private` by one each; `curl` ends with code 7; `nat64-private-post == 0` |
+| `192.0.0.1` and the public IPv4 both hit `nat64-host` | same | `192.0.0.1` is private (refused before translation); the public IPv4 hits `nat64-host` |
+| negative proof "the NixOS forward chain alone lets an undeclared source ping through" | same | two stages: `to_translator` emptied → still no answer, `nat64-return-undeclared` +2; `from_translator` emptied too → the ping passes |
+| guard counters | same, helper `guard_quiet` | `guard-leftover == 0 and guard-leaving == 0` after the basic phase, the CLAT phase, the traffic shapes and the rate limit floods; `health.json` says `"guard": true` |
+| namespace forwarding | same | `net.ipv4.conf.all.forwarding` and `net.ipv6.conf.all.forwarding` are 0 in `nat64` and `clat` |
+| `nat64-private` counted after translation (`kube-clat.nix`) | `lib/gateway/tests/vm/kube-clat.nix` | service mode: the stray packets are captured as IPv6 on the gateway's inside link (the IPv4 address is bytes 36 to 39 of the header); one pod request moves the counter by one; `JSTAT_SUCCESS` does not move. Fixture mode (`k3s-clat-mapped`) is unchanged |
+| `unzoned.zones = ["home"]` | `lib/gateway/tests/vm/kube-router.nix` | `zones.home.fabric = true` |
+
+Not rewritten yet (NOT-RUN; `check` was not run in the probe round, so every nix-unit row of the table above is open): `test_table`, `test_unknownUnzoned`, `test_forwardRules`, `test_ownLinksOnly`, the remote-builder tests, and the router suite's boot-grace phase (waits for §3.9 f point 2). Expect the nix-unit tests that read rule text (`test_table`, `test_meterPer64`, the router's input chain texts) to fail on the prototype until they are rewritten.
 
 ---
 
@@ -873,6 +880,42 @@ Format as in `runs/*.verdicts.txt`: `HOSTILE SAFE|GAP <id> <claim>: <evidence>`.
 | B06 | builder in two instances | eval + VM: both instances' clients build | one daemon, one host key, both clients connect (I26) |
 | B07 | scanner | `ssh-keyscan -p 22 builder` before and after enabling the service | port 22's keys are identical (I24) |
 
+### Results of the hostile runs (2026-11-27, prototype applied)
+
+The tables above are the draft. What ran, and how a verdict differs from its draft row:
+
+| ID | Result | Suite | As run |
+|---|---|---|---|
+| N01 to N04 | SAFE | `nat-gateway-hostile` | unchanged scans |
+| N05 | SAFE, ten verdicts | same | every target ends `curl rc=7, ping rc=1`, also `127.0.0.1` (on `main`: answered). One verdict more reads the mechanism: `nat64-private` 16, `nat64-private-post` 0, `nat64-host` 10, guard counters 0 |
+| N06 | SAFE, four verdicts | same | (1) one crossing; (2) `clat-foreign-source` +1 and nothing let through to `clat0`; (3) with `to_clat` replaced by `accept`: `guard-leftover` +1, still one crossing each; (4) with the guard deleted too: still one crossing (forwarding off and the `unreachable` route) |
+| N07 | SAFE, two verdicts | same | one crossing; `nat64-protocol` +1, nothing let through |
+| N08 | SAFE | same | unchanged |
+| N09 | SAFE | same | three datagrams to `pool6::192.0.0.2` at another client's mapped port: `nat64-private` +3 (the TCP half of the draft row is covered by N05's `192.0.0.1`) |
+| N10 | SAFE | same | instance removed: one crossing, Jool handed the client's one packet back (a counter at prerouting -5 in the namespace), nothing left the namespace. `guard-leftover` moves by more than one: the health check's pings end there too |
+| N11 | SAFE, five verdicts | same | see §3.7. The draft's "N07's packet crosses at most twice" ran as: host chain emptied and guard deleted, one crossing |
+| N12 | SAFE | same | NS, RS and an MLD query to a pool6 address: `nat64-icmp-type` +3, nothing let through |
+| N13 | SAFE | same | forged "packet too big" from the outsider: `nat64-undeclared` +1 |
+| N14 | SAFE | same | UDP to 101 ports and SYNs from an IPv4 address no flow goes to: 0 packets towards `jool0`, the client's listener hears nothing, `nat64-unsolicited4` 0 (the masquerade's conntrack refuses first) |
+| N15 | SAFE | same | 3000 bytes echoed to an allowed destination; to a private one `nat64-private` +1, nothing let through |
+| N16 | SAFE | same | see P3 |
+| N17 | SAFE | same | `guard-leaving` 0 on both gateways and both clients after every attack |
+| C01 | SAFE | same | `clat-private-source` +1, nothing let through |
+| C02, C03, C07 | SAFE, one verdict | same | three forged packets from a gateway's `/96` with a public IPv4 inside (SYN to 22, a datagram to an open UDP port, an echo request): let through 3, `clat-unsolicited` +3, the open port heard nothing, no answer sent, nothing forwarded back |
+| C04 | SAFE | same | forged RA with a PREF64 option and a high-preference default route, three times: the CLAT's pool6 does not move in 20 s (the draft said 90 s). INFO: the client took no default route (`ra = false`) |
+| C05 | SAFE, in the function suite | `nat-gateway` | marker `NAT_GATEWAY_FOREIGN_PREFIX_OK` (the existing foreign-prefix phase) |
+| C06 | SAFE | `nat-gateway-hostile` | instance removed: the host's ping is sent once, comes back 0 times, `guard-leftover` +1 |
+| C08 (new, O7) | SAFE, two verdicts | same | §3.5 |
+| R01 to R14, R16 | SAFE (R16 is an INFO line) | `hostile-router` | unchanged |
+| R15 | SAFE, **and only now a real verdict** | same | On `main`'s copy of the suite the rogue radvd had `MaxRtrAdvInterval 4` and no `MinRtrAdvInterval`: radvd refuses such an interface, no advertisement was ever sent, and SAFE meant nothing (the first runs' R16 line shows only the router's own default route). Fixed with `MinRtrAdvInterval 3` and a control: a LAN neighbour must take the rogue prefix, else the suite fails. Run 08: `R15 control: the rogue advertisement reached a LAN neighbour: True`; the router's routes and addresses are unchanged; R16 shows the neighbour's rogue default route and two `2001:db8:bad::` addresses |
+| R17 | SAFE | same | a listener on 8443 and 8444, `wanPorts.tcp = [8443]` |
+| R18 | SAFE | same | as run: the test writes netif's PD file (the DHCP client stopped) with `::/0`, `fd00::/8`, `fe80::/10`, a /24, a /72, `ff00::/8`, `64:ff9b::/96` beside the real prefix. The draft's DHCPv6 server on the ISP was not built |
+| R19 | SAFE, two verdicts | same | ICMP timestamp requests; the redirect sysctls are read. Forged redirect packets were not sent |
+| R20 | SAFE after a design change: 69 of 200 answered, 131 dropped by the rate rule (first run: 200 of 200, §3.9 e) | same | `ping -f -c 200` |
+| R21, R22 | SAFE (`ROUTER_KUBE_DENY_OK`, `ROUTER_KUBE_OK`) | `router-kube` | the suite's existing checks with the new option: zone `home` (`fabric = true`) reaches pods on both nodes, zone `servers` (default) does not |
+| R23, R24 | NOT-RUN | | need §3.9 f point 2 |
+| B01 to B07 | NOT-RUN | | owner-gated (O8) |
+
 ---
 
 ## 7. Failure modes and stability
@@ -884,13 +927,13 @@ Format as in `runs/*.verdicts.txt`: `HOSTILE SAFE|GAP <id> <claim>: <evidence>`.
 | IfState fails on another link | Jool unit is `Wants`, not `Requires`: it still runs. | | existing |
 | `nat64-jool` restart | Guard first, atomic. No moment without it. | I10 | N10, ownership phase |
 | Jool instance removed (pool6 change, operator) | Packets get `NF_ACCEPT` from Jool, the guard drops them. Second layer: the `unreachable` route. One crossing. | I2 | N10 |
-| Guard deleted by hand | `unreachable` routes still stop loops for `pool6`. The health check sees it within 10 s, rounds turn bad, `nat64-jool` is restarted (reloads the guard); if it stays away 30 s the beacon is withdrawn. | I9 | N11 |
+| Guard deleted by hand | Forwarding is off in the namespace and `pool6` is unreachable there: still no loop. The health check sees it within 10 s (run: 2.3 s until it was back), rounds turn bad, `nat64-jool` is restarted (reloads the guard); if it cannot be loaded the beacon is withdrawn after the `down` window (run: 29.9 s). VERIFIED-VM | I9 | N11 |
 | Jool module fails to load at boot | Unit fails, retried every 5 s. No instance: the guard cannot load either if the namespace is missing; if the namespace exists the guard loads first and everything is dropped. Health never comes up: no beacon. Clients stay on or move to the other gateway. | I2, I9 | eval `test_unitsRetry`; VM: block `modprobe jool` once |
 | Gateway dies | Unchanged: flows stall, followers move after 60 s to a gateway heard 5 of 10. | I15 | failover suite |
 | Gateway reboots | 120 s without beacon. Its translator works as soon as `nat64-jool` ran. No client moves back. | | failover suite |
 | Both gateways lose upstream | Both withdraw. Followers stay. | | existing phase |
 | Health check crashes | Beacon stops with it (`BindsTo`). Restart resumes a state younger than 60 s. | | existing phase |
-| pool4 full | New flows fail; one crossing; band logged; beacon stays. | I8 | N16 |
+| pool4 full | New flows are dropped by Jool in silence; one crossing; band logged; beacon stays; open flows go on. VERIFIED-VM | I8 | N16 |
 | Meter set full | Fail closed for sources without an entry (unchanged). | | eval `test_table` successor |
 | Client: `clat` unit restart | Guard first; instance and its pool6 (the follower's choice) stay. | I12 | existing retry phase + C06 |
 | Client: follower dies | `Restart=always`. pool6 stays where it was. | I14 | existing |
@@ -899,7 +942,7 @@ Format as in `runs/*.verdicts.txt`: `HOSTILE SAFE|GAP <id> <claim>: <evidence>`.
 | WAN prefix change | netif rewrites the file; the path unit fires; old prefix retired for 2 h, new one current; tables replaced one transaction each. | | existing hook phases |
 | WAN delegation lost | netif writes an empty file; the hook retires the prefix at once. | | R24 |
 | Rogue delegation | Skipped with a log line. Sets unchanged. | I20 | R18 |
-| Boot order on a router | `nftables.service` before `ifstate.service`: links come up behind loaded tables. | I22 | nix-unit; VM: `systemd-analyze dot` or unit timestamps |
+| Boot order on a router | `nftables.service` before `ifstate.service`: links come up behind loaded tables. VERIFIED-VM: five boots, the tables were loaded 0.10 s to 0.16 s before IfState started | I22 | P5 (`hostile-router`); nix-unit to add |
 | Build sshd crashes | `Restart=always`. Admin sshd unaffected. Clients fall back after `ConnectTimeout 5`. | I24 | B07 |
 | Builder host key var not generated yet | Client renders no `knownHosts` entry; with `StrictHostKeyChecking yes` the connection fails closed. | I26 | eval `test_noKnownHostBeforeGeneration` (kept) |
 
@@ -907,72 +950,122 @@ Format as in `runs/*.verdicts.txt`: `HOSTILE SAFE|GAP <id> <claim>: <evidence>`.
 
 ## 8. Implementation order
 
-Every step: amend `specs/gateway.md` (and `SPEC.md` D65 for step 7) **first** (AGENTS.md rule 3), edit `documentation/docs/gateway/` with it, `git add -A`, `fmt`, `check`, then the named suite with `vm-test <suite> --remote --quiet`.
+A prototype of steps 1 to 6 exists as one patch (`probes/gateway/prototype.patch` in the session handoff, against `origin/main` `deeaba4`). It is evidence, not a PR: it has no spec amendment, no docs, no nix-unit updates, and `check` was not run on it (`fmt` was). Cut each step out of it, or write the step again from this section.
 
-Bring the hostile suites over from the worktree `fix-nat64` (`hostile-suites.v1.patch`) as step 0, unchanged, so that each later step turns a GAP into SAFE.
+Every step, in this order:
 
-| # | PR | Content | Proof |
-|---|---|---|---|
-| 0 | Hostile suites | `nat-gateway-hostile`, `hostile-router` as in the patch. No fix. | They run; verdicts equal `runs/*.verdicts.txt` (N05, N06, N07 are GAP). |
-| P | Probes (one throwaway suite, prints `FINDING`) | P1 to P5 of §9. | Findings written into `upstream-facts.md` (Jool section). Amend this design where a probe disagrees. |
-| 1 | Namespace guard + loop breakers | §3.4, the CLAT guard of §3.5, `unreachable` routes, CLAT IPv4 default route removed, guard check in the health script (§3.7). | nix-unit: guard text has both chains and the right link names; routes present; unit script loads the guard before `instance add`. VM: `nat-gateway` (line 782 flipped per §5), `nat-gateway-hostile`: N06 and N07 SAFE, N10, N11, C06 SAFE; `nat-gateway-failover`; `k3s-clat`. |
-| 2 | Host table rework, gateway | §3.3: `to_translator`, `from_translator`, `input`, `private6`, Jool globals, I7 assertion. | nix-unit: `embedded` cases, structure tests, `test_limitBound` (an override over the bound fails). VM: `nat-gateway` with re-pointed counters, hostile N05, N09, N12 to N17 SAFE, `nat-gateway-kube`, `rke2-clat`. |
-| 3 | Client table `inet clat` | §3.5. | nix-unit: sets hold every gateway's pool6. VM: hostile N06 stopped on the host (nothing on `clat0`), C01 to C05, C07; `k3s-clat`, `rke2-clat`, `k3s-clat-mapped` unchanged (it uses fixtures: `suite-compare` says same). |
-| 4 | Router firewalls from one value | §3.9 a, c, d, e; I22. | nix-unit: `test_bothFirewallsAgree`, `test_wanPortsBothFirewalls`, `test_noZones`, `test_serviceWithoutAdvertisedZone`, `ifstate` after `nftables`. VM: `router`, `hostile-router` R17, R19, R20; `router-kube`. |
-| 5 | Prefix hook | §3.9 f, with the netif N16 amendment (empty file) in the same PR; amend `specs/netif.md` too. | nix-unit: `test_sandboxed` covers the hook; the timer exists. VM: `router` hook phases rewritten per §5; R18, R23, R24. `netif` suites that read the PD file. |
-| 6 | Zones to the fabric | §3.9 b: `fabric`, fact `fabricInside`, `fabricSource`. Consumer edit in routed-fabric comes with its own design. | nix-unit: `test_fabricZoneFact`, `test_fabricDefaultOff`. VM: `router-kube` (R21, R22). |
-| 7 | remote-builder | §3.10. | nix-unit list of §5. VM: new suite `remote-builder` (B01 to B07), registered in `services/remote-builder/flake-module.nix` under `clanTests`. |
-| 8 | Optional: beacon inside pool6 | §4d. Only after P4. Removes the role option `address`. | nix-unit: the three `address` tests deleted, `test_beaconInPool6`. VM: `nat-gateway`, `nat-gateway-failover` (all phases), `nat-gateway-kube`; new phase "pool6 route withdrawn upstream while the gateway is healthy: its clients move". |
+1. amend `specs/gateway.md` (and `specs/netif.md` where named) **first** (AGENTS.md rule 3), and `documentation/docs/gateway/` with it;
+2. edit the files named;
+3. update the nix-unit tests named (`services/<service>/tests/eval-tests.nix`);
+4. `git add -A`, `fmt`, `check`;
+5. `vm-test --check <suite>`, then `vm-test <suite> --remote --quiet --rebuild` for every suite named, one at a time.
+
+| # | PR | Files | What to build | nix-unit to change | Suites that prove it |
+|---|---|---|---|---|---|
+| 0 | Hostile suites | `services/nat-gateway/tests/vm/default.nix` (`phases = "hostile"`), `services/nat-gateway/flake-module.nix`, `services/router/tests/vm/hostile.nix`, `services/router/flake-module.nix` | As in `patches/hostile-suites.patch`. No fix. | none | They run; N05 (`127.0.0.1`), N06, N07 are GAP on `main`. Never merge step 0 alone: `main` never holds a red suite. Merge it with step 1. |
+| 1 | Namespace guard, forwarding off, loop breakers, health | `lib/gateway/guard.nix` (new), `lib/gateway/names.nix` (`guard`), `lib/gateway/nat64.nix` (guard text, unit script, routes, health config and path), `lib/gateway/clat.nix` (guard text, unit script, routes), `lib/gateway/nat64-health.py` | §3.4, the CLAT guard and routes of §3.5, §3.7. `sysctl … forwarding=0` in both units. | `test_unitsRetry` (script order: `nft -f` before `instance add`), `test_clat`, `test_gatewayRenders` (routes: `unreachable` present, the CLAT's `0.0.0.0/0` absent), `test_healthSettings` (config has `guard`, `restart`). New: `test_guardText` (both chains, the link name, the pool6). | `nat-gateway` (ownership phase rewritten: guard equal across restarts, a flow goes on; guard counters 0; namespace forwarding 0); `nat-gateway-hostile` N06, N07, N10, N11 (five verdicts), C06, N17; `nat-gateway-failover`; `k3s-clat`. |
+| 2 | Host table rework, gateway | `lib/gateway/private.nix` (new), `lib/gateway/nat64.nix` (table, I7 assertion, Jool globals in the unit) | §3.3, §3.8 I7. | `test_table` → structure tests (the chains `to_translator`, `from_translator`, `input`, `postrouting` exist; every meter rule is in `to_translator`; `private6` has as many elements as `private`); `test_meterPer64`, `test_clientOverride`, `test_instanceLimits` (rule text without `oifname`); new `test_embedded` (the three cases of §3.3), `test_limitBound` (an override over the bound fails). | `nat-gateway` (`counted` finds a rule by its comment in the whole table; private refusal with curl code 7; `nat64-private-post` 0; the second negative proof empties both chains); `nat-gateway-hostile` N05 (eleven verdicts), N08, N09, N12 to N16; `nat-gateway-kube` (helper `counted`); `k3s-clat` and `rke2-clat` (private-refusal subtest: capture IPv6 on the gateway's inside link; `JSTAT_SUCCESS` must not move). |
+| 3 | Client table `inet clat` and O7 | `lib/gateway/names.nix` (`clat.table`), `lib/gateway/clat.nix` (table, option `forwardLinks`), `lib/kube-cluster/network-facts.nix` (fact `forwardLinks`), `lib/kube-cluster/service.nix`, `services/routed-fabric/default.nix`, `lib/gateway/router.nix` (each sets the fact) | §3.5. The fact is a cross-area contract: agree it with the fabric and kube designs first (`specs/target-design.md` §3). | `test_clat` (set `gateways` holds every gateway's pool6; `clat-forward` present), new `test_forwardLinks` (a kube node's table accepts `cilium*`, `lxc*`; a plain client's has no such accept). k3s, rke2, routed-fabric: one assertion each on the fact. | `nat-gateway-hostile` N06 (first two verdicts), C01, C02/C03/C07, C04, C08; `k3s-clat`, `rke2-clat`; `k3s-clat-mapped` unchanged (fixtures: `suite-compare` says same). |
+| 4 | Router firewalls from one value | `lib/gateway/router.nix` | §3.9 a, c, d, e; `ifstate.after`. | `test_bothFirewallsAgree` (for every link, `firewall.interfaces.<link>` ports equal that link's accept rules), `test_wanPortsBothFirewalls`, `test_noZones`, `test_serviceWithoutAdvertisedZone`; update every test that reads the input chain's text. | `router`; `hostile-router` R01 to R16 unchanged, R17, R19, R20, the P5 phase; `router-kube`. |
+| 5 | Prefix hook | `lib/gateway/router-prefix.py`, `lib/gateway/router.nix`; for point 2 also `services/netif/host.nix` and `specs/netif.md` N16 | §3.9 f. Points 1 and 3 are in the prototype. Point 2 needs netif's amendment in the same PR. | `test_sandboxed` covers the hook; the hook config has `own`; (point 2) the timer exists. | `router` (every G22 phase; for point 2 the boot-grace phases rewritten per §5); `hostile-router` R18; (point 2) R23, R24 and the `netif` suites that read the PD file. |
+| 6 | Zones to the fabric | `services/router/default.nix`, `lib/gateway/router.nix`, `lib/gateway/tests/vm/kube-router.nix` | §3.9 b. Needs fabric step 1 (the fact `fabricInside` and its consumers). | delete `test_unknownUnzoned`; add `test_fabricZoneFact`, `test_fabricDefaultOff`; update the `unzoned` texts in `test_forwardRules`. | `router-kube` (zone `home` with `fabric = true` reaches pods on both nodes; zone `servers` without it does not); `router`. |
+| 7 | remote-builder | **owner-gated (O8), not probed.** §3.10 is the draft. | | | new suite `remote-builder` (B01 to B07) |
+| 8 | Optional: beacon inside pool6 | `lib/gateway/nat64.nix`, `services/nat-gateway/default.nix` | §4d. Only after P4 (NOT-RUN). | the three `address` tests deleted, `test_beaconInPool6` | `nat-gateway`, `nat-gateway-failover`, `nat-gateway-kube` |
+
+Dependencies on the other areas. Each lands with its own design; adapt the gateway side in the PR that lands it:
+
+- **netif target design** renames `netif-dhcpcd-<if>.service` to `netif-dhcpcd@<if>.service`, drops `netif-guard.service` (one transaction inside `ifstate.service`), and makes RA acceptance opt-in (`ra = true` per link, default false). Gateway suites that name the old units or rely on an RA default must adapt then: `services/router/tests/vm/default.nix` (the hook phases stop and restart `netif-dhcpcd-eth1.service`), `lib/gateway/tests/vm/wan.nix`, `lib/gateway/tests/vm/dual-wan.nix`. The line `ifstate.after = ["nftables.service"]` (§3.6) must survive netif's new unit.
+- **netif N16 amendment** (an empty PD file means "delegation lost"): step 5 point 2.
+- **fabric step 1** (the fact `fabricInside` and its consumers in routed-fabric and kube): step 6. The prototype carries `patches/fixes-fabric-kube.patch` for it.
+- **kube and fabric** set the fact `forwardLinks`: step 3.
 
 Rules for the implementer:
-- Do not merge steps. Each one must leave every suite of the area green.
-- A suite that fails beside others and passes alone is a pass with a warning (owner policy). A guard counter that is not 0 after a function suite is a failure, not noise: find the packet.
+
+- Steps 1, 2 and 3 can be one PR or three. If three: after step 1 alone, `127.0.0.1` is stopped by the guard's `leaving` chain, not by the host; the N05 verdict that reads `nat64-private` belongs to step 2, and N06's "the client's own table refuses" to step 3.
+- A suite that fails beside others and passes alone is a pass with a warning (owner policy). A guard counter (`guard-leftover`, `guard-leaving`) that is not 0 after a function suite is a failure, not noise: find the packet.
 - `vm-test` takes one suite per call.
 - Steps 1 to 3 change node derivations: `suite-snapshot`/`suite-compare` do not apply (not a refactor), except for `k3s-clat-mapped` in step 3.
+- Test traps met while probing:
+  - A hostile verdict needs a control that shows the attack ran. `hostile-router` R15 was SAFE for no reason until its radvd config was valid (§6). Give every hostile group one positive control; a missing control fails the suite.
+  - Stopping `netif-dhcpcd-<if>.service` on a router takes the WAN's IPv6 away. A test that writes netif's PD file and then checks connectivity must leave the client running.
+  - The test driver type-checks the script: `re.search(…).group(1)` on an optional match is refused. Use `re.findall(…)[0]`.
+  - An emptied `to_clat` chain does not open the CLAT (the packet ends at `clat-forward`). To take that layer away, flush the chain and add `accept`.
+  - While no Jool instance exists, the health check's own pings also end at the guard. Read a client's packet with a counter of its own in the namespace (prerouting, priority -5).
+  - `nft log` inside a namespace needs `net.netfilter.nf_log_all_netns=1`.
+  - A second `systemd.services.<unit>` attribute path beside an existing `systemd.services = { … }` block is a duplicate attribute for `nixf-diagnose`.
 
 ---
 
-## 9. Open risks and probes
+## 9. Probes, results and open risks
 
-### Probes (run before step 1; one throwaway suite on the `nat-gateway` topology)
+All runs: 2026-11-27, remote builder, kernel 6.18, Jool 4.1.15, IfState 2.5.1, the prototype on `origin/main` `deeaba4` with `patches/fixes-fabric-kube.patch` (the consumers of `fabricInside`). Log lines are in `probes/gateway/runs/` and `specs/probes/2026-11-27/gateway.md`.
 
-| ID | Question | How | Decides |
-|---|---|---|---|
-| P1 | Does `ip6 daddr & ::ffff:ffff @private6` load, and match `pool6::7f00:1`? | `nft -c -f` on the rendered table; then one ping with a counter | the form of `nat64-private`. Fallback: one rule per range with `ip6 daddr & ::ff00:0 == ::7f00:0` style masks. |
-| P2 | Does Jool translate with `forwarding=0` in the namespace (both families, NAT64 and SIIT)? | set it, run `assert_gateway` and a CLAT curl | idea (m). If yes: set 0 and drop the `sysctl -w … forwarding=1` lines (`nat64.nix:411`, `clat.nix:174`). |
-| P3 | What does Jool 4.1.15 do with a new flow on a full pool4: drop, ICMP error, or hand back? | pool4 of 10 ports, an 11th flow, `jool stats display --all`, count crossings without the guard | the wording of I8; no design change either way |
-| P4 | DNAT of the beacon to `fd64::1:5364` on a gateway that is a kube node (Cilium on the uplink) | `nat-gateway-kube` topology, `dig @pool6::c000:aa` | step 8 |
-| P5 | Is there a moment at boot with links up and no tables? | on a router VM: compare `systemctl show -p ActiveEnterTimestampMonotonic nftables ifstate` over 5 boots | whether I22's ordering line is enough |
-| P6 | Do the guard's two base chains see what §3.1 says? | with the guard loaded and `counter` on both policies: run `assert_gateway`, PMTUD and fragment shapes | confirms the Jool priority reading on the pinned kernel (6.18) |
+### Probes
 
-### Verified vs assumed
+| ID | Question | Result | Evidence | Effect on the design |
+|---|---|---|---|---|
+| P1 | Does `ip6 daddr & ::ffff:ffff @private6` load and match? | **VERIFIED-VM** | Build-time `nft --check` passes; `nat-gateway`: twelve private embeddings move `nat64-private` by one each; `nat-gateway-hostile` N05 (ten verdicts), N15; C01 for the source form `ip6 saddr & ::ffff:ffff @private6` | None. No fallback form needed. |
+| P2 | Does Jool translate with `forwarding=0` in the namespace? | **VERIFIED-VM**, NAT64 and SIIT | `nat-gateway-hostile` (run 03): `FINDING P2 … {'page': True, 'ping': True, 'udp': True, 'udp 3000 bytes (fragments)': True, '2 MB download': True}` for both. Then built in: `nat-gateway` passes every shape, path MTU discovery too, with forwarding 0 asserted | **Design changed**: forwarding is off in both namespaces (§3.2 layer 3). |
+| P3 | What does Jool do with a new flow on a full pool4? | **VERIFIED-VM**: it drops it itself, in silence | `nat-gateway-hostile` N16: 300 datagrams, 300 crossings, `JSTAT_BIB6_NOT_FOUND: 290`, `guard-leftover` +0, ICMPv6 errors to the client: 0; an open TCP flow of another client goes on; the beacon stays | I8 holds without the guard. "Fail fast on exhaustion" is not available: the client times out. Stated in §0 point 10. |
+| P4 | DNAT of the beacon into `pool6` on a gateway that is a kube node | **NOT-RUN** | | Step 8 stays optional and unproven. |
+| P5 | Is there a moment at boot with links up and no tables on a router? | **VERIFIED-VM**: no such moment in five boots | `hostile-router`: `FINDING P5 boot 1: nftables.service active at 7.141 s, ifstate.service started at 7.297 s: the tables were loaded 0.156 s before the first link was configured` (0.096 s to 0.156 s in all five boots); `FINDING P5 ifstate.service is ordered after: ['network-pre.target', 'nftables.service', …]` | The order holds already through `network-pre.target` (nftables is before it, IfState after it); the explicit `ifstate.after = ["nftables.service"]` states it. No "forwarding gate" unit is needed. `systemd-sysctl` turns forwarding on about 1.7 s before the tables load, while no link is configured: nothing can be forwarded then |
+| P6 | Do the guard's two chains see exactly what Jool hands back; do PMTUD, fragments and Jool's own ICMP errors pass? | **VERIFIED-VM** | `nat-gateway`: `guard-leftover` 0 and `guard-leaving` 0 on both gateways and both clients after every protocol, 2 MB down, 300 kB up, fragments, a 1400 byte hop (path MTU 1420 learned through NAT64, 1400 through the CLAT), the rate limit floods (asserted). N10 and C06: with no instance the client's one packet is handed back and ends at `guard-leftover`. `nat64-jool-error` 0: Jool sent no ICMPv6 error of its own in any shape | The guard is as drafted, plus one rule: link chatter (multicast) is counted apart, so `guard-leftover == 0` can be asserted. |
+
+### Verified, refuted, not run
 
 | Claim | Status |
 |---|---|
-| Jool hook: PRE_ROUTING, priority -75, both families | VERIFIED-SRC (`xlator.c:28-34`) |
-| Untranslatable and "no instance" → `NF_ACCEPT` to the kernel | VERIFIED-SRC |
-| Unknown L4 in NAT64 is untranslatable, no ICMP sent | VERIFIED-SRC |
-| Translated packets leave via `dst_output` (POSTROUTING only) | VERIFIED-SRC; hook traversal on 6.18 ASSUMED → P6 |
-| Jool's own ICMP errors use the kernel's `icmp_send`/`icmpv6_send` and pass POSTROUTING with the namespace's addresses as source | ASSUMED → P6 (PMTUD shapes must still pass) |
-| N05/N06/N07 mechanics | VERIFIED-VM |
-| The `127.0.0.1` packet re-enters PREROUTING on `lo` | ASSUMED (kernel loopback path); N05 SAFE proves the fix whichever layer stops it |
-| nft rulesets are per network namespace; a host `nftables.service` restart leaves the guard | ASSUMED; asserted in the suite (§5) |
-| IfState 2.5.1 accepts `type = "unreachable"` routes in a namespace | VERIFIED by the prototype's hostile runs (`runs/*.with-fix.*` exist for other suites; the nat-gateway fix run is not in `runs/`) → treat as ASSUMED until step 1's suite |
-| Bitwise-then-set-lookup on `ip6 daddr` | ASSUMED → P1 |
-| Jool global names (`udp-timeout`, `address-dependent-filtering`, `drop-externally-initiated-tcp`) | ASSUMED for 4.1.15 spelling → step 2's suite |
-| Host conntrack on `clat0` INPUT is reliable beside Cilium | ASSUMED → step 3 (`k3s-clat`, `rke2-clat`) |
-| `HostKeyAlias` lookup ignores the port | ASSUMED → B04 |
-| `sshd -f <own config>` runs beside the main sshd with `UsePAM no` on NixOS | ASSUMED → step 7 suite |
-| Linux 6.18 has no nf_tables NAT64 | ASSUMED (kernel config not in the store) |
+| Jool hook: PRE_ROUTING, priority -75, both families | VERIFIED-SRC; consistent with every run (a chain at priority -5 sees only handed-back packets) |
+| Untranslatable and "no instance" → `NF_ACCEPT` to the kernel | VERIFIED-SRC, VERIFIED-VM (N10, C06; N06 and N07 on `main`) |
+| Unknown L4 in NAT64 is untranslatable, no ICMP sent | VERIFIED-SRC; with the design the host refuses it first with ICMPv6 admin-prohibited (N07: `nat64-protocol` +1, let through 0) |
+| Translated packets leave via `dst_output` (postrouting only) on 6.18 | VERIFIED-VM (P6) |
+| Jool's own ICMP errors pass postrouting with the namespace's addresses as source | **NOT-RUN as stated**: no run made Jool send one (`nat64-jool-error` 0). Path MTU discovery passes because the ICMP errors of the path are *translated* packets (source in `pool6` or pool4). The accept rules for `fd64::2` and `fd00:c1a7::2` stay, unproven |
+| The `127.0.0.1` packet re-enters prerouting on `lo` | NOT-RUN (moot: refused on the host, N05; the guard's `leaving` chain is the second layer) |
+| nft rulesets are per network namespace; a host `nftables.service` restart leaves the guard | VERIFIED-VM (`nat-gateway`, `NAT_GATEWAY_GUARD_RESTARTS_OK`) |
+| The guard survives an IfState apply and a Jool unit restart | VERIFIED-VM (same phase and the IfState phase: JSON of the table equal) |
+| IfState 2.5.1 accepts `type = "unreachable"` routes in a namespace and an apply stays a no-op | VERIFIED-VM (`nat-gateway`, `NAT_GATEWAY_IFSTATE_OK`) |
+| The CLAT namespace needs no IPv4 default route | VERIFIED-VM (`nat-gateway`, every CLAT shape; `k3s-clat`: passes) |
+| Bitwise-then-set-lookup on `ip6 daddr` and `ip6 saddr` | VERIFIED-VM (P1) |
+| Jool global names (`udp-timeout`, `icmp-timeout`, `address-dependent-filtering`, `drop-externally-initiated-tcp`), time format `H:MM:SS` | VERIFIED-VM (the unit runs them at every start; `jool global update` lists the names) |
+| A gateway without its guard is unhealthy; the check has it loaded again; if it cannot, the beacon is withdrawn | VERIFIED-VM (N11, four verdicts) |
+| Host conntrack on `clat0` INPUT is reliable beside Cilium (`clat-unsolicited`) | **VERIFIED-VM** as behaviour: `k3s-clat` passes with the rule (a node's own IPv4 through its CLAT with Cilium up, pod egress, 2 MB down and up, a remade CLAT link, reboots). The counter read 8 on each node (R12). `rke2-clat` NOT-RUN |
+| Default-deny IPv6 forwarding on a CLAT host (O7) | VERIFIED-VM on a plain client (C08, with the negative proof); on a kube node: **VERIFIED-VM**: `k3s-clat` passes (alpha is a fabric spine, beta a leaf; pods reach IPv4 and IPv6, the pod network between the nodes in both families, ClusterIP, NodePort, reboots; `clat-forward` 0 on both nodes). `rke2-clat` NOT-RUN |
+| A gateway that is a kube node still works with the reworked table | **VERIFIED-VM**: `nat-gateway-kube` passes (`NAT_GATEWAY_KUBE_OK`: Cilium devices, pod egress, the shared IPv4) |
+| `wanPorts` connect through both firewalls | **VERIFIED-VM**: `hostile-router` R17 `{'8443 IPv4': True, '8443 IPv6': True, '8444 IPv4': False, '8444 IPv6': False}` (a listener on both ports, `wanPorts.tcp = [8443]`) |
+| The ICMPv6 type list does not break SLAAC, DHCPv6-PD, PMTUD on a router | **VERIFIED-VM**: `router` passes with the list (`ROUTER_LINKS_OK`, `ROUTER_RA_OK`, `ROUTER_HOOK_OK`, `ROUTER_OK`: DHCPv4 and DHCPv6-PD on the WAN, SLAAC and RDNSS in the zones, NAT44, native IPv6, every prefix-change phase) |
+| A zone reaches pods only with `fabric = true` | **VERIFIED-VM**: `router-kube` passes (`ROUTER_KUBE_DENY_OK`): the zone `home` with `fabric = true` reaches pods on both nodes; the zone `servers` (default) does not, though it has a route. A fabric address as the target was not tried |
+| Rogue delegations never enter the hook's sets; the sandboxed hook still works | **VERIFIED-VM**: `hostile-router` R18 (`inet router_svc holds ['2001:db8:1000::/60'], netdev router_src holds ['2001:db8:1000::/60']; a LAN host's IPv6 page: rc=0`); `router` passes every hook phase with the sandbox (`ROUTER_HOOK_OK`) |
+| Failover behaviour is unchanged by the guard and the health addition | **VERIFIED-VM**: `nat-gateway-failover` passes every phase on the prototype (`NAT_GATEWAY_CRASH_OK`, `NAT_GATEWAY_LOSSY_OK`, `NAT_GATEWAY_FLAPPING_OK`, `NAT_GATEWAY_LOSSY_CANDIDATE_OK`, `NAT_GATEWAY_FAILOVER_OK`; 2299 s) |
+| An ICMPv6 error from a source outside the gateways' `/96` reaches the CLAT and is translated | VERIFIED-VM for the gateway's own refusal (`k3s-clat`: a pod gets "No route to host" at once). "Packet too big" from a router on the path: NOT-RUN |
+| `HostKeyAlias`, a second sshd with `UsePAM no` (remote-builder) | NOT-RUN, owner-gated (O8) |
+| Linux 6.18 has no nf_tables NAT64 | NOT-RUN (kernel config not read) |
+| Empty file under `/run/netif/pd/<link>` means "delegation lost" | NOT-RUN, NOT-BUILT (netif's N16 amendment) |
+| The rules before the meters cost no noticeable throughput (R2) | NOT-RUN as a measurement; the 2 MB download of every suite passes |
+
+### Refuted or changed by the probe round
+
+| Draft | What the run showed | Now |
+|---|---|---|
+| "`guard-leftover` is 0 after the function suite" with the draft's two-rule chain | 13 to 14 packets on every namespace, constant from boot on: multicast link chatter on the veth, not Jool | `meta pkttype != host counter drop comment "guard-noise-in"` before the counted rule; `ip6 daddr ff00::/8 … "guard-noise-out"` in `leaving`. Then both counters are 0 and asserted |
+| The namespace keeps `forwarding=1` | Jool translates with 0 (P2) | 0 in both namespaces; a third layer |
+| "Fail fast on exhaustion" (§0 point 10) | Jool drops in silence (P3) | Stated as not available |
+| `to_clat`: only a gateway's `/96` may send to the CLAT | Would drop "packet too big" from a router on the path (reasoned, not run) | ICMPv6 errors from any source are let in |
+| `input` of `inet nat64` accepts established IPv4 from `jool0` | Not needed: the health check's answers are IPv6 | IPv6 only |
+| With the allowlist chain emptied an undeclared source pings through (the suite's negative proof) | The answer is dropped by `nat64-return-undeclared` | The proof empties both chains; the single-chain case is a positive check |
+| Router: an echo rate limit as an `accept` rule behind `ct state established` | 200 of 200 flood pings answered: one flood is one tracked flow | The limit is a `limit rate over … drop` rule ahead of the `established` accept (§3.9 e) |
+| R5: clients forward IPv6 machine-wide, "not fixed" | The owner decided O7 | `clat-forward` and the fact `forwardLinks` (§3.5) |
 
 ### Open risks
 
-- **R1 The guard hides a Jool regression.** If a Jool update starts returning packets it used to translate, the guard drops them silently. Mitigation: `guard-leftover` and `guard-leaving` counters must be 0 after the function suite; the health file carries the guard state; add both counters to `health.json` so a later exporter sees them.
-- **R2 More rules before the meters cost CPU per packet.** Four extra matches and two set lookups per packet. Not measured. The suite's throughput shape (2 MB download, `kube-clat.nix:790`) must not slow down noticeably; record the time in the PR.
-- **R3 `ct state related` for foreign ICMPv6 errors.** It depends on conntrack having seen the flow on the IPv6 side. It does today (the same expression is in the current rule). Unchanged risk.
-- **R4 Step 8 changes the failover signal.** A beacon inside `pool6` makes beacon loss and route loss one event. That is the goal, but it also means a short route flap silences the beacon. The 60 s follower clock absorbs flaps under a minute. Simulate in `checks.clat-follow` before building.
-- **R5 Clients forward IPv6 machine-wide** (idea n). Not fixed by this design. Needs an owner decision: default `filterForward` on CLAT clients, or a netif-level statement.
-- **R6 netif contract change (empty PD file).** Other readers of `/run/netif/pd/<link>` must treat an empty file as "none". Today the only reader in this repo is the hook (**VERIFIED-CODE**: grep finds `router.nix:118,504` and `router-prefix.py`).
-- **R7 remote-builder and external-systems/home.** `home` consumes this service. The redesign changes the port, the alias, the host-key generator name and the CI key default. The owner must update `home` in the same session as step 7 merges.
-- **R8 Second sshd and clan's own sshd service.** If a machine also runs clan-core's `sshd` service with certificates, the build sshd does not use them. Intended (I24), but worth one README line.
-- **R9 `ICMP` type list on the router.** A too-short ICMPv6 list breaks ND or PMTUD. The list in §3.9 e follows RFC 4890's must-not-drop set. The `router` suite's SLAAC, DHCPv6-PD and PMTU phases are the proof; if one fails, add the missing type, do not go back to "accept all".
+- **R1 The guard hides a Jool regression.** Mitigated: the suites assert both counters 0 after real traffic, and `health.json` carries `guard` and `guard_dropped`. Open: nothing alerts on a counter that moves in production (an exporter is day-2).
+- **R2 More rules before the meters cost CPU per packet.** Not measured.
+- **R3 `ct state related` for foreign ICMPv6 errors.** Unchanged. N13: a forged error about no flow is dropped.
+- **R4 Step 8 changes the failover signal.** Unchanged, NOT-RUN.
+- **R5 closed** by O7 (§3.5).
+- **R6 netif contract change (empty PD file).** Open, NOT-BUILT.
+- **R7, R8 remote-builder.** Owner-gated (O8).
+- **R9 ICMP type list on the router.** **VERIFIED-VM**: `router` passes with the list of §3.9 e. If a later suite fails on it, add the missing type; do not go back to "accept all".
+- **R10 `forwardLinks` is a new cross-area fact.** A service that forwards IPv6 and does not set it is cut off on a CLAT host (`clat-forward` counts it). Today's setters: k3s/rke2, routed-fabric, router. Docker with IPv6 and Tailscale subnet routing on a CLAT host need the option `forwardLinks`; NOT-RUN.
+- **R11 The guard's accept for Jool's own ICMP errors is unproven** (no run produced one). If Jool sends them with another source they are dropped and counted in `guard-leaving`: the suite assertion would show it.
+- **R12 `clat-unsolicited` on a kube node** rests on Cilium handling pod return traffic before netfilter INPUT. `k3s-clat` passes with it. The counter is not 0 there (8 packets per node in the suite, not captured): do not assert it 0 on a kube node, and capture once before step 3 merges to name those packets. `rke2-clat` NOT-RUN.
+- **R13 A gateway whose guard cannot load keeps translating** until its clients move (the beacon is the only signal, and a client moves only when another gateway is up). Accepted: the host table and layer 3 still hold. Stopping the translator instead would turn a missing second layer into an outage.
