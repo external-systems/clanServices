@@ -6,7 +6,7 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G28`, so they never collide
+pages together.** Decisions are numbered `G1`–`G30`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
 `specs/netif.md` §2 (U3, U13–U18).
 
@@ -177,6 +177,18 @@ the evidence.
 - **G28 (SPEC.md H17, O7):** a CLAT host forwards IPv6 for its CLAT and
   for declared forward links only (`clan.networkFacts.forwardLinks`,
   set by k3s, rke2, routed-fabric and the router).
+
+Round G13 (2026-11-28): **gateway steps 4 and 5 (points 1 and 3) of the
+round-61 target design** (`specs/design-gateway.md` §8 rows 4 and 5;
+SPEC.md round 68, one PR with netif steps 2 to 4).
+- **G29:** the router's two firewalls render from one value
+  (`offered`, per link); ICMP by type with an echo rate ahead of the
+  connection tracking; a router needs a zone; the service /64 alone
+  runs the prefix hook; `ifstate.service` after `nftables.service`.
+- **G30:** the prefix hook takes only a delegation it may use (global
+  unicast, a /32 to a /64, none of the router's own prefixes, at most
+  8) and runs in a sandbox. Point 2 of design step 5 (an empty PD file
+  means "lost"; the boot grace without a marker) is wave 3.
 
 
 
@@ -1246,6 +1258,73 @@ any code (AGENTS.md rule 3).
   *(implemented: `nat-gateway-hostile`, N06, C01, C02, C03, C07, C04,
   C08; `nat-gateway`; `k3s-clat`)*
 
+- **G29 The router's firewalls come from one value** (round G13;
+  `specs/design-gateway.md` §3.9 a, c, d, e, I16, I19, I22, I23;
+  G-A3, G-A7, G-A8). Amends G11 and G25.
+  - **One value.** `clanServices.gateway.router.offered` (internal,
+    read-only): per router link the TCP and UDP ports the router itself
+    offers. A zone link: 53 when the zone has a resolver, 22 with
+    `ssh`, UDP 67 with DHCPv4. The WAN: `wanPorts`. The NixOS firewall's
+    `interfaces.<link>` and the router table's `offered on <link>`
+    rules both render from it; DNS on a zone link stays bound to the
+    zone's address (`dnsRules`). On `main` `wanPorts` reached the table
+    only, so it never connected, and a zone's SSH worked only because
+    `openFirewall` opened 22 everywhere.
+  - **ICMP (I16).** The input chain accepts by type (RFC 4890): IPv4
+    destination-unreachable, time-exceeded, parameter-problem,
+    echo-request; ICMPv6 the errors, echo-request, neighbour and router
+    discovery and MLD. Every other type is a counted drop (`input icmp
+    dropped`): no timestamp, no redirect. Echo requests over 20 a
+    second (burst 40) are dropped ahead of `ct state established`: the
+    requests of one flood are one tracked flow, so a limit behind it
+    never applies (probe R20). One bucket for all router links.
+  - **Redirects.** The netif baseline (N47) writes them 0 for `all`,
+    `default` and every link; the router does not write them a second
+    time (one writer per key, netif S4). A nix-unit test reads them on
+    the router.
+  - **I23.** A router without a zone fails at evaluation. The reverse
+    path rule for zone links is rendered only when there is one.
+  - **G-A8.** The prefix hook, its path unit and its tables unit run
+    when a zone takes a delegated /64 **or** `servicePrefix` is set;
+    CoreRAD still only with an advertised zone.
+  - **I22.** `ifstate.service` is ordered after `nftables.service` (it
+    holds already through `network-pre.target`; probe P5 measured
+    0.1 s between them over five boots). Stated, since a router link
+    without its table would forward unfiltered.
+  *(implemented round G13; `hostile-router` R17 (the declared port
+  connects in both families, its neighbour port does not), R19 (no
+  timestamp answer, with a control that the probe counts answers; no
+  redirect), R20 (a flood is answered at the rate only, with a control
+  that a normal ping is), the P5 boot phase; `router`, `router-kube`;
+  nix-unit `test_bothFirewallsAgree`, `test_wanPortsBothFirewalls`,
+  `test_icmpAndRedirects`, `test_serviceWithoutAdvertisedZone`,
+  `test_noZones`)*
+
+- **G30 The prefix hook does not trust the WAN's DHCPv6 server**
+  (round G13; `specs/design-gateway.md` §3.9 f points 1 and 3, I20;
+  G-A5, G-A6). Amends G22.
+  - **Validation.** `router-prefix.py` keeps a prefix of netif's file
+    only when it is global unicast (inside `2000::/3`), a /32 to a /64,
+    and overlaps none of the router's own static IPv6 prefixes (a zone's
+    prefixes, the stable service /64; the hook config's `own`). It keeps
+    at most 8, in the file's order. Every refused word is one journal
+    line ("is not a delegation to use"). On `main` `::/0` in the file
+    went into the hook's sets: the WAN's spoof check then dropped every
+    IPv6 packet from the internet.
+  - **Sandbox.** The hook unit runs with the lib/gateway sandbox
+    (`ProtectSystem = strict`, `NoNewPrivileges`), writes only
+    `/run/router` and `/var/lib/router`, keeps `CAP_NET_ADMIN` only,
+    talks `AF_UNIX` (systemctl, systemd-run) and `AF_NETLINK` (nft)
+    only, and `IPAddressDeny = any`.
+  - **Not here (wave 3).** Design point 2: netif writes an empty file
+    for "delegation lost" (netif N16 amended in the same PR), the hook
+    drops its boot marker and `systemd-run` grace for a static recheck
+    timer (R23, R24).
+  *(implemented round G13; `hostile-router` R18 (seven rogue prefixes
+  beside the real one; control: the hook refused each in the journal;
+  the sets hold the real one only and a LAN host's IPv6 keeps working);
+  `router` (every G22 phase); nix-unit `test_hookSandboxed`)*
+
 ## 3. Invariants (target)
 
 1. Neither service declares a physical link, a VLAN, an address on one
@@ -1294,7 +1373,7 @@ any code (AGENTS.md rule 3).
   | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric; since round G7 on the services (netif, `nat-gateway`, D71's rendered `devices`, a plain resolver) | `<DISTRO>_CLAT_OK` |
   | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative; since round G8 with a plain resolver (no DNS64) | `K3S_CLAT_MAPPED_OK` |
   | `nat-gateway-hostile` (round G12; the third part of the `nat-gateway` file, `phases = "hostile"`) | G26, G27, G28 against an attacker: scans of both gateways and the beacon (N01–N04), private and loopback destinations (N05), loops through the CLAT and the translator (N06, N07), Jool instance and guard removed (N10, N11), ICMPv6 types, forged errors, the IPv4 side, fragments, a full pool4 (N12–N16), the guards' counters (N17), forged CLAT sources, rogue RA and PREF64 (C01–C07), a second link behind a CLAT host (C08). Every verdict group has a positive control (SPEC.md H19) | `NAT_GATEWAY_HOSTILE_OK` |
-  | `hostile-router` (round G12) | the router against a hostile ISP, a LAN intruder and a host of another zone: scans, zone crossing, forged sources, a rogue RA on a LAN link (R15, with a capture control: the rogue RA reaches the router's link and a neighbour takes its prefix) | `HOSTILE_ROUTER_OK` |
+  | `hostile-router` (round G12) | the router against a hostile ISP, a LAN intruder and a host of another zone: scans, zone crossing, forged sources, a rogue RA on a LAN link (R15, with a capture control: the rogue RA reaches the router's link and a neighbour takes its prefix); round G13: a declared WAN port and its neighbour (R17), ICMP timestamp and redirects (R19), an echo flood (R20), rogue delegations (R18), the boot order of tables and links (P5) | `HOSTILE_ROUTER_OK` |
 
 - A suite asserts a bound with margin (about three times the measured
   sample), never the sample. It prints the measured value.

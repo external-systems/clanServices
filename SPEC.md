@@ -4,6 +4,50 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 68 (2026-11-28): wave 2 of the round-61 target design for
+netif (steps 2 to 4) and the gateway (steps 4 and 5).** One PR, one
+commit per step (`specs/design-netif.md` §8.3 to §8.5,
+`specs/design-gateway.md` §8 rows 4 and 5). The contracts are
+`specs/netif.md` and `specs/gateway.md`:
+
+- **Test tooling.** `VM_PHASES='word|word' vm-test <suite> --rebuild`
+  runs only the named subtests of any suite (an impure evaluation; the
+  suite derivation is unchanged without it); `soft_checks` collects
+  independent failures (`documentation/docs/reference/testing.md`).
+- **N48** router advertisements only where declared: `ra` defaults to
+  false, the kernel's `default` scope takes none, an `ra` link takes a
+  prefix and (only when it may own the IPv6 default and has no static
+  gateway) the default router, never route information, an MTU or a
+  low hop limit.
+- **N49** evaluation checks (design §3.9): gateways and route gateways
+  inside the link's subnets, no network or broadcast host address, one
+  deploy-target instance, an sshd port open on the deploy link (errors);
+  a guard with nothing to test, links with the firewall off (warnings).
+- **N50** DHCP is untrusted input: no lease routes (options 33, 121,
+  249) without `dhcp.classlessRoutes`, never a lease MTU, lease DNS
+  only on a default-owning link or with `dhcp.dns`; a hot-plug link's
+  DNS is no default route while a declared link has DNS.
+- **G29** (`specs/gateway.md`) the router's table and the NixOS
+  firewall render from one value per link (`wanPorts` now connects);
+  ICMP by type with the echo rate ahead of the connection tracking; a
+  router needs a zone; the service /64 alone runs the prefix hook;
+  links come up after the tables.
+- **G30** the router's prefix hook takes only a delegation it may use
+  (global unicast, /32 to /64, not its own, at most 8) and runs in a
+  sandbox.
+- **Fabric fix.** routed-fabric keeps one `kube_cluster` record per
+  cluster name: every member exports the same facts, so a cluster with
+  two members rendered its `neighbor ::1` block (and every per-cluster
+  list) twice (nix-unit `test_ciliumNeighborOnce`).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| G30 | The hook put any word of netif's file that parsed as a prefix into its sets (`::/0` dropped all WAN IPv6), as root with no sandbox | Validation (I20) and the lib/gateway sandbox | `hostile-router` R18 (control: the hook refused each rogue prefix), `router`; nix-unit `test_hookSandboxed` |
+| G29 | `wanPorts` reached one of two firewalls; every ICMP type accepted, an echo flood answered in full; a router without zones rendered broken nft; a service /64 without an advertised zone had no hook | One value for both firewalls; ICMP by type, a rate ahead of `established`; I23; `hookWanted` | `hostile-router` (R17, R19, R20 with controls, P5), `router`, `router-kube`; nix-unit `test_bothFirewallsAgree`, `test_wanPortsBothFirewalls`, `test_icmpAndRedirects`, `test_noZones` |
+| N50 | A lease installed its option-121, 33 and 249 routes and an MTU on its routes; any DHCP link's server became DNS for all names | A closed list per link, opt-ins `dhcp.classlessRoutes` and `dhcp.dns`; DNS scope explicit | `netif-hostile` (H09–H13, H18a–c, each group with a control), `netif-dhcp`, `netif-hotplug`; nix-unit `test_dhcpOptionPolicy`, `test_dhcpOptInsNeedDhcp` |
+| N49 | A wrong gateway, a network address, two deploy targets or a closed sshd port on the deploy link reached the machine | Build errors (warnings for an empty guard and a closed-off firewall) | nix-unit `test_gatewayChecks`, `test_routeGatewayChecks`, `test_networkAddressRejected`, `test_twoTargetHostsRejected`, `test_deployLinkOpensSsh`, `test_checkWarnings`; `netif-vmhost` (guest port `gp(1`) |
+| N48 | Every link took router advertisements, beside a static IPv6 gateway too; a guest port, a VLAN parent or a member took them | Only links with `ra = true` and hot-plug links; there no route information, MTU or hop limit | `netif-hostile` (H02, H03, H04, H15, H16a–d, H23 and the RA survey, each with a control), `netif`, `netif-dhcp`, `netif-v6only`, `netif-hotplug`, `router`, `hostile-router`, `gateway-wan`; nix-unit `test_raOffByDefault`, `test_raOptIn`, `test_raOnMember`, `test_dhcp6NeedsRouter` |
+
 **Round 67 (2026-11-28): kube steps 3 and 4, a fabric always, typed
 options, HAProxy on loopback, one firewall matrix (D76).** Wave 2 of the
 round-61 target design for the kube services (`specs/design-kube.md`

@@ -13,7 +13,9 @@
 > contracts and the build order are in `specs/target-design.md`.
 >
 > **Done:** steps 0 and 1 (round 64: `specs/netif.md` N46, N47; the
-> sysctl baseline and `netif-hostile`).
+> sysctl baseline and `netif-hostile`); step 2 (round 68: N48, RA only
+> where declared); step 3 (round 68: N49, evaluation checks); step 4 (round 68: N50,
+> DHCP option policy and DNS scope).
 
 Base: `main` at deeaba4. Builds on `reviews/netif.md` (N-A1..N-A16).
 Paths are relative to the repo root.

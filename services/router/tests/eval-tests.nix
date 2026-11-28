@@ -21,6 +21,8 @@
         module.name = "netif";
         module.input = "self";
         roles.default.machines.router.settings.links.wan = {
+          # the IPv6 default comes from the ISP's advertisement (netif N48)
+          ra = true;
           interface = "enp1s0";
           zone = "wan";
           dhcp = {
@@ -202,7 +204,7 @@ in {
       loopback = lib.hasInfix ''iifname "lo" accept'' table;
       unzonedInternet = lib.hasInfix ''oifname { "enp1s0" } accept comment "unzoned: internet"'' table;
       unzonedOther = lib.hasInfix "to unzoned" table || lib.hasInfix "unzoned to zone" table;
-      wanPort = lib.hasInfix "WAN port" table;
+      wanPort = lib.hasInfix "offered on enp1s0" table;
       hostPorts = lib.hasInfix "host ports" table;
       inherit (base.networking.firewall.interfaces) enp2s0 enp3s0;
       rpfilter = base.networking.firewall.checkReversePath;
@@ -215,16 +217,17 @@ in {
       unzonedOther = false;
       wanPort = false;
       hostPorts = false;
-      # home: the resolver and DHCPv4; servers: the resolver only
+      # home: the resolver, SSH (G29: the zone's `ssh` reaches both
+      # firewalls) and DHCPv4; servers: the resolver and SSH
       enp2s0 = {
         allowedTCPPortRanges = [];
-        allowedTCPPorts = [53];
+        allowedTCPPorts = [22 53];
         allowedUDPPortRanges = [];
         allowedUDPPorts = [53 67];
       };
       enp3s0 = {
         allowedTCPPortRanges = [];
-        allowedTCPPorts = [53];
+        allowedTCPPorts = [22 53];
         allowedUDPPortRanges = [];
         allowedUDPPorts = [53];
       };
@@ -248,7 +251,7 @@ in {
     nodeTable = node.networking.nftables.tables.router.content;
   in {
     expr = {
-      wanPort = lib.hasInfix ''iifname { "enp1s0" } udp dport { 51820 } accept comment "WAN port"'' nodeTable;
+      wanPort = lib.hasInfix ''iifname "enp1s0" udp dport { 51820 } accept comment "offered on enp1s0"'' nodeTable;
       # one rule: the zone's link, every UDP port the machine opens
       hostPorts = map (line: lib.hasInfix ''iifname { "enp3s0" } udp dport {'' line && lib.hasInfix "51900" line) (
         lib.filter (lib.hasInfix "host ports") (lib.splitString "\n" nodeTable)
@@ -376,6 +379,21 @@ in {
       startLimit = 0;
     };
   };
+  # G30 (G-A5): the hook reads a file the WAN's DHCPv6 server decides; it
+  # runs in a sandbox with the one capability nft needs.
+  test_hookSandboxed = {
+    expr = {
+      inherit (base.systemd.services.router-prefix.serviceConfig) ProtectSystem NoNewPrivileges CapabilityBoundingSet RestrictAddressFamilies IPAddressDeny ReadWritePaths;
+    };
+    expected = {
+      ProtectSystem = "strict";
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = ["CAP_NET_ADMIN"];
+      RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
+      IPAddressDeny = "any";
+      ReadWritePaths = ["/run/router" "/var/lib/router"];
+    };
+  };
   test_unknownZone = {
     expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.zones.iot = {};}) "no netif link in zone(s) iot";
     expected = true;
@@ -396,7 +414,113 @@ in {
     };
   };
   # G10: a router without a resolver address renders no CoreDNS
-  test_noZoneNoResolver = let
+  # G29 (design §3.9 a): one value renders both firewalls. For every
+  # router link the NixOS firewall opens exactly the offered ports, and
+  # the router's table accepts each of them on that link (DNS on the
+  # zone's address, every other port by an `offered on` rule).
+  test_bothFirewallsAgree = let
+    agree = config: let
+      t = config.networking.nftables.tables.router.content;
+      fw = config.networking.firewall.interfaces;
+      inherit (config.clanServices.gateway.router) offered;
+      accepted = link: proto: port:
+        (port == 53 && lib.hasInfix ''iifname { "${link}" } ip daddr'' t)
+        || lib.any (line: lib.hasInfix ''iifname "${link}" ${proto} dport {'' line && lib.hasInfix " ${toString port}" line) (lib.splitString "\n" t);
+    in
+      lib.mapAttrs (link: offer: {
+        nixos = let
+          sorted = lib.sort builtins.lessThan;
+          # netif opens the DHCPv6 client port on the WAN (I13)
+          netif = lib.optional (link == config.clanServices.gateway.router.wan) 546;
+        in
+          sorted fw.${link}.allowedTCPPorts == sorted offer.tcp && sorted (lib.subtractLists netif fw.${link}.allowedUDPPorts) == sorted offer.udp;
+        table = lib.all (accepted link "tcp") offer.tcp && lib.all (accepted link "udp") offer.udp;
+      })
+      offered;
+    ssh = with' {instances.edge.roles.router.machines.router.settings.zones.servers.ssh = true;};
+  in {
+    expr = {
+      base = agree base;
+      ssh = (agree ssh).enp3s0;
+      sshPorts = ssh.clanServices.gateway.router.offered.enp3s0.tcp;
+    };
+    expected = {
+      base =
+        lib.mapAttrs (_: _: {
+          nixos = true;
+          table = true;
+        })
+        cfg.offered;
+      ssh = {
+        nixos = true;
+        table = true;
+      };
+      sshPorts = [53 22];
+    };
+  };
+  # `wanPorts` reaches both firewalls (G-A3: it reached the table only).
+  test_wanPortsBothFirewalls = let
+    open = with' {instances.edge.roles.router.machines.router.settings.wanPorts.tcp = [8443];};
+  in {
+    expr = {
+      nixos = open.networking.firewall.interfaces.enp1s0.allowedTCPPorts;
+      table = lib.hasInfix ''iifname "enp1s0" tcp dport { 8443 } accept comment "offered on enp1s0"'' open.networking.nftables.tables.router.content;
+    };
+    expected = {
+      nixos = [8443];
+      table = true;
+    };
+  };
+  # G29 (design §3.9 e): ICMP by type; an echo flood meets its rate ahead
+  # of the connection tracking; no redirects (the netif baseline, N47).
+  test_icmpAndRedirects = let
+    at = needle: lib.stringLength (builtins.head (lib.splitString needle table));
+  in {
+    expr = {
+      limitFirst = at "input echo over the rate" < at "ct state established,related accept";
+      anyIcmp = lib.hasInfix "meta l4proto { icmp, ipv6-icmp } accept" table;
+      dropped = lib.hasInfix ''meta l4proto { icmp, ipv6-icmp } counter drop comment "input icmp dropped"'' table;
+      redirects = map (key: base.boot.kernel.sysctl.${key}) [
+        "net.ipv4.conf.all.accept_redirects"
+        "net.ipv4.conf.default.accept_redirects"
+        "net.ipv4.conf.all.secure_redirects"
+        "net.ipv4.conf.all.send_redirects"
+        "net.ipv6.conf.all.accept_redirects"
+        "net.ipv6.conf.default.accept_redirects"
+      ];
+      # I22: links come up behind loaded tables
+      ifstateAfter = lib.elem "nftables.service" base.systemd.services.ifstate.after;
+    };
+    expected = {
+      limitFirst = true;
+      anyIcmp = false;
+      dropped = true;
+      redirects = [0 0 0 0 0 0];
+      ifstateAfter = true;
+    };
+  };
+  # G-A8: the service /64 alone runs the hook.
+  test_serviceWithoutAdvertisedZone = let
+    alone = with' {
+      # netif assigns no delegated /64 to a zone
+      instances.wan.roles.default.machines.router.settings.links.wan.dhcp.prefixDelegation.assign = lib.mkForce [];
+    };
+  in {
+    expr = {
+      hook = alone.systemd.services ? router-prefix;
+      path = alone.systemd.paths ? router-prefix;
+      corerad = alone.services.corerad.enable;
+      service = alone.clanServices.gateway.router.servicePrefix.subnet != null;
+    };
+    expected = {
+      hook = true;
+      path = true;
+      corerad = false;
+      service = true;
+    };
+  };
+  # I23 (G29): a router without a zone fails at evaluation.
+  test_noZones = let
     alone = with' {
       instances.edge.roles.router.machines.router.settings = {
         zones = lib.mkForce {};
@@ -406,11 +530,11 @@ in {
   in {
     expr = {
       coredns = alone.services.coredns.enable;
-      clean = lib.all (item: item.assertion || !(lib.hasInfix "router" item.message)) alone.assertions;
+      noZone = failedAssertion alone "has no LAN zone";
     };
     expected = {
       coredns = false;
-      clean = true;
+      noZone = true;
     };
   };
   # G13: a zone's DHCPv4 subnet id comes from its name: a new zone

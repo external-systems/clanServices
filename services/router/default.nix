@@ -312,6 +312,11 @@ in {
       in {
         imports = [../../lib/gateway];
         assertions = [
+          # I23 (G29): a router routes between zones and a WAN
+          {
+            assertion = settings.zones != {};
+            message = "router/${instanceName}: machine '${machine.name}' has no LAN zone; a router needs one zone or more (specs/gateway.md G29)";
+          }
           {
             assertion = lib.length wanLinks == 1;
             message = "router/${instanceName}: machine '${machine.name}' needs exactly one netif link in zone '${settings.wanZone}'; got ${toString wanLinks} (one WAN; a second is G16, frozen)";

@@ -199,6 +199,8 @@ in {
           };
           slaac.settings.links.uplink = {
             interface = "eth1";
+            # address and default from the provider's advertisement (N48)
+            ra = true;
             nameservers = [dns];
           };
         };

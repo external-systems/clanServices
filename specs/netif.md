@@ -6,10 +6,41 @@ network configuration: `services/netif`, the shared IfState base
 keeps the Kubernetes bootstrap and data-plane contracts; `routed-fabric`,
 `wireguard-mesh`, `k3s` and `rke2` consume this contract. The human
 rendering is `documentation/docs/netif/`. **Edit this file and those pages
-together.** Decisions are numbered `N1`–`N47` so they never collide with
+together.** Decisions are numbered `N1`–`N50` so they never collide with
 SPEC.md's `D1`–`D70` or `specs/gateway.md`'s `G1`–`G23`. Phases are numbered `P0`–`P8` (they were `N0`–`N8`
 until the proof round), so a phase and a decision never share a label
 (§10).
+
+Round 68 (2026-11-28): **netif steps 2 to 4 of the target design**
+(SPEC.md round 68; `specs/design-netif.md` §8.3 to §8.5). What changed:
+- **N48** router advertisements only where declared: `ra` defaults to
+  false; the kernel's `default` scope takes none; a link with `ra =
+  true` takes prefixes and addresses, a default router only when it may
+  own the IPv6 default and has no static IPv6 gateway, and never a
+  route-information route, an MTU or a hop limit below 64. Eval checks
+  E3 (DHCPv6 without a router source), E4 (`ra` on a member) and the
+  warning E5 (`ra` on a guest-ports bridge). Every fixture that takes
+  its IPv6 default or SLAAC address from an advertisement says
+  `ra = true`.
+- **`netif-hostile`** gains the `ral` link (H16a–d), the guest's
+  advertisement (H15), the VLAN parent (H23) and the RA survey of every
+  link; H02, H03 and the rogue prefix route are verdicts now, each with
+  a control that turns the key on by hand and sees the effect.
+- **N49** evaluation checks: a gateway (of the link or of a route)
+  outside the link's static subnets, a network or broadcast address
+  as a host address, two instances naming the deploy target, and a
+  deploy link whose firewall lets no sshd port in are build errors; a
+  guard with nothing to test and links with the firewall off are
+  warnings. A guest-port name with regex characters is escaped (it was
+  a broken regex).
+- **N50** DHCP is untrusted input: a lease sets a closed list. No
+  static or classless routes (options 33, 121, 249) unless the link
+  says `dhcp.classlessRoutes`; never an MTU (26); lease DNS only on a
+  link that owns a default route unless it says `dhcp.dns`; a hot-plug
+  link's DNS is no default route for names while a declared link has
+  DNS. `netif-hostile`'s `side` is a DHCP link now, beside `optin`
+  (eth4) and a rogue server behind the dock (H09–H13, H18a–c), and a
+  dhcpcd without `nooption` lines is the positive control.
 
 Round 64 (2026-11-27): **netif step 1 of the target design: the
 threat model, one sysctl baseline and `netif-hostile`** (SPEC.md round
@@ -2248,12 +2279,12 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   - **Invariants and the step that implements each.** I7 no redirect,
     no source route on any link: **step 1, implemented (N47)**. I13 the
     firewall stays closed: already true (N19). I8 RA only where
-    declared: step 2. I9 a lease sets a closed list, I11 DNS scope:
-    step 4. I1–I6 (no lockout by deploy, do no harm, only proven bundles
+    declared: step 2, **implemented (N48)**. I9 a lease sets a closed list, I11 DNS scope:
+    step 4, **implemented (N50)**. I1–I6 (no lockout by deploy, do no harm, only proven bundles
     recorded, a bad bundle is not retried, own evidence only, a missing
     NIC blocks nothing), I10, S1–S3: step 6. I12 one manager per boot:
     step 7. S4 one writer per kernel object and per sysctl key: the
-    registry and N47. S5 stable source addresses: step 2.
+    registry and N47. S5 stable source addresses: step 2 (N48).
   - **Rewritten in step 6.** N25 (the guard), N31 (dhcpcd units) and
     N36 (targets) stay as they are until the transaction lands; step 6
     rewrites them to the design's §3.2.
@@ -2294,6 +2325,123 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   port, hot-plug, veth, bridge, dummy, WireGuard) with its control;
   `netif` `assert_ifstate_noop` with the new keys; nix-unit
   `test_sysctlBaseline`)*
+
+- **N48 Router advertisements only where declared.** A link takes
+  router advertisements only when it says `ra = true` (default false);
+  and there only what the link needs (I8; design §3.4, §3.6). Amends
+  N21 (an RA default needs `ra = true` and no static IPv6 gateway) and
+  extends N47 (`lib/sysctl-baseline.nix` gains `raOff6`).
+  - **Keys of a declared link** (IfState `sysctl.ipv6`, restored on
+    every apply): `accept_ra` 1 with `ra` (2 when the machine forwards),
+    else 0; `autoconf` and `accept_ra_pinfo` follow `ra`;
+    `accept_ra_defrtr` 1 only when `ra`, the link may own the IPv6
+    default and has no static IPv6 gateway; `accept_ra_rt_info_max_plen`
+    0, `accept_ra_mtu` 0, `accept_ra_min_hop_limit` 64 always;
+    `use_tempaddr` 0 (S5, stable source addresses).
+  - **Every other link.** `boot.kernel.sysctl` writes `raOff6` for the
+    `default` scope only, so a bridge port, veth, member, VLAN parent
+    or container link that appears later takes nothing. No glob and no
+    `all`: a glob would switch RAs off on hot-plug links at every sysctl
+    reload, and `all.accept_ra` has no effect on a link. iwd and
+    NetworkManager handle advertisements on their own links (design P4).
+    Residual: a NIC that exists before systemd-sysctl runs and that no
+    instance declares keeps the kernel's `accept_ra = 1` (it is down
+    unless something brings it up).
+  - **Hot-plug links** (`hotplugUp`) turn on `accept_ra` (2 when
+    forwarding), `autoconf`, `accept_ra_pinfo` and `accept_ra_defrtr`
+    before the link comes up; the other keys stay as `default` set them.
+  - **Default source (N21).** `v6Default`: a static IPv6 gateway outside
+    a policy table, or `ra` with no static IPv6 gateway.
+  - **Eval checks.** E3: a DHCPv6 link that may own the IPv6 default
+    needs `ra = true` or a static gateway (DHCPv6 carries no router).
+    E4: a bond or bridge member must not set `ra`. E5 (warning): `ra`
+    on a bridge with `bridge.guestPorts`.
+  - **Limit.** On a link with `ra = true` any on-link host can become
+    the default router when the link owns the default. That is what
+    `ra = true` means; the option text says so.
+  *(implemented round 68; suite `netif-hostile` `NETIF_HOSTILE_OK`:
+  H02, H03, H04 (prefix and route information) with a control each
+  (the same advertisement adds the default, the address and the routes
+  once the keys are 1 by hand), H15 and H23 with a capture control,
+  H16a–d with a control each (the advertisement carries a default
+  router, route information, MTU 1280 and hop limit 1), the RA survey
+  of every link with its control; `netif`, `netif-dhcp`,
+  `netif-v6only`, `netif-hotplug`, `router`, `hostile-router`,
+  `gateway-wan` with `ra = true` where they take an advertised
+  default; nix-unit `test_raOffByDefault`, `test_raOptIn`,
+  `test_raBesideStaticGateway`, `test_raOffOnGuestBridgeAndMember`,
+  `test_dhcp6NeedsRouter`, `test_dhcp6WithRa`, `test_raOnMember`,
+  `test_raOnGuestBridgeWarns`)*
+
+- **N49 Evaluation checks.** A configuration that cannot work, or that
+  can lock its owner out, fails the build with a message that names the
+  instance, link, machine and fix (design §3.9). Errors:
+  - **E1** a static gateway outside the link's static subnets, unless
+    `gateway.onLink`, DHCP for that family, or an `fe80:` gateway;
+  - **E2** the same for each `routes[].gateway`, unless the route (or
+    the link's gateway) sets `onLink`;
+  - **E3, E4** (N48);
+  - **E7** more than one instance sets `targetHost` on one machine;
+  - **E10** netif names the deploy target from a link, sshd runs, the
+    firewall is on, and no rule lets an sshd port in on that link (the
+    link is not trusted, the port is in neither the global nor the
+    link's allowed ports): the guard sees outbound reachability only,
+    this is the static half of "no lockout";
+  - **E11** a static IPv4 address that is the network or broadcast
+    address of its subnet (prefix below 31).
+  Warnings: **E5** (N48); **E8** the guard has nothing to test (no
+  gateway, no DHCP or RA default, no target); **E9** netif declares
+  links and `networking.firewall.enable = false`.
+  - **Guest-port names (N-A12).** The ignore regex that keeps guest
+    ports escapes every regex character of a name, then the YAML
+    string; a name such as `gp(1` was a broken regex before.
+  - `routes` are always in the main table (option text; a
+    `routingPolicy.table` takes the link's default gateway only).
+  - E6 lands with the DHCP options (N50); E12 (the hot-plug prefix
+    pattern) is kept.
+  *(implemented round 68; nix-unit `test_gatewayChecks`,
+  `test_routeGatewayChecks`, `test_networkAddressRejected`,
+  `test_twoTargetHostsRejected`, `test_deployLinkOpensSsh`,
+  `test_checkWarnings`; suite `netif-vmhost` with a guest port named
+  `gp(1`)*
+
+- **N50 DHCP option policy and DNS scope.** A DHCP server on a link can
+  set the address, the mask and (only on the link that owns the IPv4
+  default) the router. Nothing else unless the link declares it (I9,
+  I11; design §3.5). Amends N9 (DNS) and N12 (hot-plug).
+  - **dhcpcd file of a declared link.** `nooption interface_mtu` always
+    (the MTU is `links.<n>.mtu`; dhcpcd wrote option 26 as the `mtu` of
+    every route of the lease). `nooption static_routes,
+    classless_static_routes, ms_classless_static_routes` unless
+    `dhcp.classlessRoutes = true` (then `option
+    classless_static_routes`). Lease DNS and search domains (`option
+    domain_name_servers, domain_name, domain_search` and the DHCPv6
+    pair) when the link owns a default route or `dhcp.dns = true`;
+    `nooption` for both otherwise. `nooption` is needed, not tidy: a
+    server's unrequested option is taken without it (design P6).
+  - **Hot-plug file.** No `hostname` sent to a stranger's server; DNS
+    options yes; no routes, no MTU. The router option at metric
+    `routeMetric + 100` as before (N18).
+  - **DNS scope (`dnsApply`).** A declared link with DNS gets
+    `resolvectl default-route yes` (explicit, never resolved's guess). A
+    hot-plug link gets `no` while any declared link has carrier and DNS,
+    `yes` otherwise; every run judges every present hot-plug link, and
+    with hot-plug prefixes every link event re-runs the writer.
+  - **Untrusted values.** `set -f` in the dhcpcd script and the DNS
+    writer: no globbing of what a server sent.
+  - **Options.** `links.<n>.dhcp.classlessRoutes` (bool, false) and
+    `links.<n>.dhcp.dns` (null = the link owns a default route). E6:
+    `classlessRoutes` needs `dhcp.ipv4`; `dns` needs DHCP. Host facts
+    `classlessRoutes` and `dhcpDns` in `clanServices.netif.links`.
+  - **Limit.** On the link that owns the default route, its DHCP server
+    picks the gateway and (unless `dhcp.dns = false`) the DNS servers.
+  *(implemented round 68; suite `netif-hostile`: H09–H12 with the
+  rogue lease as control and a plain dhcpcd that takes option 121 and
+  26 as the positive control, H13 (the opt-ins), H18a–c with the
+  dock's lease as control and the DNS default moving back to the dock
+  when no declared link has DNS; `netif-dhcp` (`private` opts in to
+  DNS and classless routes); nix-unit `test_dhcpOptionPolicy`,
+  `test_dhcpOptInsNeedDhcp`)*
 
 
 ## 4. Invariants
@@ -2449,7 +2597,7 @@ Cloudflare WARP are planned (N29); WireGuard is `routed-fabric` only
   | `netif-containers` | Docker and rootful Podman keep links, namespaces, default and user-defined networks and a published port reached from another machine across two applies, in an IfState mode; pool-overlap eval error | P7 |
   | `netif-vmhost` | bridge sends from the uplink's MAC; a bridge over a VLAN; guest ports with arbitrary names survive two applies and stay reachable | P7 |
   | `netif-guard` | a change that loses the gateway is rolled back and the unit fails; a good change is kept; a gateway that ignores ping passes; no previous configuration fails loudly | P8 |
-  | `netif-hostile` | an attacker beside the machine: no open TCP port on any address; a forged ICMP redirect moves no route and redirects and source routes are off on every link (with a positive control each); a spoofed source gets no answer; the RA fixture's advertisement arrives (control) and gives no route-information route. Later design steps add their verdicts (design §6) | round 64 (N46, N47) |
+  | `netif-hostile` | an attacker beside the machine: no open TCP port on any address; a forged ICMP redirect moves no route and redirects and source routes are off on every link (with a positive control each); a spoofed source gets no answer; a rogue advertisement beside a static gateway gives no default, address or route, on an `ra` link only a prefix (no default, route information, MTU or hop limit), and nothing to a guest-ports bridge or a VLAN parent; only declared `ra` links and hot-plug links take advertisements (each with a control). Later design steps add their verdicts (design §6) | rounds 64, 68 (N46–N48) |
 
   Existing suites stay green throughout.
 

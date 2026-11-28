@@ -121,7 +121,7 @@ in {
     GUEST_FILE = "/run/netif/guest-ports.yaml"
 
     def link(name):
-        return json.loads(host.succeed(f"ip -d -j link show {name}"))[0]
+        return json.loads(host.succeed(f"ip -d -j link show '{name}'"))[0]
 
     def guest(name, port, address):
         """A guest the way a hypervisor makes one: a namespace and a port on br0."""
@@ -170,13 +170,15 @@ in {
             # a tap device, as libvirt makes them, and a port with a dot in its name
             host.succeed("ip tuntap add dev tap0 mode tap && ip link set tap0 master br0 up")
             host.succeed("ip link add gx.1 type dummy && ip link set gx.1 master br0 up")
+            # a name with a regex character: escaped, not a broken regex (N-A12)
+            host.succeed("ip link add 'gp(1' type dummy && ip link set 'gp(1' master br0 up")
             peer.wait_until_succeeds("ping -c1 -W2 192.168.2.50", timeout=30)
             reapply(2)
             listed = host.succeed(f"cat {GUEST_FILE}").strip()
             print("guest ports regex:", listed)
             # the file is a YAML double-quoted string: the regex's \. is written \\.
-            assert "gp0" in listed and "tap0" in listed and "gx\\\\.1" in listed and "nic2" not in listed, listed
-            for port in ["gp0", "tap0", "gx.1"]:
+            assert "gp0" in listed and "tap0" in listed and "gx\\\\.1" in listed and "gp\\\\(1" in listed and "nic2" not in listed, listed
+            for port in ["gp0", "tap0", "gx.1", "gp(1"]:
                 assert link(port)["master"] == "br0", link(port)
             assert "UP" in link("gp0")["flags"]
             host.succeed("ip netns list | grep '^guest1' >/dev/null")
@@ -198,7 +200,7 @@ in {
             reapply()
             listed = host.succeed(f"cat {GUEST_FILE}").strip()
             assert "gp0" not in listed and "tap0" in listed, listed
-            host.succeed("ip link del tap0 && ip link del gx.1")
+            host.succeed("ip link del tap0 && ip link del gx.1 && ip link del 'gp(1'")
             reapply()
             assert host.succeed(f"cat {GUEST_FILE}").strip() == '"^$"'
             print("NETIF_VMHOST_SHRINK_OK")

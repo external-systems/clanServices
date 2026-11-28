@@ -158,7 +158,9 @@ in {
     # The sysctl baseline (specs/netif.md N47), in every mode: `all`
     # and `default`, and the glob for links that exist before
     # systemd-sysctl runs, belong to another owner or appear later (udev
-    # runs systemd-sysctl for each new link).
+    # runs systemd-sysctl for each new link). Router advertisements are
+    # off by `default` only (N48): no glob, so hot-plug links and the
+    # links of iwd and NetworkManager keep their own setting.
     boot.kernel.sysctl = lib.mkMerge (
       [
         {
@@ -166,6 +168,7 @@ in {
             lib.unique (config.clanServices.networking.reservedPorts ++ map toString wireguardPorts)
           );
         }
+        (lib.mapAttrs' (key: value: lib.nameValuePair "net.ipv6.conf.default.${key}" (lib.mkDefault value)) baseline.raOff6)
       ]
       ++ lib.concatMap (scope: [
         (lib.mapAttrs' (key: value: lib.nameValuePair "net.ipv4.conf.${scope}.${key}" (lib.mkDefault value)) baseline.everyLink4)

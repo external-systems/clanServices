@@ -508,6 +508,11 @@ in {
 
   config = lib.mkIf (cfg.links != {} && guard.enable && config.clanServices.networking.mode.manager == "ifstate") {
     clanServices.netif.guardGeneration = generation;
+    # E8 (N49): a guard with no gateway, no learned default and no target
+    # tests nothing and always passes.
+    warnings =
+      lib.optional (gatewayTargets == [] && extraTargets == [] && dhcpDefaults == [] && !(lib.any (l: l.ra && l.default6) (lib.attrValues cfg.links)))
+      "netif: the lockout guard has nothing to test on this machine: no link has a gateway or a DHCP or RA default, and 'clanServices.netif.guard.targets' is empty. Add a target (the machine you deploy from), or set 'clanServices.netif.guard.enable = false' (N49)";
     systemd = {
       tmpfiles.rules = ["d /var/lib/netif/guard 0755 root root -"];
       services = {

@@ -1084,6 +1084,8 @@
         roles.default.machines.spine-a.settings.links.wan = {
           interface = "enp1s0";
           dhcp.ipv4 = true;
+          # router advertisements are opt-in (netif N48)
+          ra = true;
         };
       };
     }
@@ -1106,6 +1108,8 @@
         roles.default.machines.client.settings.links.wan = {
           interface = "enp1s0";
           dhcp.ipv4 = true;
+          # router advertisements are opt-in (netif N48)
+          ra = true;
         };
       };
     }
@@ -1602,6 +1606,17 @@ in {
         enabled = true;
         checked = true;
       };
+    };
+    # Each member of a cluster exports its facts: a cluster with two
+    # members renders its Cilium neighbor block once on each.
+    test_ciliumNeighborOnce = let
+      twice = mkEvaled (lib.recursiveUpdate baseInventory {
+        instances.cluster-a.roles.default.machines.spine-a = {};
+      });
+      count = config: lib.length (lib.filter (line: lib.trim line == "neighbor ::1 remote-as 4200000001") (lib.splitString "\n" config.services.frr.config));
+    in {
+      expr = count twice.config.nixosConfigurations.node-a.config;
+      expected = 1;
     };
     test_localCiliumFrr = {
       expr = {

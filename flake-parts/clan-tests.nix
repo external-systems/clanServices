@@ -8,7 +8,58 @@
   inputs,
   lib,
   ...
-}: {
+}: let
+  # Skip-to-phase switch (reference/testing.md, "Running some phases"):
+  # `VM_PHASES='H16|DHCP' vm-test <suite> --remote --rebuild` runs only
+  # the subtests whose name contains one of the `|`-separated words; the
+  # code outside subtests (boot, helpers, the final marker) still runs.
+  # Impure evaluation only (`--rebuild`); a pure evaluation reads "" and
+  # leaves every suite derivation unchanged.
+  phases = builtins.getEnv "VM_PHASES";
+  phaseFilter = ''
+    import contextlib as _phase_contextlib
+    import sys as _phase_sys
+
+    _PHASES = [word for word in ${builtins.toJSON phases}.split("|") if word]
+    _phase_subtest = subtest
+
+
+    class _PhaseSkipped(Exception):
+        pass
+
+
+    def _phase_skip_body(frame, event, arg):
+        frame.f_trace = None
+        raise _PhaseSkipped()
+
+
+    @_phase_contextlib.contextmanager
+    def _phase_filtered_subtest(name):
+        if any(word in name for word in _PHASES):
+            with _phase_subtest(name):
+                yield
+            return
+        print(f"PHASE SKIPPED (VM_PHASES): {name}")
+        # raise on the first line of the `with` body, swallow it here
+        frame = _phase_sys._getframe(1)
+        while frame.f_code.co_filename == _phase_contextlib.__file__:
+            frame = frame.f_back
+        previous = _phase_sys.gettrace()
+        _phase_sys.settrace(lambda *_: None)
+        frame.f_trace = _phase_skip_body
+        try:
+            yield
+        except _PhaseSkipped:
+            pass
+        finally:
+            frame.f_trace = None
+            _phase_sys.settrace(previous)
+
+
+    subtest = _phase_filtered_subtest
+    print(f"VM_PHASES: only the subtests that name one of {_PHASES}")
+  '';
+in {
   options.clanTests = lib.mkOption {
     type = lib.types.attrsOf lib.types.deferredModule;
     default = {};
@@ -27,6 +78,7 @@
         imports = [
           inputs.clan-core.modules.nixosTest.clanTest
           test
+          {testScript = lib.mkIf (phases != "") (lib.mkBefore phaseFilter);}
         ];
         defaults._module.args.clan-core = inputs.clan-core;
         # suite-snapshot --pin: evaluate against a baseline copy of the

@@ -47,6 +47,13 @@ DOMAIN = CONFIG["domain"]
 PREF64 = CONFIG["pref64"]
 TABLES = ["inet router_svc", "netdev router_src"]
 RETIRED_FOR = 7200
+# What a delegation may be (specs/gateway.md G30, design I20): global
+# unicast, a /32 to a /64, none of the router's own static prefixes, at
+# most MAX_PREFIXES. The WAN's DHCPv6 server is not trusted: `::/0` in
+# the set would drop every IPv6 packet from the WAN as "spoofed".
+GLOBAL = ipaddress.IPv6Network("2000::/3")
+OWN = [ipaddress.IPv6Network(prefix, strict=False) for prefix in CONFIG["own"]]
+MAX_PREFIXES = 8
 # The first run after a boot (/run is new): netif's file is not there
 # yet, because dhcpcd has not had its first reply. That is not a lost
 # delegation. The prefix on disk stays current for GRACE seconds, then
@@ -102,16 +109,23 @@ def load_state():
 
 
 def delegated(text):
-    """The prefixes in netif's file, in its order; anything else is skipped."""
+    """The prefixes in netif's file that are a delegation to use, in its
+    order; anything else is skipped, with a line in the journal."""
     found = []
     for word in (text or "").split():
         try:
-            prefix = str(ipaddress.IPv6Network(word))
+            network = ipaddress.IPv6Network(word)
         except ValueError:
+            print(f"router-prefix: {word[:64]!r} is not a delegation to use (not an IPv6 prefix with its host bits zero): skipped", flush=True)
             continue
-        if prefix not in found:
-            found.append(prefix)
-    return found
+        if not network.subnet_of(GLOBAL) or not 32 <= network.prefixlen <= 64 or any(network.overlaps(own) for own in OWN):
+            print(f"router-prefix: {word} is not a delegation to use (not global unicast, not a /32 to a /64, or one of the router's own prefixes): skipped", flush=True)
+            continue
+        if str(network) not in found:
+            found.append(str(network))
+    if len(found) > MAX_PREFIXES:
+        print(f"router-prefix: {len(found)} delegated prefixes, the first {MAX_PREFIXES} are used", flush=True)
+    return found[:MAX_PREFIXES]
 
 
 def corerad(state):

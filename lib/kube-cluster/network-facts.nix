@@ -63,7 +63,7 @@
         addresses = strList "Declared static addresses; dynamic addresses are not invented.";
         dhcp4 = bool "Whether DHCPv4 is declared.";
         dhcp6 = bool "Whether DHCPv6 is declared.";
-        ra = fact t.bool true "Whether IPv6 router advertisements are accepted.";
+        ra = fact t.bool false "Whether IPv6 router advertisements are accepted (opt-in, specs/netif.md N48).";
         gateway4 = nullableStr "Declared IPv4 gateway.";
         gateway6 = nullableStr "Declared IPv6 gateway.";
         gatewayInMain = bool "Whether this link declares a main-table default route.";

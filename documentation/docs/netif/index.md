@@ -80,6 +80,25 @@ passes the contract gate.
   redirect or accepts a source-routed packet, in every mode, also links
   netif does not declare and links that appear later (N47). The suite
   `netif-hostile` attacks a netif machine to prove it.
+- **Build checks (N49):** the build fails when a gateway lies outside
+  its link's subnets, a static address is a network or broadcast
+  address, two instances name the deploy target, or the deploy link's
+  firewall lets no sshd port in. It warns when the lockout guard has
+  nothing to test or the firewall is off.
+- **DHCP:** a lease sets the address, the mask and, on the link that
+  owns the default route, the router (N50). Its routes (options 121,
+  33, 249) only with `dhcp.classlessRoutes = true`; never its MTU; its
+  DNS servers only on a link that owns a default route or says
+  `dhcp.dns = true`. A dock's DNS is used for names only while no
+  declared link has DNS.
+- **Router advertisements:** off unless a link says `ra = true` (N48).
+  Such a link takes prefixes and addresses; it takes the default
+  router only when it may own the IPv6 default and has no static IPv6
+  gateway. No link takes a route-information route, an MTU or a hop
+  limit below 64 from an advertisement. Hot-plug links (docks) take
+  advertisements; Wi-Fi under iwd and NetworkManager links handle
+  their own. A DHCPv6 link that owns the IPv6 default needs `ra = true`
+  (DHCPv6 carries no router); the build says so.
 
 - **Firewall:** a link is untrusted unless its segment or the link sets
   `firewall.trust = true` (from P3b). Services open their own ports.
