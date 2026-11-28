@@ -27,6 +27,12 @@ that make them pass with no gap:
 - **The spec text matches the code** (K-A10): §6.6 says where HAProxy
   binds today, §6.12 names the API front and the member-only
   supervisor front, and the 2381 rule is explained.
+- **`<distro>-single` reads a certificate's lifetime as notAfter minus
+  notBefore.** It checked "valid for 364 more days from now", which
+  fails a day after the test vars were generated: clan reuses them
+  while their inputs stay the same. The behaviour proved (the admin
+  identity lives 365 days, the health-check certificate about ten
+  years) is unchanged.
 
 The suites merge the kube prototype (K05d..K53) and the fabric
 prototype (`mallory` as an `access = "client"` leaf, K40a, K40, K41,
