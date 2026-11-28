@@ -485,10 +485,10 @@ On `main` a zone's SSH worked only because `services.openssh.openFirewall` opens
 
 | Change | Where | Type / default |
 |---|---|---|
-| **add** `zones.<name>.fabric` | `services/router/default.nix`, `router.nix` | `bool`, default `false` |
+| **add** `zones.<name>.fabric` (**done** with fabric steps 1 and 2, round 62: the option and the fact; `router-kube` sets it on `home`) | `services/router/default.nix`, `router.nix` | `bool`, default `false` |
 | **remove** `unzoned.zones` and its assertion | same | replaced by the per-zone option |
 | **rename** `unzoned.source.{ipv4,ipv6}` → `fabricSource.{ipv4,ipv6}` | same | unchanged type and default |
-| **set** fact `clan._networkFacts.fabricInside = zonesOf fabricZones` | `router.nix` | the fact itself is fabric step 1 |
+| **set** fact `clan._networkFacts.fabricInside = zonesOf fabricZones` (**done**, round 62) | `router.nix` | the fact itself is fabric step 1 |
 
 - The consumers are routed-fabric's border guard and the kube ingress chain (`patches/fixes-fabric-kube.patch`, applied in the prototype). They belong to those designs.
 - "Unzoned links always reach the WAN" stays (owner-accepted, G25).

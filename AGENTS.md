@@ -64,7 +64,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   `observe`, `print_versions`, `seconds_until`, `holds_for`,
   `state_dump_on_failure`; use them in new suites).
   Each service, and `lib/gateway`, registers its suites in its
-  `flake-module.nix` (49 in all; `vm-test --list` counts them)
+  `flake-module.nix` (50 in all; `vm-test --list` counts them)
   under the top-level `clanTests.<suite>`. They land in
   `legacyPackages.<system>.vmTests`, never `checks`. k3s and rke2 suites
   that test one contract share a body in `lib/kube-cluster/tests/vm/<suite>.nix`
@@ -106,7 +106,7 @@ runner; a devenv shell; the org CI. external-systems/home consumes it
   not in the repo.
 - `SPEC.md` (repo root) — the normative decision contract AND the status
   authority (implemented vs planned), optimized for agents. Its decision
-  record (D1–D72) and dated round summaries hold the history; read them
+  record (D1–D73) and dated round summaries hold the history; read them
   before changing a design decision. Bootstrap + data plane only: ingress,
   certificates, Flux, storage and the like are day-2 GitOps patterns, never
   clan-rendered (§3.3, D39–D45).
@@ -187,7 +187,7 @@ frozen (planned for the 0.1.x release).
    kubeconfigs, ClusterMesh material, gitops-hub identities) — never in
    the Nix store. Sealing keys and all in-cluster application credentials
    are day-2 GitOps-owned (SPEC.md D35 revised, round 13).
-7. Read SPEC.md's decision record (D1–D72) before implementing a
+7. Read SPEC.md's decision record (D1–D73) before implementing a
    Planned/Reserved row. Standing decisions: IfState 2.5.1 is the only
    static network renderer (no systemd-networkd, netdevs or scripted
    network units; D61); one owner each for Cilium and FRR objects; FRR +

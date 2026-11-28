@@ -40,7 +40,7 @@ day-2 or bundle concerns and are out of scope for the hardening plan.
 
 | Path | What lives there |
 | --- | --- |
-| `SPEC.md` | normative contract and status authority; decisions D1–D72, invariants §5, subsystems §6, testing §7 |
+| `SPEC.md` | normative contract and status authority; decisions D1–D73, invariants §5, subsystems §6, testing §7 |
 | `AGENTS.md` | layout, tool loop and hard rules (read all of them) |
 | `services/netif/` | underlay links, addressing, DHCP hook, policy routing, deploy-target export |
 | `services/routed-fabric/` | leaf/spine fabric: per-adjacency WireGuard, FRR, border, source return |

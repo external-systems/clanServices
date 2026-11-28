@@ -206,6 +206,8 @@ in {
   testScript = ''
     import json${netifHelpers}
 
+    ${import ../../../../tests/suite-lib.nix}
+
     machines = [spine_a, spine_b, alpha, beta, gamma]
     stable = ${builtins.toJSON stable}
     # One WireGuard interface per derived adjacency, two BGP sessions
@@ -350,24 +352,27 @@ in {
                 machine.fail("nft list chain inet nixos-fw input | grep 'trusted interfaces' | grep '\"rf' >/dev/null")
             print("ROUTED_FABRIC_UNTRUSTED_OK")
 
-        # R5: the border's forward filter. A packet from outside the
-        # fabric (beta's underlay) to a member loopback, sent through
-        # spine-a, is dropped there and counted.
-        with subtest("the border does not forward from outside the fabric to the fabric's own addresses"):
-            def infra_drops():
-                rules = spine_a.succeed("nft -a list chain inet routed-fabric-fleet forward")
-                line = [l for l in rules.splitlines() if "@infra4" in l]
-                assert len(line) == 1, rules
-                return int(line[0].split("counter packets ")[1].split()[0])
-            before = infra_drops()
+        # D73 (I8): a fabric destination never leaves by a link outside
+        # the fabric. A bogus more-specific route (what a rogue DHCP server
+        # would push) sends beta's traffic for gamma to the underlay: it
+        # is dropped on beta and counted, and never reaches spine-a. That
+        # a spine forwards nothing from outside into the fabric is the
+        # hostile-fabric suite's (F05..F09): it needs a machine that is
+        # no member.
+        with subtest("a fabric destination does not leave by the underlay, also with a bogus route"):
+            def guard_drops(machine, comment):
+                return drops(machine, "inet routed-fabric-fleet", comment)
+            before = guard_drops(beta, "fabric destination on a link outside the fabric")
+            arrived = guard_drops(spine_a, "outside to a fabric address")
             beta.succeed("ip route add ${stable.gamma.ipv4}/32 via 192.168.1.4 dev ${underlayLink} metric 1")
             try:
                 beta.succeed("ip route get ${stable.gamma.ipv4} | grep 'dev ${underlayLink}' >/dev/null")
                 beta.fail("ping -c 3 -W 1 -I ${underlayLink} ${stable.gamma.ipv4}")
             finally:
                 beta.succeed("ip route del ${stable.gamma.ipv4}/32 via 192.168.1.4 dev ${underlayLink} metric 1")
-            after = infra_drops()
+            after = guard_drops(beta, "fabric destination on a link outside the fabric")
             assert after >= before + 3, (before, after)
+            assert guard_drops(spine_a, "outside to a fabric address") == arrived, "the packets left beta"
             # the fabric path still works
             beta.succeed("ping -c 1 -W 2 ${stable.gamma.ipv4}")
             print("ROUTED_FABRIC_FORWARD_FILTER_OK")

@@ -4,6 +4,51 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 62 (2026-11-27): fabric steps 1 and 2, the link contract and
+the guard (D73).** First implementation step of the round-61 target
+design (`specs/design-routed-fabric.md` §8.1). routed-fabric now names
+what is allowed instead of what is bad:
+
+- **One link contract per adjacency.** `sources` (what the peer may
+  announce, plus its transfer address) and `destinations` (what the
+  peer is sent routes for, plus this end's transfer address) are the
+  adjacency's existing `import` and `export` sets. WireGuard's
+  AllowedIPs is `sources` (plus 0/0 on an `externalTransit` link until
+  transit tunnels become their own link class), the FRR lists read the
+  same two sets, and so does the guard table. `export` left the ACL: on
+  a leaf it let the leaf's own addresses in as sources.
+- **One guard table on every member with an adjacency**
+  (`inet routed-fabric-<instance>`), the same shape on a leaf and a
+  spine: `ingress` (raw prerouting: a fabric link carries only its
+  contract; another link carries no fabric source and reaches no
+  fabric address unless its owner declared it inside), `forward`
+  (default deny for a packet that uses a fabric link: only a spine
+  relays between fabric links; pod links and inside links pass) and
+  `egress` (a fabric destination never leaves by another link). It
+  replaces round G11's border forward filter.
+- **`access` is enforced on the spine** (H4): a leaf reaches only
+  what it is sent routes for. This covers what a spine relays; a pod on
+  a kube spine is kube's to guard (limit L1, H12).
+- **BGP and BFD answer the link's peer address only**, sent to this
+  end's address on the link; BFD single hop on 3784 with TTL 255. UDP
+  4784 is closed on fabric links and no `ttl-security` is rendered
+  (H20).
+- **FRR waits for the guard table** (an `ExecStartPre` that waits
+  80 s per attempt, never `requires`).
+- **The fact `clan.networkFacts.fabricInside`** (H3): the CLAT and
+  NAT64 host links always; a router zone only with
+  `zones.<name>.fabric = true` (default false). The router option lands
+  here because `router-kube` needs it; the rest of the router's zone
+  rework (`unzoned.zones` folded into it) stays gateway step 6.
+
+Not in this round (later fabric steps): `arp_ignore`, link sysctls
+(step 5), keys per adjacency and preshared keys (step 6), unreachable
+aggregates (step 7), typed options (step 3), transit tunnels (step 4).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| D73 | ACL = import ∪ export; a forward filter on forwarding borders only; 179 and BFD (3784, 4784) open on every fabric interface | link contract feeds WireGuard, FRR and nft; one guard table on every member; BGP/BFD pinned per link; FRR waits for the guard | `hostile-fabric` (`HOSTILE_FABRIC_OK`, every verdict with its positive control), `routed-fabric`, `routed-fabric-transit`, the kube and gateway suites of the PR; nix-unit |
+
 **Round 61 (2026-11-27): best design first; owner decisions of the
 hardening review.** No code changed in this round. The owner set the
 phase rule for the work up to the 0.1.x release (§7 "Current phase"):
@@ -27,8 +72,8 @@ findings are `specs/probes/2026-11-27/`. The prototypes are not on
 |---|---|---|
 | H1 | Best design first: tests prove behaviour and may be rewritten; a safety behaviour is never dropped; hostile suites are extended, never weakened (§7) | active |
 | H2 | NodePorts answer cluster members only by default; an opt-in list names other sources. Published services use LB VIPs | decided, not implemented |
-| H3 | Links that may reach fabric and pod addresses through a machine: the fabric's own, the CLAT link and the NAT64 link always; a router zone only when it opts in (default off) | decided, not implemented |
-| H4 | `access = client\|member` is enforced on the spine, not only by the leaf's imports | decided, not implemented |
+| H3 | Links that may reach fabric and pod addresses through a machine: the fabric's own, the CLAT link and the NAT64 link always; a router zone only when it opts in (default off) | implemented round 62 (D73, `zones.<name>.fabric`) |
+| H4 | `access = client\|member` is enforced on the spine, not only by the leaf's imports | implemented round 62 (D73) for what a spine relays; a pod on a kube spine is H12's |
 | H5 | routed-fabric does not originate `ownedPrefixes` into the fabric: the upstream's route to them is the operator's (R7). Eval warning when a prefix is owned and no upstream is declared | decided, not implemented |
 | H6 | netif ignores DHCP classless routes (option 121) by default; a link may opt in | decided, not implemented |
 | H7 | The README quick start must evaluate (a nix-unit test evaluates it); its assertion stays | decided, not implemented |
@@ -44,7 +89,8 @@ findings are `specs/probes/2026-11-27/`. The prototypes are not on
 | H17 | (O7) A CLAT host forwards IPv6 only for the CLAT and for links a service declares (`forwardLinks`) | decided, probed, not implemented |
 | H18 | (O8) remote-builder is redesigned apart, with the matching change in external-systems/home; not before the owner schedules it | decided, not implemented |
 | H19 | Every hostile verdict has a positive control; a missing control fails the suite. Two RA verdicts were empty without one | active for new suites |
-| H20 | No GTSM on fabric sessions: on FRR 10.7.1 it turns the neighbor's BFD multihop. Sessions are pinned by link, peer address and own address | decided, probed, not implemented |
+| H20 | No GTSM on fabric sessions: on FRR 10.7.1 it turns the neighbor's BFD multihop. Sessions are pinned by link, peer address and own address | implemented round 62 (D73) |
+| H21 | A host of a router zone with `fabric = true` is `world` for Cilium: it reaches only pods labelled `clan.lol/outside=allow` (or in a labelled namespace), through a Service whose source ranges hold it | decided; the zone option is in (round 62), the Cilium policy is kube step 7 |
 
 **Round 60 (2026-11-26): R7, external transit.** A probe sent an
 outside client through upstream → border leaf → dedicated spine →
@@ -960,9 +1006,10 @@ buildable diagrams without becoming a clanServices dependency (D57).
   spine↔spine pairs — never one per remote machine (§6.3, D51/D59).
   eBGP per adjacency with unique node ASNs;
   FRR-BFD monitors every fabric path; spines readvertise with
-  next-hop-self, leaves never provide transit. WireGuard `AllowedIPs` —
-  outbound cryptokey selection AND inbound source ACL — and BGP filters
-  derive from the same route policy; external-transit adjacencies may
+  next-hop-self, leaves never provide transit. One link contract per
+  adjacency (D73: `sources`, `destinations`) feeds WireGuard `AllowedIPs`
+  — outbound cryptokey selection AND inbound source ACL — the BGP filters
+  and the nft guard table; external-transit adjacencies may
   carry 0.0.0.0/0 + ::/0 crypto ACL without an IP default route. D63 scopes
   BGP/BFD exposure, reserves listen ports, validates endpoint/policy
   coherence, and uses stable `site`/`wan` timers with DelayOpen and a
@@ -1004,7 +1051,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D72)
+## 4. Decision record (D1–D73)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -1987,6 +2034,11 @@ unless noted) — revoked entries keep one-line reasons for history.
   routes do not. Multi-hop external transit (derived `sourceReturn` and
   0/0 ACLs on every hop) is not built; a case that needs it starts as a
   new probe.
+  **Superseded in part by D73 (round 62):** BGP and BFD of a fabric
+  link answer that link's peer address only (no port per interface, no
+  4784 on fabric links), and the forward filter above is replaced by
+  D73's guard table on every member. The R7 transit rules stay until
+  transit tunnels become their own link class.
   **Amended round G11 (R9): upstream policy.** A border announces its
   `ownedPrefixes` and accepts only the peer's `acceptedPrefixes` (default
   nothing). `ttlSecurity` (GTSM, both ends) is per peer, default off. No
@@ -2402,6 +2454,53 @@ unless noted) — revoked entries keep one-line reasons for history.
     fabric as `<distro>-clustermesh-nodeport`. The tag
     `tunnel-mode-final` is pushed.
 
+### Round 62 decisions (2026-11-27) — active
+
+- **D73 Link contracts and one guard table** *(round 62; design
+  `specs/design-routed-fabric.md` §2, §3.2, §3.3, §3.10; owner H3, H4,
+  H10, H20)*. A link carries a packet only if BGP may carry its route.
+  - **Contract.** Per adjacency `sources` = cidrs of `import` plus the
+    peer's transfer /32 and /128; `destinations` = cidrs of `export`
+    plus this end's transfer addresses. WireGuard AllowedIPs =
+    `sources` (an `externalTransit` link adds 0/0 until transit tunnels
+    land). The FRR lists read `import`/`export` as before. Both sets
+    are in the fact `clan.networkFacts.fabric.<i>.adjacencies.<r>`. The
+    two ends mirror (nix-unit `test_contractMirror`, `hostile-fabric`
+    C01).
+  - **Guard.** One table `inet routed-fabric-<instance>` on every
+    member with an adjacency. `F` = loopback pool, transfer pool, ULA
+    /48 and every member's stable address (the member list goes when
+    pinned loopbacks must lie in their pool). Chains: `ingress` (filter,
+    prerouting, priority raw) jumps each fabric link to its
+    `link_<L>` chain (source not in `src_<L>` or destination not in
+    `dst_<L>`: counted drop), accepts local links (`lo`, the fabric
+    dummy, `cilium*`, `lxc*`), drops a fabric source from any other
+    link, accepts `fabricInside` links, drops any other link's packet to
+    `F`; `forward` (priority filter − 5) sends packets from a fabric
+    link to `from_fabric` (a spine relays to fabric links; pod and
+    inside links pass; else counted drop) and packets into a fabric link
+    to `into_fabric` (pod and inside links pass; else counted drop);
+    `egress` (postrouting) drops a packet to `F` that leaves by a link
+    outside the fabric. Stateless, default deny only by a final drop in
+    the two link chains (never `policy drop`: a router's LAN to WAN is
+    not the fabric's, G25). Rules are found by their comment.
+  - **Sessions.** Per adjacency four input rules: TCP 179 and UDP 3784
+    (TTL / hop limit 255) from the peer's transfer address to this
+    end's, on that link. No 4784 and no `ttl-security` on fabric
+    sessions (H20). Upstream peers keep D63's rules.
+  - **Fail closed.** FRR is ordered after `nftables.service` and its
+    `ExecStartPre` waits up to 80 s for the guard table (the unit's
+    start limit would end a check that fails at once). A guard removed
+    at run time is not noticed; on a running machine zebra `-r` keeps
+    the kernel routes while FRR waits.
+  - **Inside links.** `clan.networkFacts.fabricInside` lists links whose
+    hosts may reach fabric addresses through this machine: the CLAT and
+    NAT64 host links always, a router zone with `fabric = true`.
+  - **Limits.** L1: a packet for a pod on a kube node enters Cilium
+    before netfilter, so pods are kube's to guard (H12). L3: a rooted
+    spine can forge member sources (§6.12). L4: a member can reset its
+    own BGP session.
+
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
 1. One declarative fleet: instance declaration ⇒ stable identity,
@@ -2496,6 +2595,12 @@ unless noted) — revoked entries keep one-line reasons for history.
     collisions fail eval, forwarding-safe RA is used, and symmetric BFD/BGP
     profiles plus DelayOpen and a warning-only fabric route limit favor
     stability over speed. The fabric is no trust zone (R5).
+25. A fabric link carries a packet only if its source is in the link's
+    `sources` and its destination in its `destinations`; another link
+    carries no fabric source and reaches no fabric address unless its
+    owner declared it inside; a fabric destination never leaves by a
+    link outside the fabric; only a spine relays between fabric links
+    (D73, `hostile-fabric`).
 
 ## 6. Subsystem contracts (condensed)
 
@@ -3022,8 +3127,8 @@ the local pod links (`lxc*`, `cilium*`). The cluster services never
 trust a fabric link (routed-fabric's `firewall.trust` decides) and never
 accept everything from a pod: a pod is a source like any other. Public
 ports only where exposed; WireGuard only on configured underlays;
-BGP/BFD only on fabric WireGuard interfaces and from declared upstream
-peers, never globally (D63); mirror Services restricted to GitOps
+BGP/BFD only from a fabric link's peer address to this end's address on
+that link (D73) and from declared upstream peers, never globally (D63); mirror Services restricted to GitOps
 namespaces. VMs assert positive AND negative exposure, the nft backend,
 Cilium datapath rules, and no kube-proxy rules.
 
@@ -3059,6 +3164,16 @@ default gateway for ordinary non-fabric LAN clients is outside MVP.
 Node duality uses the same FRR, never a second stack. Members get
 routes only — their name resolution is a day-2 concern (external-dns-
 style automation), never a fabric render.
+
+The guard (D73, round 62): every member with an adjacency renders
+`inet routed-fabric-<instance>` from the link contracts. A spine refuses
+a destination it sends a leaf no route for (`access` on the spine), a
+leaf's forged source, an outsider's packet to a fabric address or with a
+fabric source, and relaying by a leaf; a fabric destination never leaves
+by the underlay. Pods on a kube node are guarded by kube (L1). FRR does
+not start without the table. A spine can forge member sources (L3), so
+by-source rules above the fabric protect against leaves and outsiders
+only; against a rooted spine only TLS, tokens and mTLS help.
 
 Acceptance (target; round 20 status: the NAT-site, Internet source/return,
 border-filter and route-filter-negative items are not yet VM-proven, see

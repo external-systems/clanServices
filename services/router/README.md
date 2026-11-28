@@ -39,6 +39,15 @@ What may cross between the two sides is named, default deny:
 - `zones.<zone>.hostPorts = true`: the zone may reach the ports the
   machine opens to everyone, such as the fabric's WireGuard ports. Set
   it on the zone that holds the other nodes.
+- `zones.<zone>.fabric = true` (default off): the zone's link is inside
+  the fabric (`clan.networkFacts.fabricInside`, SPEC.md D73), so
+  routed-fabric's guard lets the zone's hosts reach fabric addresses
+  through this machine. Without it the guard drops every packet from the
+  zone to a fabric address or into a fabric link, also for a zone in
+  `unzoned.zones`. A zone in `unzoned.zones` that should reach pods on
+  other nodes needs both. Planned (kube step 7, SPEC.md H21): Cilium
+  then lets such a host reach only pods labelled
+  `clan.lol/outside=allow`.
 - `wanPorts.tcp`, `wanPorts.udp`: ports of the router itself that the
   WAN may reach. Empty by default: nothing enters. **Name 22 here
   before the first deploy if you deploy over the WAN.**

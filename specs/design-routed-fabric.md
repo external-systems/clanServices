@@ -1399,8 +1399,8 @@ hunks from it; the lists below say which.
 
 | # | Step | State | Proof |
 |---|---|---|---|
-| 1 | Link contract, zone guard, session rules | prototype ran | `hostile-fabric` F01..F17, C01..C04, F23..F25 |
-| 2 | Link contracts in nft, topology, leak guard | prototype ran | F18, F19, F21, F22, S01..S03; kube K40 |
+| 1 | Link contract, zone guard, session rules | **implemented** (SPEC.md round 62, D73) | `hostile-fabric` F01..F17, C01..C04, F23..F25 |
+| 2 | Link contracts in nft, topology, leak guard | **implemented** (round 62); K40 lands with the kube step | F18, F19, F21, F22, S01..S03, F26, F27; kube K40 |
 | 3 | Options and filters | NOT-RUN | nix-unit; K42 |
 | 4 | Transit tunnels | probe ran (§3.4); service NOT-RUN | T00..T08 |
 | 5 | Link hardening (no GTSM) | prototype ran | F20; FINDING A8 |
@@ -1415,6 +1415,23 @@ and 7 are small and may ride in the same PR or follow; they are
 written apart so each can be reviewed alone.
 
 ### 8.1 Steps 1 and 2: the contract and the guard
+
+**Implemented in round 62** (SPEC.md D73). What the PR did beyond the
+list below:
+
+- `hostile-fabric` carries a positive control for every verdict group
+  (`control(id, worked, detail)`); a control that did not work fails the
+  suite (H19). F20 (step 5), P3 and P3b (step 6) are not in it yet.
+- FRR's waiting `ExecStartPre` (§3.10) landed with the guard it waits
+  for; F26, F26b and F27 prove it. The unreachable aggregates of step 7
+  did not: F21 is proven by the `egress` rule alone.
+- The router setter is `zones.<name>.fabric` (default false), not the
+  prototype's `unzoned.zones`. The option and the fact landed here
+  because `router-kube` needs a setter; folding `unzoned.zones` into it
+  stays gateway step 6.
+- `drops(machine, table, comment)` is in `tests/suite-lib.nix`.
+- Item 8 (the kube hostile suite) and item 10 (`forwardLinks`) were left
+  to the kube step and the gateway step.
 
 Files and what changes in each (all hunks are in `prototype.patch`):
 

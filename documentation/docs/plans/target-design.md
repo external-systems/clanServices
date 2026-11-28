@@ -80,5 +80,12 @@ In waves, one PR per step:
    fronts, transit).
 4. New code without a prototype, and optional steps.
 
+Done so far:
+
+- Fabric steps 1 and 2 (SPEC.md D73): the link contract, one guard
+  table on every fabric member, BGP and BFD pinned to the link's peer,
+  FRR waits for the guard, and `zones.<name>.fabric` on the router.
+  Proven by the suite `hostile-fabric`.
+
 Until the design is frozen, tests prove behaviour and may be rewritten
 (see [Testing](../reference/testing.md)).

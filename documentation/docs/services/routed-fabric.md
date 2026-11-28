@@ -58,9 +58,13 @@ Every machine has stable loopback `/32` and `/128` addresses. Every
 adjacency in the derived graph — leaf↔spine, spine↔spine, border↔upstream
 — gets exactly one point-to-point WireGuard interface with one peer. This
 preserves cryptokey correctness and kernel ECMP across interfaces.
-`AllowedIPs` is both outbound peer selection and the inbound source ACL,
-and includes the transit prefixes a spine readvertises; FRR filters derive
-from the same route policy. External-transit links may list default entries
+Each adjacency has one **link contract** (D73): `sources`, what the
+peer may announce on the link (and its link address), and
+`destinations`, what the peer is sent routes for (and this end's link
+address). `AllowedIPs` is both outbound peer selection and the inbound
+source ACL, and it is exactly `sources`: that includes the transit
+prefixes a spine readvertises. The FRR filters and the guard table read
+the same two sets, so the three cannot drift. External-transit links may list default entries
 as a crypto ACL without installing a default route, and Internet-sourced
 ingress requires source-policy return. Multiple NAT borders do not share
 conntrack state by default, so existing-flow failover requires a separate
@@ -176,24 +180,47 @@ every session carrying it shares, so `frr.conf` grows with members plus
 adjacencies, not with their product.
 
 The fabric is no trust zone. `firewall.trust` is off by default: a fabric
-link opens TCP 179 and UDP 3784/4784 and nothing else, and each service
-opens its own ports on the links (k3s and rke2 open the cluster's ports
-and Cilium's health port 4240). With `trust = true` every fabric link is a
-trusted interface, but never an `externalTransit` link. TCP 179 and UDP
-3784/4784 are opened only on fabric WireGuard interfaces and from
-declared literal upstream peer addresses, never globally.
+link answers BGP (TCP 179) and BFD (UDP 3784) from its peer and nothing
+else, and each service opens its own ports on the links (k3s and rke2
+open the cluster's ports and Cilium's health port 4240). With
+`trust = true` every fabric link is a trusted interface, but never an
+`externalTransit` link. BGP and BFD of a fabric link answer only the
+peer's address on that link, sent to this end's address on it; BFD is
+single hop with TTL 255. UDP 4784 (multihop BFD) is closed on fabric
+links, and no `ttl-security` is rendered: on FRR 10.7.1 it turns the
+neighbor's BFD into multihop. Declared literal upstream peers keep their
+own rules. Nothing is opened globally.
 
-Forwarding nodes carry a forward filter in their own nftables table
-(`inet routed-fabric-<instance>`). It is stateless, so ECMP that sends the
-two directions of a flow through different spines passes, and it only
-drops:
+Every member with an adjacency carries **the guard** (D73), one nftables
+table `inet routed-fabric-<instance>` with the same shape on a leaf and a
+spine. It is stateless, so ECMP that sends the two directions of a flow
+through different spines passes, and it only drops. Each drop rule is
+counted and has a comment that names it.
 
-- what an `externalTransit` link forwards must go to the border's
-  `ownedPrefixes`, and it stops there: nothing from the link is forwarded
-  on into the fabric (only fabric-to-fabric traffic crosses);
-- a forwarding border forwards nothing from outside the fabric (any link
-  but its fabric links and Cilium's) to the fabric's own addresses: the
-  member loopbacks, the transfer pool and the ULA /48.
+| Chain | Hook | What it does |
+|---|---|---|
+| `ingress` | prerouting, priority raw | a fabric link carries only its contract (`<peer>: source outside its contract`, `<peer>: destination outside its contract`); any other link carries no fabric source (`fabric source from outside the fabric`) and, unless it is declared inside, reaches no fabric address (`outside to a fabric address`) |
+| `forward` | forward, priority filter − 5 | a packet that uses a fabric link: only a spine relays between fabric links; pod links (`cilium*`, `lxc*`) and inside links pass; the rest is dropped (`from the fabric to a link outside it`, `from outside into a fabric link`) |
+| `egress` | postrouting | a fabric address never leaves by a link outside the fabric, also when a bogus route points there (`fabric destination on a link outside the fabric`) |
+
+The fabric's addresses are the loopback and transfer pools, the ULA /48
+and every member's stable address. A link is **inside** when the service
+that owns it says so in `clan.networkFacts.fabricInside`: the CLAT and
+NAT64 host links always, a router zone only with `fabric = true`.
+`access` is enforced on the spine this way: a client leaf reaches only
+what it is sent routes for. A packet for a pod on a Kubernetes node
+enters Cilium before nftables, so pods are guarded by the cluster, not
+by this table.
+
+FRR waits for the guard: it starts after `nftables.service`, and its
+pre-start check waits up to 80 seconds for the table, then the unit
+retries. A check that failed at once would hit the unit's start limit
+and leave FRR down for good. On a running machine zebra keeps the
+kernel's routes while FRR waits; the peers withdraw theirs.
+
+Until transit tunnels become their own link class, an `externalTransit`
+link is exempt from the contract chains and keeps the R7 transit rules
+below.
 
 When another service turns on the NixOS forward filter on a spine (a
 NAT64 gateway), routed-fabric accepts transit between its links there.

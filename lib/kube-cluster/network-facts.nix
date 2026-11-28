@@ -48,6 +48,8 @@
         timerProfile = str "Symmetric FRR stability profile for this adjacency.";
         endpoint = nullableStr "Remote public endpoint when declared; null means outbound-only or unknown.";
         allowedIPs = strList "WireGuard crypto ACL derived from the route policy.";
+        sources = strList "The link contract's sources: what the peer may announce, and its transfer address.";
+        destinations = strList "The link contract's destinations: what the peer is sent routes for, and this end's transfer address.";
         externalTransit = bool "Whether default entries are allowed only as a crypto ACL.";
         sourceReturn = bool "Whether a separate source-return policy table is declared.";
       };
@@ -78,6 +80,7 @@
   in {
     schemaVersion = fact t.ints.positive 2 "Network facts schema version.";
     forwarding = bool "Whether any declared service enables host packet forwarding.";
+    fabricInside = strList "Links, beside a fabric's own, whose hosts may reach the fabric's addresses through this machine (SPEC.md D73; routed-fabric's guard reads it). Set by the service that owns the link: the CLAT and NAT64 host links always, a router zone only with `fabric = true`.";
     node = {
       name = str "Clan machine identity.";
     };

@@ -243,6 +243,11 @@ in {
             default = false;
             description = "The zone may reach the ports the machine opens to everyone (`networking.firewall.allowedTCPPorts` and the like): what other services on the machine declared.";
           };
+          fabric = mkOption {
+            type = types.bool;
+            default = false;
+            description = "The zone's links are declared inside a fabric (`clan.networkFacts.fabricInside`, SPEC.md D73): its hosts may reach fabric addresses through this machine.";
+          };
         };
       });
     };
@@ -361,7 +366,13 @@ in {
         }
       ];
 
-    clan._networkFacts.forwarding = true;
+    clan._networkFacts = {
+      forwarding = true;
+      # D73 (specs/gateway.md H3): a zone reaches a fabric's addresses
+      # through this machine only when the owner says so; routed-fabric's
+      # guard reads the fact
+      fabricInside = zonesOf (builtins.attrNames (lib.filterAttrs (_: zone: zone.fabric) lanZones));
+    };
     boot.kernel.sysctl = {
       "net.ipv4.conf.all.forwarding" = 1;
       "net.ipv6.conf.all.forwarding" = 1;

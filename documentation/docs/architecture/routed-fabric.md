@@ -157,6 +157,26 @@ is dropped by cryptokey routing even though BGP accepted it. FRR filters
 render from the same resolved policy, so cryptokey and routing state cannot
 drift.
 
+Since D73 that policy is one **link contract** per adjacency, read by
+three consumers:
+
+```
+            import (what the peer may announce)   export (what it is sent)
+                 |                                      |
+   sources = cidrs(import) + peer's link address        destinations = cidrs(export) + own link address
+                 |                                      |
+    +------------+-------------+                        |
+    |            |             |                        |
+ WireGuard    FRR lists     nft src_<L>               nft dst_<L>
+ AllowedIPs   (import)      (ingress)                 (ingress), FRR lists (export)
+```
+
+The ACL no longer holds `export`: on a leaf it let the leaf's own
+addresses in as sources. The two ends of a link mirror: what one end
+accepts as a source is what the other end is sent routes for. The guard
+table that enforces the contract, and the links it trusts, are described
+in the [service page](../services/routed-fabric.md).
+
 Two consequences:
 
 - **External-transit links may carry default entries as a crypto ACL**

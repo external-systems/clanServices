@@ -92,7 +92,12 @@ in {
       kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
     };
     # the CLAT forwards IPv6, so netif renders accept_ra 2
-    clan._networkFacts.forwarding = true;
+    clan._networkFacts = {
+      forwarding = true;
+      # D73: this link's hosts may reach a fabric's addresses through
+      # this machine (routed-fabric's guard reads the fact)
+      fabricInside = [names.clat.host];
+    };
     environment.systemPackages = [pkgs.jool-cli];
 
     networking.ifstate.settings = {

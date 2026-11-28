@@ -484,6 +484,8 @@ in
               egress_all("after an IfState apply")
               alpha.succeed("systemctl is-active nat64-beacon.service")
 
+      for machine in [alpha, beta]:
+          print(f"FINDING guard drops on {machine.name} at the end of the suite: " + " | ".join(l.strip() for l in machine.succeed("nft list ruleset | awk '/^table inet (routed-fabric|kube)-/,/^}/' | grep 'counter packets [1-9]' || true").splitlines()))
       print("NAT_GATEWAY_KUBE_OK")
     '';
   }

@@ -808,23 +808,29 @@
         )
         extraRoutes
       ];
-      cryptoRoutes = frr.mergeRoutes [
-        importRoutes
-        export
-        (frr.emptyRoutes
-          // {
-            hosts = [
-              "${remoteAddress.ipv4}/32"
-              "${remoteAddress.ipv6}/128"
-            ];
-          })
-      ];
+      # D73 (link contract): `import` is what the peer may announce on
+      # this link, and so every source it may send; `export` is what it
+      # is sent routes for, and so every destination it may address.
+      # WireGuard's AllowedIPs, the FRR lists and the nft sets all read
+      # these two values.
+      cidrsOf = routes:
+        routes.hosts
+        ++ routes.vips
+        ++ map (pod: pod.cidr) routes.pods
+        ++ routes.services
+        ++ routes.extra;
+      sources = lib.unique (cidrsOf importRoutes
+        ++ [
+          "${remoteAddress.ipv4}/32"
+          "${remoteAddress.ipv6}/128"
+        ]);
+      destinations = lib.unique (cidrsOf export
+        ++ [
+          "${localAddress.ipv4}/32"
+          "${localAddress.ipv6}/128"
+        ]);
       allowedIPs =
-        cryptoRoutes.hosts
-        ++ cryptoRoutes.vips
-        ++ map (pod: pod.cidr) cryptoRoutes.pods
-        ++ cryptoRoutes.services
-        ++ cryptoRoutes.extra
+        sources
         ++ lib.optionals externalTransit [
           "0.0.0.0/0"
           "::/0"
@@ -847,6 +853,7 @@
       inherit
         addressFamilyMismatch
         allowedIPs
+        destinations
         endpoint
         export
         externalTransit
@@ -865,6 +872,7 @@
         transfer6Generator
         rulePriority
         sourceReturn
+        sources
         table
         timerOverrideConflict
         timerProfile
@@ -1276,17 +1284,21 @@
       # Mode scoping (N4): rendered only in the instance's modes.
       modeActive = modeScope.active config ownSettings.modes;
 
-      # R5: the forward filter. Stateless, so ECMP that sends the two
-      # directions of a flow through different spines passes, and in its
-      # own table, so it only ever drops: what the NixOS firewall and
-      # other services accept or refuse stays theirs.
-      #   - an externalTransit link forwards only to the border's
-      #     ownedPrefixes (its crypto ACL is 0/0), and only on the owner
-      #     end; outside sources end there (R7): nothing from the link
-      #     goes on into the fabric but the fabric's own traffic;
-      #   - a forwarding border sends nothing from outside the fabric to
-      #     the fabric's own addresses: the member loopbacks, the
-      #     transfer prefixes and the ULA /48. Cilium's links are inside.
+      # D73: the guard. One table, the same shape on every member.
+      # Stateless (a flow whose two directions use different spines
+      # passes) and in its own table, so it only ever drops: what the
+      # NixOS firewall and other services accept or refuse stays theirs.
+      #   ingress  addresses, before conntrack, input and forward alike:
+      #            a fabric link carries only its contract (sources the
+      #            peer may announce, destinations it is sent routes
+      #            for); a link outside the fabric neither carries a
+      #            fabric source nor reaches a fabric address;
+      #   forward  topology: a packet that uses a fabric link is
+      #            forwarded only between fabric links (a spine), pod
+      #            links and links their owner declared inside;
+      #   egress   a fabric destination never leaves by another link.
+      # Transit links (`externalTransit`) are exempt until they become
+      # their own link class (design step 4): their R7 rules stay.
       forwarding = ownRole == "spine" || (border != null && border.forwarding);
       ownedOf = family:
         builtins.filter (prefix: (family == 6) == lib.hasInfix ":" prefix) (
@@ -1294,9 +1306,14 @@
           then border.ownedPrefixes
           else []
         );
-      infra = {
-        "4" = lib.unique (builtins.filter (prefix: !(lib.hasInfix ":" prefix)) stableHosts ++ [transfer4PoolRecord]);
-        "6" = lib.unique (builtins.filter (lib.hasInfix ":") stableHosts ++ ["${ulaBase}::/48"]);
+      isV6 = lib.hasInfix ":";
+      v4Of = builtins.filter (prefix: !(isV6 prefix));
+      v6Of = builtins.filter isV6;
+      # F: the fabric's own addresses. The pools, and the members'
+      # addresses for a pinned one outside its pool.
+      fabricAddresses = {
+        "4" = lib.unique ([loopback4PoolRecord transfer4PoolRecord] ++ v4Of stableHosts);
+        "6" = lib.unique (["${ulaBase}::/48"] ++ v6Of stableHosts);
       };
       quoted = names: "{ ${lib.concatMapStringsSep ", " (name: ''"${name}"'') names} }";
       nftSet = name: family: elements: ''
@@ -1309,32 +1326,75 @@
           ${lib.optionalString (elements != []) "elements = { ${lib.concatStringsSep ", " elements} }"}
         }
       '';
-      guardBorder = forwarding && border != null && fabricInterfaces != [];
+      contractLinks = builtins.filter (adjacency: !adjacency.externalTransit) adjacencies;
+      localLinks = ["lo" loopbackName "cilium*" "lxc*"];
+      podLinks = ["cilium*" "lxc*"];
+      declaredInside = config.clan.networkFacts.fabricInside;
+      guard = adjacencies != [];
       # R7: on the owner end only; on the upstream end the owned sets
       # are empty and the guard would drop everything the link forwards
       guardTransit = transitInterfaces != [] && border != null;
-      forwardTable = ''
+      guardTable = ''
         ${nftSet "owned4" "4" (ownedOf 4)}
         ${nftSet "owned6" "6" (ownedOf 6)}
-        ${nftSet "infra4" "4" infra."4"}
-        ${nftSet "infra6" "6" infra."6"}
+        ${nftSet "fabric4" "4" fabricAddresses."4"}
+        ${nftSet "fabric6" "6" fabricAddresses."6"}
+        ${lib.concatMapStrings (adjacency: ''
+            ${nftSet "src4_${adjacency.name}" "4" (v4Of adjacency.sources)}
+            ${nftSet "src6_${adjacency.name}" "6" (v6Of adjacency.sources)}
+            ${nftSet "dst4_${adjacency.name}" "4" (v4Of adjacency.destinations)}
+            ${nftSet "dst6_${adjacency.name}" "6" (v6Of adjacency.destinations)}
+            chain link_${adjacency.name} {
+              ip saddr != @src4_${adjacency.name} counter drop comment "${adjacency.remoteName}: source outside its contract"
+              ip6 saddr != @src6_${adjacency.name} counter drop comment "${adjacency.remoteName}: source outside its contract"
+              ip daddr != @dst4_${adjacency.name} counter drop comment "${adjacency.remoteName}: destination outside its contract"
+              ip6 daddr != @dst6_${adjacency.name} counter drop comment "${adjacency.remoteName}: destination outside its contract"
+              accept
+            }
+          '')
+          contractLinks}
+        chain ingress {
+          type filter hook prerouting priority raw; policy accept;
+          ${lib.optionalString (contractLinks != []) ''
+          iifname vmap { ${lib.concatMapStringsSep ", " (adjacency: ''"${adjacency.name}" : goto link_${adjacency.name}'') contractLinks} }
+        ''}
+          iifname ${quoted (localLinks ++ transitInterfaces)} accept
+          ip saddr @fabric4 counter drop comment "fabric source from outside the fabric"
+          ip6 saddr @fabric6 counter drop comment "fabric source from outside the fabric"
+          ${lib.optionalString (declaredInside != []) "iifname ${quoted declaredInside} accept"}
+          ip daddr @fabric4 counter drop comment "outside to a fabric address"
+          ip6 daddr @fabric6 counter drop comment "outside to a fabric address"
+        }
         chain forward {
           type filter hook forward priority filter - 5; policy accept;
           ${lib.optionalString guardTransit ''
-          iifname ${quoted transitInterfaces} ip saddr @infra4 ip daddr @infra4 accept
-          iifname ${quoted transitInterfaces} ip6 saddr @infra6 ip6 daddr @infra6 accept
+          iifname ${quoted transitInterfaces} ip saddr @fabric4 ip daddr @fabric4 accept
+          iifname ${quoted transitInterfaces} ip6 saddr @fabric6 ip6 daddr @fabric6 accept
           iifname ${quoted transitInterfaces} meta nfproto ipv4 ip daddr != @owned4 counter drop comment "externalTransit: to ownedPrefixes only"
           iifname ${quoted transitInterfaces} meta nfproto ipv6 ip6 daddr != @owned6 counter drop comment "externalTransit: to ownedPrefixes only"
           ${lib.optionalString (fabricInterfaces != []) ''
             iifname ${quoted transitInterfaces} oifname ${quoted fabricInterfaces} counter drop comment "externalTransit: ends on this border"
           ''}
         ''}
-          ${lib.optionalString guardBorder ''
-          iifname ${quoted fabricInterfaces} accept
-          iifname { "cilium*", "lxc*" } accept
-          oifname ${quoted fabricInterfaces} ip daddr @infra4 counter drop comment "outside to the fabric's own addresses"
-          oifname ${quoted fabricInterfaces} ip6 daddr @infra6 counter drop comment "outside to the fabric's own addresses"
+          ${lib.optionalString (fabricInterfaces != []) ''
+          iifname ${quoted fabricInterfaces} goto from_fabric
+          oifname ${quoted fabricInterfaces} goto into_fabric
         ''}
+        }
+        chain from_fabric {
+          ${lib.optionalString (ownRole == "spine") "oifname ${quoted interfaceNames} accept"}
+          oifname ${quoted (podLinks ++ declaredInside)} accept
+          counter drop comment "from the fabric to a link outside it"
+        }
+        chain into_fabric {
+          iifname ${quoted (podLinks ++ declaredInside ++ transitInterfaces)} accept
+          counter drop comment "from outside into a fabric link"
+        }
+        chain egress {
+          type filter hook postrouting priority filter; policy accept;
+          oifname ${quoted (interfaceNames ++ localLinks)} accept
+          ip daddr @fabric4 counter drop comment "fabric destination on a link outside the fabric"
+          ip6 daddr @fabric6 counter drop comment "fabric destination on a link outside the fabric"
         }
       '';
     in {
@@ -1854,8 +1914,10 @@
                       mtu
                       endpoint
                       allowedIPs
+                      destinations
                       externalTransit
                       sourceReturn
+                      sources
                       timerProfile
                       ;
                   };
@@ -1890,26 +1952,27 @@
             '';
           };
           nftables.enable = true;
-          nftables.tables."routed-fabric-${instanceName}" = lib.mkIf (guardBorder || guardTransit) {
+          nftables.tables."routed-fabric-${instanceName}" = lib.mkIf guard {
             family = "inet";
-            content = forwardTable;
+            content = guardTable;
           };
           firewall = {
             allowedUDPPorts = lib.optionals ownSettings.firewall.openPort listenPorts;
-            interfaces = lib.listToAttrs (
-              map (adjacency: {
-                inherit (adjacency) name;
-                value = {
-                  allowedTCPPorts = [179];
-                  allowedUDPPorts = [
-                    3784
-                    4784
-                  ];
-                };
-              })
-              adjacencies
-            );
-            extraInputRules = upstreamFirewallRules;
+            # D73 (I9): BGP and BFD of a link answer that link's peer
+            # address only, sent to this end's address on the link. BFD
+            # is single hop (port 3784, TTL 255). No `ttl-security` on
+            # the session: on FRR 10.7.1 it turns the neighbor's BFD
+            # session into a multihop one (port 4784, any TTL), probe
+            # `probe-fabric-session`.
+            extraInputRules =
+              upstreamFirewallRules
+              + lib.concatMapStrings (adjacency: ''
+                iifname "${adjacency.name}" ip saddr ${adjacency.remote.ipv4} ip daddr ${adjacency.local.ipv4} tcp dport 179 accept
+                iifname "${adjacency.name}" ip saddr ${adjacency.remote.ipv4} ip daddr ${adjacency.local.ipv4} udp dport 3784 ip ttl 255 accept
+                iifname "${adjacency.name}" ip6 saddr ${adjacency.remote.ipv6} ip6 daddr ${adjacency.local.ipv6} tcp dport 179 accept
+                iifname "${adjacency.name}" ip6 saddr ${adjacency.remote.ipv6} ip6 daddr ${adjacency.local.ipv6} udp dport 3784 ip6 hoplimit 255 accept
+              '')
+              adjacencies;
             # rendered only when another service filters forwarding (a
             # NAT64 gateway on a spine): transit between fabric links
             extraForwardRules = lib.optionalString (forwarding && fabricInterfaces != []) ''
@@ -1930,7 +1993,26 @@
           ];
           config = frrConfig;
         };
-        systemd.services.frr.after = ["ifstate.service"];
+        # D73 (I14): FRR does not start while the guard table is missing.
+        # The check waits (80 s) instead of failing at once: the unit has
+        # `Restart=always` with a start limit of 3 in 180 s, and three
+        # quick failures would leave FRR down for good, also after the
+        # guard is back. A waiting start is retried forever and starts
+        # by itself as soon as the table loads. Not `requires`: a restart
+        # of nftables.service must not restart FRR.
+        systemd.services.frr = {
+          after = ["ifstate.service" "nftables.service"];
+          serviceConfig.ExecStartPre = lib.mkIf guard (lib.mkBefore [
+            (pkgs.writeShellScript "routed-fabric-${instanceName}-guard-present" ''
+              for _ in $(${pkgs.coreutils}/bin/seq 1 40); do
+                ${pkgs.nftables}/bin/nft list table inet routed-fabric-${instanceName} >/dev/null 2>&1 && exit 0
+                ${pkgs.coreutils}/bin/sleep 2
+              done
+              echo "routed-fabric/${instanceName}: the guard table inet routed-fabric-${instanceName} is missing; FRR stays down" >&2
+              exit 1
+            '')
+          ]);
+        };
         services.ndppd = lib.mkIf (border != null && border.ndpInterfaces != []) {
           enable = true;
           proxies = lib.listToAttrs (

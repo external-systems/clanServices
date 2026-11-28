@@ -53,6 +53,7 @@ Your home box is both. Since 2026-11-25 the service is built for it.
 | `unzoned.zones = ["home"]` | none | zone `home` and the cluster's pods and Services may reach each other, both ways |
 | `unzoned.source.ipv4`, `.ipv6` | the node's cluster-network address; without one, the outgoing port's address | the address such traffic appears to come from. The router reads it from the cluster network. Set it only to override |
 | `zones.<zone>.hostPorts` | off | the zone may reach the ports the machine opens to everyone, such as the cluster network's WireGuard ports. Turn it on for the zone that holds your other nodes |
+| `zones.<zone>.fabric` | off | the zone's hosts may reach the cluster network's addresses through this machine (SPEC.md D73). Without it the cluster network's firewall drops them, also for a zone in `unzoned.zones`. A zone that should reach pods on other nodes needs both. Later the cluster will let such a host reach only pods labelled `clan.lol/outside=allow` (SPEC.md H21) |
 | `wanPorts.tcp`, `wanPorts.udp` | empty | ports of the router itself that the internet may reach |
 
 - **The cluster always reaches the internet.** And a zone in

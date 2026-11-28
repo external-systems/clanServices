@@ -1073,6 +1073,16 @@ any code (AGENTS.md rule 3).
       ports the machine opens to everyone
       (`networking.firewall.allowedTCPPorts` and the like), such as the
       fabric's WireGuard ports. For a zone that holds other nodes;
+    - `zones.<zone>.fabric` (default off; SPEC.md H3, D73, round 62):
+      the zone's links join `clan.networkFacts.fabricInside`, so
+      routed-fabric's guard lets the zone's hosts reach fabric
+      addresses through this machine. Without it the guard drops a
+      packet from the zone to a fabric address or into a fabric link,
+      also for a zone in `unzoned.zones`. The NAT64 host link
+      (`jool0`) and the CLAT host link (`clat0`) are always inside
+      (`lib/gateway/nat64.nix`, `clat.nix`). Folding `unzoned.zones`
+      into this option is gateway step 6 (`specs/design-gateway.md`
+      §3.9 b);
     - `wanPorts.tcp`, `wanPorts.udp` (default empty): ports of the
       router itself that the WAN may reach. Invariant 3 holds until the
       owner names a port (22 for deploys over the WAN; a WireGuard port
