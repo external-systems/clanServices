@@ -647,6 +647,36 @@ in {
     expected = true;
   };
 
+  # K-A1: `packages.rke2` is the runtime and the source of the
+  # distro's airgap images (one package, so their tags match).
+  test_packageOverrideIsRuntime = let
+    fakeImages = {
+      type = "derivation";
+      name = "rke2-images-test";
+      outPath = "/nix/store/00000000000000000000000000000001-rke2-images-test";
+    };
+    fakePackage = {
+      type = "derivation";
+      name = "rke2-test-1.99.0";
+      version = "1.99.0";
+      outPath = "/nix/store/00000000000000000000000000000000-rke2-test-1.99.0";
+      images-core-linux-amd64-tar-zst = fakeImages;
+    };
+    alpha =
+      (mkEvaled (lib.recursiveUpdate explicitInventory {
+        instances.rke2.roles.server.settings.packages.rke2 = fakePackage;
+      })).config.nixosConfigurations.alpha.config;
+  in {
+    expr = {
+      runtime = alpha.services.rke2.package.outPath;
+      images = (builtins.head alpha.services.rke2.images).outPath;
+    };
+    expected = {
+      runtime = fakePackage.outPath;
+      images = fakeImages.outPath;
+    };
+  };
+
   test_roleServer = {
     expr = alphaExplicit.services.rke2.role;
     expected = "server";
@@ -1785,14 +1815,16 @@ in {
 
   # K2: manual addresses: the cluster ports from members and pods, etcd
   # from the servers, no blanket pod accept, no trusted fabric link.
+  # K-A2: the supervisor and its LB front (8443) from the members only.
   test_firewallManualBySource = let
     rules = alphaExplicit.networking.firewall.extraInputRules;
   in {
     expr = {
-      cluster = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443, 8443, 10250, 4240 } accept" rules;
-      cluster6 = lib.hasInfix "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443, 8443, 10250, 4240 } accept" rules;
+      cluster = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2, 10.1.0.0/16 } tcp dport { 6443, 7443, 10250, 4240 } accept" rules;
+      cluster6 = lib.hasInfix "ip6 saddr { fd00::1, fd00::2, fd10:1::/56 } tcp dport { 6443, 7443, 10250, 4240 } accept" rules;
       etcd = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 2379, 2380, 2381 } accept" rules;
-      supervisorMembersOnly = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 9345 } accept" rules;
+      supervisorMembersOnly = lib.hasInfix "ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport { 8443, 9345 } accept" rules;
+      supervisorMembersOnly6 = lib.hasInfix "ip6 saddr { fd00::1, fd00::2 } tcp dport { 8443, 9345 } accept" rules;
       noBlanketPodAccept = !(lib.hasInfix ''iifname { "cilium*", "lxc*" } accept'' rules);
       noGuard = !(lib.hasInfix "iifname" rules);
       trusted = alphaExplicit.networking.firewall.trustedInterfaces;
@@ -1802,6 +1834,7 @@ in {
       cluster6 = true;
       etcd = true;
       supervisorMembersOnly = true;
+      supervisorMembersOnly6 = true;
       noBlanketPodAccept = true;
       noGuard = true;
       trusted = [
@@ -1814,18 +1847,23 @@ in {
 
   # K2: a fabric agent opens no etcd and no API port, only on its fabric
   # links and local pod links, and does not trust the fabric links.
+  # K-A2: its supervisor front (8443) answers the members only.
   test_firewallFabricAgent = let
     rules = gammaTransport.networking.firewall.extraInputRules;
   in {
     expr = {
       noEtcd = !(lib.hasInfix "2379" rules);
-      ports = lib.hasInfix "tcp dport { 7443, 8443, 10250, 4240 } accept" rules;
+      ports = lib.hasInfix "tcp dport { 7443, 10250, 4240 } accept" rules;
+      supervisorFront = lib.hasInfix "tcp dport { 8443 } accept" rules;
+      supervisorFrontNoPods = !(lib.hasInfix "/56 } tcp dport { 8443 }" rules || lib.hasInfix "/16 } tcp dport { 8443 }" rules);
       guard = lib.hasInfix ''iifname { "fk-gamma-1", "fk-gamma-2", "lxc*", "cilium*" } ip saddr'' rules;
       trusted = gammaTransport.networking.firewall.trustedInterfaces;
     };
     expected = {
       noEtcd = true;
       ports = true;
+      supervisorFront = true;
+      supervisorFrontNoPods = true;
       guard = true;
       trusted = [
         "cilium_host"

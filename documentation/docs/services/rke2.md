@@ -63,17 +63,29 @@ behavior remain unchanged.
 - **A machine holds only what its role reads.** An agent gets the agent
   token, never the server token (which joins the control plane); the
   ClusterMesh CA and keys stay on the `clusterInit` server.
-- **The cluster ports by source.** The API, the HAProxy LB ports, the
-  kubelet and Cilium's health port answer the members and the cluster's
-  pods; etcd answers the servers only. A pod reaches no other host port,
+- **The cluster ports by source.** The API, the API's HAProxy front,
+  the kubelet and Cilium's health port answer the members and the
+  cluster's pods; the supervisor and its HAProxy front answer the
+  members only (D74); etcd answers the servers only. A pod reaches no other host port,
   and the service never trusts a fabric link (routed-fabric decides).
+- **Pods and Services only over the fabric (D74).** The table
+  `inet kube-<instance>` drops and counts a packet for the cluster's
+  pod or Service CIDRs that arrives on any link but a fabric link, a
+  pod link, loopback or a link its owner declared inside. A host on the
+  node LAN that routes a pod address to a node gets nothing. Cilium
+  hands a packet for a local pod past netfilter on its own devices;
+  the clusterwide policy of a later step guards that path.
+- **Hostile suite.** `rke2-hostile` attacks the cluster as an outsider
+  on the node LAN, as a fabric leaf outside the cluster, as a pod and
+  as a local user. Every verdict has a positive control.
 - **The first-server guard fails closed.** A `clusterInit` server with no
   etcd data waits for IfState and FRR, starts only when every other server
   refuses the connection, and refuses when one answers or stays silent
   for 300 s. `/var/lib/rancher/<distro>/server/allow-new-cluster-<instance>`
   allows one start.
 - **Two servers are refused** (etcd needs both: worse than one); an even
-  count above two warns. Half-explicit CIDR pairs, overlapping pod and
+  count above two warns. To replace a dead server of three, add the new
+  one and remove the old in one commit. Half-explicit CIDR pairs, overlapping pod and
   service CIDRs, and an instance name that is no Cilium cluster name
   (32 characters at most) are eval errors. `configOverrides` cannot replace
   a key the service renders or carry a token.

@@ -4,6 +4,46 @@ Single dense contract for agents; `documentation/` (MkDocs) is the human
 record. **Same spec, two renderings — edit both together.** This file is
 both the *target contract* and the *status authority*.
 
+**Round 63 (2026-11-27): kube step 1, the hostile suites and the first
+kube guards (D74).** First kube step of the round-61 target design
+(`specs/design-kube.md` §8 item 1). It puts `k3s-hostile` and
+`rke2-hostile` in the tree (one body,
+`lib/kube-cluster/tests/vm/hostile.nix`) and lands the minimal fixes
+that make them pass with no gap:
+
+- **The kube guard table** `inet kube-<instance>` (L1, design §3.3) on
+  every member with fabric links: raw prerouting accepts the fabric
+  links, `lo`, `cilium*`, `lxc*` and the `fabricInside` links, and drops
+  and counts any other link's packet to the cluster's pod or Service
+  CIDRs ("outside to the cluster's pods and Services"). An outsider on
+  the node LAN that routes a pod address to a node no longer reaches it
+  (K05, K06).
+- **The rke2 supervisor front is member-only** (K-A2): its HAProxy
+  front (`8442 + cilium.id`) moved from the ports open to members and
+  pods to `memberOnlyPorts`, beside the supervisor itself. A pod
+  reaches neither (K24).
+- **`packages.rke2` is the runtime** (K-A1): `services.rke2.package`
+  is the effective package, the same one the airgap images come from.
+- **The spec text matches the code** (K-A10): §6.6 says where HAProxy
+  binds today, §6.12 names the API front and the member-only
+  supervisor front, and the 2381 rule is explained.
+
+The suites merge the kube prototype (K05d..K53) and the fabric
+prototype (`mallory` as an `access = "client"` leaf, K40a, K40, K41,
+P5, P6). Every verdict group has a positive control (`control(...)`):
+the attack runs without the guard table, its packets are seen to
+arrive and be counted, or the same probe finds a legal target. A
+failed control fails the suite (H19). What a later kube step closes is
+an `info` line that names the step: NodePorts answer a fabric leaf
+outside the cluster (K10n, K13: step 8), a pod on a kube spine and a
+LAN link that is a Cilium device (K41, K05d: step 7), the fronts bind
+the node addresses (K27: step 4), tokens without the CA pin (K34: step
+6), Pod Security (K50: step 9).
+
+| ID | Was | Now | Proof |
+|---|---|---|---|
+| D74 | No guard for pod and Service CIDRs from a non-fabric link; the rke2 supervisor front open to pods; `packages.rke2` set the images only | `inet kube-<instance>` drops them; the front answers members only; `packages.rke2` is the runtime | `k3s-hostile`, `rke2-hostile` (`<DISTRO>_HOSTILE_OK`, no gap, every control works), `<distro>-join`, `<distro>-single`, `k3s-data-plane`; nix-unit `test_kubeIngressTable`, `test_packageOverrideIsRuntime`, the firewall tests |
+
 **Round 62 (2026-11-27): fabric steps 1 and 2, the link contract and
 the guard (D73).** First implementation step of the round-61 target
 design (`specs/design-routed-fabric.md` §8.1). routed-fabric now names
@@ -91,6 +131,7 @@ findings are `specs/probes/2026-11-27/`. The prototypes are not on
 | H19 | Every hostile verdict has a positive control; a missing control fails the suite. Two RA verdicts were empty without one | active for new suites |
 | H20 | No GTSM on fabric sessions: on FRR 10.7.1 it turns the neighbor's BFD multihop. Sessions are pinned by link, peer address and own address | implemented round 62 (D73) |
 | H21 | A host of a router zone with `fabric = true` is `world` for Cilium: it reaches only pods labelled `clan.lol/outside=allow` (or in a labelled namespace), through a Service whose source ranges hold it | decided; the zone option is in (round 62), the Cilium policy is kube step 7 |
+| H22 | The ClusterMesh API Service is type LoadBalancer with source ranges on every exposure mode, node-port too (a class no controller serves, its fixed NodePort answers the ranges only). On node-port exposure `cilium clustermesh status` cannot read it; `cilium-dbg status` on the agents replaces it | decided (owner, 2026-11-27); kube step 8 |
 
 **Round 60 (2026-11-26): R7, external transit.** A probe sent an
 outside client through upstream → border leaf → dedicated spine →
@@ -1051,7 +1092,7 @@ floating-IP movers. These live in `documentation/` as recipes and are
 pinned/consumed by the operator's GitOps repos — not by this repo, not by
 the artifact flake (D44/pkgs narrowing).
 
-## 4. Decision record (D1–D73)
+## 4. Decision record (D1–D74)
 
 Statuses: **active** | **REVISED** (round noted) | **REVOKED** (round 13
 unless noted) — revoked entries keep one-line reasons for history.
@@ -2501,6 +2542,31 @@ unless noted) — revoked entries keep one-line reasons for history.
     spine can forge member sources (§6.12). L4: a member can reset its
     own BGP session.
 
+### Round 63 decisions (2026-11-27) — active
+
+- **D74 The kube guard table; the rke2 supervisor front for members**
+  *(round 63; design `specs/design-kube.md` §3.3, §8 item 1; owner H1,
+  H10, H19)*.
+  - **Guard.** One table `inet kube-<instance>` on every member with
+    fabric links (a manual-address node has none until kube step 3
+    removes that mode). Chain `ingress` (filter, prerouting, priority
+    raw, policy accept): `iifname` in the fabric links, `lo`,
+    `cilium*`, `lxc*` and `clan.networkFacts.fabricInside` accepts;
+    a packet to the pod or Service CIDRs from any other link is a
+    counted drop with the comment "outside to the cluster's pods and
+    Services". Readers find the rule by that comment.
+  - **Limit.** A packet that a Cilium device delivers to a local pod
+    never enters netfilter (design §3.1, probe P1): the table guards
+    non-Cilium links and packets for a pod on another node. The
+    clusterwide policy (kube step 7, H12) guards the rest.
+  - **Supervisor front.** The rke2 supervisor's HAProxy front
+    (`8442 + cilium.id`) is in `memberOnlyPorts` with the supervisor
+    (9345): members only, never the pod CIDRs (K-A2).
+  - **Runtime.** `services.rke2.package` is the effective
+    `packages.rke2`, as k3s already did (K-A1).
+  - **Suites.** `<distro>-hostile`, one body; every verdict group has a
+    positive control that gates the suite like a verdict (H19).
+
 ## 5. Invariants (target; eval-asserted or VM-proven)
 
 1. One declarative fleet: instance declaration ⇒ stable identity,
@@ -2601,6 +2667,11 @@ unless noted) — revoked entries keep one-line reasons for history.
     owner declared it inside; a fabric destination never leaves by a
     link outside the fabric; only a spine relays between fabric links
     (D73, `hostile-fabric`).
+26. On a cluster member with fabric links, a packet for the cluster's
+    pod or Service CIDRs that arrives by a link that is not a fabric
+    link, a pod link, loopback or a declared inside link is dropped
+    and counted; the rke2 supervisor and its HAProxy front answer
+    members only (D74, `<distro>-hostile`).
 
 ## 6. Subsystem contracts (condensed)
 
@@ -2934,10 +3005,13 @@ Services are clan-rendered globals, D30). MCS-API reserved. Rotation =
 separate two-phase CA-bundle design; blind regeneration unsupported.
 
 ### 6.6 HAProxy kubeapi HA (bootstrap contract)
-Every node except the bootstrap server's first boot runs clan-rendered
-HAProxy on loopback, load-balancing that cluster's server API endpoints
-(rendered from exports, health-checked via the per-node health-check
-client certificate — existing `mkHaproxyGenerator`). Join URL and agent
+Every node runs clan-rendered HAProxy, load-balancing that cluster's
+server API endpoints. Today its fronts bind the node's own fabric
+addresses (`nodeIPv4`, `nodeIPv6`, the init server included) and the
+firewall opens them by source (§6.12); kube step 4 moves them to
+loopback (`specs/design-kube.md` §3.6). The backends are rendered from
+exports and health-checked with the per-node health-check client
+certificate (`mkHaproxyGenerator`). Join URL and agent
 kubeconfigs point at it: server loss never strands nodes. Ports derive
 deterministically from `cilium.id` (existing scheme: 7442+id,
 +1000 supervisor). This is control-plane HA — unrelated to the revoked
@@ -3075,7 +3149,9 @@ source/return, HA-profile and duplicate-ASN rejections below remain planned;
 see the later hardening phases.*
 
 Eval rejects: multiple bootstraps; exactly two servers (etcd needs both
-for quorum: worse than one; an even count above two warns); an instance
+for quorum: worse than one; an even count above two warns; to replace a
+dead server of three, add the new one and remove the old in one commit);
+an instance
 name that is no Cilium cluster name; half-explicit CIDR pairs,
 overlapping pod and service CIDRs, and pod CIDRs smaller than the per-node
 /24 and /64; `configOverrides` keys the service renders, or a token
@@ -3119,11 +3195,17 @@ or write verbs (D38). Firewall: nftables-only — Cilium's required
 KPR/BPF-masquerade rules use iptables-nft; legacy iptables and
 kube-proxy rules are forbidden (D55); API on transport only; the
 cluster ports by source (round G11, `lib/kube-cluster/firewall.nix`):
-the API, the HAProxy LB ports, the kubelet (10250) and Cilium's health
-port (4240) from the members' node addresses and the cluster's pod
-CIDRs, the rke2 supervisor (9345) from the members, etcd (2379–2381) on
-servers from the servers only; on a fabric only on the fabric links and
-the local pod links (`lxc*`, `cilium*`). The cluster services never
+the API, the API's HAProxy front (`7442 + cilium.id`), the kubelet
+(10250) and Cilium's health port (4240) from the members' node
+addresses and the cluster's pod CIDRs; the rke2 supervisor (9345) and
+its HAProxy front (`8442 + cilium.id`) from the members only (D74);
+etcd (2379, 2380) on servers from the servers only. 2381 (etcd
+metrics) listens on loopback only; its rule exists so the `ha` suite
+reads a refusal, and goes with kube step 4. On a fabric only on the
+fabric links and the local pod links (`lxc*`, `cilium*`). The cluster's
+pod and Service CIDRs are reached only over the fabric links, the pod
+links, loopback and declared inside links (`inet kube-<instance>`,
+D74). The cluster services never
 trust a fabric link (routed-fabric's `firewall.trust` decides) and never
 accept everything from a pod: a pod is a source like any other. Public
 ports only where exposed; WireGuard only on configured underlays;

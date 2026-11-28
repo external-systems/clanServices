@@ -45,6 +45,9 @@ allowed.
   A deploy during a network outage reports a failure and changes
   nothing.
 - A CLAT host no longer forwards IPv6 between its other links.
+- The ClusterMesh API Service is type LoadBalancer with source ranges,
+  also on node-port exposure. There `cilium clustermesh status` cannot
+  read it; use `cilium-dbg status` on the agents.
 
 ## What the probes proved
 
@@ -86,6 +89,10 @@ Done so far:
   table on every fabric member, BGP and BFD pinned to the link's peer,
   FRR waits for the guard, and `zones.<name>.fabric` on the router.
   Proven by the suite `hostile-fabric`.
+- Kube step 1 (SPEC.md D74): the suites `k3s-hostile` and `rke2-hostile`,
+  the table `inet kube-<instance>` (a host on the node LAN no longer
+  reaches a pod), the rke2 supervisor front for members only, and
+  `packages.rke2` as the runtime.
 
 Until the design is frozen, tests prove behaviour and may be rewritten
 (see [Testing](../reference/testing.md)).
