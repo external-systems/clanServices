@@ -83,6 +83,11 @@ Your home box is both. Since 2026-11-25 the service is built for it.
   Pings over 20 a second (burst 40) are dropped, also during one long
   flood.
 - **A router needs a zone.** The build fails without one.
+- **The ISP cannot hand the router a bad prefix.** The prefix hook
+  uses a delegated prefix only when it is a public IPv6 /32 to /64 and
+  none of the router's own networks, at most eight; it logs and skips
+  the rest (G30). It runs in a sandbox: it can change firewall tables
+  and restart CoreRAD, nothing else.
 - **Pods on the router leave with the WAN address.** The cluster
   service adds the WAN port to Cilium's device list by itself.
 - **Port names must differ between the router's zones and other nodes'

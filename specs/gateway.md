@@ -6,7 +6,7 @@ reach for machines that have none), and their private shared
 implementation `lib/gateway/`. Both build on netif's zone seam
 (`specs/netif.md` N10) and never declare links themselves. The human
 rendering is `documentation/docs/gateway/`. **Edit this file and those
-pages together.** Decisions are numbered `G1`–`G29`, so they never collide
+pages together.** Decisions are numbered `G1`–`G30`, so they never collide
 with `N` (netif) or `D` (SPEC.md) numbers. Use cases stay in
 `specs/netif.md` §2 (U3, U13–U18).
 
@@ -185,6 +185,10 @@ SPEC.md round 68, one PR with netif steps 2 to 4).
   (`offered`, per link); ICMP by type with an echo rate ahead of the
   connection tracking; a router needs a zone; the service /64 alone
   runs the prefix hook; `ifstate.service` after `nftables.service`.
+- **G30:** the prefix hook takes only a delegation it may use (global
+  unicast, a /32 to a /64, none of the router's own prefixes, at most
+  8) and runs in a sandbox. Point 2 of design step 5 (an empty PD file
+  means "lost"; the boot grace without a marker) is wave 3.
 
 
 
@@ -1296,6 +1300,31 @@ any code (AGENTS.md rule 3).
   `test_icmpAndRedirects`, `test_serviceWithoutAdvertisedZone`,
   `test_noZones`)*
 
+- **G30 The prefix hook does not trust the WAN's DHCPv6 server**
+  (round G13; `specs/design-gateway.md` §3.9 f points 1 and 3, I20;
+  G-A5, G-A6). Amends G22.
+  - **Validation.** `router-prefix.py` keeps a prefix of netif's file
+    only when it is global unicast (inside `2000::/3`), a /32 to a /64,
+    and overlaps none of the router's own static IPv6 prefixes (a zone's
+    prefixes, the stable service /64; the hook config's `own`). It keeps
+    at most 8, in the file's order. Every refused word is one journal
+    line ("is not a delegation to use"). On `main` `::/0` in the file
+    went into the hook's sets: the WAN's spoof check then dropped every
+    IPv6 packet from the internet.
+  - **Sandbox.** The hook unit runs with the lib/gateway sandbox
+    (`ProtectSystem = strict`, `NoNewPrivileges`), writes only
+    `/run/router` and `/var/lib/router`, keeps `CAP_NET_ADMIN` only,
+    talks `AF_UNIX` (systemctl, systemd-run) and `AF_NETLINK` (nft)
+    only, and `IPAddressDeny = any`.
+  - **Not here (wave 3).** Design point 2: netif writes an empty file
+    for "delegation lost" (netif N16 amended in the same PR), the hook
+    drops its boot marker and `systemd-run` grace for a static recheck
+    timer (R23, R24).
+  *(implemented round G13; `hostile-router` R18 (seven rogue prefixes
+  beside the real one; control: the hook refused each in the journal;
+  the sets hold the real one only and a LAN host's IPv6 keeps working);
+  `router` (every G22 phase); nix-unit `test_hookSandboxed`)*
+
 ## 3. Invariants (target)
 
 1. Neither service declares a physical link, a VLAN, an address on one
@@ -1344,7 +1373,7 @@ any code (AGENTS.md rule 3).
   | `k3s-clat`, `rke2-clat` | G5 as decided, D67, on the routed fabric; since round G7 on the services (netif, `nat-gateway`, D71's rendered `devices`, a plain resolver) | `<DISTRO>_CLAT_OK` |
   | `k3s-clat-mapped` | why G5 is needed (as shipped, pod IPv4 fails) and the documented alternative; since round G8 with a plain resolver (no DNS64) | `K3S_CLAT_MAPPED_OK` |
   | `nat-gateway-hostile` (round G12; the third part of the `nat-gateway` file, `phases = "hostile"`) | G26, G27, G28 against an attacker: scans of both gateways and the beacon (N01–N04), private and loopback destinations (N05), loops through the CLAT and the translator (N06, N07), Jool instance and guard removed (N10, N11), ICMPv6 types, forged errors, the IPv4 side, fragments, a full pool4 (N12–N16), the guards' counters (N17), forged CLAT sources, rogue RA and PREF64 (C01–C07), a second link behind a CLAT host (C08). Every verdict group has a positive control (SPEC.md H19) | `NAT_GATEWAY_HOSTILE_OK` |
-  | `hostile-router` (round G12) | the router against a hostile ISP, a LAN intruder and a host of another zone: scans, zone crossing, forged sources, a rogue RA on a LAN link (R15, with a capture control: the rogue RA reaches the router's link and a neighbour takes its prefix); round G13: a declared WAN port and its neighbour (R17), ICMP timestamp and redirects (R19), an echo flood (R20), the boot order of tables and links (P5) | `HOSTILE_ROUTER_OK` |
+  | `hostile-router` (round G12) | the router against a hostile ISP, a LAN intruder and a host of another zone: scans, zone crossing, forged sources, a rogue RA on a LAN link (R15, with a capture control: the rogue RA reaches the router's link and a neighbour takes its prefix); round G13: a declared WAN port and its neighbour (R17), ICMP timestamp and redirects (R19), an echo flood (R20), rogue delegations (R18), the boot order of tables and links (P5) | `HOSTILE_ROUTER_OK` |
 
 - A suite asserts a bound with margin (about three times the measured
   sample), never the sample. It prints the measured value.

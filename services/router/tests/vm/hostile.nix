@@ -317,6 +317,8 @@ in {
     import json
     import re
 
+    ${import ../../../../tests/suite-lib.nix}
+
     ISP = "2001:db8::1"
     PREFIX = "${prefix}"
     ROUTER_WAN_LL = "${routerWanLinkLocal}"
@@ -525,6 +527,37 @@ in {
             verdict("R20 an echo flood from the WAN gets answers at the stated rate only (burst 40, 20 a second)", 1 <= answered <= 100, f"{answered} of 200 echo requests answered; over the rate: {router.succeed('nft list chain inet router input | grep -F over').strip()}")
             router.succeed("sleep 3")
             isp.succeed(f"ping -c2 -W2 {wan_v4}")
+
+        with subtest("wan: a rogue DHCPv6 server delegates prefixes that are not a delegation (R18)"):
+            # the hook reads what netif wrote of the server's reply; here the
+            # test writes it. The DHCP client keeps running: stopping it
+            # takes the WAN's IPv6 away, which is not what is tested.
+            pd = "/run/netif/pd/eth1"
+            good = router.succeed(f"cat {pd}").split()
+            rogue = ["::/0", "fd00::/8", "fe80::/10", "2001:db8:5::/24", "2001:db8:6::/72", "ff00::/8", "64:ff9b::/96"]
+            held = lambda shown: sorted(re.findall(r"[0-9a-f:]+/[0-9]+", shown.split("elements", 1)[-1]))
+            before = router.succeed("nft list set inet router_svc delegated")
+            try:
+                router.succeed(f"printf '%s\\n' {' '.join(rogue)} {' '.join(good)} > {pd}.new && mv {pd}.new {pd}")
+                # the control: the hook read the rogue file (one journal
+                # line per refused prefix); without it "safe" means nothing
+                took = seconds_until(router, f"journalctl -b -u router-prefix -o cat --no-pager | grep -cF 'is not a delegation to use' | awk '$1 >= {len(rogue)} {{ ok = 1 }} END {{ exit !ok }}'", limit=30)
+                control("R18 the hook read the rogue delegations and refused each", took is not None, router.execute("journalctl -b -u router-prefix -o cat --no-pager | grep -F 'is not a delegation' | tail -n 3")[1].strip().replace("\n", " | "))
+                router.succeed("sleep 2")
+                after = router.succeed("nft list set inet router_svc delegated")
+                source = router.succeed("nft list set netdev router_src delegated")
+                # from the servers zone: the home client may still hold the
+                # rogue prefix of R15 as its source
+                reach = node.execute(f"curl -sS --max-time 5 'http://[{ISP}]/'")[0]
+                verdict(
+                    "R18 rogue delegations (::/0, a ULA, link-local, a /24, a /72, multicast, the well-known NAT64 prefix) never enter the router's sets; the real one stays and WAN IPv6 keeps working",
+                    held(after) == held(before) and held(after) == held(source) == sorted(good) and reach == 0,
+                    f"inet router_svc holds {held(after)}, netdev router_src holds {held(source)}; a LAN host's IPv6 page: rc={reach}",
+                )
+                info("R18 the hook's sandbox", router.succeed("systemctl show -p CapabilityBoundingSet -p ProtectSystem -p RestrictAddressFamilies -p IPAddressDeny router-prefix.service").strip().replace("\n", " | "))
+            finally:
+                router.succeed(f"printf '%s\\n' {' '.join(good)} > {pd}.new && mv {pd}.new {pd}")
+            router.wait_until_succeeds(f"grep -x '{PREFIX}::/60' {pd} >/dev/null", timeout=120)
 
         with subtest("probe P5: over two boots of the router, the firewall's tables are loaded before IfState configures a link"):
             for boot in range(1, 3):

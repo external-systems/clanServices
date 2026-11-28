@@ -32,9 +32,13 @@ commit per step (`specs/design-netif.md` §8.3 to §8.5,
   ICMP by type with the echo rate ahead of the connection tracking; a
   router needs a zone; the service /64 alone runs the prefix hook;
   links come up after the tables.
+- **G30** the router's prefix hook takes only a delegation it may use
+  (global unicast, /32 to /64, not its own, at most 8) and runs in a
+  sandbox.
 
 | ID | Was | Now | Proof |
 |---|---|---|---|
+| G30 | The hook put any word of netif's file that parsed as a prefix into its sets (`::/0` dropped all WAN IPv6), as root with no sandbox | Validation (I20) and the lib/gateway sandbox | `hostile-router` R18 (control: the hook refused each rogue prefix), `router`; nix-unit `test_hookSandboxed` |
 | G29 | `wanPorts` reached one of two firewalls; every ICMP type accepted, an echo flood answered in full; a router without zones rendered broken nft; a service /64 without an advertised zone had no hook | One value for both firewalls; ICMP by type, a rate ahead of `established`; I23; `hookWanted` | `hostile-router` (R17, R19, R20 with controls, P5), `router`, `router-kube`; nix-unit `test_bothFirewallsAgree`, `test_wanPortsBothFirewalls`, `test_icmpAndRedirects`, `test_noZones` |
 | N50 | A lease installed its option-121, 33 and 249 routes and an MTU on its routes; any DHCP link's server became DNS for all names | A closed list per link, opt-ins `dhcp.classlessRoutes` and `dhcp.dns`; DNS scope explicit | `netif-hostile` (H09–H13, H18a–c, each group with a control), `netif-dhcp`, `netif-hotplug`; nix-unit `test_dhcpOptionPolicy`, `test_dhcpOptInsNeedDhcp` |
 | N49 | A wrong gateway, a network address, two deploy targets or a closed sshd port on the deploy link reached the machine | Build errors (warnings for an empty guard and a closed-off firewall) | nix-unit `test_gatewayChecks`, `test_routeGatewayChecks`, `test_networkAddressRejected`, `test_twoTargetHostsRejected`, `test_deployLinkOpensSsh`, `test_checkWarnings`; `netif-vmhost` (guest port `gp(1`) |

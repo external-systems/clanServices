@@ -379,6 +379,21 @@ in {
       startLimit = 0;
     };
   };
+  # G30 (G-A5): the hook reads a file the WAN's DHCPv6 server decides; it
+  # runs in a sandbox with the one capability nft needs.
+  test_hookSandboxed = {
+    expr = {
+      inherit (base.systemd.services.router-prefix.serviceConfig) ProtectSystem NoNewPrivileges CapabilityBoundingSet RestrictAddressFamilies IPAddressDeny ReadWritePaths;
+    };
+    expected = {
+      ProtectSystem = "strict";
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = ["CAP_NET_ADMIN"];
+      RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
+      IPAddressDeny = "any";
+      ReadWritePaths = ["/run/router" "/var/lib/router"];
+    };
+  };
   test_unknownZone = {
     expr = failedAssertion (with' {instances.edge.roles.router.machines.router.settings.zones.iot = {};}) "no netif link in zone(s) iot";
     expected = true;

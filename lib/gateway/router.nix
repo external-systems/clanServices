@@ -155,6 +155,8 @@
     inherit lans;
     inherit wan;
     inherit (cfg) domain pref64;
+    # a delegation never overlaps what the router holds statically (G30)
+    own = ownPrefixes "ipv6";
   });
   hook = pkgs.writers.writePython3 "router-prefix" {flakeIgnore = ["E501"];} (builtins.readFile ./router-prefix.py);
 
@@ -614,12 +616,26 @@ in {
           unitConfig.StartLimitIntervalSec = 0;
           # G7: a run that failed (a LAN link not there yet) is tried
           # again; each table loads on its own
-          serviceConfig = {
-            Type = "oneshot";
-            ExecStart = "${hook} ${hookConfig}";
-            Restart = "on-failure";
-            RestartSec = 10;
-          };
+          # G30 (G-A5): root for nft and `systemctl`, little else. It
+          # reads a file the WAN's DHCPv6 server decides.
+          serviceConfig =
+            (import ./sandbox.nix)
+            // {
+              ReadWritePaths = [
+                "/run/router"
+                "/var/lib/router"
+              ];
+              CapabilityBoundingSet = ["CAP_NET_ADMIN"];
+              RestrictAddressFamilies = [
+                "AF_UNIX"
+                "AF_NETLINK"
+              ];
+              IPAddressDeny = "any";
+              Type = "oneshot";
+              ExecStart = "${hook} ${hookConfig}";
+              Restart = "on-failure";
+              RestartSec = 10;
+            };
         };
       };
     };
