@@ -49,13 +49,34 @@
       iifname ${quoted hostPortLinks} udp dport { ${lib.concatStringsSep ", " hostUdp} } accept comment "host ports"
     ''
   );
-  wanPortRules =
-    lib.optionalString (cfg.wanPorts.tcp != []) ''
-      iifname ${wan} tcp dport ${ports cfg.wanPorts.tcp} accept comment "WAN port"
-    ''
-    + lib.optionalString (cfg.wanPorts.udp != []) ''
-      iifname ${wan} udp dport ${ports cfg.wanPorts.udp} accept comment "WAN port"
-    '';
+  # What the router itself offers on each of its links: the one value
+  # both firewalls render from (specs/gateway.md G29, design §3.9 a). A
+  # port here is accepted by the router's table and opened in the NixOS
+  # firewall on that link; a packet must pass both (G25).
+  zoneOf = link: lib.findFirst (zone: lib.elem link zone.interfaces) null (builtins.attrValues lanZones);
+  offered =
+    lib.genAttrs lanLinks (link: let
+      zone = zoneOf link;
+      dns = zone.dns.ipv4 != null || zone.dns.ipv6 != null;
+    in {
+      tcp = lib.optional dns 53 ++ lib.optional zone.ssh 22;
+      udp = lib.optional dns 53 ++ lib.optional (zone.dhcp4 != null) 67;
+    })
+    // {
+      ${cfg.wan} = {inherit (cfg.wanPorts) tcp udp;};
+    };
+  # DNS on a zone link is offered on the zone's own address only
+  # (`dnsRules`); every other port by link.
+  offeredRules = lib.concatStrings (lib.mapAttrsToList (link: offer: let
+    rule = proto: list: let
+      plain = lib.filter (port: link == cfg.wan || port != 53) list;
+    in
+      lib.optionalString (plain != []) ''
+        iifname "${link}" ${proto} dport ${ports plain} accept comment "offered on ${link}"
+      '';
+  in
+    rule "tcp" offer.tcp + rule "udp" offer.udp)
+  offered);
   # Flows between a zone and the unzoned side (specs/gateway.md G25,
   # `router-kube`).
   # - A flow from the zone is masqueraded behind the router's address
@@ -93,6 +114,9 @@
     '';
   # zones with a delegated /64: the hook advertises them
   advertised = lib.filterAttrs (_: zone: zone.subnet != null) lanZones;
+  # The hook also runs for the service /64 alone (G-A8): it routes and
+  # opens the service prefix even when no zone takes a delegated /64.
+  hookWanted = advertised != {} || cfg.servicePrefix.subnet != null;
 
   # specs/gateway.md §17 (G14): a packet from the WAN never has a source
   # that is the router's own (a zone's static prefixes, the stable
@@ -251,6 +275,18 @@ in {
         };
       });
     };
+    offered = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          tcp = mkOption {type = types.listOf types.port;};
+          udp = mkOption {type = types.listOf types.port;};
+        };
+      });
+      readOnly = true;
+      internal = true;
+      default = offered;
+      description = "The ports the router itself offers per link: the one value its table and the NixOS firewall render from (G29).";
+    };
     wanPorts = {
       tcp = mkOption {
         type = types.listOf types.port;
@@ -399,14 +435,15 @@ in {
         # The prefix hook's tables answer a wrong source with an error
         # at once (G22); a reverse path filter would drop it in silence.
         checkReversePath = lib.mkDefault false;
-        extraReversePathFilterRules = "iifname ${lans} accept";
-        interfaces = lib.genAttrs lanLinks (link: let
-          zone = lib.findFirst (zone: lib.elem link zone.interfaces) null (builtins.attrValues lanZones);
-          dns = zone.dns.ipv4 != null || zone.dns.ipv6 != null;
-        in {
-          allowedTCPPorts = lib.optional dns 53;
-          allowedUDPPorts = lib.optional dns 53 ++ lib.optional (zone.dhcp4 != null) 67;
-        });
+        # an empty set `{ }` is no valid nft (G-A7)
+        extraReversePathFilterRules = lib.optionalString (lanLinks != []) "iifname ${lans} accept";
+        # G29: the same value as the router table's `offered on` rules
+        interfaces =
+          lib.mapAttrs (_: offer: {
+            allowedTCPPorts = offer.tcp;
+            allowedUDPPorts = offer.udp;
+          })
+          offered;
         # only rendered when another service filters forwarding there
         extraForwardRules = ''
           iifname ${mine} accept
@@ -431,14 +468,22 @@ in {
             chain input {
               type filter hook input priority filter; policy drop;
               iifname != ${mine} accept comment "not a router link: the machine's firewall decides"
+              # Echo requests at a rate, ahead of the connection tracking:
+              # the requests of one flood are one tracked flow, so a limit
+              # behind `established` never applies (G29, probe R20). One
+              # bucket for all router links.
+              icmp type echo-request limit rate over 20/second burst 40 packets counter drop comment "input echo over the rate"
+              icmpv6 type echo-request limit rate over 20/second burst 40 packets counter drop comment "input echo over the rate"
               ct state established,related accept
-              meta l4proto { icmp, ipv6-icmp } accept
+              # RFC 4890: errors, neighbour and router discovery, MLD, echo
+              # requests. No redirect, no timestamp, no other type.
+              icmp type { destination-unreachable, time-exceeded, parameter-problem, echo-request } accept
+              icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, mld-listener-query, mld-listener-report, mld-listener-done, mld2-listener-report } accept
+              meta l4proto { icmp, ipv6-icmp } counter drop comment "input icmp dropped"
               iifname ${wan} udp dport { 68, 546 } accept
-              ${wanPortRules}
+              ${offeredRules}
               ${hostPortRules}
-              ${lib.optionalString (dhcpZones != {}) "iifname ${quoted (zonesOf (builtins.attrNames dhcpZones))} udp dport 67 accept"}
               ${dnsRules}
-              ${lib.optionalString (lib.any (zone: zone.ssh) (builtins.attrValues lanZones)) ''iifname ${quoted (lib.concatMap (zone: zone.interfaces) (lib.filter (zone: zone.ssh) (builtins.attrValues lanZones)))} tcp dport 22 accept comment "ssh"''}
               counter comment "input dropped"
             }
             chain forward {
@@ -513,17 +558,21 @@ in {
         "d /run/router 0755 root root -"
         "d /var/lib/router 0755 root root -"
       ];
-      paths.router-prefix = lib.mkIf (advertised != {}) {
+      paths.router-prefix = lib.mkIf hookWanted {
         wantedBy = ["multi-user.target"];
         pathConfig.PathChanged = "/run/netif/pd/${cfg.wan}";
       };
       services = {
+        # I22: the links come up behind loaded tables. It holds already
+        # through network-pre.target (probe P5); stated here, since a
+        # router link without its table would forward unfiltered.
+        ifstate.after = ["nftables.service"];
         coredns = lib.mkIf (binds != []) {after = ["ifstate.service"];};
         # G14: the hook's tables go when the hook goes (a removed router,
         # or no zone with a delegated /64). Not restarted on a change:
         # its stop would drop the live tables until the next change of
         # the delegation.
-        router-prefix-tables = lib.mkIf (advertised != {}) {
+        router-prefix-tables = lib.mkIf hookWanted {
           description = "Router prefix hook tables: removed when the hook is (specs/gateway.md §17)";
           wantedBy = ["multi-user.target"];
           restartIfChanged = false;
@@ -548,7 +597,7 @@ in {
           # limit the sixth restart within 10 s leaves it down.
           unitConfig.StartLimitIntervalSec = 0;
         };
-        router-prefix = lib.mkIf (advertised != {}) {
+        router-prefix = lib.mkIf hookWanted {
           description = "Router prefix hook (specs/gateway.md G22)";
           wantedBy = ["multi-user.target"];
           # after IfState: the hook's netdev chain names the LAN links

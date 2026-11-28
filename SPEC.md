@@ -27,9 +27,15 @@ commit per step (`specs/design-netif.md` §8.3 to §8.5,
   249) without `dhcp.classlessRoutes`, never a lease MTU, lease DNS
   only on a default-owning link or with `dhcp.dns`; a hot-plug link's
   DNS is no default route while a declared link has DNS.
+- **G29** (`specs/gateway.md`) the router's table and the NixOS
+  firewall render from one value per link (`wanPorts` now connects);
+  ICMP by type with the echo rate ahead of the connection tracking; a
+  router needs a zone; the service /64 alone runs the prefix hook;
+  links come up after the tables.
 
 | ID | Was | Now | Proof |
 |---|---|---|---|
+| G29 | `wanPorts` reached one of two firewalls; every ICMP type accepted, an echo flood answered in full; a router without zones rendered broken nft; a service /64 without an advertised zone had no hook | One value for both firewalls; ICMP by type, a rate ahead of `established`; I23; `hookWanted` | `hostile-router` (R17, R19, R20 with controls, P5), `router`, `router-kube`; nix-unit `test_bothFirewallsAgree`, `test_wanPortsBothFirewalls`, `test_icmpAndRedirects`, `test_noZones` |
 | N50 | A lease installed its option-121, 33 and 249 routes and an MTU on its routes; any DHCP link's server became DNS for all names | A closed list per link, opt-ins `dhcp.classlessRoutes` and `dhcp.dns`; DNS scope explicit | `netif-hostile` (H09–H13, H18a–c, each group with a control), `netif-dhcp`, `netif-hotplug`; nix-unit `test_dhcpOptionPolicy`, `test_dhcpOptInsNeedDhcp` |
 | N49 | A wrong gateway, a network address, two deploy targets or a closed sshd port on the deploy link reached the machine | Build errors (warnings for an empty guard and a closed-off firewall) | nix-unit `test_gatewayChecks`, `test_routeGatewayChecks`, `test_networkAddressRejected`, `test_twoTargetHostsRejected`, `test_deployLinkOpensSsh`, `test_checkWarnings`; `netif-vmhost` (guest port `gp(1`) |
 | N48 | Every link took router advertisements, beside a static IPv6 gateway too; a guest port, a VLAN parent or a member took them | Only links with `ra = true` and hot-plug links; there no route information, MTU or hop limit | `netif-hostile` (H02, H03, H04, H15, H16a–d, H23 and the RA survey, each with a control), `netif`, `netif-dhcp`, `netif-v6only`, `netif-hotplug`, `router`, `hostile-router`, `gateway-wan`; nix-unit `test_raOffByDefault`, `test_raOptIn`, `test_raOnMember`, `test_dhcp6NeedsRouter` |

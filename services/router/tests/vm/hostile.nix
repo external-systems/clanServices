@@ -13,7 +13,9 @@
 # all of them, prints a `HOSTILE SAFE|GAP <id>` line each, and fails at
 # the end when any is a gap. `info(...)` lines report behaviour the
 # owner decides on. A new attack is a new verdict; never delete one to
-# make the suite pass.
+# make the suite pass. A `control(...)` shows that an attack is real
+# (it works against a legal target, or the probe finds what it looks
+# for); a control that did not work fails the suite like a gap.
 {
   inputs,
   lib,
@@ -139,6 +141,8 @@ in {
             };
             domain = "home.test";
             dns.upstream = ["192.0.2.1"];
+            # R17: one port of the router itself that the WAN may reach
+            wanPorts.tcp = [8443];
           };
         };
       };
@@ -153,6 +157,8 @@ in {
         vlans = [1 2 3];
       };
       environment.systemPackages = tools pkgs;
+      # R17: started by the test; 8444 is not a WAN port
+      systemd.services.wanport.serviceConfig.ExecStart = "${lib.getExe pkgs.python3} ${echo pkgs [8443 8444]}";
     };
     client = lanHost 2;
     node = lanHost 3;
@@ -309,17 +315,25 @@ in {
 
   testScript = ''
     import json
+    import re
 
     ISP = "2001:db8::1"
     PREFIX = "${prefix}"
     ROUTER_WAN_LL = "${routerWanLinkLocal}"
     everyone = [isp, router, client, intruder, node]
     RESULTS = []
+    CONTROLS = []
 
 
     def verdict(key, safe, detail=""):
         RESULTS.append((key, bool(safe), detail))
         print(f"HOSTILE {'SAFE' if safe else 'GAP '} {key}: {detail}")
+
+
+    def control(key, worked, detail=""):
+        """A positive control: the attack of a verdict group is real."""
+        CONTROLS.append((key, bool(worked), detail))
+        print(f"HOSTILE CONTROL {'OK  ' if worked else 'FAIL'} {key}: {detail}")
 
 
     def info(key, detail):
@@ -483,11 +497,59 @@ in {
             info("R16 what a LAN neighbour took from the rogue advertisement (layer 2; a switch's RA guard stops it)", rogue.strip().replace("\n", " | "))
             intruder.succeed("systemctl stop radvd")
 
+        with subtest("wan: a declared WAN port answers; its neighbour, odd ICMP types and an echo flood do not"):
+            router.succeed("systemctl start wanport.service")
+            router.wait_until_succeeds("ss -tln | grep ':8443 ' >/dev/null && ss -tln | grep ':8444 ' >/dev/null", timeout=30)
+            reached = {f"{port} {family}": isp.execute(f"nc -z -w3 {target} {port}")[0] == 0 for port in [8443, 8444] for family, target in [("IPv4", wan_v4), ("IPv6", wan_v6)]}
+            # the control is the declared port itself: the probe connects
+            control("R17 the declared WAN port connects in both families", reached["8443 IPv4"] and reached["8443 IPv6"], f"{reached}")
+            verdict("R17 a listening port that is not in `wanPorts` does not connect from the WAN", not reached["8444 IPv4"] and not reached["8444 IPv6"], f"{reached}")
+            router.succeed("systemctl stop wanport.service")
+            dropped = lambda: int(re.findall(r"counter packets (\d+) bytes \d+ drop comment \"input icmp dropped\"", router.succeed("nft list chain inet router input"))[0])
+            # control: the probe gets an answer from a host that answers
+            # timestamps (the ISP's own kernel)
+            own = isp.succeed("nping --icmp --icmp-type timestamp -c 3 --delay 200ms 192.0.2.1 2>&1 || true")
+            control("R19 the timestamp probe counts the answers of a host that gives them", re.findall(r"Rcvd: (\d+)", own) not in ([], ["0"]), " ".join(own.split())[-200:])
+            before = dropped()
+            out = isp.succeed(f"nping --icmp --icmp-type timestamp -c 3 --delay 200ms {wan_v4} 2>&1 || true")
+            answers = re.findall(r"Rcvd: (\d+)", out)
+            verdict("R19 the router answers no ICMP timestamp request from the WAN", answers == ["0"] and dropped() >= before + 3, f"answers: {answers or out}; input icmp dropped +{dropped() - before}")
+            redirects = router.succeed("sysctl -n net.ipv4.conf.all.accept_redirects net.ipv4.conf.all.send_redirects net.ipv4.conf.all.secure_redirects net.ipv6.conf.all.accept_redirects").split()
+            verdict("R19 the router accepts and sends no ICMP redirect", redirects == ["0", "0", "0", "0"], f"accept_redirects, send_redirects, secure_redirects, IPv6 accept_redirects: {redirects}")
+            # control: echo requests at a normal rate are all answered
+            status, out = isp.execute(f"ping -c 5 -i 0.2 -W 2 {wan_v4} 2>&1")
+            control("R20 echo requests at a normal rate are answered", status == 0 and " 0% packet loss" in out, out.strip().splitlines()[-2] if out.strip() else "")
+            router.succeed("sleep 3")
+            out = isp.succeed(f"ping -f -c 200 -W 1 {wan_v4} 2>&1 || true")
+            answered = int(re.findall(r"(\d+) received", out)[0])
+            verdict("R20 an echo flood from the WAN gets answers at the stated rate only (burst 40, 20 a second)", 1 <= answered <= 100, f"{answered} of 200 echo requests answered; over the rate: {router.succeed('nft list chain inet router input | grep -F over').strip()}")
+            router.succeed("sleep 3")
+            isp.succeed(f"ping -c2 -W2 {wan_v4}")
+
+        with subtest("probe P5: over two boots of the router, the firewall's tables are loaded before IfState configures a link"):
+            for boot in range(1, 3):
+                router.shutdown()
+                router.start()
+                router.wait_for_unit("multi-user.target", timeout=300)
+                loaded = int(router.succeed("systemctl show -p ActiveEnterTimestampMonotonic --value nftables.service").strip())
+                links = int(router.succeed("systemctl show -p ExecMainStartTimestampMonotonic --value ifstate.service").strip())
+                print(f"FINDING P5 boot {boot}: nftables.service active at {loaded / 1e6:.3f} s, ifstate.service started at {links / 1e6:.3f} s: the tables were loaded {(links - loaded) / 1e6:.3f} s before the first link was configured")
+                assert 0 < loaded < links, f"boot {boot}: links were configured before the tables were loaded ({loaded} >= {links})"
+            ordering = router.succeed("systemctl show -p After --value ifstate.service").split()
+            print(f"FINDING P5 ifstate.service is ordered after: {sorted(ordering)}")
+            assert "nftables.service" in ordering, ordering
+            router.wait_until_succeeds(f"grep -x '{PREFIX}::/60' /run/netif/pd/eth1 >/dev/null", timeout=120)
+            client.wait_until_succeeds("curl -sS --max-time 5 http://192.0.2.1/", timeout=120)
+
         print("HOSTILE SUMMARY")
         for key, safe, detail in RESULTS:
             print(f"  {'SAFE' if safe else 'GAP '} {key}" + (f" [{detail}]" if not safe else ""))
+        for key, worked, detail in CONTROLS:
+            print(f"  {'CONTROL OK  ' if worked else 'CONTROL FAIL'} {key}" + (f" [{detail}]" if not worked else ""))
         gaps = [key for key, safe, _ in RESULTS if not safe]
+        failed = [key for key, worked, _ in CONTROLS if not worked]
         assert not gaps, f"{len(gaps)} gap(s): {gaps}"
+        assert not failed, f"{len(failed)} positive control(s) did not work, so their verdicts prove nothing: {failed}"
         print("HOSTILE_ROUTER_OK")
     except Exception:
         router.execute("nft list ruleset >&2; ip -br addr >&2; ip -6 route >&2")

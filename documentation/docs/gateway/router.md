@@ -61,7 +61,7 @@ Your home box is both. Since 2026-11-25 the service is built for it.
 | `unzoned.source.ipv4`, `.ipv6` | the node's cluster-network address; without one, the outgoing port's address | the address such traffic appears to come from. The router reads it from the cluster network. Set it only to override |
 | `zones.<zone>.hostPorts` | off | the zone may reach the ports the machine opens to everyone, such as the cluster network's WireGuard ports. Turn it on for the zone that holds your other nodes |
 | `zones.<zone>.fabric` | off | the zone's hosts may reach the cluster network's addresses through this machine (SPEC.md D73). Without it the cluster network's firewall drops them, also for a zone in `unzoned.zones`. A zone that should reach pods on other nodes needs both. Later the cluster will let such a host reach only pods labelled `clan.lol/outside=allow` (SPEC.md H21) |
-| `wanPorts.tcp`, `wanPorts.udp` | empty | ports of the router itself that the internet may reach |
+| `wanPorts.tcp`, `wanPorts.udp` | empty | ports of the router itself that the internet may reach. Both firewalls open them (G29) |
 
 - **The cluster always reaches the internet.** And a zone in
   `unzoned.zones` is open in both directions: Cilium sends a pod's
@@ -74,6 +74,15 @@ Your home box is both. Since 2026-11-25 the service is built for it.
 - **Deploys over the WAN need `wanPorts.tcp = [22]`.** Without it the
   first deploy closes SSH from the internet. SSH from a zone is open by
   default.
+- **One list of ports per port, two firewalls.** What the router offers
+  on a port (DNS, SSH and DHCPv4 on a zone, `wanPorts` on the WAN) is
+  one value; the router's table and the NixOS firewall both open
+  exactly that (G29).
+- **ICMP by type.** The router answers pings, errors and neighbour
+  discovery, and drops every other ICMP type (timestamps, redirects).
+  Pings over 20 a second (burst 40) are dropped, also during one long
+  flood.
+- **A router needs a zone.** The build fails without one.
 - **Pods on the router leave with the WAN address.** The cluster
   service adds the WAN port to Cilium's device list by itself.
 - **Port names must differ between the router's zones and other nodes'
