@@ -27,34 +27,67 @@ networking invariants, and delivery plan, see [SPEC.md](../../SPEC.md).
 
 ```nix
 {
-  instances.kube = {
-    module.name = "rke2";
-    module.input = "self";
-    roles.server = {
-      settings.network.fabric = null;
-      machines.alpha.settings = {
-        clusterInit = true;
-        network = {
-          ipv4 = "10.0.0.1";
-          ipv6 = "fd00::1";
+  instances = {
+    # A one-machine fabric: routed-fabric is the only transport (D72),
+    # and the cluster takes its node addresses from it.
+    fabric = {
+      module.name = "routed-fabric";
+      module.input = "self";
+      roles.spine.machines.alpha = {};
+    };
+    kube = {
+      module.name = "rke2";
+      module.input = "self";
+      roles.server = {
+        settings.network.fabric = {
+          service = "routed-fabric";
+          instance = "fabric";
         };
+        machines.alpha.settings.clusterInit = true;
       };
     };
   };
 }
 ```
 
+A cluster always rides a fabric: its node addresses, links and MTU come
+from the fabric's `node_transport` export (SPEC.md D72, D76). One machine
+is a one-machine fabric, as above. `module.input = "self"` names the flake
+that holds the services; use its input name in your clan. A nix-unit test
+(`test_readmeQuickStart`) evaluates this inventory and expects no failed
+assertion (H7).
+
+`clusterInit = true` selects embedded etcd. Exactly one server per instance must
+set it; joining servers and agents use `server` through their local haproxy.
+
 ## Node addressing
 
-Set `settings.network.fabric` to a transport instance — a
-`routed-fabric` instance — to consume its `node_transport` export, or set `network.fabric = null`
-and provide explicit
-`network.ipv4`/`network.ipv6` per machine. D58 changes the exported
-`node_transport` schema only, never this option. The service consumes only
-the generic `node_transport` schemaVersion 2 and never branches on
-provider service names (SPEC.md D58). The posture is all-or-none
-(SPEC.md §6.3): mixing transport-provided and manual member addresses is
-an eval error.
+`settings.network.fabric` is required: the `routed-fabric` instance (or any
+transport that implements the neutral `node_transport` schemaVersion 2,
+D58) whose export gives every member its node addresses. The service never
+branches on provider service names (SPEC.md D58). Every member must be in
+that instance; a member without an export is an eval error. There are no
+per-machine address options: manual addresses were removed in round 67
+(D76).
+
+## Who reaches what
+
+The node firewall opens each port by source, from one matrix
+(`lib/kube-cluster/firewall.nix`, SPEC.md §6.12). Every rule also needs a
+fabric link or a local pod link; no link is trusted.
+
+| Port | On | From |
+|---|---|---|
+| 6443 (API) | servers | members, the cluster's pods |
+| 9345 (supervisor) | servers | members |
+| 10250 (kubelet) | every node | servers; pods only with `firewall.kubeletFromPods = true` |
+| 4240 (Cilium health) | every node | members |
+| 2379, 2380 (etcd) | servers | servers |
+
+The HAProxy fronts listen on loopback only, so no other host and no pod
+reaches them. etcd's metrics port (2381) listens on loopback. A pod
+reaches the API on a server and nothing else of a node. A metrics scraper
+in a pod (metrics-server) needs `firewall.kubeletFromPods = true`.
 
 ## Exports
 
@@ -71,26 +104,36 @@ module.
 
 ## The per-node haproxy kube-apiserver LB
 
-Every node — servers AND agents — runs a local haproxy bound to the node's own
-transport addresses (both families):
+Every node — servers AND agents — runs a local haproxy whose fronts listen
+on loopback only (`127.0.0.1` and `::1`, D76):
 
-- The kubeapi FQDN (`kubeapi-<instance>.<domain>`) resolves to the node's OWN
-  address via `/etc/hosts`. Every Kubernetes client path that needs the API —
-  joining servers/agents (`server` URL), Cilium (`k8sServiceHost`), the admin
-  kubeconfig — goes through the local haproxy.
-- The apiserver owns `:6443` and the supervisor `:9345` on every address, so
-  the LB listens on the derived ports: kubeapi LB = `7442 + <resolved cilium
-  id>` (explicit pin or hashed default, SPEC.md §6.2), supervisor LB =
-  `+1000` (unique per cluster sharing one transport).
-- Backends are every server member's transport addresses with TLS `/readyz`
+- The kubeapi FQDN (`kubeapi-<instance>.<domain>`) resolves to loopback via
+  `/etc/hosts`. Every Kubernetes client path that needs the API —
+  joining servers/agents (`server` URL), Cilium (`k8sServiceHost`; its pods
+  are host-network and read the node's `/etc/hosts`), the admin
+  kubeconfig — goes through the local haproxy. No other host and no pod
+  reaches a front.
+- The apiserver owns `:6443` and the supervisor `:9345`, so the LB listens
+  on the derived ports: kubeapi LB = `7442 + <resolved cilium id>`
+  (explicit pin or hashed default, SPEC.md §6.2), supervisor LB on a
+  server = `+1000`.
+- An agent's supervisor front listens on `9345`, the supervisor's own port
+  (an agent runs no supervisor). The agent's tunnel to the servers, which
+  `kubectl logs` and `exec` ride, dials every server's node address on the
+  port of the agent's join URL: with `9345` it reaches the real
+  supervisor, which the firewall opens to members.
+- Backends are every server member's node addresses with TLS `/readyz`
   healthchecks (`check check-ssl` — the check connects with TLS, the data path
-  stays raw end-to-end TCP). The check verifies the serving chain against the
+  stays raw end-to-end TCP). Every server line pins its source to this
+  node's address (`source`). The check verifies the serving chain against the
   pre-generated server CA and presents a vars-issued client cert. A server
   lists itself plain and the remote servers `backup`; agents list all servers
   plain. `option allbackups` routes around dead backends.
 - The supervisor backend's check probes the real API port (`check port 6443`)
   as the anti-deadlock signal: a joining server's supervisor is L4-up but
   cannot serve joins until its local apiserver is ready.
+- Loopback always exists, so haproxy starts before the fabric is up; a
+  backend is DOWN until the fabric holds the node's address, then UP.
 - The checks also verify that the certificate names the kubeapi FQDN
   (`verifyhost`).
 - A read-only stats page on loopback (`127.0.0.1:8404`, `[::1]:8404`), with

@@ -49,25 +49,6 @@
       };
     };
 
-    network = {
-      ipv4 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          The node's IPv4 address. Required when network.fabric is
-          null (no fabric service provides one).
-        '';
-      };
-      ipv6 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          The node's IPv6 address. Required when network.transport is
-          null.
-        '';
-      };
-    };
-
     # Extra blocks for this machine's auto-rendered node-named
     # CiliumLoadBalancerIPPool (D8 per-machine scope: the join-address
     # /32+/128 pair is always included; these are the declared

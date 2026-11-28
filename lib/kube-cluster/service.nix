@@ -140,20 +140,19 @@
     members = map (m: m.machineName) roleMembers;
     serverMembers = lib.filter (m: m.role == "server") roleMembers;
 
-    fabricEnabled = settings.network.fabric != null;
+    # D76: every member's node addresses, links and MTU come from the
+    # fabric (network.fabric is required; manual addresses are gone).
     allTransportExports = lib.genAttrs members (
       name:
-        if fabricEnabled
-        then
-          transportExportFor {
-            inherit exports;
-            transport = settings.network.fabric;
-            machineName = name;
-          }
-        else null
+        transportExportFor {
+          inherit exports;
+          transport = settings.network.fabric;
+          machineName = name;
+        }
     );
 
-    # Per-machine resolved transport facts (null = manual-address member).
+    # Per-machine resolved transport facts (null = the member has no
+    # export from network.fabric; mkClusterAssertions names it).
     allTransportFacts =
       lib.mapAttrs (
         name: exportValue:
@@ -165,22 +164,22 @@
       )
       allTransportExports;
 
-    # A member's node addresses: the node_transport export when
-    # configured, else the explicit per-machine network.ipv4/ipv6
-    # settings.
     # SPEC.md D71: the CLAT link and the IPv6-only underlay links of every
     # member, from the netif and nat_gateway exports (lib/kube-cluster/devices.nix).
     extraDevices = kube.devices.extra {
       inherit clanLib exports members;
     };
 
+    # A member's node addresses: its node_transport export (null
+    # without one; the assertion names the member).
     memberAddr = name:
       if allTransportFacts.${name} != null
       then {
         inherit (allTransportFacts.${name}) ipv4 ipv6;
       }
       else {
-        inherit (allMembers.${name}.settings.network) ipv4 ipv6;
+        ipv4 = null;
+        ipv6 = null;
       };
 
     initMember = lib.findFirst (m: m.settings.clusterInit) null serverMembers;
@@ -210,13 +209,11 @@
       then settings.domain
       else meta.domain;
     # D54: the mesh group defaults from the fabric instance; explicit
-    # meshGroup wins; manual clusters fall back to the domain.
+    # meshGroup wins.
     meshGroup =
       if settings.meshGroup != null
       then settings.meshGroup
-      else if fabricEnabled
-      then settings.network.fabric.instance
-      else domain;
+      else settings.network.fabric.instance;
 
     # --- Data plane (D9/D10/D19/D49/D55): the Cilium-side BGP v2
     # resources and the fabric pool — one resolution seam shared by the
@@ -322,9 +319,8 @@
       transport =
         if transportProfile == null
         then
-          # Manual-address clusters: no internal LB capability (no
-          # transport-provided VIP pool); node-port is the universal
-          # fallback (operator-managed node connectivity).
+          # No member has a fabric export yet (asserted): no internal
+          # LB capability, node-port keeps the evaluation going.
           {
             internalLoadBalancer = false;
             nodePort = true;
@@ -422,15 +418,9 @@
             serviceCIDRv6
             clusterDNS
             ;
-          fabric =
-            if fabricEnabled
-            then {
-              inherit (settings.network.fabric) service instance;
-            }
-            else {
-              service = null;
-              instance = null;
-            };
+          fabric = {
+            inherit (settings.network.fabric) service instance;
+          };
         };
         # D58: the transport-derived datapath facts (routing is always
         # native, D72).
@@ -497,19 +487,30 @@
       modeActive = modeScope.active config machineSettings.modes;
 
       # --- Per-node kube-apiserver / supervisor load balancer -------
-      # EVERY node runs a local haproxy bound to its own transport
-      # addresses. The kubeapi FQDN resolves to the node's OWN address
-      # via /etc/hosts, so the kubelet bootstrap, Cilium's API
-      # endpoint (k8sServiceHost) and every joining server/agent all
-      # go through the local LB, which balances across the servers'
-      # transport addresses with TLS /readyz healthchecks. The
-      # apiserver owns :6443 (and an rke2 supervisor :9345) on every
-      # address, so the LB listens on the derived ports (7442 +
-      # resolved cilium.id, +1000 — unique per cluster sharing a
-      # transport). k3s serves joins on the API port: one front.
+      # EVERY node runs a local haproxy whose fronts bind loopback only
+      # (D76, specs/design-kube.md §3.6). The kubeapi FQDN resolves to
+      # loopback via /etc/hosts, so the kubelet bootstrap, Cilium's API
+      # endpoint (k8sServiceHost) and every joining server/agent all go
+      # through the local LB, which balances across the servers' node
+      # addresses with TLS /readyz healthchecks. The apiserver owns
+      # :6443 (and an rke2 supervisor :9345), so the LB listens on the
+      # derived ports (7442 + resolved cilium.id, +1000 — unique per
+      # cluster on one machine). k3s serves joins on the API port: one
+      # front.
       kubeapiAddr = "kubeapi-${instanceName}.${domain}";
       haproxyKubeapiPort = 7442 + resolvedCiliumId;
-      haproxySupervisorPort = haproxyKubeapiPort + 1000;
+      # rke2: an agent's tunnel to the servers (`kubectl logs` and `exec`
+      # ride it) dials every server's node address on the PORT of the
+      # agent's join URL (`rke2-hostile` on the prototype: `Connecting
+      # to proxy url="wss://<server>:8443/v1-rke2/connect"`, then a
+      # timeout). An agent has no supervisor of its own, so its front
+      # takes the supervisor's real port on loopback: the tunnel then
+      # dials <server>:9345, the firewall row `supervisor`. A server
+      # keeps the derived port: its own supervisor owns 9345.
+      haproxySupervisorPort =
+        if distro.supervisor && !isServer
+        then supervisorPort
+        else haproxyKubeapiPort + 1000;
 
       ownAddr = memberAddr machine.name;
       nodeIPv4 = ownAddr.ipv4;
@@ -517,9 +518,8 @@
 
       ownTransport = allTransportFacts.${machine.name};
       # Every datapath interface of this machine (D58: the transport's
-      # exported interfaces — one per fabric adjacency on native
-      # fabrics) and its derived MTU; manual clusters fall back to the
-      # single underlay guess eth0/1500 (the old behavior).
+      # exported interfaces — the fabric loopback and one per fabric
+      # adjacency). Empty only without an export (asserted).
       transportInterfaces =
         if ownTransport != null
         then ownTransport.interfaces
@@ -577,24 +577,20 @@
         transportFacts = {
           # Devices cover EVERY cluster member's datapath interfaces
           # (one cilium-config serves all nodes, §6.4/D51); the MTU is
-          # the cluster-wide minimum (transportProfile). Both fall back
-          # to the manual-cluster guess.
-          interfaces =
-            if transportProfile != null
-            then
-              lib.unique (
-                lib.concatMap (p: p.interfaces) (lib.filter (p: p != null) (lib.attrValues allTransportFacts))
-                ++ extraDevices
-              )
-            else ["eth0"] ++ extraDevices;
+          # the cluster-wide minimum (transportProfile). null only
+          # without an export (asserted).
+          interfaces = lib.unique (
+            lib.concatMap (p: p.interfaces) (lib.filter (p: p != null) (lib.attrValues allTransportFacts))
+            ++ extraDevices
+          );
           directRoutingDevice =
             if ownTransport != null
             then ownTransport.directRoutingDevice
-            else "eth0";
+            else null;
           mtu =
             if transportProfile != null
             then transportProfile.mtu
-            else 1500;
+            else null;
         };
         k8sServiceHost = kubeapiAddr;
         k8sServicePort = haproxyKubeapiPort;
@@ -913,10 +909,9 @@
                 settings
                 resolvedCidrs
                 ;
-              transportFacts =
-                if fabricEnabled
-                then allTransportFacts
-                else null;
+              transportFacts = allTransportFacts;
+              # K-A8: the distro's own options (rke2 `profile`)
+              extraClusterLevel = builtins.attrNames (distro.extraOptions lib);
               # Cross-role parity (the export is per-member; fleet
               # consumers read one scope — all roles must agree on the
               # cluster-level knobs). Sourced from MACHINE-level
@@ -1064,8 +1059,9 @@
               # address to this node is dropped and counted. Limit: a
               # packet that a Cilium device hands straight to a local pod
               # never enters netfilter; the clusterwide policy (kube
-              # step 7) guards that path.
-              tables."kube-${instanceName}" = lib.mkIf (transportInterfaces != []) {
+              # step 7) guards that path. Every member has fabric links
+              # (D76), so the table is always rendered.
+              tables."kube-${instanceName}" = {
                 family = "inet";
                 content = let
                   inside = lib.unique (transportInterfaces ++ ["lo" "cilium*" "lxc*"] ++ config.clan.networkFacts.fabricInside);
@@ -1087,47 +1083,50 @@
                 map (iface: ''iifname "${iface}" accept'') transportInterfaces
                 ++ ["meta mark and 0x0f00 == 0x0200 accept"]
               );
-              # The fabric links are never trusted: routed-fabric has no
-              # option for it (D75), and the cluster opens only
-              # its own ports, by source (K2, lib/kube-cluster/firewall.nix).
-              # A pod's API traffic (ClusterIP translated to a server's
-              # 6443) arrives with its pod source.
-              trustedInterfaces = [
-                "cilium_host"
-                "cilium_net"
-              ];
-              extraInputRules = kube.render.mkInputRules {
-                inherit transportInterfaces isServer;
-                inherit (resolvedCidrs) podCIDRv4 podCIDRv6;
-                members = map (m: {inherit (m) role;} // memberAddr m.machineName) roleMembers;
-                # the API, its LB front, the kubelet, Cilium's health port
-                clusterPorts =
-                  lib.optional isServer kubeapiPort
-                  ++ [
-                    haproxyKubeapiPort
-                    10250
-                    4240
-                  ];
-                # the rke2 supervisor and its LB front: members only. A
-                # pod never joins; the front proxies to every server's
-                # supervisor with a member source (K-A2).
-                memberOnlyPorts =
-                  lib.optional distro.supervisor haproxySupervisorPort
-                  ++ lib.optional (isServer && distro.supervisor) supervisorPort;
-              };
+              # D76 (specs/design-kube.md §3.2): neither the fabric links
+              # (routed-fabric has no option to trust one, D75) nor
+              # Cilium's host links are trusted. The cluster opens its own
+              # ports only, by source, from one matrix
+              # (lib/kube-cluster/firewall.nix). A pod's API traffic
+              # (ClusterIP translated to a server's 6443) arrives with its
+              # pod source. The HAProxy fronts bind loopback: no row.
+              extraInputRules = let
+                nonNull = lib.filter (x: x != null);
+                addrs = ms: let
+                  all = map (m: memberAddr m.machineName) ms;
+                in {
+                  v4 = nonNull (map (a: a.ipv4) all);
+                  v6 = nonNull (map (a: a.ipv6) all);
+                };
+              in
+                kube.render.renderFirewallMatrix {
+                  guardInterfaces = transportInterfaces;
+                  rows = kube.render.firewallMatrix {
+                    inherit isServer kubeapiPort supervisorPort;
+                    inherit (distro) supervisor;
+                    inherit (settings.firewall) kubeletFromPods;
+                  };
+                  sources = {
+                    members = addrs roleMembers;
+                    servers = addrs serverMembers;
+                    pods = {
+                      v4 = nonNull [resolvedCidrs.podCIDRv4];
+                      v6 = nonNull [resolvedCidrs.podCIDRv6];
+                    };
+                  };
+                };
               extraForwardRules = ''
                 iifname { "cilium*", "lxc*" } accept
                 oifname { "cilium*", "lxc*" } accept
               '';
             };
-            # kubeapi FQDN -> the node's OWN transport address: every
-            # node talks to its LOCAL haproxy (the per-node
-            # kube-apiserver load balancer), which balances across the
-            # servers' transport addresses with TLS /readyz
-            # healthchecks.
+            # kubeapi FQDN -> loopback: every node talks to its LOCAL
+            # haproxy (the per-node kube-apiserver load balancer, fronts
+            # on loopback only), which balances across the servers' node
+            # addresses with TLS /readyz healthchecks.
             extraHosts = ''
-              ${nodeIPv4} ${kubeapiAddr}
-              ${nodeIPv6} ${kubeapiAddr}
+              127.0.0.1 ${kubeapiAddr}
+              ::1 ${kubeapiAddr}
             '';
           };
 
@@ -1140,8 +1139,14 @@
             config = haproxyConfig;
           };
 
-          # haproxy binds transport addresses created by IfState;
-          # Restart=always rides out any remaining bind race.
+          # The fronts bind loopback, which always exists: haproxy needs
+          # no network unit to start (T3), and `after` orders without
+          # requiring. Every server line leaves from this node's fabric
+          # address (`source`), which IfState creates on the fabric
+          # loopback (specs/target-design.md §3), so ordering after it
+          # makes the first health checks find it. Until the fabric
+          # carries the address a backend is DOWN, then UP, with no
+          # restart.
           systemd.services.haproxy = {
             after = ["ifstate.service"];
             unitConfig.StartLimitIntervalSec = 0;

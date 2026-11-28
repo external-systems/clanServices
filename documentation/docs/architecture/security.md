@@ -14,13 +14,15 @@ default, k3s with `secrets-encryption: true`).
 The firewall contract (SPEC.md §6.12): the API listens on the transport
 only, public ports open only where a Service exposes them, mesh and BGP
 traffic is restricted to expected peers, and mirror Services are reachable
-only from GitOps namespaces (D30). The cluster ports open by source: the
-API, the API's HAProxy front, the kubelet and Cilium's health port to the
-members' node addresses and the cluster's pod CIDRs, the rke2 supervisor
-and its HAProxy front to the members only, etcd to the servers only; on a
-fabric only on the fabric links and the local pod links. A pod reaches no
-other port of its node, and the cluster services never trust a fabric
-link. The cluster's pod and Service addresses are reached only over the
+only from GitOps namespaces (D30). The cluster ports open by source, from one
+matrix (D76): the API to the members' node addresses and the cluster's
+pod CIDRs, the rke2 supervisor and Cilium's health port to the members,
+the kubelet to the servers (and to pods only with
+`firewall.kubeletFromPods`), etcd to the servers; only on the fabric
+links and the local pod links. The HAProxy fronts listen on loopback,
+so no other host and no pod reaches them. A pod reaches the API on a
+server and no other port of a node, and the cluster services trust no
+link: not a fabric link, not Cilium's host links. The cluster's pod and Service addresses are reached only over the
 fabric links, the pod links and declared inside links (the table
 `inet kube-<instance>`, D74). VM tests assert positive connectivity *and*
 negative exposure (`<distro>-single`: an outside host reaches no cluster

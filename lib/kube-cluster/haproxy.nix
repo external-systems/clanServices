@@ -1,16 +1,20 @@
 # Per-node kube-apiserver / optional supervisor load balancer (haproxy)
 # rendering.
 #
-# The design (ported from the BORG fleet, VM-proven there): EVERY node —
-# servers and agents — runs a local haproxy bound to the node's own
-# transport addresses (both families). The kubeapi FQDN resolves to the
-# node's OWN address via /etc/hosts, so the kubelet's bootstrap, Cilium's
-# API endpoint (k8sServiceHost) and every joining server/agent all talk to
-# the LOCAL haproxy, which balances across the servers' transport
-# addresses with TLS /readyz healthchecks.
+# EVERY node — servers and agents — runs a local haproxy whose fronts
+# bind loopback only (127.0.0.1 and ::1; SPEC.md D76,
+# specs/design-kube.md §3.6). The kubeapi FQDN resolves to loopback via
+# /etc/hosts, so the kubelet's bootstrap, Cilium's API endpoint
+# (k8sServiceHost; the Cilium pods are host-network and read the node's
+# /etc/hosts) and every joining server/agent all talk to the LOCAL
+# haproxy, which balances across the servers' node addresses with TLS
+# /readyz healthchecks. No other host and no pod reaches a front, and
+# loopback always exists, so haproxy starts before the fabric is up.
+# Every server line pins its source to this node's address: the servers
+# accept members only, whatever route the kernel would pick.
 #
-# The kube-apiserver owns :<kubeapiPort> on every address, so the LB listens
-# on the derived lbKubeapiPort. RKE2 additionally enables a supervisor LB on
+# The kube-apiserver owns :<kubeapiPort>, so the LB listens on the
+# derived lbKubeapiPort. RKE2 additionally enables a supervisor LB on
 # lbSupervisorPort; k3s disables it with enableSupervisor = false. The
 # healthcheck connects with TLS (check-ssl) while the DATA path stays raw TCP
 # (end-to-end TLS to the apiserver): `check` ENABLES checks (check-ssl alone
@@ -32,7 +36,8 @@
 {lib}: {
   mkHaproxyConfig = {
     instanceName,
-    # This node's own addresses (the haproxy bind addresses).
+    # This node's own addresses: the source of every connection to a
+    # server (health checks and data). The fronts bind loopback.
     nodeIPv4,
     nodeIPv6,
     # One entry per server-role member:
@@ -62,8 +67,8 @@
         b: let
           backup = lib.optionalString b.backup " backup";
         in
-          "    server ${b.name}-4 ${b.ipv4}:${toString port}${backup}\n"
-          + "    server ${b.name}-6 [${b.ipv6}]:${toString port}${backup}"
+          "    server ${b.name}-4 ${b.ipv4}:${toString port} source ${nodeIPv4}${backup}\n"
+          + "    server ${b.name}-6 [${b.ipv6}]:${toString port} source [${nodeIPv6}]${backup}"
       )
       backends;
     checkArgs = "check check-ssl verify required verifyhost ${healthCheckSni} ca-file ${caCrtPath} crt ${clientPemPath} sni str(${healthCheckSni}) inter 5s fall 3 rise 2 fastinter 1s downinter 10s on-marked-down shutdown-sessions";
@@ -72,8 +77,8 @@
       # supervisor LB gets distinct names (the kubeapi pair already
       # differs: _kubeapi frontend -> _api backend).
       frontend ${safeName}_supervisor
-          bind ${nodeIPv4}:${toString lbSupervisorPort}
-          bind [${nodeIPv6}]:${toString lbSupervisorPort}
+          bind 127.0.0.1:${toString lbSupervisorPort}
+          bind [::1]:${toString lbSupervisorPort}
           mode tcp
           option tcplog
           default_backend ${safeName}_supervisor_lb
@@ -123,8 +128,8 @@
         stats refresh 60s
 
     frontend ${safeName}_kubeapi
-        bind ${nodeIPv4}:${toString lbKubeapiPort}
-        bind [${nodeIPv6}]:${toString lbKubeapiPort}
+        bind 127.0.0.1:${toString lbKubeapiPort}
+        bind [::1]:${toString lbKubeapiPort}
         mode tcp
         option tcplog
         default_backend ${safeName}_api

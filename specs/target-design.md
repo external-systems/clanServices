@@ -93,11 +93,11 @@ These cross a file boundary. Build them once, in the step named.
 | Units: `netif-dhcpcd-<if>.service` becomes `netif-dhcpcd@<if>.service`; `netif-guard.service` is gone. Suites of the other areas that name them change in the netif PR (`lib/kube-cluster/tests/vm/{join,data-plane}.nix`, `services/routed-fabric/tests/vm/suite.nix`, `lib/gateway/tests/vm/{wan,dual-wan}.nix`, `services/router/tests/vm/default.nix`) | netif | kube, fabric, gateway suites | netif step 6 |
 | `ifstate.service` stays ordered after `nftables.service` on a router and keeps its one-transaction shape | netif | gateway | netif step 6 |
 | RA is opt-in per link (`ra = true`). Fixtures of other areas that take an RA default must set it | netif | gateway, router, kube IPv6 fixtures | netif step 2 |
-| HAProxy server lines use `source <node address>`: the fabric loopback must exist (after `ifstate.service`); it does while FRR still waits for its guard | kube | routed-fabric | kube step 4 |
+| HAProxy server lines use `source <node address>`: the fabric loopback must exist (after `ifstate.service`); it does while FRR still waits for its guard | kube | routed-fabric | kube step 4 (**done**, round 67: haproxy keeps `after = ["ifstate.service"]`) |
 | `node_transport` gains `fabricInterfaces`; a transit tunnel is not in it | routed-fabric | `lib/kube-cluster/transport.nix` | fabric step 4 |
-| Manual-address mode is removed; `network.fabric` is required | kube | routed-fabric may drop `firewall.trust` | kube step 3, fabric step 3 |
+| Manual-address mode is removed; `network.fabric` is required | kube | routed-fabric may drop `firewall.trust` | kube step 3, fabric step 3 (**done**, rounds 66 and 67) |
 | Empty file under `/run/netif/pd/<link>` means "delegation lost"; no file means "no answer yet" | netif (N16 amended) | the router's prefix hook | gateway step 5 point 2, with the netif spec in the same PR |
-| A spine can forge member sources: by-source rules protect against leaves and outsiders only; TLS, tokens and mTLS cover the rest | — | SPEC.md §6.12 states it | kube step 4 |
+| A spine can forge member sources: by-source rules protect against leaves and outsiders only; TLS, tokens and mTLS cover the rest | — | SPEC.md §6.12 states it | kube step 4 (**done**, round 67) |
 | The shared hostile suite `lib/kube-cluster/tests/vm/hostile.nix` was extended by two prototypes (kube: K05d..K53; fabric: `mallory` as `client`, K40a, K40, K41, P5, P6). Merge both sets; kube's file is the base | kube | routed-fabric | kube step 1 (**done**, round 63: merged; verdicts that need a later kube step are `info` lines naming it) |
 
 Numbering: the area files suggest decision ids (D73, N45). Take the
@@ -192,7 +192,7 @@ nix-unit tests that it lacks.
 | Wave | Steps | Why this order |
 |---|---|---|
 | 1 | The judges and the first guards: fabric steps 1 and 2 as one PR (with `fabricInside`; **done**, round 62); kube step 1 (with `packages.rke2`, K-A1; **done**, round 63); netif step 1 (sysctl baseline, `netif-hostile` with controls; **done**, round 64); gateway steps 0 to 3 (one PR; step 3 carries `forwardLinks` and its three setters; **done**, round 65); `hostile-router` with the R15 fix (**done**, round 65) | Closes every proven gap. Puts the hostile suites in the tree |
-| 2 | The structural steps: fabric 5 and 7 (may ride with wave 1), fabric 3 (one PR; **done**, round 66, D75); kube 3 and 4; netif 2, 3, 4; gateway 4, 5 (points 1 and 3) | Each is independent of the other areas, except the contracts of §3 |
+| 2 | The structural steps: fabric 5 and 7 (may ride with wave 1), fabric 3 (one PR; **done**, round 66, D75); kube 3 and 4 (one PR; **done**, round 67, D76); netif 2, 3, 4; gateway 4, 5 (points 1 and 3) | Each is independent of the other areas, except the contracts of §3 |
 | 3 | The large steps: netif 5, 6, 7 (the transaction; the unit renames reach the other areas' suites); kube 7 and 8 (policy and Service fronts; READMEs explain both gates together), kube 6; fabric 4 (transit, O1), 6; gateway 6 (zones; adds the zone-and-policy verdict) and 5 point 2 | Need the wave-2 structure |
 | 4 | kube 5 (beacon and decider: new code, prove first), kube 9; fabric 8; netif 8 (ARP keys); gateway 8 (after P4) | New code without a prototype, or optional |
 | gated | gateway 7 (remote-builder), with external-systems/home (O8) | Owner schedules it |

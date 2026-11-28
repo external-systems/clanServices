@@ -109,6 +109,12 @@ Done so far:
   link's own addresses; the fabric's pools are `unreachable` until BGP
   says otherwise. Proven by `hostile-fabric`, `k3s-hostile` and the new
   suite `routed-fabric-fail-closed`.
+- Kube steps 3 and 4 (SPEC.md D76): a cluster always rides a fabric
+  (manual addresses are gone; the README quick start is a one-machine
+  fabric and a test evaluates it); typed options; the HAProxy fronts
+  listen on loopback only; the node firewall is one matrix by source,
+  so a pod reaches the API on a server and nothing else of a node, and
+  no link is trusted. Proven by `k3s-hostile` and `rke2-hostile`.
 
 Until the design is frozen, tests prove behaviour and may be rewritten
 (see [Testing](../reference/testing.md)).

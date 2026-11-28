@@ -222,7 +222,8 @@ in {
       unsupportedHelmValues
       ;
     inherit (haproxy) mkHaproxyConfig;
-    inherit (firewall) mkInputRules;
+    firewallMatrix = firewall.matrix;
+    renderFirewallMatrix = firewall.renderMatrix;
     inherit mkManifestLabels resolvePools;
   };
 

@@ -157,7 +157,7 @@ in rec {
         # also needs the private fabric pool (its VIPs draw from it) —
         # without the pool (fabric.enable = false) auto falls back to
         # node-port. NodePort is the universal fallback (a Kubernetes
-        # primitive — manual-address clusters included); only EXPLICIT
+        # primitive); only EXPLICIT
         # unsupported selections eval-error.
         if transport.internalLoadBalancer && fabricBlocks != null
         then "internal-load-balancer"

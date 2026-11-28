@@ -131,8 +131,7 @@ in rec {
 
     # 5. Mesh-group fabric consistency (§6.3/D54): same-group clusters
     # must consume the same fabric instance — one mesh group = one
-    # routed-fabric instance. Posture mixes (fabric vs manual) inside a
-    # group are likewise rejected.
+    # routed-fabric instance.
     fabricInconsistent = lib.concatMap (
       groupClusters:
         lib.filter (

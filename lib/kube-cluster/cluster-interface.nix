@@ -1,47 +1,55 @@
-{lib, ...}: {
+{lib, ...}: let
+  # K-A7: addresses and prefixes are typed; a typo fails at evaluation,
+  # not in a firewall set, HAProxy or a kubeconfig
+  ip = import ../ip.nix {inherit lib;};
+in {
   options = {
     domain = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
+      type = lib.types.nullOr (lib.types.strMatching "[a-z0-9]([-a-z0-9.]*[a-z0-9])?");
       default = null;
+      example = "example.org";
       description = ''
-        Domain name for the cluster. null lets the distro service fall
-        back to clan meta.domain.
+        Domain name for the cluster (lower-case letters, digits, `-` and
+        `.`). null lets the distro service fall back to clan meta.domain.
       '';
     };
 
     network = {
       fabric = lib.mkOption {
-        type = lib.types.nullOr (
-          lib.types.submodule {
-            options = {
-              service = lib.mkOption {
-                type = lib.types.str;
-                description = ''
-                  Name of the clanService that exports the generic
-                  node_transport interface (the transport source — e.g.
-                  routed-fabric, or any third-party native router
-                  implementing the neutral schemaVersion 2 seam, D58,
-                  D72). The cluster consumes that instance's node_transport
-                  export ONLY; it never branches on provider service names.
-                '';
-              };
-              instance = lib.mkOption {
-                type = lib.types.str;
-                description = "Name of the transport instance to consume.";
-              };
+        type = lib.types.submodule {
+          options = {
+            service = lib.mkOption {
+              type = lib.types.str;
+              description = ''
+                Name of the clanService that exports the generic
+                node_transport interface (the transport source — e.g.
+                routed-fabric, or any third-party native router
+                implementing the neutral schemaVersion 2 seam, D58,
+                D72). The cluster consumes that instance's node_transport
+                export ONLY; it never branches on provider service names.
+              '';
             };
-          }
-        );
-        default = null;
+            instance = lib.mkOption {
+              type = lib.types.str;
+              description = "Name of the transport instance to consume.";
+            };
+          };
+        };
+        example = {
+          service = "routed-fabric";
+          instance = "fabric";
+        };
         description = ''
-          Selects the transport source consumed through the generic
-          node_transport schemaVersion 2 export (D58). null requires
-          explicit per-node network.ipv4/ipv6 addresses. The mesh group
-          defaults to the transport instance name (D54).
+          Required. The transport source consumed through the generic
+          node_transport schemaVersion 2 export (D58): every member's
+          node addresses, links and MTU come from it. routed-fabric is
+          the only transport (D72); a one-machine cluster is a
+          one-machine fabric (SPEC.md D76). The mesh group defaults to
+          the transport instance name (D54).
         '';
       };
       podCIDRv4 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv4Cidr;
         default = null;
         description = ''
           IPv4 pod CIDR. null derives from cilium.id:
@@ -49,7 +57,7 @@
         '';
       };
       podCIDRv6 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv6Cidr;
         default = null;
         description = ''
           IPv6 pod CIDR. null derives from cilium.id:
@@ -57,7 +65,7 @@
         '';
       };
       serviceCIDRv4 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv4Cidr;
         default = null;
         description = ''
           IPv4 service CIDR. null derives from cilium.id:
@@ -65,7 +73,7 @@
         '';
       };
       serviceCIDRv6 = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv6Cidr;
         default = null;
         description = ''
           IPv6 service CIDR. null derives from cilium.id:
@@ -238,12 +246,12 @@
           Render the private fleet fabric (D10): a cluster-global
           shared-bgp pool "<instance>-fabric" carrying the internal
           ClusterMesh apiserver IPv4 VIP (offset 79, D60). null defaults on
-          for local-router transports and off for manual-address
-          clusters. Explicitly enabling it requires local-router BGP.
+          for local-router transports (routed-fabric) and off for any
+          other. Explicitly enabling it requires local-router BGP.
         '';
       };
       ipv4Block = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv4Cidr;
         default = null;
         description = ''
           Fabric pool IPv4 block. null derives 172.16.<ciliumId>.0/24.
@@ -252,7 +260,7 @@
         '';
       };
       ipv6Block = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr ip.types.ipv6Cidr;
         default = null;
         description = ''
           Fabric pool IPv6 block. null derives fd11:<ciliumId>::/64.
@@ -267,9 +275,8 @@
       default = null;
       description = ''
         The mesh (trust-domain) group this cluster belongs to. null =
-        the default group: the fabric instance name when network.fabric is
-        set, else the clan's meta.domain (or the instance's domain
-        override). An explicit string names a group; clusters sharing a
+        the default group: the fabric instance name
+        (network.fabric.instance). An explicit string names a group; clusters sharing a
         group form one trust domain (ClusterMesh, control domains — D43/
         D54). Same-group clusters must consume the same fabric instance
         (fleet-asserted). Recorded in the kube_cluster export.
@@ -416,6 +423,20 @@
           systemd oneshot (kubectl apply --server-side
           --field-manager=clan-bootstrap, D40). false removes the unit —
           the day-2 off-ramp once GitOps has adopted the bundle.
+        '';
+      };
+    };
+
+    # The node firewall (SPEC.md §6.12, D76; lib/kube-cluster/firewall.nix).
+    firewall = {
+      kubeletFromPods = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Open the kubelet (10250) to the cluster's pod CIDRs. Off by
+          default: the kubelet answers the servers only (the API server
+          reads logs and runs exec). Turn it on for a metrics scraper
+          that runs in a pod (metrics-server).
         '';
       };
     };

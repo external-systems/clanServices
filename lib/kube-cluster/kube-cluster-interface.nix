@@ -37,12 +37,12 @@ in {
         service = lib.mkOption {
           type = t.nullOr t.str;
           default = null;
-          description = "Service name of the consumed node_transport source; null = manual addresses.";
+          description = "Service name of the consumed node_transport source; null = no export from it yet.";
         };
         instance = lib.mkOption {
           type = t.nullOr t.str;
           default = null;
-          description = "Instance name of the consumed node_transport source; null = manual addresses.";
+          description = "Instance name of the consumed node_transport source; null = no export from it yet.";
         };
       };
       podCIDRv4 = lib.mkOption {
@@ -204,7 +204,7 @@ in {
       routeExchange = lib.mkOption {
         type = t.nullOr (t.enum ["local-router"]);
         default = null;
-        description = "The daemon-neutral route-exchange profile (local-router; null for manual-address clusters).";
+        description = "The daemon-neutral route-exchange profile (local-router; null while no member has a node_transport export).";
       };
       devices = lib.mkOption {
         type = t.listOf t.str;
@@ -214,12 +214,12 @@ in {
       directRoutingDevice = lib.mkOption {
         type = t.nullOr t.str;
         default = null;
-        description = "The transport's directRoutingDevice (null for manual-address clusters).";
+        description = "The transport's directRoutingDevice (null while no member has a node_transport export).";
       };
       mtu = lib.mkOption {
         type = t.nullOr t.ints.positive;
         default = null;
-        description = "The cluster's derived Cilium MTU (the minimum interface MTU; null for manual-address clusters).";
+        description = "The cluster's derived Cilium MTU (the minimum interface MTU; null while no member has a node_transport export).";
       };
       internalLoadBalancer = lib.mkOption {
         type = t.bool;
@@ -267,12 +267,12 @@ in {
             ipv4 = lib.mkOption {
               type = t.nullOr t.str;
               default = null;
-              description = "The member's node IPv4 (mesh or manual).";
+              description = "The member's node IPv4 (from the node_transport export).";
             };
             ipv6 = lib.mkOption {
               type = t.nullOr t.str;
               default = null;
-              description = "The member's node IPv6 (mesh or manual).";
+              description = "The member's node IPv6 (from the node_transport export).";
             };
             endpoint = lib.mkOption {
               type = t.nullOr t.str;
@@ -282,17 +282,17 @@ in {
             interfaces = lib.mkOption {
               type = t.listOf t.str;
               default = [];
-              description = "The member's fabric adjacency interface names (one per declared adjacency, D51); empty for manual-address clusters.";
+              description = "The member's fabric adjacency interface names (one per declared adjacency, D51).";
             };
             mtu = lib.mkOption {
               type = t.nullOr t.ints.positive;
               default = null;
-              description = "The member's smallest fabric adjacency MTU (native Cilium uses it directly, D51); null for manual-address clusters.";
+              description = "The member's smallest fabric adjacency MTU (native Cilium uses it directly, D51); null while it has no node_transport export.";
             };
             port = lib.mkOption {
               type = t.nullOr t.port;
               default = null;
-              description = "The member's transport listen port (null for manual-address clusters).";
+              description = "The member's transport listen port (null while no member has a node_transport export).";
             };
             topology = {
               region = lib.mkOption {

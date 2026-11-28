@@ -1,7 +1,7 @@
 # <distro>-ha: three servers (managers) on the routed fabric
 # (routed-fabric, FRR, per-pair WireGuard, Cilium native routing).
 # Proves the HA shape: every manager joins through its OWN haproxy
-# (kubeapi FQDN -> own node address; k3s: LB kubeapi port 7443 -> manager
+# (kubeapi FQDN -> loopback; k3s: LB kubeapi port 7443 -> manager
 # kube-apiserver backends, rke2: LB supervisor port 8443 -> manager
 # supervisor backends, over the fabric), etcd quorum with 3 members, Cilium
 # healthy everywhere — then an unclean loss of one manager (shutdown):
@@ -237,7 +237,7 @@ in {
                 gamma.wait_until_succeeds(f"ping -6 -c2 -W2 {mesh_ips6[target]}", timeout=120)
 
         # --- Non-init managers joined through THEIR OWN haproxy ----------
-        # kubeapi FQDN -> own node address (/etc/hosts), join URL on the LB
+        # kubeapi FQDN -> loopback (/etc/hosts), join URL on the LB
         ${
       if k3s
       then "# kubeapi port 7443."
@@ -245,7 +245,8 @@ in {
     } The clusterInit manager has NO server URL.
         with subtest("non-init managers joined through their own haproxy"):
             for name, m in [("alpha", alpha), ("beta", beta), ("gamma", gamma)]:
-                m.succeed(f"grep -q '^{mesh_ips[name]} kubeapi-${distro}.test.clan$' /etc/hosts")
+                m.succeed("grep -q '^127.0.0.1 kubeapi-${distro}.test.clan$' /etc/hosts")
+                m.succeed("grep -q '^::1 kubeapi-${distro}.test.clan$' /etc/hosts")
                 for port in [${
       if k3s
       then ''"6443", "7443", "8404"''
@@ -465,10 +466,21 @@ in {
             alpha.succeed("nft delete table inet k3hold")
 
         with subtest("init guard: reachable peers with no API let the server start"):
-            # 2381 (etcd metrics) is open to servers and listens on
-            # loopback only: every peer refuses the connection
-            guard_dropin("INIT_GUARD_PORT=2381")
+            # A peer with no cluster refuses the connection. The firewall
+            # opens no port without a listener to a server (D76: 2381 is
+            # gone), so the peers refuse port 2399 by a TCP reset, as a
+            # stopped API would. Kube step 5 replaces this with the state
+            # beacon.
+            for m in [beta, gamma]:
+                m.succeed(
+                    "nft add table inet guardpeer && "
+                    "nft add chain inet guardpeer in '{ type filter hook input priority -10; }' && "
+                    "nft add rule inet guardpeer in tcp dport 2399 reject with tcp reset"
+                )
+            guard_dropin("INIT_GUARD_PORT=2399")
             alpha.succeed(f"systemctl start {guard}")
+            for m in [beta, gamma]:
+                m.succeed("nft delete table inet guardpeer")
 
         with subtest("init guard: the override file allows a start once"):
             guard_dropin()

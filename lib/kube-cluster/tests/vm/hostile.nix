@@ -84,19 +84,27 @@
     then "k3s"
     else "rke2-agent";
   kubeconfig = "/etc/rancher/${distro}/${distro}.yaml";
-  # what a pod may reach on a node today (lib/kube-cluster/firewall.nix):
-  # the API (servers), the API's HAProxy front, the kubelet, Cilium's
-  # health port. The rke2 supervisor (9345) and its front (8443) are for
-  # members only (K-A2). Kube step 4 narrows this to the API on a server.
+  # what a pod may reach on a node (lib/kube-cluster/firewall.nix, D76,
+  # specs/design-kube.md §3.2): the API on a server, nothing on an agent.
+  # The kubelet answers the servers, Cilium's health port and the rke2
+  # supervisor the members; the HAProxy fronts bind loopback.
   clusterPorts = {
-    alpha = [6443 7443 10250 4240];
-    beta = [7443 10250 4240];
+    alpha = [6443];
+    beta = [];
   };
-  # the HAProxy fronts: the API front, and the rke2 supervisor front
+  # the HAProxy fronts per node: the API front, and the rke2 supervisor
+  # front. An rke2 agent's supervisor front has the supervisor's own port
+  # (its tunnel dials the servers on the port of its join URL, §3.6).
   frontPorts =
     if k3s
-    then [7443]
-    else [7443 8443];
+    then {
+      alpha = [7443];
+      beta = [7443];
+    }
+    else {
+      alpha = [7443 8443];
+      beta = [7443 9345];
+    };
   # every port a hostile actor would try first
   interesting = "22,179,2379-2381,4240,4244,4245,6443,7443,8404,8443,9345,9963,10248-10259";
 in {
@@ -722,10 +730,10 @@ in {
                 code, _ = node.execute(f"{prefix} socat -T 3 /dev/null TCP:{fabric['alpha']['ipv4']}:6443,connect-timeout=3")
                 control(f"K24 the same connect from a {label} reaches alpha:6443", code == 0, f"rc={code}")
             if rke2:
-                # control: the supervisor and its front answer a member
-                for port in [9345, 8443]:
-                    code, _ = beta.execute(f"socat -T 3 /dev/null TCP:{fabric['alpha']['ipv4']}:{port},connect-timeout=3")
-                    control(f"K24 a member connects to alpha:{port}", code == 0, f"rc={code}")
+                # control: the supervisor answers a member (its front 8443
+                # binds loopback: K27)
+                code, _ = beta.execute(f"socat -T 3 /dev/null TCP:{fabric['alpha']['ipv4']}:9345,connect-timeout=3")
+                control("K24 a member connects to alpha:9345", code == 0, f"rc={code}")
             code = http_code(beta, f"https://{api_vip}:443/api/v1/namespaces/kube-system/secrets", prefix=in_pod)
             verdict("K25 the API refuses an anonymous request for secrets", code in ("401", "403"), f"HTTP {code}")
             token = alpha.succeed(f"{KUBECTL} exec hostile -- cat /var/run/secrets/kubernetes.io/serviceaccount/token").strip()
@@ -737,18 +745,44 @@ in {
             code = http_code(beta, f"https://{api_vip}:443/version", prefix=in_pod, header="-H @/tmp/hostile-header")
             control("K25/K26 the pod's token is valid: the API serves it /version", code == "200", f"HTTP {code}")
 
-        with subtest("the load-balancer fronts"):
-            for port in front_ports:
-                code, _ = mallory.execute(f"nc -z -w 3 -s {fabric['mallory']['ipv4']} {fabric['alpha']['ipv4']} {port}")
-                verdict(f"K27 a fabric member outside the cluster does not reach the front {port} of alpha", code != 0)
-                # control: a member reaches the same front
-                code, _ = beta.execute(f"nc -z -w 3 {fabric['alpha']['ipv4']} {port}")
-                control(f"K27 a member reaches the front {port} of alpha", code == 0, f"rc={code}")
+        with subtest("the load-balancer fronts listen on loopback only"):
+            # D76 (specs/design-kube.md §3.6): only the node itself dials
+            # its fronts. Control: the node connects to each front on
+            # loopback, so the listener is there and the probe works.
             for node in cluster:
                 listeners = node.succeed("ss -Hltn | awk '{print $4}'").split()
-                for port in front_ports:
+                for port in front_ports[node.name]:
                     binds = sorted(l.rsplit(":", 1)[0] for l in listeners if l.endswith(f":{port}"))
-                    info(f"K27 the front {port} of {node.name} binds; kube step 4 moves it to loopback", f"{binds}")
+                    verdict(f"K27 the front {port} of {node.name} listens on loopback only", binds == ["127.0.0.1", "[::1]"], f"binds: {binds}")
+                    code4, _ = node.execute(f"nc -z -w 3 127.0.0.1 {port}")
+                    code6, _ = node.execute(f"nc -z -w 3 ::1 {port}")
+                    control(f"K27 {node.name} reaches its own front {port} on loopback", code4 == 0 and code6 == 0, f"rc IPv4 {code4}, IPv6 {code6}")
+            for src, dst in [(beta, "alpha"), (alpha, "beta")]:
+                # control: the same member reaches the other member's node
+                # address on a port that is open to it
+                open_port = 6443 if dst == "alpha" else 4240
+                for key in ["ipv4", "ipv6"]:
+                    code, _ = src.execute(f"nc -z -w 3 {fabric[dst][key]} {open_port}")
+                    control(f"K27 {src.name} reaches {dst}:{open_port} ({key})", code == 0, f"rc={code}")
+                    for port in front_ports[dst]:
+                        code, _ = src.execute(f"nc -z -w 3 {fabric[dst][key]} {port}")
+                        verdict(f"K27 a member ({src.name}) does not reach the front {port} of another member ({dst}, {key})", code != 0, f"rc={code}")
+            for dst, node in [("alpha", alpha), ("beta", beta)]:
+                # control: a port that the firewall opens for the test
+                # answers mallory on the same node address, so the path
+                # to the fronts is real
+                node.succeed("systemd-run --unit k27-listener socat TCP6-LISTEN:9998,fork,reuseaddr EXEC:true")
+                node.wait_until_succeeds("ss -tln | grep ':9998 ' >/dev/null", timeout=30)
+                node.succeed("nft insert rule inet nixos-fw input tcp dport 9998 accept comment k27-control")
+                for key in ["ipv4", "ipv6"]:
+                    code, _ = mallory.execute(f"nc -z -w 3 -s {fabric['mallory'][key]} {fabric[dst][key]} 9998")
+                    control(f"K27 mallory reaches an opened port on {dst}'s node address ({key})", code == 0, f"rc={code}")
+                    for port in front_ports[dst]:
+                        code, _ = mallory.execute(f"nc -z -w 3 -s {fabric['mallory'][key]} {fabric[dst][key]} {port}")
+                        verdict(f"K27 a fabric member outside the cluster does not reach the front {port} of {dst} ({key})", code != 0, f"rc={code}")
+                handle = node.succeed("nft -a list chain inet nixos-fw input | grep k27-control | awk '{print $NF}'").strip()
+                node.succeed(f"nft delete rule inet nixos-fw input handle {handle}")
+                node.succeed("systemctl stop k27-listener")
 
         with subtest("the cluster still works: logs and exec on the agent, node health"):
             # P6: the API server reaches the agent's kubelet; node-to-node health
